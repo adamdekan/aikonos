@@ -5,7 +5,7 @@
 <h3 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/eu-mark-dark.png" />
-    <img src="docs/img/eu-mark.png" alt="European Union" height="34" />
+    <img src="docs/img/eu-mark.png" alt="European Union" height="24" />
   </picture>
   &nbsp;AI control OS for enterprises
 </h3>
