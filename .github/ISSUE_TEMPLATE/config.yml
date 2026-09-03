@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/adamdekan/aikonos/security/advisories/new
+    about: Vulnerabilities go through private reporting, never a public issue.
+  - name: Documentation
+    url: https://github.com/adamdekan/aikonos/tree/main/docs
+    about: Architecture, policy model, threat model and the operations runbook.

@@ -218,10 +218,7 @@ decision rather than oversight, each documented with its reasoning in
 
 ## Contributing
 
-Issues and pull requests are welcome. Sign off your commits with
-`git commit -s` to accept the Developer Certificate of Origin.
-
-Run what CI runs before opening a pull request:
+Issues and pull requests are welcome. Run what CI runs before opening one:
 
 ```bash
 task broker:test     # Go unit tests
@@ -230,11 +227,9 @@ task test:all        # gateway, webui and docs-mcp suites
 task compose:verify  # smoke-test a running stack
 ```
 
-Two conventions are enforced rather than preferred. Database access goes
-through `broker/internal/db/` and nowhere else, and every query begins with
-`withTenant()` so row-level security applies. Task state changes go through
-`db.TaskRepo.Transition()`, which keeps the state machine the only authority on
-what transition is legal.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers sign-off, the two conventions a
+reviewer will hold you to, and where to start.
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) governs participation.
 
 Security issues do not belong in the issue tracker. See
 [SECURITY.md](SECURITY.md).

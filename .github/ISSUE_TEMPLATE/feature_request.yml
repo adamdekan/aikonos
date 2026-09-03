@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a capability or a change in behaviour
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: >
+        Describe the situation you are in, not the implementation you have in
+        mind. What are you unable to do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Effect on the architectural invariants
+      description: >
+        `ROADMAP.md` lists invariants any change has to preserve, such as
+        fail-closed authorization and capabilities that can only narrow. If your
+        proposal touches one, say which and how. Answer "none that I can see" if
+        that is the case.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
