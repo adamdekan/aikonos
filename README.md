@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/aikonos-wordmark.png" alt="Aikonos" height="80" />
+  <a href="https://aikonos.com/"><img src="docs/img/aikonos-wordmark.png" alt="Aikonos" height="80" /></a>
 </p>
 
 <h3 align="center">
@@ -9,6 +9,10 @@
   </picture>
   &nbsp;AI control OS for enterprises
 </h3>
+
+<p align="center">
+  <a href="https://aikonos.com/">aikonos.com</a>
+</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0" /></a>
