@@ -1,0 +1,131 @@
+# OTel Collector — Azure Blob archive config (AIKONOS_OBS_ARCHIVE=azure)
+#
+# Archive sink: azureblobexporter (native; ships in otel/opentelemetry-collector-contrib).
+# No S3-compatible shim involved.
+#
+# Auth is selected by AIKONOS_OBS_AZURE_AUTH_TYPE (default: connection_string). The
+# azureblobexporter in collector 0.130.0 implements exactly these four types — there
+# is NO federated "workload_identity" type in this version; for AKS/host workload
+# identity use system_managed_identity (the pod/host's assigned identity):
+#   connection_string       — AIKONOS_OBS_AZURE_CONNECTION_STRING (carries its own endpoint)
+#   system_managed_identity — AIKONOS_OBS_AZURE_ACCOUNT_URL (no secret; system-assigned identity)
+#   user_managed_identity   — AIKONOS_OBS_AZURE_ACCOUNT_URL + AIKONOS_OBS_AZURE_CLIENT_ID
+#   service_principal       — AIKONOS_OBS_AZURE_ACCOUNT_URL + AIKONOS_OBS_AZURE_TENANT_ID
+#                             + AIKONOS_OBS_AZURE_CLIENT_ID + AIKONOS_OBS_AZURE_CLIENT_SECRET
+#
+# AIKONOS_OBS_AZURE_ACCOUNT_URL is the blob endpoint, e.g.
+#   https://<account>.blob.core.windows.net/
+# REQUIRED for every auth type except connection_string. Container names are fixed:
+# logs, metrics, traces — create them in the storage account before starting.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        id: docker_json
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+      # Extract container id and 12-char short prefix from log.file.path.
+      # include_file_path: true writes the path into attributes["log.file.path"]
+      # in stanza's entry model (resource promotion happens later in stanza→OTLP).
+      # docker.sock NOT mounted — assume-breach hardening (H1/H2).
+      # on_error: send — parse miss never drops the record.
+      - type: regex_parser
+        id: extract_container_id
+        parse_from: attributes["log.file.path"]
+        regex: '/var/lib/docker/containers/(?P<container_id>(?P<container_short>[a-f0-9]{12})[a-f0-9]{52})/'
+        on_error: send
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  redaction:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - "(?i).*authorization.*"
+      - "(?i).*bearer.*"
+      - "(?i).*password.*"
+      - "(?i).*passwd.*"
+      - "(?i).*secret.*"
+      - "(?i).*api.?key.*"
+      - "(?i).*token.*"
+      - "(?i).*conn.*string.*"
+      - "(?i).*connection.?string.*"
+    blocked_values:
+      # Bearer token values
+      - "(?i)bearer\\s+[a-zA-Z0-9\\-._~+/]+=*"
+      # Generic long base64-ish secrets (40+ chars) — intentionally broad in a dev stack
+      - "[a-zA-Z0-9+/]{40,}={0,2}"
+    summary: silent
+
+exporters:
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Loki 3.x OTLP ingest: exporter appends /v1/logs, so base must be …/otlp (not …:3100).
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Archive (Azure Blob) — native azureblobexporter (contrib 0.130.0). Auth type +
+  # credentials come from env (see header comment). url is required for every auth
+  # type except connection_string; unused fields stay empty and are ignored by the
+  # exporter for the selected type.
+  azureblob:
+    url: ${env:AIKONOS_OBS_AZURE_ACCOUNT_URL:-}
+    auth:
+      type: ${env:AIKONOS_OBS_AZURE_AUTH_TYPE:-connection_string}
+      # Placeholder default keeps `otelcol validate` green with no env set (the
+      # exporter errors on an empty connection_string under the default type). It's
+      # ignored when auth type is an identity. Real connection_string mode overrides it.
+      connection_string: ${env:AIKONOS_OBS_AZURE_CONNECTION_STRING:-validate-placeholder}
+      tenant_id: ${env:AIKONOS_OBS_AZURE_TENANT_ID:-}
+      client_id: ${env:AIKONOS_OBS_AZURE_CLIENT_ID:-}
+      client_secret: ${env:AIKONOS_OBS_AZURE_CLIENT_SECRET:-}
+    container:
+      logs: logs
+      metrics: metrics
+      traces: traces
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, redaction]
+      exporters: [otlp/tempo, azureblob]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [batch, redaction]
+      exporters: [otlphttp/loki, azureblob]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

@@ -1,0 +1,45 @@
+#cloud-config
+# VM bootstrap for the Aikonos dev deployment:
+#  - install Docker Engine + compose plugin
+#  - format + mount the attached Premium data disk at /mnt/data
+#  - point Docker's data-root at /mnt/data/docker so images AND named volumes
+#    (postgres-data, minio-data, workspace-data, traefik-acme, ...) live on the
+#    durable disk
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+
+# Partition + format the data disk (LUN 0). Azure exposes it via this stable symlink.
+disk_setup:
+  /dev/disk/azure/scsi1/lun0:
+    table_type: gpt
+    layout: true
+    overwrite: false
+fs_setup:
+  - device: /dev/disk/azure/scsi1/lun0
+    partition: 1
+    filesystem: ext4
+mounts:
+  - [ "/dev/disk/azure/scsi1/lun0-part1", "/mnt/data", "ext4", "defaults,nofail", "0", "2" ]
+
+write_files:
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      { "data-root": "/mnt/data/docker" }
+
+runcmd:
+  # Docker apt repo (official).
+  - install -m0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  # data-root lives on the mounted disk; ensure it exists before (re)start.
+  - mkdir -p /mnt/data/docker
+  - usermod -aG docker azureuser
+  - systemctl enable --now docker
+  - systemctl restart docker

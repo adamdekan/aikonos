@@ -1,0 +1,59 @@
+{
+  "description": "Wire/log strings with no shared symbol across languages or packages to pin them by import. Pinned instead by grep: agent-gateway/test/contracts.test.ts reads this file and fails if a listed file no longer contains its string. No codegen — a reword must fail this test before it reaches prod.",
+  "strings": [
+    {
+      "value": "aikonos.approval.request",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.tool.error",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.user",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.skills.loaded",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.memory.recalled",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.subagent.spawned",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "aikonos.subagent.completed",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
+      "value": "provider key missing from Vault",
+      "family": "log-string",
+      "producers": ["broker/internal/broker/providers_south.go"],
+      "consumers": ["scripts/compose-verify.sh"]
+    },
+    {
+      "value": "llm credentials unavailable",
+      "family": "log-string",
+      "producers": ["agent-gateway/src/pi/session.ts", "agent-gateway/src/ipc/supervisor.ts"],
+      "consumers": ["scripts/compose-verify.sh"]
+    }
+  ]
+}

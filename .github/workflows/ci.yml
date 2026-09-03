@@ -1,0 +1,305 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  broker-test:
+    name: Broker tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+          cache-dependency-path: go.sum
+
+      # protoc + plugins are required: broker packages import gen/ stubs (gitignored)
+      # Versions pinned to match broker/Dockerfile — keep in lockstep with broker/Dockerfile.
+      - name: Install protoc and Go plugins
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+      - name: Generate proto stubs
+        run: bash scripts/proto-gen.sh
+
+      - name: Run broker tests
+        run: go test ./broker/...
+
+  policy-test:
+    name: OPA policy tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OPA
+        run: |
+          curl -sL -o opa https://openpolicyagent.org/downloads/v0.68.0/opa_linux_amd64_static
+          echo "dfd5081fc6f930dfeaf2a225e31e616fc227dc0c7b43019b73d6f8fb8a1de1aa  opa" | sha256sum -c
+          chmod +x opa
+          sudo mv opa /usr/local/bin/opa
+          opa version
+
+      - name: Run OPA policy tests
+        run: opa test policies/opa/ -v
+
+  gateway-test:
+    name: Gateway tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agent-gateway/package-lock.json
+
+      - name: Install gateway dependencies
+        run: npm ci --prefix agent-gateway
+
+      # Tests import gen/ts stubs (gitignored). Regenerate them — TS-only, so no
+      # Go toolchain is needed; the ts_proto plugin comes from npm ci above.
+      - name: Install protoc
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler
+
+      - name: Generate proto stubs (TypeScript)
+        run: bash scripts/proto-gen.sh --ts-only
+
+      - name: Run gateway tests
+        run: npm --prefix agent-gateway test -- --run
+
+  webui-test:
+    name: Webui tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/web/package-lock.json
+
+      - name: Install webui dependencies
+        working-directory: webui/web
+        run: npm ci
+
+      - name: Run webui tests
+        working-directory: webui/web
+        run: npm test
+
+      - name: Install webui proxy dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Run webui proxy tests
+        working-directory: webui
+        run: npm test
+
+  docs-mcp-test:
+    name: docs-mcp tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs-mcp/package-lock.json
+
+      - name: Install docs-mcp dependencies
+        working-directory: docs-mcp
+        run: npm ci
+
+      - name: Run docs-mcp tests
+        working-directory: docs-mcp
+        run: npm test
+
+  migrations:
+    name: Migrations apply cleanly and idempotently
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aikonos
+          POSTGRES_PASSWORD: aikonos
+          POSTGRES_DB: aikonos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: aikonos
+      PGPASSWORD: aikonos
+      PGDATABASE: aikonos
+      # migrate.sh provisions the non-superuser broker role aikonos_app and
+      # requires its password (RLS enforcement).
+      AIKONOS_DB_APP_PASSWORD: aikonos-app-ci
+      # ...and the SELECT-only Grafana analytics role aikonos_grafana.
+      AIKONOS_GRAFANA_DB_PASSWORD: aikonos-grafana-ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql-client
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-client
+
+      # migrate.sh hard-codes MIG_DIR=/migrations (the compose mount point) and
+      # walks it with `find ... -maxdepth 1` (no -L) — a symlinked /migrations
+      # matches zero files under that invocation, so stage a real directory.
+      - name: Stage migrations at /migrations
+        run: |
+          sudo mkdir -p /migrations
+          sudo cp broker/internal/db/migrations/*.sql /migrations/
+
+      - name: Run migrations (fresh)
+        run: bash deploy/compose/migrate.sh
+
+      - name: Assert all migrations applied (fresh)
+        run: |
+          want=$(find broker/internal/db/migrations -maxdepth 1 -name '*.sql' | wc -l)
+          got=$(psql -tAc "SELECT count(*) FROM schema_migrations")
+          echo "expected ${want} applied migrations, ledger has ${got}"
+          [ "${want}" -eq "${got}" ]
+
+      - name: Re-run migrations (idempotency)
+        run: bash deploy/compose/migrate.sh
+
+      - name: Assert ledger count unchanged after re-run
+        run: |
+          want=$(find broker/internal/db/migrations -maxdepth 1 -name '*.sql' | wc -l)
+          got=$(psql -tAc "SELECT count(*) FROM schema_migrations")
+          echo "expected ${want} applied migrations, ledger has ${got}"
+          [ "${want}" -eq "${got}" ]
+
+  compose-config:
+    name: Compose config drift (local/azure/onprem)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # compose.onprem.yaml uses the `!reset` merge tag (floor: Compose v2.24.0,
+      # see deploy/onprem/README.md prerequisites). Ensure the runner's docker
+      # compose plugin is new enough rather than assuming the image default.
+      - name: Ensure Compose >= 2.24.0 (!reset support)
+        run: |
+          have="$(docker compose version --short)"
+          need="2.24.0"
+          if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" != "$need" ]; then
+            echo "runner docker compose ($have) is older than the !reset floor ($need); installing a pinned plugin"
+            mkdir -p ~/.docker/cli-plugins
+            plugin="$HOME/.docker/cli-plugins/docker-compose"
+            curl -sL -o "$plugin" \
+              https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64
+            echo "383ce6698cd5d5bbf958d2c8489ed75094e34a77d340404d9f32c4ae9e12baf0  $plugin" | sha256sum -c
+            chmod +x "$plugin"
+          fi
+          docker compose version
+
+      # Dummy env — never the real .env. --env-file scopes each invocation to
+      # its own placeholder file for all three variants (local included).
+      - name: Write dummy env files
+        run: |
+          cp deploy/compose/.env.local.example .env.ci-local
+          cp deploy/compose/.env.azure.example .env.ci-azure
+          cp deploy/compose/.env.onprem.example .env.ci-onprem
+
+      - name: Config-parse local variant
+        run: docker compose --env-file .env.ci-local config -q
+
+      - name: Config-parse azure variant
+        run: docker compose --env-file .env.ci-azure -f compose.yaml -f deploy/compose/compose.azure.yaml config -q
+
+      - name: Config-parse onprem variant
+        run: docker compose --env-file .env.ci-onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml config -q
+
+      # deploy/compose/compose.digests.yaml is checked in (refreshed by
+      # scripts/pin-image-digests.sh, a live-pull script CI does not run) —
+      # only prove it still parses on top of each prod overlay.
+      - name: Config-parse azure+digests variant
+        run: docker compose --env-file .env.ci-azure -f compose.yaml -f deploy/compose/compose.azure.yaml -f deploy/compose/compose.digests.yaml config -q
+
+      - name: Config-parse onprem+digests variant
+        run: docker compose --env-file .env.ci-onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml -f deploy/compose/compose.digests.yaml config -q
+
+      - name: Run env-drift check
+        run: bash scripts/check-env-drift.sh
+
+  scorecard:
+    name: OpenSSF Scorecard
+    runs-on: ubuntu-latest
+    # Informational supply-chain posture check (zero-trust audit Domain 6).
+    # Runs the Scorecard CLI directly (pinned tag + checksum-verified) instead of
+    # ossf/scorecard-action: the CLI works on a private repo without GitHub
+    # Advanced Security and avoids a third-party action that the org Actions
+    # allowlist may block. Non-blocking — a low score or a check that needs an
+    # elevated token (e.g. Branch-Protection) must not red-X the workflow.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Scorecard CLI
+        run: |
+          curl -sL -o scorecard.tar.gz \
+            https://github.com/ossf/scorecard/releases/download/v5.5.0/scorecard_5.5.0_linux_amd64.tar.gz
+          echo "83b90a05c1540ef1390db1cd5711e5fd04be9c1d8537fb84d39d02092d6a8dff  scorecard.tar.gz" | sha256sum -c
+          tar -xzf scorecard.tar.gz scorecard
+          chmod +x scorecard
+          ./scorecard version
+
+      - name: Run Scorecard
+        env:
+          GITHUB_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./scorecard --repo=github.com/${{ github.repository }} \
+            --format=json --show-details > scorecard-results.json
+          echo "Aggregate score:"
+          jq '.score' scorecard-results.json
+          echo "Per-check scores (score / check):"
+          jq -r '.checks[] | "  \(.score)\t\(.name)"' scorecard-results.json
+
+      - name: Upload Scorecard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-results
+          path: scorecard-results.json

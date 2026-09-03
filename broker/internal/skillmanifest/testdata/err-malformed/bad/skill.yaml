@@ -1,0 +1,5 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: bad.malformed
+  description: {this is not valid yaml because: [unclosed bracket

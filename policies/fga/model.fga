@@ -1,0 +1,116 @@
+model
+  schema 1.1
+
+# ── Core entity types ─────────────────────────────────────────────────────────
+
+type user
+  relations
+    # User→user delegation (north-bound SendEnvelope): a user may delegate to a
+    # peer or to a direct report. The broker checks
+    # CheckFGA(user:<from>, can_delegate_to_user, user:<recipient>).
+    define peer: [user, group#member]
+    define manager: [user]
+    define can_delegate_to_user: peer or manager
+
+type group
+  relations
+    define member: [user, group#member]
+    define manager: [user]
+    # Delegation cohort. The self-referential marker tuple
+    # (group:G#member, delegatable, group:G) flips the whole group on; the
+    # intersection then yields the current member set (or ∅ when unmarked), so
+    # delegation rights track membership with no per-member fan-out.
+    define delegatable: [group#member]
+    define delegatable_member: member and delegatable
+
+type tenant
+  relations
+    define admin: [user]
+    define member: [user, group#member]
+
+# ── Workspace authorization ───────────────────────────────────────────────────
+
+type workspace
+  relations
+    define tenant: [tenant]
+    define owner: [user]
+    define editor: [user, group#member]
+    define viewer: [user, group#member] or editor
+    define can_read: viewer or owner
+    define can_write: editor or owner
+    define can_delete: owner
+    define can_share: owner
+
+# ── Skill authorization ───────────────────────────────────────────────────────
+
+type skill
+  relations
+    define tenant: [tenant]
+    # Groups assigned to this skill by admin
+    define permitted_group: [group#member]
+    define can_invoke: permitted_group
+
+type mcp_connector
+  relations
+    define tenant: [tenant]
+    define permitted_agent: [agent]
+    define permitted_group: [group#member]
+    define can_access: permitted_agent or permitted_group
+
+# ── Task and delegation ───────────────────────────────────────────────────────
+
+type task
+  relations
+    define owner: [user]
+    define delegate: [user]
+    define approver: [user, group#member]
+    define can_approve: approver
+    define can_cancel: owner or approver
+    define can_view: owner or delegate or approver
+
+type agent
+  relations
+    define spawned_by: [user, agent]
+    define owner_user: [user]
+    define usable_by: [user, group#member]
+    define can_delegate_to_user: owner_user
+    define can_use: usable_by or owner_user
+
+# ── Document and artifact sharing ────────────────────────────────────────────
+
+type document
+  relations
+    define owner: [user]
+    define viewer: [user, group#member]
+    define can_read: viewer or owner
+    define can_delete: owner
+    define can_share: owner
+
+type artifact
+  relations
+    define owner: [user]
+    define viewer: [user, group#member]
+    define can_read: viewer or owner
+    define can_delete: owner
+
+# ── Agent-skill bundle authorization ────────────────────────────────────────
+
+type agentskill
+  relations
+    define tenant: [tenant]
+    # Groups granted use of this bundle by an admin. `can_use` is DIRECTLY
+    # assignable (not computed) so AssignRole/dev-seed can write the grant tuple
+    # and the broker's CheckFGA(user, can_use, agentskill:<id>) resolves it — both
+    # sides use the same `can_use` relation.
+    define can_use: [group#member]
+
+# ── Skill lifecycle (publish pipeline) ───────────────────────────────────────
+
+type skill_submission
+  relations
+    define submitter: [user]
+    define reviewer: [user, group#member]
+    define approver: [user, group#member]
+    define can_review: reviewer
+    define can_approve: approver
+    define can_publish: approver

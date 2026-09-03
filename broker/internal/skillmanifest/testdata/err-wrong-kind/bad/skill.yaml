@@ -1,0 +1,8 @@
+apiVersion: aikonos.com/v1
+kind: NotASkill
+metadata:
+  name: bad.wrong.kind
+spec:
+  capability_scope: web:read
+  effect_class: read_only
+  tools: []

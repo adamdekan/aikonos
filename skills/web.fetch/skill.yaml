@@ -1,0 +1,57 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: web.fetch
+  version: 0.1.0
+  description: Fetch a URL and return its text content. Read-only. No state change.
+  author: aikonos-platform
+  source_repo: https://github.com/YOUR_ORG/aikonos
+spec:
+  capability_scope: web:read
+  effect_class: read_only
+  runtime: python-3.12
+
+  required_scopes:
+    - "web:fetch:*"
+
+  tools:
+    - name: fetch_url
+      description: Fetch the text content of a URL. Returns extracted text, not raw HTML.
+      effect_class: read_only
+      input_schema:
+        type: object
+        required: [url]
+        additionalProperties: false
+        properties:
+          url:
+            type: string
+            format: uri
+            description: URL to fetch. Must be HTTP or HTTPS.
+          timeout_seconds:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 15
+          extract_text_only:
+            type: boolean
+            default: true
+            description: If true, strip HTML and return plain text.
+      output_schema:
+        type: object
+        properties:
+          url:        {type: string}
+          status_code: {type: integer}
+          content:    {type: string}
+          content_length: {type: integer}
+          fetched_at: {type: string, format: date-time}
+
+  resource_limits:
+    cpu_cores: 0.5
+    memory_mb: 256
+    timeout_seconds: 30
+    max_tool_calls: 20
+    max_tokens: 10000
+
+  # Filled by publish pipeline — do not edit manually
+  signature: ""
+  sbom_ref: ""

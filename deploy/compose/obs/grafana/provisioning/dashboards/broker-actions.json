@@ -1,0 +1,309 @@
+{
+  "uid": "aikonos-broker-actions",
+  "title": "Broker Actions",
+  "tags": ["aikonos", "broker", "grpc"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "RPC service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\"}, rpc_service)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "method",
+        "label": "RPC method",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\"}, rpc_method)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "actor",
+        "label": "Actor (regex)",
+        "type": "textbox",
+        "query": ".+",
+        "current": { "text": ".+", "value": ".+" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total RPCs (range)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[$__range]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Error ratio (range)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "100 * sum(increase(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\", rpc_grpc_status_code!=\"0\"}[$__range])) / clamp_min(sum(increase(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[$__range])), 1)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "RPC rate (req/s)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p95 latency (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "decimals": 1 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(rpc_server_duration_milliseconds_bucket{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m])))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate by method",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (rpc_method) (rate(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m]))", "legendFormat": "{{rpc_method}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Error rate by method (status != OK)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (rpc_method) (rate(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\", rpc_grpc_status_code!=\"0\"}[5m]))", "legendFormat": "{{rpc_method}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99 (all selected)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 5 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(rpc_server_duration_milliseconds_bucket{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m])))", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(rpc_server_duration_milliseconds_bucket{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m])))", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(rpc_server_duration_milliseconds_bucket{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m])))", "legendFormat": "p99", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Request rate by service (north / south)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (rpc_service) (rate(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m]))", "legendFormat": "{{rpc_service}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Top actions by call count (range)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "targets": [
+        { "refId": "A", "expr": "topk(20, sum by (rpc_service, rpc_method) (increase(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[$__range])))", "format": "table", "instant": true, "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Calls by gRPC status code",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (rpc_grpc_status_code) (rate(rpc_server_duration_milliseconds_count{exported_job=\"aikonos-broker\", rpc_service=~\"$service\", rpc_method=~\"$method\"}[5m]))", "legendFormat": "code {{rpc_grpc_status_code}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Governance & rate limiting",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Rate-limit enforcement (hits/s)",
+      "description": "rate_limit_hits_total — only appears once the limiter first fires.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 40 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (limit_type) (rate(rate_limit_hits_total{exported_job=\"aikonos-broker\"}[5m]))", "legendFormat": "{{limit_type}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Audit trail health (failures & drops)",
+      "description": "audit_emit_failures_total / audit_events_dropped_total — non-zero means compliance-trail gaps.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(audit_emit_failures_total{exported_job=\"aikonos-broker\"}[5m]))", "legendFormat": "emit failures", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "expr": "sum(increase(audit_events_dropped_total{exported_job=\"aikonos-broker\"}[5m]))", "legendFormat": "events dropped", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Broker runtime",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Goroutines",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "expr": "process_runtime_go_goroutines{exported_job=\"aikonos-broker\"}", "legendFormat": "goroutines", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Heap in-use",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "expr": "process_runtime_go_mem_heap_inuse_bytes{exported_job=\"aikonos-broker\"}", "legendFormat": "heap in-use", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "GC cycles (rate)",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "expr": "rate(process_runtime_go_gc_count_total{exported_job=\"aikonos-broker\"}[5m])", "legendFormat": "gc/s", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "User activity (audit trail)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Activity by actor",
+      "description": "Audit events per interval, keyed by actor_email when known (falls back to actor_user_id — the raw OIDC subject/email or spiffe:// service identity — when no email is on the event). Sourced from broker AUDIT logs in Loki. Filter with the $actor regex variable (matches the raw actor_user_id), e.g. set it to '@' for humans only or 'spiffe' for services.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (actor) (count_over_time({service_name=~\".+\"} |= \"AUDIT\" | json | msg=\"AUDIT\" | actor_user_id=~\"$actor\" | line_format \"{{.raw}}\" | json actor_email=\"actor_email\" | label_format actor=\"{{ if .actor_email }}{{ .actor_email }}{{ else }}{{ .actor_user_id }}{{ end }}\" [$__interval]))", "legendFormat": "{{actor}}", "datasource": { "type": "loki", "uid": "loki" } }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "table",
+      "title": "Top actors by activity (range)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "targets": [
+        { "refId": "A", "expr": "topk(20, sum by (actor) (count_over_time({service_name=~\".+\"} |= \"AUDIT\" | json | msg=\"AUDIT\" | actor_user_id=~\"$actor\" | line_format \"{{.raw}}\" | json actor_email=\"actor_email\" | label_format actor=\"{{ if .actor_email }}{{ .actor_email }}{{ else }}{{ .actor_user_id }}{{ end }}\" [$__range])))", "instant": true, "datasource": { "type": "loki", "uid": "loki" } }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "Activity by event type",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (event_type) (count_over_time({service_name=~\".+\"} |= \"AUDIT\" | json | msg=\"AUDIT\" | actor_user_id=~\"$actor\" [$__interval]))", "legendFormat": "{{event_type}}", "datasource": { "type": "loki", "uid": "loki" } }
+      ]
+    },
+    {
+      "id": 44,
+      "type": "logs",
+      "title": "Recent audit events",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "dedupStrategy": "none", "sortOrder": "Descending" },
+      "targets": [
+        { "refId": "A", "expr": "{service_name=~\".+\"} |= \"AUDIT\" | json | msg=\"AUDIT\" | actor_user_id=~\"$actor\" | line_format \"{{.raw}}\" | json | line_format \"{{ if .actor_email }}{{ .actor_email }}{{ else }}{{ .actor_user_id }}{{ end }}  {{.event_type}}  {{.resource_ref}}\"", "datasource": { "type": "loki", "uid": "loki" } }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "office-worker",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "busboy": "^1",
+    "docx": "^9.7.1",
+    "pptxgenjs": "^4.0.1"
+  }
+}

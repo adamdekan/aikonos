@@ -1,0 +1,21 @@
+{
+  "prompt": "Send the Q2 2026-06-15 report to finance@example.com",
+  "tools": [
+    {
+      "id": "tc-1",
+      "name": "doc.read",
+      "argsJson": "{\"path\":\"/reports/Q2-2026-06-15.pdf\"}",
+      "result": "Q2 2026-06-15 report contents...",
+      "isError": false,
+      "done": true
+    },
+    {
+      "id": "tc-2",
+      "name": "email.draft",
+      "argsJson": "{\"to\":\"finance@example.com\",\"subject\":\"Q2 2026-06-15 Report\",\"body\":\"Please find the Q2 2026-06-15 report attached.\"}",
+      "result": "draft-id-abc123",
+      "isError": false,
+      "done": true
+    }
+  ]
+}

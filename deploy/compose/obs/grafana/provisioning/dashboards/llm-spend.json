@@ -1,0 +1,1842 @@
+{
+  "uid": "aikonos-llm-spend",
+  "title": "LLM Spend",
+  "description": "Durable per-call LLM spend analytics over llm_usage_events. Complements the Prometheus-fed LLM Analytics dashboard.",
+  "tags": [
+    "aikonos",
+    "llm",
+    "spend"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT DISTINCT tenant_id::text FROM llm_usage_events ORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT DISTINCT tenant_id::text FROM llm_usage_events ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT DISTINCT provider FROM llm_usage_events WHERE provider <> '' ORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT DISTINCT provider FROM llm_usage_events WHERE provider <> '' ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT DISTINCT model FROM llm_usage_events WHERE model <> '' ORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT DISTINCT model FROM llm_usage_events WHERE model <> '' ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id) AS \"__text\", e.agent_id AS \"__value\"\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE e.agent_id <> ''\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id) AS \"__text\", e.agent_id AS \"__value\"\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE e.agent_id <> ''\nGROUP BY 1, 2\nORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "usr",
+        "label": "User",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) AS \"__text\", e.user_id AS \"__value\"\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nWHERE e.user_id <> ''\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) AS \"__text\", e.user_id AS \"__value\"\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nWHERE e.user_id <> ''\nGROUP BY 1, 2\nORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "grp",
+        "label": "Group",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT DISTINCT g FROM llm_usage_events, unnest(user_groups) AS g ORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT DISTINCT g FROM llm_usage_events, unnest(user_groups) AS g ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "source",
+        "label": "Source",
+        "type": "query",
+        "datasource": {
+          "type": "postgres",
+          "uid": "aikonos-postgres"
+        },
+        "query": {
+          "refId": "tempvar",
+          "rawSql": "SELECT DISTINCT source FROM llm_usage_events WHERE source <> '' ORDER BY 1",
+          "format": "table",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        "definition": "SELECT DISTINCT source FROM llm_usage_events WHERE source <> '' ORDER BY 1",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "'__ALL__'",
+        "multi": true,
+        "sort": 1,
+        "options": [],
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "groupby",
+        "label": "Group by",
+        "type": "custom",
+        "query": "model,provider,agent_id,user_id,source",
+        "includeAll": false,
+        "multi": false,
+        "options": [
+          {
+            "selected": true,
+            "text": "model",
+            "value": "model"
+          },
+          {
+            "selected": false,
+            "text": "provider",
+            "value": "provider"
+          },
+          {
+            "selected": false,
+            "text": "agent_id",
+            "value": "agent_id"
+          },
+          {
+            "selected": false,
+            "text": "user_id",
+            "value": "user_id"
+          },
+          {
+            "selected": false,
+            "text": "source",
+            "value": "source"
+          }
+        ],
+        "current": {
+          "text": "model",
+          "value": "model"
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Headline",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Spend today",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE ts >= date_trunc('day', now())\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ],
+      "description": "Calendar window \u2014 deliberately ignores the dashboard time range; the template variable filters still apply."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Spend this ISO week",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE ts >= date_trunc('week', now())\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ],
+      "description": "Calendar window \u2014 deliberately ignores the dashboard time range; the template variable filters still apply."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Spend this month",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 7,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE ts >= date_trunc('month', now())\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ],
+      "description": "Calendar window \u2014 deliberately ignores the dashboard time range; the template variable filters still apply."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Spend last month",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 10,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE ts >= date_trunc('month', now()) - interval '1 month'\n  AND ts < date_trunc('month', now())\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ],
+      "description": "Calendar window \u2014 deliberately ignores the dashboard time range; the template variable filters still apply."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Month forecast",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 14,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0\n       / GREATEST(EXTRACT(DAY FROM now()), 1)\n       * EXTRACT(DAY FROM (date_trunc('month', now()) + interval '1 month - 1 day'))\n       AS forecast\nFROM llm_usage_events\nWHERE ts >= date_trunc('month', now())\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ],
+      "description": "Month-to-date spend divided by elapsed days, projected over the full calendar month. Ignores the dashboard time range."
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Calls (range)",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS calls\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Avg cost / call (range)",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(cost_micros), 0) / 1000000.0 / GREATEST(COUNT(*), 1)\n       AS avg_cost\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Trends",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Spend over time by $groupby",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(e.ts, $__interval),\n       CASE '$groupby'\n         WHEN 'user_id'  THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id)\n         WHEN 'agent_id' THEN COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id)\n         ELSE e.${groupby:raw}\n       END AS metric,\n       SUM(e.cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE $__timeFilter(e.ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR e.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR e.provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR e.model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR e.agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR e.user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR e.source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR e.user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1, 2\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Tokens over time",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(ts, $__interval),\n       SUM(tokens_in) AS \"input\",\n       SUM(tokens_out) AS \"output\",\n       SUM(cache_read) AS \"cache read\"\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "row",
+      "title": "Calendar (fixed lookback, independent of dashboard range)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "panels": []
+    },
+    {
+      "id": 13,
+      "type": "barchart",
+      "title": "Spend by day (last 30d)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "vertical",
+        "xTickLabelRotation": -45,
+        "showValue": "never",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT to_char(date_trunc('day', ts), 'YYYY-MM-DD') AS bucket,\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 1"
+        }
+      ],
+      "description": "Fixed 30d lookback (panel time override) \u2014 the dashboard range does not apply.",
+      "timeFrom": "30d"
+    },
+    {
+      "id": 14,
+      "type": "barchart",
+      "title": "Spend by ISO week (last 12w)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 15
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "vertical",
+        "xTickLabelRotation": -45,
+        "showValue": "never",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT to_char(date_trunc('week', ts), 'IYYY-\"W\"IW') AS bucket,\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 1"
+        }
+      ],
+      "description": "Fixed 12w lookback (panel time override) \u2014 the dashboard range does not apply.",
+      "timeFrom": "12w"
+    },
+    {
+      "id": 15,
+      "type": "barchart",
+      "title": "Spend by month (last 12m)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "vertical",
+        "xTickLabelRotation": -45,
+        "showValue": "never",
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT to_char(date_trunc('month', ts), 'YYYY-MM') AS bucket,\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 1"
+        }
+      ],
+      "description": "Fixed 12M lookback (panel time override) \u2014 the dashboard range does not apply.",
+      "timeFrom": "12M"
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Breakdowns",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "panels": []
+    },
+    {
+      "id": 17,
+      "type": "bargauge",
+      "title": "Top 10 users by spend",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "spend",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) AS \"user\",\n       SUM(e.cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nWHERE $__timeFilter(e.ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR e.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR e.provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR e.model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR e.agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR e.user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR e.source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR e.user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC\nLIMIT 10"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "bargauge",
+      "title": "Top 10 agents by spend",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 24
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "spend",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id) AS \"agent\",\n       SUM(e.cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE $__timeFilter(e.ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR e.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR e.provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR e.model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR e.agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR e.user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR e.source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR e.user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC\nLIMIT 10"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "bargauge",
+      "title": "Top 10 models by spend",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "spend",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT model AS \"model\",\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC\nLIMIT 10"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "bargauge",
+      "title": "Top 10 groups by spend",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 24
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "spend",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT g AS \"group\",\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events, unnest(user_groups) AS g\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC\nLIMIT 10"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "piechart",
+      "title": "Spend by provider",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value"
+          ],
+          "showLegend": true
+        },
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^spend$/",
+          "values": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT provider AS \"provider\",\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "piechart",
+      "title": "Spend by source",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value"
+          ],
+          "showLegend": true
+        },
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^spend$/",
+          "values": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT source AS \"source\",\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY spend DESC"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "row",
+      "title": "Efficiency",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "panels": []
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Cache hit rate over time",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(ts, $__interval),\n       SUM(cache_read)::float\n         / NULLIF(SUM(tokens_in) + SUM(cache_read), 0) AS \"cache hit rate\"\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "table",
+      "title": "Cost per 1k output tokens by model",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "spend"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cost per 1k out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 5
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT model,\n       SUM(tokens_out) AS \"output tokens\",\n       SUM(cost_micros) / 1000000.0 AS \"spend\",\n       SUM(cost_micros) / 1000000.0 * 1000\n         / NULLIF(SUM(tokens_out), 0) AS \"cost per 1k out\"\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1\nORDER BY 4 DESC NULLS LAST"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Calls by model over time",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(ts, $__interval),\n       model AS metric,\n       COUNT(*) AS calls\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1, 2\nORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "row",
+      "title": "Drill-down",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "panels": []
+    },
+    {
+      "id": 28,
+      "type": "table",
+      "title": "Top 20 sessions by spend",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT e.session_id,\n       COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) AS \"user\",\n       COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id) AS \"agent\",\n       COUNT(*) AS calls,\n       SUM(e.tokens_in + e.tokens_out) AS tokens,\n       SUM(e.cost_micros) / 1000000.0 AS cost\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE $__timeFilter(e.ts)\n  AND e.session_id <> ''\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR e.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR e.provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR e.model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR e.agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR e.user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR e.source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR e.user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1, 2, 3\nORDER BY cost DESC\nLIMIT 20"
+        }
+      ],
+      "description": "Only chat runs carry a session id; scheduler, external-invoke, reason, vision and connection-test calls do not."
+    },
+    {
+      "id": 29,
+      "type": "table",
+      "title": "Top 20 runs by spend",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT run_id,\n       source,\n       model,\n       COUNT(*) AS calls,\n       SUM(cost_micros) / 1000000.0 AS cost\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND run_id <> ''\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1, 2, 3\nORDER BY cost DESC\nLIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "table",
+      "title": "50 most recent events",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT e.ts,\n       COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) AS \"user\",\n       COALESCE(a.name, CASE WHEN e.agent_id = e.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), e.user_id) || ' (personal)' END, e.agent_id) AS \"agent\",\n       e.model,\n       e.source,\n       e.tokens_in,\n       e.tokens_out,\n       e.cost_micros / 1000000.0 AS cost\nFROM llm_usage_events e\nLEFT JOIN user_directory ud ON ud.tenant_id = e.tenant_id AND ud.subject = e.user_id\nLEFT JOIN agents a ON a.id::text = e.agent_id\nWHERE $__timeFilter(e.ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR e.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR e.provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR e.model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR e.agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR e.user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR e.source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR e.user_groups && ARRAY[${grp:sqlstring}]::text[])\nORDER BY e.ts DESC\nLIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "row",
+      "title": "Governance (monthly caps \u2014 llm_spend_counters is the authoritative meter)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "panels": []
+    },
+    {
+      "id": 32,
+      "type": "bargauge",
+      "title": "Cap utilization per user (this month)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 70
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "utilization",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), c.user_id) AS \"user\",\n       SUM(c.cost_micros)::float\n         / NULLIF(MAX(cap.cap_micros), 0) AS utilization\nFROM llm_spend_counters c\nJOIN spend_caps cap\n  ON cap.tenant_id = c.tenant_id\n AND cap.scope = 'user'\n AND cap.subject_id = c.user_id\nLEFT JOIN user_directory ud\n  ON ud.tenant_id = c.tenant_id AND ud.subject = c.user_id\nWHERE c.period_start = date_trunc('month', now())::date\n  AND c.user_id <> ''\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR c.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR c.user_id IN (${usr:sqlstring}))\nGROUP BY 1\nORDER BY utilization DESC NULLS LAST\nLIMIT 20"
+        }
+      ],
+      "description": "Current calendar month from llm_spend_counters (the cap meter), joined to spend_caps. That table carries no provider/model/source/group dimension, so only the tenant and identity variables apply."
+    },
+    {
+      "id": 33,
+      "type": "bargauge",
+      "title": "Cap utilization per agent (this month)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 70
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "utilization",
+          "values": true
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(a.name, CASE WHEN c.agent_id = c.user_id || '-agent' THEN COALESCE(NULLIF(ud.name,''), NULLIF(ud.email,''), c.user_id) || ' (personal)' END, c.agent_id) AS \"agent\",\n       SUM(c.cost_micros)::float\n         / NULLIF(MAX(cap.cap_micros), 0) AS utilization\nFROM llm_spend_counters c\nJOIN spend_caps cap\n  ON cap.tenant_id = c.tenant_id\n AND cap.scope = 'agent'\n AND cap.subject_id = c.agent_id\nLEFT JOIN agents a ON a.id::text = c.agent_id\nLEFT JOIN user_directory ud\n  ON ud.tenant_id = c.tenant_id AND ud.subject = c.user_id\nWHERE c.period_start = date_trunc('month', now())::date\n  AND c.agent_id <> ''\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR c.tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR c.agent_id IN (${agent:sqlstring}))\nGROUP BY 1\nORDER BY utilization DESC NULLS LAST\nLIMIT 20"
+        }
+      ],
+      "description": "Current calendar month from llm_spend_counters (the cap meter), joined to spend_caps. That table carries no provider/model/source/group dimension, so only the tenant and identity variables apply."
+    },
+    {
+      "id": 34,
+      "type": "gauge",
+      "title": "Org cap utilization (this month)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 70
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^utilization$/",
+          "values": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT c.tenant_id::text AS \"tenant\",\n       SUM(c.cost_micros)::float\n         / NULLIF(MAX(cap.cap_micros), 0) AS utilization\nFROM llm_spend_counters c\nJOIN spend_caps cap\n  ON cap.tenant_id = c.tenant_id\n AND cap.scope = 'org'\nWHERE c.period_start = date_trunc('month', now())::date\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR c.tenant_id::text IN (${tenant:sqlstring}))\nGROUP BY 1\nORDER BY utilization DESC NULLS LAST"
+        }
+      ],
+      "description": "Current calendar month from llm_spend_counters (the cap meter), joined to spend_caps. That table carries no provider/model/source/group dimension, so only the tenant and identity variables apply. One gauge per selected tenant."
+    },
+    {
+      "id": 35,
+      "type": "table",
+      "title": "Spend by day-of-week x hour",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "aikonos-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "cellOptions": {
+              "type": "color-background",
+              "mode": "gradient"
+            },
+            "align": "center",
+            "minWidth": 44
+          },
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "aikonos-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT to_char(ts, 'ID-Dy') AS dow,\n       to_char(ts, 'HH24') AS hour,\n       SUM(cost_micros) / 1000000.0 AS spend\nFROM llm_usage_events\nWHERE $__timeFilter(ts)\n  AND ('__ALL__' IN (${tenant:sqlstring}) OR tenant_id::text IN (${tenant:sqlstring}))\n  AND ('__ALL__' IN (${provider:sqlstring}) OR provider IN (${provider:sqlstring}))\n  AND ('__ALL__' IN (${model:sqlstring}) OR model IN (${model:sqlstring}))\n  AND ('__ALL__' IN (${agent:sqlstring}) OR agent_id IN (${agent:sqlstring}))\n  AND ('__ALL__' IN (${usr:sqlstring}) OR user_id IN (${usr:sqlstring}))\n  AND ('__ALL__' IN (${source:sqlstring}) OR source IN (${source:sqlstring}))\n  AND ('__ALL__' IN (${grp:sqlstring}) OR user_groups && ARRAY[${grp:sqlstring}]::text[])\nGROUP BY 1, 2\nORDER BY 1, 2"
+        }
+      ],
+      "description": "Colour-graded matrix (Grafana's heatmap panel cannot consume a two-key SQL aggregate directly). Buckets are UTC \u2014 the Postgres session carries no browser timezone.",
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "hour",
+            "rowField": "dow",
+            "valueField": "spend",
+            "emptyValue": "null"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+---
+title: Aikonos Docs
+template: splash
+# Starlight builds <title> as "<page title> | <site title>", which doubles on this
+# page since the two are identical. Set it explicitly instead.
+head:
+  - tag: title
+    content: Aikonos Docs
+hero:
+  # Empty by design: the landing page leads with the tagline, not a heading.
+  title: ""
+  tagline: "Aikonos is a governed AI-agent platform. You chat with agents that can use tools: files, documents, the web, connected drives, while every action is checked against permissions your organization sets."
+  # No hero `actions` here: they render via Starlight's LinkButton, which
+  # passes frontmatter `link` values straight to `href` with no base
+  # prefixing — a subpath build (DOCS_BASE=/docs) would leak unprefixed
+  # root-relative links. The CardGrid below covers the same navigation as
+  # ordinary MDX body links, which the remark-base-links plugin does prefix.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+{/* With no hero heading, Pagefind would fall back to the document title
+    ("Aikonos Docs | Aikonos Docs") for this page's search result. */}
+<span data-pagefind-meta="title:Aikonos Docs" />
+
+<CardGrid>
+	<Card title="Concepts" icon="open-book">
+		What agents, skills, workflows, and governance are. [Start here](/concepts/).
+	</Card>
+	<Card title="User Guide" icon="rocket">
+		Every screen and control you use: chat, files, connections, schedules, workflows, and
+		inbox. [Read the guide](/guides/).
+	</Card>
+	<Card title="Administrator Guide" icon="setting">
+		Access control, tool and agent configuration, LLM providers, and policy. [Read the
+		guide](/admin/).
+	</Card>
+	<Card title="Chat" icon="comment-alt">
+		The composer's palettes, attachments, and the approval flow. [Chat
+		guide](/guides/chat/).
+	</Card>
+	<Card title="Access Control" icon="approve-check-circle">
+		Who has access to what: members, tool grants, and provisioning. [Access Control
+		guide](/admin/access-control/).
+	</Card>
+</CardGrid>

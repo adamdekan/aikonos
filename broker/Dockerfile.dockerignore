@@ -1,0 +1,12 @@
+# Keep the Docker build context small. The broker build needs go.mod, go.sum,
+# the broker/ source, and proto/ — the gen/go/ stubs are generated in-image
+# (H6), so host gen/ is excluded to keep the in-image stubs authoritative.
+.vm/
+.git/
+bin/
+gen/
+talos/clusterconfig/
+planner/.venv/
+**/__pycache__/
+*.log
+.env.local

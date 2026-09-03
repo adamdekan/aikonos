@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""
+scripts/aikonosctl
+Aikonos CLI — developer and operator tool.
+
+Usage:
+  aikonosctl task create --prompt "..." [--budget 1000]
+  aikonosctl task get <task-id>
+  aikonosctl task approve <task-id>
+  aikonosctl task cancel <task-id>
+  aikonosctl task list [--user alice@corp]
+
+  aikonosctl plan submit --task <id> --file plan.json
+  aikonosctl plan validate --file plan.json   (offline OPA check only)
+
+  aikonosctl policy check --user alice --action can_invoke --resource skill:web.fetch
+  aikonosctl policy test                      (run all OPA tests)
+
+  aikonosctl audit tail [--tenant aikonos-dev]
+  aikonosctl audit verify                     (check MinIO audit object presence)
+
+  aikonosctl kill-switch user <user-id>
+  aikonosctl kill-switch tenant <tenant-id>
+  aikonosctl kill-switch status
+
+  aikonosctl workspace create --user <user-id>
+  aikonosctl workspace erase --user <user-id> [--gdpr]
+
+  aikonosctl health                           (check all services)
+
+Config (env vars or ~/.aikonos/config.yaml):
+  AIKONOS_BROKER_ADDR   localhost:9090
+  AIKONOS_TENANT_ID     aikonos-dev
+  AIKONOS_USER_ID       your-user@corp (for CLI calls on your behalf)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+DEFAULT_BROKER_ADDR = os.getenv("AIKONOS_BROKER_ADDR", "localhost:9090")
+DEFAULT_TENANT_ID   = os.getenv("AIKONOS_TENANT_ID", "aikonos-dev")
+DEFAULT_USER_ID     = os.getenv("AIKONOS_USER_ID", "cli-user@example.com")
+
+# Repo root is one level above scripts/; used as cwd for compose commands so
+# Docker Compose finds the project's compose.yaml.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# ── Output helpers ────────────────────────────────────────────────────────────
+
+def info(msg: str)  -> None: print(f"  {msg}")
+def ok(msg: str)    -> None: print(f"\033[32m✓\033[0m {msg}")
+def fail(msg: str)  -> None: print(f"\033[31m✗\033[0m {msg}", file=sys.stderr)
+def warn(msg: str)  -> None: print(f"\033[33m!\033[0m {msg}")
+def header(msg: str)-> None: print(f"\n── {msg} {'─' * (50 - len(msg))}")
+
+
+def compose_exec(service: str, *cmd: str, capture: bool = True) -> str:
+    """Run `docker compose exec -T <service> <cmd...>` from the repo root.
+
+    Non-zero exit prints the error and calls sys.exit(1).
+    capture=False is for interactive commands (audit tail).
+    """
+    argv = ["docker", "compose", "exec", "-T", service, *cmd]
+    if capture:
+        result = subprocess.run(argv, capture_output=True, text=True, cwd=_REPO_ROOT)
+        if result.returncode != 0:
+            fail(f"compose exec error: {result.stderr.strip()}")
+            sys.exit(1)
+        return result.stdout.strip()
+    else:
+        try:
+            subprocess.run(argv, check=True, cwd=_REPO_ROOT)
+        except subprocess.CalledProcessError as exc:
+            fail(f"compose exec error: exit {exc.returncode}")
+            sys.exit(1)
+        return ""
+
+
+def parse_compose_ps(stdout: str) -> list[dict]:
+    """Parse `docker compose ps --format json` stdout (one JSON object per line).
+
+    Returns a list of dicts with keys: name, state, health.
+    Unknown/extra JSON fields are ignored so the caller isn't coupled to the
+    full docker-compose schema, which varies across versions.
+    """
+    result = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result.append({
+            "name":   obj.get("Service", ""),
+            "state":  obj.get("State", ""),
+            "health": obj.get("Health", ""),
+        })
+    return result
+
+
+def opa(*args: str) -> str:
+    result = subprocess.run(["opa", *args], capture_output=True, text=True)
+    return result.stdout.strip()
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+# why: gRPC-native task RPCs (CreateTask/ApproveTask/GetTaskState) over
+# localhost:9090/9091 are a deferred follow-up. north=OIDC bearer (no operator
+# principal) and south=SPIFFE-mTLS restricted to gateway/planner SVIDs — an
+# operator CLI has no clean auth principal on either surface. Needs an auth
+# design before wiring. Until then, task reads go direct-Postgres (dev only)
+# and task create prints the payload for submission via webui/gateway.
+
+def cmd_task_create(args: argparse.Namespace) -> None:
+    """Print the request payload; submit via the webui or gateway."""
+    payload = {
+        "tenant_id": args.tenant,
+        "user_id": args.user,
+        "prompt": args.prompt,
+        "cost_budget": args.budget,
+    }
+    header("Task Create")
+    info(f"Prompt : {args.prompt}")
+    info(f"Budget : {args.budget} units")
+    info(f"Tenant : {args.tenant}")
+    info(f"User   : {args.user}")
+    info("")
+    warn("Broker gRPC not wired for the CLI (see why comment). Request payload for webui/gateway:")
+    print(json.dumps(payload, indent=2))
+
+
+def cmd_task_get(args: argparse.Namespace) -> None:
+    header(f"Task {args.task_id}")
+    result = compose_exec(
+        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
+        f"SELECT task_id, state, cost_consumed, cost_budget, created_at FROM tasks WHERE task_id = '{args.task_id}';"
+    )
+    print(result)
+
+
+def cmd_task_approve(args: argparse.Namespace) -> None:
+    header(f"Approve Task {args.task_id}")
+    result = compose_exec(
+        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
+        f"UPDATE tasks SET state='APPROVED' WHERE task_id='{args.task_id}' AND state='AWAITING_APPROVAL';"
+    )
+    print(result)
+    ok(f"Task {args.task_id} approved (dev direct-DB; bypasses broker state machine — dev only)")
+
+
+def cmd_task_list(args: argparse.Namespace) -> None:
+    header("Tasks")
+    result = compose_exec(
+        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
+        "SELECT task_id, owner_user_id, state, cost_consumed, cost_budget, created_at FROM tasks ORDER BY created_at DESC LIMIT 20;"
+    )
+    print(result)
+
+
+def cmd_plan_validate(args: argparse.Namespace) -> None:
+    """Offline OPA validation of a plan JSON file."""
+    header("Plan Validation (offline OPA)")
+    plan_path = Path(args.file)
+    if not plan_path.exists():
+        fail(f"Plan file not found: {args.file}")
+        sys.exit(1)
+
+    with open(plan_path) as f:
+        plan_data = json.load(f)
+
+    opa_input = {
+        "plan": plan_data,
+        "task": {
+            "cost_budget": args.budget,
+            "effect_class_ceiling": "write_external",
+        },
+        "actor": {"user_id": args.user, "is_control_plane": False},
+    }
+
+    input_file = "/tmp/aikonosctl-plan-input.json"
+    with open(input_file, "w") as f:
+        json.dump(opa_input, f)
+
+    result = opa(
+        "eval",
+        "--input", input_file,
+        "--data", "policies/opa/plan_validation.rego",
+        "data.aikonos.plan_validation",
+        "--format", "pretty",
+    )
+    print(result)
+
+    violations = opa(
+        "eval",
+        "--input", input_file,
+        "--data", "policies/opa/plan_validation.rego",
+        "data.aikonos.plan_validation.violations",
+        "--format", "raw",
+    )
+
+    if violations.strip() in ("set()", "[]", ""):
+        ok("Plan passes offline validation (no violations)")
+    else:
+        fail(f"Plan has violations:\n{violations}")
+        sys.exit(1)
+
+
+def cmd_policy_check(args: argparse.Namespace) -> None:
+    header("Policy Check (OpenFGA)")
+    warn("OpenFGA CLI check — requires fga CLI and running OpenFGA instance")
+    # Fall back to the compose-stack env var if FGA_STORE_ID isn't set.
+    store_id = os.getenv("FGA_STORE_ID") or os.getenv("AIKONOS_POLICY_OPENFGA_STORE_ID", "")
+    cmd = [
+        "fga", "query", "check",
+        "--store-id", store_id,
+        "--user", f"user:{args.user}",
+        "--relation", args.action,
+        "--object", args.resource,
+    ]
+    info(f"Running: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(result.stdout)
+        if result.returncode != 0:
+            print(result.stderr, file=sys.stderr)
+    except FileNotFoundError:
+        fail("fga CLI not found. Install: https://github.com/openfga/cli")
+
+
+def cmd_policy_test(args: argparse.Namespace) -> None:
+    header("OPA Policy Tests")
+    result = subprocess.run(
+        ["opa", "test", "policies/opa/", "-v"],
+        capture_output=False,
+    )
+    sys.exit(result.returncode)
+
+
+def cmd_audit_tail(args: argparse.Namespace) -> None:
+    header("Audit Log Tail (MinIO)")
+    warn("mc alias 'local' must be configured inside the minio container")
+    compose_exec(
+        "minio", "mc", "watch", f"local/aikonos-audit/{args.tenant}/",
+        capture=False,
+    )
+
+
+def cmd_audit_verify(args: argparse.Namespace) -> None:
+    header("Audit Chain Verification")
+    # scripts/verify-audit.sh was removed in the Docker-only pivot.
+    # This checks WORM object presence; full HMAC hash-chain verification
+    # runs via `task compose:verify` (scripts/compose-verify.sh).
+    warn("Checking audit object presence only — HMAC chain verification: task compose:verify")
+
+    # Fetch creds from the running container's env (never interpolate into sh -c).
+    user = compose_exec("minio", "printenv", "MINIO_ROOT_USER").strip() or "minioadmin"
+    pwd  = compose_exec("minio", "printenv", "MINIO_ROOT_PASSWORD").strip() or "minioadmin-secret-change-me"
+    # Configure the mc alias with individual argv tokens — no shell quoting issues.
+    compose_exec("minio", "mc", "alias", "set", "local",
+                 "http://localhost:9000", user, pwd, "--api", "S3v4")
+    result = compose_exec("minio", "mc", "ls", "--recursive", "local/aikonos-audit/")
+    if not result:
+        warn("No audit objects found in local/aikonos-audit/ — stack may not have processed events yet")
+        return
+    lines = [l for l in result.splitlines() if l.strip()]
+    ok(f"Found {len(lines)} audit object(s) in MinIO WORM bucket")
+    info("(object-lock GOVERNANCE retention enforced; HMAC chain not verified here)")
+
+
+def cmd_kill_switch(args: argparse.Namespace) -> None:
+    header(f"Kill Switch — {args.scope}")
+    if args.scope == "status":
+        result = compose_exec(
+            "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
+            "SELECT scope, subject, activated_by, activated_at FROM kill_switches WHERE active = true;"
+        )
+        print(result)
+        return
+
+    subject = getattr(args, "subject", "")
+    if not subject:
+        fail(f"Subject required for kill-switch {args.scope}")
+        sys.exit(1)
+
+    warn(f"Activating kill switch: scope={args.scope} subject={subject}")
+    compose_exec(
+        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
+        f"INSERT INTO kill_switches (tenant_id, scope, subject, activated_by, reason) "
+        f"VALUES ('00000000-0000-0000-0000-000000000001', '{args.scope}', '{subject}', 'aikonosctl', 'manual') "
+        f"ON CONFLICT DO NOTHING;"
+    )
+    ok(f"Kill switch activated: {args.scope}/{subject}")
+    warn("Direct DB write — bypasses Broker API (dev only)")
+
+
+# Core services expected to be running under any compose profile.
+_CORE_SERVICES = {
+    "agent-gateway", "broker", "keycloak", "minio", "nats",
+    "opa", "openfga", "postgres", "vault", "webui",
+}
+
+
+def cmd_health(args: argparse.Namespace) -> None:
+    header("Service Health")
+    result = subprocess.run(
+        ["docker", "compose", "ps", "--format", "json"],
+        capture_output=True, text=True, cwd=_REPO_ROOT,
+    )
+    if result.returncode != 0:
+        fail(f"docker compose ps failed: {result.stderr.strip()}")
+        sys.exit(1)
+
+    services = parse_compose_ps(result.stdout)
+    running_names = {s["name"] for s in services if s["state"] == "running"}
+
+    all_ok = True
+    for svc in services:
+        name   = svc["name"]
+        state  = svc["state"]
+        health = svc["health"]
+        label  = f"{health}" if health else state
+        if state == "running":
+            ok(f"{name:25s} {label}")
+        else:
+            # One-shots (migrate, dev-ca-mint, openfga-migrate) exit normally —
+            # don't flag them as failures; only warn about long-running services.
+            if name in _CORE_SERVICES:
+                fail(f"{name:25s} {state}")
+                all_ok = False
+            else:
+                info(f"{name:25s} {state} (one-shot)")
+
+    missing = _CORE_SERVICES - running_names
+    for name in sorted(missing):
+        fail(f"{name:25s} not found in compose ps output")
+        all_ok = False
+
+    print()
+    if all_ok:
+        ok("All core services running")
+    else:
+        fail("One or more core services are not running")
+        sys.exit(1)
+
+
+# ── Argument parser ───────────────────────────────────────────────────────────
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="aikonosctl", description="Aikonos CLI")
+    p.add_argument("--tenant", default=DEFAULT_TENANT_ID)
+    p.add_argument("--user",   default=DEFAULT_USER_ID)
+    p.add_argument("--broker", default=DEFAULT_BROKER_ADDR)
+
+    sub = p.add_subparsers(dest="command")
+
+    # task
+    task = sub.add_parser("task")
+    task_sub = task.add_subparsers(dest="task_command")
+
+    tc = task_sub.add_parser("create")
+    tc.add_argument("--prompt", required=True)
+    tc.add_argument("--budget", type=int, default=1000)
+
+    tg = task_sub.add_parser("get")
+    tg.add_argument("task_id")
+
+    ta = task_sub.add_parser("approve")
+    ta.add_argument("task_id")
+    ta.add_argument("--deny", action="store_true")
+
+    task_sub.add_parser("list")
+
+    # plan
+    plan = sub.add_parser("plan")
+    plan_sub = plan.add_subparsers(dest="plan_command")
+    pv = plan_sub.add_parser("validate")
+    pv.add_argument("--file", required=True)
+    pv.add_argument("--budget", type=int, default=1000)
+
+    # policy
+    policy = sub.add_parser("policy")
+    policy_sub = policy.add_subparsers(dest="policy_command")
+    pc = policy_sub.add_parser("check")
+    pc.add_argument("--user", required=True)
+    pc.add_argument("--action", required=True)
+    pc.add_argument("--resource", required=True)
+    policy_sub.add_parser("test")
+
+    # audit
+    audit = sub.add_parser("audit")
+    audit_sub = audit.add_subparsers(dest="audit_command")
+    audit_sub.add_parser("tail")
+    audit_sub.add_parser("verify")
+
+    # kill-switch
+    ks = sub.add_parser("kill-switch")
+    ks_sub = ks.add_subparsers(dest="scope")
+    ks_user = ks_sub.add_parser("user")
+    ks_user.add_argument("subject")
+    ks_tenant = ks_sub.add_parser("tenant")
+    ks_tenant.add_argument("subject")
+    ks_sub.add_parser("status")
+
+    # health
+    sub.add_parser("health")
+
+    return p
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    dispatch = {
+        ("task", "create"):    cmd_task_create,
+        ("task", "get"):       cmd_task_get,
+        ("task", "approve"):   cmd_task_approve,
+        ("task", "list"):      cmd_task_list,
+        ("plan", "validate"):  cmd_plan_validate,
+        ("policy", "check"):   cmd_policy_check,
+        ("policy", "test"):    cmd_policy_test,
+        ("audit", "tail"):     cmd_audit_tail,
+        ("audit", "verify"):   cmd_audit_verify,
+        ("health", None):      cmd_health,
+    }
+
+    if args.command == "kill-switch":
+        cmd_kill_switch(args)
+        return
+
+    key = (args.command, getattr(args, "task_command", None)
+           or getattr(args, "plan_command", None)
+           or getattr(args, "policy_command", None)
+           or getattr(args, "audit_command", None))
+
+    handler = dispatch.get(key)
+    if handler:
+        handler(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

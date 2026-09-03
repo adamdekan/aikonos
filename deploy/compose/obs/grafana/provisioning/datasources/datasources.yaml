@@ -1,0 +1,61 @@
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:3200
+    access: proxy
+    isDefault: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+      nodeGraph:
+        enabled: true
+      serviceMap:
+        datasourceUid: prometheus
+
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:3100
+    access: proxy
+    isDefault: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_?[Ii][Dd]"\s*:\s*"([a-f0-9]{32})"'
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus:9090
+    access: proxy
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+
+  # Durable per-call LLM spend analytics.
+  # aikonos_grafana is SELECT-only on five tables; migrate.sh provisions it.
+  - name: Aikonos Postgres
+    type: postgres
+    uid: aikonos-postgres
+    url: postgres:5432
+    user: aikonos_grafana
+    access: proxy
+    isDefault: false
+    jsonData:
+      database: $__env{GRAFANA_PG_DATABASE}
+      sslmode: disable
+      postgresVersion: 1600
+      maxOpenConns: 5
+      timescaledb: false
+    secureJsonData:
+      password: $__env{GRAFANA_PG_RO_PASSWORD}

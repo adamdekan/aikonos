@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package aikonos.skill.v1;
+option go_package = "github.com/adamdekan/aikonos/gen/go/skill/v1;skillv1";
+
+import "google/protobuf/struct.proto";
+import "proto/plan.proto";
+
+// SkillManifest is the canonical descriptor for a Aikonos skill.
+// Declared in skill.yaml, validated at publish, re-validated at every invocation.
+// The effect_class field gates approval, sandbox runtime, and DLP hooks.
+message SkillManifest {
+  string api_version = 1;    // aikonos.com/v1
+  string kind = 2;           // Skill
+
+  SkillMetadata metadata = 3;
+  SkillSpec spec = 4;
+}
+
+message SkillMetadata {
+  string name = 1;           // e.g. web.fetch
+  string version = 2;        // semver e.g. 0.1.0
+  string description = 3;
+  map<string, string> labels = 4;
+  string author = 5;
+  string source_repo = 6;
+}
+
+message SkillSpec {
+  // Primary risk classification — cannot be understated (validated by Broker)
+  aikonos.plan.v1.EffectClass effect_class = 1;
+
+  // Runtime environment
+  string runtime = 2;           // e.g. python-3.12, go-1.23
+
+  // Scopes this skill requires — validated against user's capability token
+  repeated string required_scopes = 3;
+
+  // Tool definitions exposed by this skill
+  repeated ToolDefinition tools = 4;
+
+  // Resource limits for the sandbox running this skill
+  ResourceLimits resource_limits = 5;
+
+  // Sigstore cosign bundle (base64) — set by publish pipeline, not by author
+  string signature = 6;
+
+  // OCI reference to SBOM attestation
+  string sbom_ref = 7;
+
+  // Additional effect classes this skill may escalate to (must be declared)
+  repeated aikonos.plan.v1.EffectClass possible_escalations = 8;
+}
+
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct input_schema = 3;   // JSON Schema
+  google.protobuf.Struct output_schema = 4;  // JSON Schema
+  aikonos.plan.v1.EffectClass effect_class = 5;  // Per-tool override (must be <= skill level)
+}
+
+message ResourceLimits {
+  float cpu_cores = 1;      // e.g. 1.0
+  int64 memory_mb = 2;      // e.g. 512
+  int32 timeout_seconds = 3; // Hard limit per tool call
+  int32 max_tool_calls = 4;  // Per task limit
+  int64 max_tokens = 5;     // LLM token limit for this skill
+}

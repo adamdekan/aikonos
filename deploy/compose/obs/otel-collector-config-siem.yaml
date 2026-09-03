@@ -1,0 +1,122 @@
+# OTel Collector — generic SIEM export config (AIKONOS_OBS_ARCHIVE=siem)
+#
+# Archive sink: otlphttp exporter targeting any OTLP-HTTP-native SIEM/ingest
+# endpoint (Splunk, Datadog, Elastic, etc.) — no vendor-specific exporter
+# needed since these all speak OTLP natively.
+#
+# The exporter is ADDED alongside the local panes (Tempo/Loki/Prometheus),
+# never replacing them — the local dashboards keep working when AIKONOS_OBS_ARCHIVE=siem.
+#
+# Settings from env:
+#   AIKONOS_SIEM_OTLP_ENDPOINT    — OTLP-HTTP base URL, e.g. https://siem.example:4318
+#   AIKONOS_SIEM_OTLP_AUTH_HEADER — full Authorization header value, e.g. "Bearer <token>"
+#                                  or "Api-Key <key>" (format is receiver-specific).
+#                                  Leave unset for an endpoint that needs no auth —
+#                                  the exporter then sends an empty Authorization
+#                                  header, which unauthenticated OTLP receivers ignore.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        id: docker_json
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+      # Extract container id and 12-char short prefix from log.file.path.
+      # include_file_path: true writes the path into attributes["log.file.path"]
+      # in stanza's entry model (resource promotion happens later in stanza→OTLP).
+      # docker.sock NOT mounted — assume-breach hardening (H1/H2).
+      # on_error: send — parse miss never drops the record.
+      - type: regex_parser
+        id: extract_container_id
+        parse_from: attributes["log.file.path"]
+        regex: '/var/lib/docker/containers/(?P<container_id>(?P<container_short>[a-f0-9]{12})[a-f0-9]{52})/'
+        on_error: send
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  redaction:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - "(?i).*authorization.*"
+      - "(?i).*bearer.*"
+      - "(?i).*password.*"
+      - "(?i).*passwd.*"
+      - "(?i).*secret.*"
+      - "(?i).*api.?key.*"
+      - "(?i).*token.*"
+      - "(?i).*conn.*string.*"
+      - "(?i).*connection.?string.*"
+    blocked_values:
+      # Bearer token values
+      - "(?i)bearer\\s+[a-zA-Z0-9\\-._~+/]+=*"
+      # Generic long base64-ish secrets (40+ chars) — intentionally broad in a dev stack
+      - "[a-zA-Z0-9+/]{40,}={0,2}"
+    summary: silent
+
+exporters:
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Exporter appends /v1/logs, so base must be …/otlp (not …:3100).
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # SIEM export — generic OTLP-HTTP sink. Splunk/Datadog/Elastic all ingest
+  # OTLP natively, so one exporter covers them; only the endpoint + auth
+  # header differ. Placeholder endpoint keeps `otelcol validate` green with no
+  # env set (otlphttp, unlike awss3/azureblob, rejects an empty endpoint).
+  # Deliberately NOT the collector's own receiver port (4317/4318) — that
+  # would export straight back into this same pipeline and loop. Port 1 on
+  # loopback has nothing listening, so an unset endpoint just fails/retries
+  # export quietly instead of looping or reaching a real host. An empty auth
+  # header is sent as-is for unauthenticated endpoints.
+  otlphttp/siem:
+    endpoint: "${env:AIKONOS_SIEM_OTLP_ENDPOINT:-http://127.0.0.1:1}"
+    headers:
+      Authorization: "${env:AIKONOS_SIEM_OTLP_AUTH_HEADER:-}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, redaction]
+      exporters: [otlp/tempo, otlphttp/siem]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [batch, redaction]
+      exporters: [otlphttp/loki, otlphttp/siem]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, otlphttp/siem]

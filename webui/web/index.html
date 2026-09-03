@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Fonts are self-hosted, never fetched from a third-party CDN. A hosted font
+       sends every visitor's IP to that provider on page load, which this product
+       cannot ask its own operators to accept, and an air-gapped deployment could
+       not reach the CDN anyway. Both faces are SIL Open Font License 1.1; the
+       licence texts ship alongside them in public/fonts/. -->
+  <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin />
+  <style>
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 100 900;
+      src: url('/fonts/inter-latin-var.woff2') format('woff2');
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Space Grotesk';
+      font-style: normal;
+      font-weight: 700;
+      src: url('/fonts/space-grotesk-latin-700.woff2') format('woff2');
+      font-display: swap;
+    }
+  </style>
+  <title>Aikonos</title>
+  <script>
+    (function () {
+      var theme = "dark";
+      try {
+        var stored = localStorage.getItem("aikonos.theme");
+        if (stored === "dark" || stored === "light") {
+          theme = stored;
+        } else if (
+          window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: light)").matches
+        ) {
+          theme = "light";
+        }
+      } catch (_) {}
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

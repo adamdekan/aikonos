@@ -1,0 +1,170 @@
+/* Inter is loaded from Google Fonts in index.html. */
+:root {
+  /* Native form controls (select popup lists, checkboxes, scrollbars) render
+     with UA colors unless the document declares its scheme. */
+  color-scheme: dark;
+
+  /* ── backgrounds ── */
+  --bg:          #2b2b2b;
+  --bg-sidebar:  #232323;
+  --bg-elevated: #323232;
+  --bg-hover:    #3a3a42;
+  --bg-active:   #34323d;
+
+  /* ── text ── */
+  --text:           #f0eee9;
+  --text-muted:     #b9b6bf;
+  --text-faint:     #87848f;
+  --text-on-accent: #ffffff;
+
+  /* ── borders & accents ── */
+  --border:       #3a3a3a;
+  --accent:       #8d90d8;
+  --accent-hover: #9fa2e0;
+  --danger:       #D01A32;
+  --ok:           #00805B;
+
+  /* ── translucent fills (rgba — keep in sync with the solid tokens above) ── */
+  --overlay:     rgba(0, 0, 0, 0.6);
+  --fill-muted:  rgba(171, 168, 186, 0.15);
+  --fill-accent: rgba(141, 144, 216, 0.15);
+  --fill-danger: rgba(208, 26, 50, 0.1);
+  --fill-ok:     rgba(0, 128, 91, 0.15);
+
+  /* ── scrollbar (minimal, auto-hiding — see .scroll-min below) ── */
+  --scrollbar-thumb:       rgba(171, 168, 186, 0.32);
+  --scrollbar-thumb-hover: rgba(171, 168, 186, 0.55);
+
+  /* ── shape ── */
+  --radius:    12px;
+  --radius-sm: 8px;
+
+  /* ── spacing scale (4px base — shared rhythm across views) ── */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ── typography ── */
+  --font-sans:  "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont,
+                "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Inter", "Tiempos Text", ui-serif, Georgia,
+                "Times New Roman", serif;
+  --font-mono:  ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:          #f0eee9;
+  --bg-sidebar:  #e7e4dc;
+  --bg-elevated: #ffffff;
+  --bg-hover:    #e3e1ea;
+  --bg-active:   #dedbe8;
+  --text:        #2b2b2b;
+  --text-muted:  #5c5a63;
+  --text-faint:  #8a8893;
+  --border:      #d9d6ce;
+  --accent:      #8d90d8;
+  --accent-hover: #7d80c8;
+  --fill-accent: rgba(141, 144, 216, 0.15);
+  --scrollbar-thumb:       rgba(92, 90, 99, 0.30);
+  --scrollbar-thumb-hover: rgba(92, 90, 99, 0.50);
+}
+
+/* ── global reset ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+/* ── form-field baseline ──
+   Low-specificity theme defaults so a bare <select>/<input> in any component
+   renders theme-correct instead of falling back to UA colors. Scoped component
+   styles always win (they carry a data-v attribute selector). */
+select,
+textarea,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+}
+
+select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* ── minimal auto-hiding scrollbars ──
+   The track is always transparent; the thumb is invisible at rest and appears
+   only while the element is actively scrolled (the `v-autoscroll` directive
+   adds `.is-scrolling`) or on hover, then fades back out. Pair the class with
+   the directive: class="scroll-min" v-autoscroll. */
+.scroll-min {
+  scrollbar-width: thin;                     /* Firefox */
+  scrollbar-color: transparent transparent;  /* Firefox: hidden at rest */
+}
+.scroll-min.is-scrolling,
+.scroll-min:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.scroll-min::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-min::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-min::-webkit-scrollbar-thumb {
+  background: transparent;
+  /* Transparent border + padding-box clip insets the paint to a slim ~4px bar. */
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  transition: background-color 0.25s ease;
+}
+.scroll-min.is-scrolling::-webkit-scrollbar-thumb,
+.scroll-min:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+.scroll-min::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}

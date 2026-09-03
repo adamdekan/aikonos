@@ -1,0 +1,120 @@
+# OTel Collector — base config (AIKONOS_OBS_ARCHIVE=file, default)
+#
+# Archive sink: fileexporter → /archive (obs-archive named volume).
+# Zero external dependencies; validates and runs standalone.
+#
+# Selection: the collector service command picks this file when
+# AIKONOS_OBS_ARCHIVE=file (default) or is unset.
+# For s3 → otel-collector-config.s3.yaml
+# For azure (Azure Blob, native azureblobexporter) → otel-collector-config.azure.yaml
+# For siem (generic OTLP-HTTP forward to Splunk/Datadog/Elastic) → otel-collector-config-siem.yaml
+
+receivers:
+  # OTLP: receives traces (and metrics/logs) from broker and other services.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  # filelog: tails Docker container JSON log files.
+  # The /var/lib/docker/containers dir is mounted read-only into the collector.
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    include_file_path: true
+    start_at: end
+    operators:
+      # Parse the Docker JSON-file log wrapper
+      - type: json_parser
+        id: docker_json
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+      # Extract container id and 12-char short prefix from log.file.path.
+      # In stanza's entry model, include_file_path: true writes the path into
+      # attributes["log.file.path"] (not resource — the resource promotion
+      # happens later in the stanza→OTLP conversion layer).
+      # docker.sock NOT mounted — assume-breach hardening (H1/H2).
+      # Friendly service.name attribution deferred to per-service OTLP log
+      # export (F4 follow-on). on_error: send — parse miss never drops the record.
+      - type: regex_parser
+        id: extract_container_id
+        parse_from: attributes["log.file.path"]
+        regex: '/var/lib/docker/containers/(?P<container_id>(?P<container_short>[a-f0-9]{12})[a-f0-9]{52})/'
+        on_error: send
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # Redaction: strips secrets/PII before any export.
+  # allow_all_keys=true keeps all attributes but blocks the patterns below.
+  redaction:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - "(?i).*authorization.*"
+      - "(?i).*bearer.*"
+      - "(?i).*password.*"
+      - "(?i).*passwd.*"
+      - "(?i).*secret.*"
+      - "(?i).*api.?key.*"
+      - "(?i).*token.*"
+      - "(?i).*conn.*string.*"
+      - "(?i).*connection.?string.*"
+    blocked_values:
+      # Bearer token values
+      - "(?i)bearer\\s+[a-zA-Z0-9\\-._~+/]+=*"
+      # Generic long base64-ish secrets (40+ chars) — intentionally broad in a dev stack
+      - "[a-zA-Z0-9+/]{40,}={0,2}"
+    summary: silent
+
+exporters:
+  # Local pane — traces → Tempo
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Local pane — logs → Loki via native OTLP ingest (Loki v3+).
+  # The dedicated loki exporter is deprecated since 2024-07-09; use otlphttp.
+  # Exporter appends /v1/logs, so base must be …/otlp (not …:3100).
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+
+  # Local pane — metrics → Prometheus (scrapes this endpoint).
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Archive (file, default) — writes to the obs-archive named volume.
+  # No cloud credentials required.
+  file:
+    path: /archive/aikonos-obs
+    append: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, redaction]
+      exporters: [otlp/tempo, file]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [batch, redaction]
+      exporters: [otlphttp/loki, file]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

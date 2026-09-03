@@ -1,0 +1,84 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: email.draft
+  version: 0.1.0
+  description: |
+    Draft and send email via the user's configured mail connector.
+    Effect class: write_external — always requires human approval before sending.
+  author: aikonos-platform
+  source_repo: https://github.com/YOUR_ORG/aikonos
+spec:
+  capability_scope: email:write
+  effect_class: write_external   # Requires human approval — never auto-approved
+
+  runtime: python-3.12
+
+  required_scopes:
+    - "email:send:external"
+
+  tools:
+    - name: draft_email
+      description: |
+        Draft an email. Does NOT send — creates a draft for human review.
+        To send, the draft must be explicitly approved via the frontend.
+      effect_class: write_local   # Drafting is local; sending requires a separate approval
+      input_schema:
+        type: object
+        required: [to, subject, body]
+        additionalProperties: false
+        properties:
+          to:
+            type: array
+            items: {type: string, format: email}
+            maxItems: 10
+            description: Recipient email addresses. Max 10.
+          cc:
+            type: array
+            items: {type: string, format: email}
+            maxItems: 5
+          subject:
+            type: string
+            maxLength: 200
+          body:
+            type: string
+            maxLength: 50000
+          format:
+            type: string
+            enum: [plaintext, html]
+            default: plaintext
+      output_schema:
+        type: object
+        properties:
+          draft_id: {type: string}
+          preview_url: {type: string}
+
+    - name: send_email
+      description: |
+        Send a previously-drafted email. Always requires explicit human approval.
+        The approval must reference the draft_id from draft_email.
+      effect_class: write_external   # This one is the actual external write
+      input_schema:
+        type: object
+        required: [draft_id, approval_token]
+        properties:
+          draft_id: {type: string}
+          approval_token: {type: string}
+            # Opaque token issued by Broker after human approves — not forgeable
+      output_schema:
+        type: object
+        properties:
+          message_id: {type: string}
+          sent_at: {type: string, format: date-time}
+
+  resource_limits:
+    cpu_cores: 0.25
+    memory_mb: 128
+    timeout_seconds: 30
+    max_tool_calls: 5    # Strictly limited — this sends real emails
+    max_tokens: 2000
+
+  possible_escalations: []   # Cannot escalate beyond write_external
+
+  signature: ""
+  sbom_ref: ""

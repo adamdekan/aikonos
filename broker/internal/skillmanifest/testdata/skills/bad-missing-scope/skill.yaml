@@ -1,0 +1,7 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: bad.missing.scope
+spec:
+  effect_class: read_only
+  tools: []

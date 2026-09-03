@@ -1,0 +1,131 @@
+# ── Build outputs ────────────────────────────────────────────────────────────
+bin/
+broker/broker
+# Proto stubs only — repo-root gen/ (anchored so nested gen/ pkgs like
+# broker/internal/effectclass/gen are tracked).
+/gen/
+
+# ── Talos generated configs (contain secrets — never commit) ─────────────────
+talos/clusterconfig/
+!talos/clusterconfig/.gitkeep
+controlplane.yaml
+worker.yaml
+
+# ── SOPS key material ────────────────────────────────────────────────────────
+bootstrap/vault/vault-init-keys.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# ── Secrets (plaintext — must be SOPS-encrypted before committing) ───────────
+secrets/*.yaml
+secrets/*.env
+!secrets/*.yaml.example
+!secrets/*.env.example
+
+# ── Go ───────────────────────────────────────────────────────────────────────
+*.test
+vendor/
+*.prof
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node.js (frontend) ───────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Helm ────────────────────────────────────────────────────────────────────
+charts/*.tgz
+
+# ── Local dev environment ────────────────────────────────────────────────────
+.env.local
+# compose .env (populated from deploy/compose/.env.local.example — never commit secrets)
+/.env
+# azure deployment secrets (populated from deploy/compose/.env.azure.example)
+/.env.azure
+# hand-made backups of the above — .env itself is ignored, so a copy of it must
+# be too, or one `git add -A` publishes the credentials it holds.
+.env*.bak
+.vm/
+repos/
+
+# ── Tooling caches ───────────────────────────────────────────────────────────
+
+# ── Temporary ────────────────────────────────────────────────────────────────
+/tmp/
+*.tmp
+*.log
+
+# Local agent tooling and its working memory — never part of the distribution.
+.claude/
+/aikonos
+
+# ── Worktrees ────────────────────────────────────────────────────────────────
+.worktrees/
+/deploy/compose/.env
+/deploy/compose/.env.azure
+
+# Editor/tool local caches (not project content)
+.zennotes/
+.localbin/
+# Playwright MCP scratch output — console logs, page snapshots, screenshots.
+# *.log already covers six of these; the .yml/.png/.jpeg siblings need the dir.
+.playwright-mcp/
+
+# ── Generated knowledge graph (graphify-out/) ────────────────────────────────
+# The AST cache and dated snapshots are machine-regenerable by `graphify update .`
+# and rewrite themselves on every run; tracking them buried real diffs under
+# hundreds of churned files. The graph itself (graph.json, manifest.json,
+# GRAPH_REPORT.md, wiki/) stays tracked — it is what `graphify query` reads.
+
+# bun install artifact — the Node projects track package-lock.json (npm is canonical)
+bun.lock
+**/bun.lock
+
+# Funding applications (VBA, aws) — local working drafts, not project content
+applications/
+
+# LinkedIn outreach working drafts — the CSVs are contact exports (names, emails),
+# so they stay local rather than entering git history.
+marketing/linkedin/
+marketing/linkedin-content-plan.md
+
+# ── Fonts ────────────────────────────────────────────────────────────────────
+# Only fonts we may redistribute belong in this repository. The two self-hosted
+# faces under webui/web/public/fonts/ are SIL Open Font License 1.1 and ship
+# with their licence texts. Any other font file is ignored by default so a
+# proprietary face cannot be committed by accident.
+*.woff
+*.woff2
+!webui/web/public/fonts/*.woff2
+
+# ── WSL download marker files ────────────────────────────────────────────────
+*:Zone.Identifier
+
+# ── Ad-hoc screenshots at repo root ──────────────────────────────────────────
+/*.png
+
+# ── Generated knowledge graphs (regenerable, 32 MB of churn) ─────────────────
+# graphify-out/ is rebuilt by `graphify update .`; .understand-anything/ by its
+# own tool. Both were tracked and buried real diffs under machine-written JSON.
+graphify-out/
+.understand-anything/

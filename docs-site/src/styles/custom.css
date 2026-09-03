@@ -1,0 +1,18 @@
+:root {
+  --sl-color-accent-low: hsl(48, 100%, 20%);
+  --sl-color-accent: hsl(48, 100%, 50%);
+  --sl-color-accent-high: hsl(48, 100%, 75%);
+  --sl-color-text-accent: var(--sl-color-accent-high);
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: hsl(48, 100%, 90%);
+  --sl-color-accent: hsl(48, 100%, 45%);
+  --sl-color-accent-high: hsl(48, 100%, 20%);
+  --sl-color-text-accent: var(--sl-color-accent);
+}
+
+.site-title img {
+  height: 1.2rem !important;
+  width: auto;
+}

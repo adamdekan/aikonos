@@ -1,0 +1,2887 @@
+syntax = "proto3";
+
+package aikonos.broker.v1;
+option go_package = "github.com/adamdekan/aikonos/gen/go/broker/v1;brokerv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+import "proto/audit.proto";
+import "proto/plan.proto";
+
+// BrokerService — north-bound API (frontend → Broker)
+// All calls require mTLS + OIDC bearer token in metadata.
+service BrokerService {
+  // Create a new task from a user prompt
+  rpc CreateTask(CreateTaskRequest) returns (TaskHandle);
+
+  // Get current state of a task
+  rpc GetTaskState(GetTaskStateRequest) returns (TaskState);
+
+  // Stream task events (plan proposals, approvals, step results, completion)
+  rpc StreamTaskEvents(StreamTaskEventsRequest) returns (stream TaskEvent);
+
+  // Approve or deny a task awaiting human approval
+  rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
+
+  // Cancel a running or pending task
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+  // Send a task envelope to another user's agent
+  rpc SendEnvelope(SendEnvelopeRequest) returns (EnvelopeHandle);
+
+  // List pending envelopes in the user's inbox
+  rpc ListInboxEnvelopes(ListInboxEnvelopesRequest) returns (ListInboxEnvelopesResponse);
+
+  // Accept or reject an incoming envelope
+  rpc RespondToEnvelope(RespondToEnvelopeRequest) returns (RespondToEnvelopeResponse);
+
+  // Dismiss an inbox envelope (PENDING/DELIVERED → DISMISSED). No task spawn,
+  // no rejection semantics — the item disappears from the inbox with a neutral audit.
+  rpc DismissEnvelope(DismissEnvelopeRequest) returns (DismissEnvelopeResponse);
+
+  // ── Personal skills — north RPCs ──
+
+  // List the caller's own personal skills (backs the Skills view's "My skills").
+  rpc ListPersonalSkills(ListPersonalSkillsRequest) returns (ListPersonalSkillsResponse);
+
+  // Delete one of the caller's own personal skills. Owner-only, recursive,
+  // bounded to that skill's own subtree.
+  rpc DeletePersonalSkill(DeletePersonalSkillRequest) returns (DeletePersonalSkillResponse);
+
+  // Snapshot-transfer a personal skill to a user or group via the envelope
+  // inbox. Never grants inherited authority — the recipient's own informed
+  // accept is the only path a copy lands in their own Skills/.
+  rpc SendSkillTransfer(SendSkillTransferRequest) returns (SendSkillTransferResponse);
+
+  // Recipient-only preview of a pending skill-transfer envelope: full body,
+  // file manifest, injection-scan flags, and whether the name conflicts with
+  // an existing skill.
+  rpc GetSkillTransferPreview(GetSkillTransferPreviewRequest) returns (GetSkillTransferPreviewResponse);
+
+  // Recipient-only accept of a pending skill-transfer envelope (rename or
+  // replace). The sole accept path for a skill_transfer envelope —
+  // RespondToEnvelope rejects it.
+  rpc AcceptSkillTransfer(AcceptSkillTransferRequest) returns (AcceptSkillTransferResponse);
+
+  // List the users the caller may delegate to (members of the caller's
+  // delegatable groups). Discovery only — SendEnvelope re-checks authorization.
+  rpc ListDelegatableUsers(ListDelegatableUsersRequest) returns (ListDelegatableUsersResponse);
+
+  // Begin a per-user connector OAuth flow; returns the provider consent URL.
+  rpc BeginConnectorAuth(BeginConnectorAuthRequest) returns (BeginConnectorAuthResponse);
+
+  // Complete a connector OAuth flow with the returned authorization code.
+  rpc CompleteConnectorAuth(CompleteConnectorAuthRequest) returns (CompleteConnectorAuthResponse);
+
+  // List the user's linked connectors and their status.
+  rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);
+
+  // List the connector providers the deployment has OAuth credentials for. Only
+  // configured providers are returned, so the UI offers exactly what can work.
+  rpc ListConnectorProviders(ListConnectorProvidersRequest) returns (ListConnectorProvidersResponse);
+
+  // Disconnect a connector (deletes its Vault secret + workspace reference).
+  rpc RevokeConnector(RevokeConnectorRequest) returns (RevokeConnectorResponse);
+
+  // ── Admin: role/relationship management (tenant-admin gated) ───────────────
+
+  // List the tenant's curated role assignments + principal directory.
+  rpc ListAssignments(ListAssignmentsRequest) returns (ListAssignmentsResponse);
+
+  // List all registered tool vocabulary (id + required scope). Read-only;
+  // works regardless of FGA state. Used to populate skill dropdowns with
+  // never-yet-granted tools that tuples alone would not surface.
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+
+  // Create or update a tenant skill overlay row (enable/disable, annotate,
+  // set effect class). Requires tenant-admin. I1: grants no invocation capability.
+  rpc UpsertSkill(UpsertSkillRequest) returns (UpsertSkillResponse);
+
+  // Delete a tenant skill overlay row, reverting the skill to un-curated
+  // defaults. Requires tenant-admin.
+  rpc DeleteSkill(DeleteSkillRequest) returns (DeleteSkillResponse);
+
+  // Grant a curated role assignment (OpenFGA tuple write).
+  rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
+
+  // Revoke a curated role assignment (OpenFGA tuple delete).
+  rpc RevokeRole(RevokeRoleRequest) returns (RevokeRoleResponse);
+
+  // ── Scheduler: user-scheduled agentic runs ────────────────────────────────
+
+  // Create a scheduled run (gated by the skill:scheduler capability).
+  rpc CreateScheduledRun(CreateScheduledRunRequest) returns (CreateScheduledRunResponse);
+
+  // List scheduled runs: own runs by default; owner_filter (or all) is
+  // tenant-admin gated.
+  rpc ListScheduledRuns(ListScheduledRunsRequest) returns (ListScheduledRunsResponse);
+
+  // Edit a schedule, or pause/resume it (desired_state). Owner or admin.
+  rpc UpdateScheduledRun(UpdateScheduledRunRequest) returns (UpdateScheduledRunResponse);
+
+  // Delete a scheduled run. Owner or admin.
+  rpc DeleteScheduledRun(DeleteScheduledRunRequest) returns (DeleteScheduledRunResponse);
+
+  // ── Network access-list (web egress) — tenant-admin gated ─────────────────
+
+  rpc ListNetworkRules(ListNetworkRulesRequest) returns (ListNetworkRulesResponse);
+  rpc AddNetworkRule(AddNetworkRuleRequest) returns (AddNetworkRuleResponse);
+  rpc DeleteNetworkRule(DeleteNetworkRuleRequest) returns (DeleteNetworkRuleResponse);
+
+  // ── Provisioning rules (email→groups JIT mapping) — tenant-admin gated ───
+
+  rpc ListProvisioningRules(ListProvisioningRulesRequest) returns (ListProvisioningRulesResponse);
+  rpc AddProvisioningRule(AddProvisioningRuleRequest) returns (AddProvisioningRuleResponse);
+  rpc DeleteProvisioningRule(DeleteProvisioningRuleRequest) returns (DeleteProvisioningRuleResponse);
+
+  // ── MCP connections — tenant-admin gated CRUD ──────────────────────────────
+
+  // List all MCP connections for the tenant.
+  rpc ListMcpConnections(ListMcpConnectionsRequest) returns (ListMcpConnectionsResponse);
+
+  // Add a new MCP connection (bearer token written to Vault; not returned).
+  rpc AddMcpConnection(AddMcpConnectionRequest) returns (AddMcpConnectionResponse);
+
+  // Update an existing MCP connection (bearer token optional; omit to leave unchanged).
+  rpc UpdateMcpConnection(UpdateMcpConnectionRequest) returns (UpdateMcpConnectionResponse);
+
+  // Delete an MCP connection and its Vault secret.
+  rpc DeleteMcpConnection(DeleteMcpConnectionRequest) returns (DeleteMcpConnectionResponse);
+
+  // List the MCP connections an agent is permitted to access (OpenFGA can_access check).
+  rpc ListAccessibleMcpServers(ListAccessibleMcpServersRequest) returns (ListAccessibleMcpServersResponse);
+
+  // List the tools exposed by a specific MCP server (connect + tools/list).
+  // Tenant-admin gated (same as ListAccessibleMcpServers). The gateway calls
+  // this during session build to register dynamic Pi tools.
+  rpc ListMcpServerTools(ListMcpServerToolsRequest) returns (ListMcpServerToolsResponse);
+
+  // ── Audit read-side: query + verify (tenant-admin gated) ─────────────────
+
+  // Query historical audit events for the caller's tenant. Newest-first, paginated.
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+
+  // Verify the integrity of the hash chain + HMAC signatures for the caller's tenant.
+  rpc VerifyAuditChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);
+
+  // Return the per-step four-gate decision trace for a task (tenant-admin gated).
+  rpc GetDecisionTrace(GetDecisionTraceRequest) returns (GetDecisionTraceResponse);
+  rpc SimulatePolicy(SimulatePolicyRequest) returns (SimulatePolicyResponse);
+
+  // ── Workspace files: per-user browser file explorer ───────────────────────
+  // The acting user (verified OIDC subject) operates on their OWN workspace
+  // (Root/<tenant>/<user>/) — the same dir agents read via workspace.read/doc.read.
+
+  // List the files in the user's workspace.
+  rpc ListWorkspaceFiles(ListWorkspaceFilesRequest) returns (ListWorkspaceFilesResponse);
+
+  // Read a file's bytes (download).
+  rpc ReadWorkspaceFile(ReadWorkspaceFileRequest) returns (ReadWorkspaceFileResponse);
+
+  // Create/overwrite a file (upload). Bounded by a per-file size cap.
+  rpc UploadWorkspaceFile(UploadWorkspaceFileRequest) returns (UploadWorkspaceFileResponse);
+
+  // Delete a file.
+  rpc DeleteWorkspaceFile(DeleteWorkspaceFileRequest) returns (DeleteWorkspaceFileResponse);
+
+  // Move/rename a file or directory within the user's workspace.
+  rpc MoveWorkspaceFile(MoveWorkspaceFileRequest) returns (MoveWorkspaceFileResponse);
+
+  // Create a (possibly nested) directory in the user's workspace.
+  rpc CreateWorkspaceDir(CreateWorkspaceDirRequest) returns (CreateWorkspaceDirResponse);
+
+  // ── Platform config (tenant-admin gated) ─────────────────────────────────
+
+  // List all config entries for the caller's tenant (with effective values + schema metadata).
+  rpc GetPlatformConfig(GetPlatformConfigRequest) returns (GetPlatformConfigResponse);
+
+  // GetObservabilityInfo returns read-only telemetry-export state. The OTLP
+  // endpoint is a broker deploy-time env var (AIKONOS_OTEL_ENDPOINT) consumed
+  // once at startup to build the MeterProvider — it is process-global and not
+  // tenant-scoped, so it is reported here for display only, never edited.
+  rpc GetObservabilityInfo(GetObservabilityInfoRequest) returns (GetObservabilityInfoResponse);
+
+  // Set a single config key for the caller's tenant.
+  rpc SetPlatformConfig(SetPlatformConfigRequest) returns (SetPlatformConfigResponse);
+
+  // ── Alerting history (tenant-admin gated) ─────────────────────────────────
+
+  // List recent security alerts for the caller's tenant (newest first).
+  rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse);
+
+  // ── Agents (tenant-admin gated) ───────────────────────────────────────────
+
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc UpdateAgent(UpdateAgentRequest) returns (UpdateAgentResponse);
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
+
+  // List the agents the caller may use (via FGA can_use). No admin gate.
+  rpc ListMyAgents(ListMyAgentsRequest) returns (ListMyAgentsResponse);
+
+  // Read/write the SOUL (personality markdown) for a named agent.
+  // Caller must be the agent's owner_user or a tenant admin.
+  rpc GetAgentSoul(GetAgentSoulRequest) returns (GetAgentSoulResponse);
+  rpc SetAgentSoul(SetAgentSoulRequest) returns (SetAgentSoulResponse);
+
+  // ── Agent API keys (tenant-admin gated) ──────────────────────────────────
+
+  // Mint a new API key for a named agent. Returns the raw key exactly once.
+  rpc MintAgentApiKey(MintAgentApiKeyRequest) returns (MintAgentApiKeyResponse);
+
+  // List non-revoked API keys for an agent (prefix + label + timestamps; no raw key).
+  rpc ListAgentApiKeys(ListAgentApiKeysRequest) returns (ListAgentApiKeysResponse);
+
+  // Revoke an API key by id.
+  rpc RevokeAgentApiKey(RevokeAgentApiKeyRequest) returns (RevokeAgentApiKeyResponse);
+
+  // ── Agent skill bundles (tenant-admin gated) ──────────────────────────────
+
+  // Create or update an agent skill bundle (SKILL.md upload). Requires tenant-admin.
+  rpc UpsertAgentSkill(UpsertAgentSkillRequest) returns (UpsertAgentSkillResponse);
+
+  // List all agent skill bundles for the caller's tenant. Requires tenant-admin.
+  rpc ListAgentSkills(ListAgentSkillsRequest) returns (ListAgentSkillsResponse);
+
+  // Get a single agent skill bundle by id. Requires tenant-admin.
+  rpc GetAgentSkill(GetAgentSkillRequest) returns (GetAgentSkillResponse);
+
+  // Delete an agent skill bundle. Requires tenant-admin.
+  rpc DeleteAgentSkill(DeleteAgentSkillRequest) returns (DeleteAgentSkillResponse);
+
+  // ── LLM providers (tenant-admin gated) ───────────────────────────────────
+
+  // List the tenant's configured LLM providers (api_key never returned).
+  rpc ListLlmProviders(ListLlmProvidersRequest) returns (ListLlmProvidersResponse);
+
+  // Create or update a provider; api_key is write-only (stored in Vault).
+  rpc UpsertLlmProvider(UpsertLlmProviderRequest) returns (UpsertLlmProviderResponse);
+
+  // Delete a provider and its Vault key (best-effort).
+  rpc DeleteLlmProvider(DeleteLlmProviderRequest) returns (DeleteLlmProviderResponse);
+
+  // Mark a provider as the tenant default (clears any prior default).
+  rpc SetDefaultProvider(SetDefaultProviderRequest) returns (SetDefaultProviderResponse);
+
+  // Mark a provider as the tenant default-vision provider (clears any prior
+  // default-vision). Rejects if the target provider isn't vision_capable.
+  rpc SetDefaultVisionProvider(SetDefaultVisionProviderRequest) returns (SetDefaultVisionProviderResponse);
+
+  // Mark a provider as the tenant fallback (clears any prior fallback). No
+  // capability guard: a fallback serves chat, so vision_capable is irrelevant
+  // here — the gateway checks it at vision-selection time.
+  rpc SetFallbackProvider(SetFallbackProviderRequest) returns (SetFallbackProviderResponse);
+
+  // Set (or clear, with an empty provider_id) the tenant's default provider for
+  // one capability. Generalizes the three SetX RPCs above, which now write the
+  // same llm_provider_defaults row through this same path.
+  rpc SetDefaultProviderFor(SetDefaultProviderForRequest) returns (SetDefaultProviderForResponse);
+
+  // Probe a provider's endpoint/key with one minimal request before saving.
+  // api_key is write-only; omit to reuse the stored key when testing an existing provider.
+  rpc TestLlmProvider(TestLlmProviderRequest) returns (TestLlmProviderResponse);
+
+  // ── M365 tenant connection (Entra OBO) — admin only ───────────────────────
+  // Tenant-wide OneDrive access via on-behalf-of (OBO) exchange of the
+  // caller's own Entra login bearer. One connection per tenant.
+  // client_secret is write-only (stored in Vault); responses report
+  // has_secret only.
+
+  // Read the tenant's M365 connection (zero-value connection when unconfigured).
+  rpc GetM365Connection(GetM365ConnectionRequest) returns (GetM365ConnectionResponse);
+
+  // Create or update the tenant's M365 connection; client_secret is
+  // write-only. Blank client_secret on an update preserves the stored secret.
+  rpc UpsertM365Connection(UpsertM365ConnectionRequest) returns (UpsertM365ConnectionResponse);
+
+  // Remove the tenant's M365 connection (clears metadata + deletes the Vault secret).
+  rpc DeleteM365Connection(DeleteM365ConnectionRequest) returns (DeleteM365ConnectionResponse);
+
+  // Probe the connection with a real OBO exchange using the caller's own
+  // bearer as the assertion. Classifies known AADSTS failure codes into an
+  // actionable detail string.
+  rpc TestM365Connection(TestM365ConnectionRequest) returns (TestM365ConnectionResponse);
+
+  // ── web.search engine config — admin only ──────
+  // Org-wide search-engine config for the web.search tool. api_key is
+  // write-only (stored in Vault); responses report has_key only.
+
+  // Read the tenant's web.search config (zero-value config when unconfigured).
+  rpc GetWebSearchConfig(GetWebSearchConfigRequest) returns (GetWebSearchConfigResponse);
+
+  // Create or update the tenant's web.search config; api_key is write-only.
+  // Blank api_key on an update preserves the stored key.
+  rpc UpsertWebSearchConfig(UpsertWebSearchConfigRequest) returns (UpsertWebSearchConfigResponse);
+
+  // Remove the tenant's web.search config (clears metadata + deletes the Vault key).
+  rpc DeleteWebSearchConfig(DeleteWebSearchConfigRequest) returns (DeleteWebSearchConfigResponse);
+
+  // Probe the configured engine with one minimal query using the supplied-or-
+  // stored key. Never persists.
+  rpc TestWebSearchConfig(TestWebSearchConfigRequest) returns (TestWebSearchConfigResponse);
+
+  // ── Per-user workspace-backend preference (CP5) — no admin gate ─────────
+  // Which storage backend (local disk vs the tenant's OneDrive OBO
+  // connection) the caller's Files explorer/composer/agent tools currently
+  // route to.
+
+  // Read the caller's effective workspace-backend preference (default-rule
+  // resolved when no row has ever been explicitly set).
+  rpc GetWorkspaceBackend(GetWorkspaceBackendRequest) returns (GetWorkspaceBackendResponse);
+
+  // Set the caller's working-folder preference. backend="onedrive" ensures
+  // the OBO connection and the folder (creating it if needed) before saving.
+  rpc SetWorkspaceBackend(SetWorkspaceBackendRequest) returns (SetWorkspaceBackendResponse);
+
+  // List folders (children only, no files) at path relative to the drive
+  // root — backs the working-folder picker, which browses the whole drive.
+  rpc ListOneDriveFolders(ListOneDriveFoldersRequest) returns (ListOneDriveFoldersResponse);
+
+  // ── Rate limit management — admin only ────────────────────────────────────
+  rpc ListRateLimitPolicies(ListRateLimitPoliciesRequest) returns (ListRateLimitPoliciesResponse);
+  rpc SetRateLimitPolicy(SetRateLimitPolicyRequest)       returns (SetRateLimitPolicyResponse);
+  rpc DeleteRateLimitPolicy(DeleteRateLimitPolicyRequest) returns (DeleteRateLimitPolicyResponse);
+
+  // ── Spend cap management — admin only ──────────
+  rpc ListSpendCaps(ListSpendCapsRequest)     returns (ListSpendCapsResponse);
+  rpc SetSpendCap(SetSpendCapRequest)         returns (SetSpendCapResponse);
+  rpc DeleteSpendCap(DeleteSpendCapRequest)   returns (DeleteSpendCapResponse);
+  rpc GetSpendSummary(GetSpendSummaryRequest) returns (GetSpendSummaryResponse);
+
+  // ── Per-session usage — caller's own sessions only ────────────────────────
+  // Rolls one chat session's billable LLM calls up by (provider, model) for the
+  // webui's per-session usage strip. Not admin-gated and deliberately not a
+  // tenant-wide surface: the handler scopes the query to the calling user, so a
+  // caller can only ever read a session they ran.
+  rpc GetSessionUsage(GetSessionUsageRequest) returns (GetSessionUsageResponse);
+
+  // ── Org governance settings (A-series) — admin only ───────────────────────
+  // Tenant-scoped org control plane: a single settings object per tenant.
+  // GetOrgSettings returns the full object (defaults when unset); UpdateOrgSettings
+  // applies only the fields present on the request (partial merge).
+  rpc GetOrgSettings(GetOrgSettingsRequest)       returns (GetOrgSettingsResponse);
+  rpc UpdateOrgSettings(UpdateOrgSettingsRequest) returns (UpdateOrgSettingsResponse);
+
+  // A3 — unified members roster (read-only aggregation). Admin only.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+
+  // ── Workflow RPCs (north/OIDC path) — reuse south message types ──────────
+  // owner_grant is ignored on the north path; identity comes from the OIDC bearer.
+  rpc SaveWorkflow(SaveWorkflowRequest)   returns (SaveWorkflowResponse);
+  rpc GetWorkflow(GetWorkflowRequest)     returns (GetWorkflowResponse);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+
+  // ── Workflow self-improvement RPCs (CP6b) ─────────────────────────────────
+  // owner_grant is ignored on the north path; identity comes from the OIDC bearer.
+  rpc RateWorkflowRun(RateWorkflowRunRequest)           returns (RateWorkflowRunResponse);
+  rpc ProposeWorkflowVersion(ProposeWorkflowVersionRequest) returns (ProposeWorkflowVersionResponse);
+  rpc DecideWorkflowVersion(DecideWorkflowVersionRequest)   returns (DecideWorkflowVersionResponse);
+
+  // ── Workflow publish RPC (CP7) ────────────────────────────────────────────
+  // Publishes a success-rated version to the owner's groups.
+  // owner_grant is ignored on the north path; identity comes from the OIDC bearer.
+  rpc PublishWorkflow(PublishWorkflowRequest) returns (PublishWorkflowResponse);
+
+  // ── Workflow fork + version-pin RPCs (CP9) ───────────────────────────────
+  // ForkWorkflow creates a new independent lineage (v1) copied from the source
+  // lineage's current approved definition. owner_grant is ignored on the north
+  // path; identity comes from the OIDC bearer.
+  rpc ForkWorkflow(ForkWorkflowRequest) returns (ForkWorkflowResponse);
+  // SetWorkflowVersionPin pins the caller's personal view to a specific approved
+  // version. ClearWorkflowVersionPin removes the pin (reverts to auto-latest).
+  rpc SetWorkflowVersionPin(SetWorkflowVersionPinRequest) returns (SetWorkflowVersionPinResponse);
+  rpc ClearWorkflowVersionPin(ClearWorkflowVersionPinRequest) returns (ClearWorkflowVersionPinResponse);
+  // ListWorkflowVersions returns all versions for a lineage (CP10c version switcher).
+  rpc ListWorkflowVersions(ListWorkflowVersionsRequest) returns (ListWorkflowVersionsResponse);
+
+  // DeleteWorkflow removes an entire workflow lineage (all versions + pins).
+  // Owner-only. Deleting a published lineage also removes it for every group it
+  // was shared with. owner_grant is ignored on the north path; identity comes
+  // from the OIDC bearer.
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
+
+  // BeginWorkflowRun (F9) authorizes an agent-bound workflow run for the caller
+  // and mints the owner grant the gateway needs to drive the run on the south
+  // (CreateGatewayTask) path under the bound agent's identity. For an unbound
+  // (personal) workflow it returns empty fields — the gateway keeps the legacy
+  // personal north path. North-only: the webui run button is the sole caller;
+  // the chat path (workflow_run Pi tool) is unchanged.
+  rpc BeginWorkflowRun(BeginWorkflowRunRequest) returns (BeginWorkflowRunResponse);
+
+  // ── Agent memory management ───────────────────
+  // The settings-modal Memory surface. Identity is bound from the OIDC bearer
+  // (callerIdentity); the explicit tenant_id/user_id fields may only echo it.
+  // Per-scope authorization: user → self; group → member/manager for reads,
+  // manager (or tenant admin) to manage; agent → tenant admin either way.
+
+  // Groups whose memory bundle the caller may see, with the member/manager
+  // relations that decide which actions the UI offers. Discovery only.
+  rpc ListMemoryGroups(ListMemoryGroupsRequest) returns (ListMemoryGroupsResponse);
+
+  // Frontmatter metadata for every concept in one scope instance.
+  rpc ListMemoryConcepts(ListMemoryConceptsRequest) returns (ListMemoryConceptsResponse);
+
+  // One concept's metadata plus its raw body (human display — unlike
+  // memory.read's concept mode, this is not model context and is not
+  // injection-annotated).
+  rpc GetMemoryConcept(GetMemoryConceptRequest) returns (GetMemoryConceptResponse);
+
+  // Record a human verification on a concept — the only writer of `verified`
+  // anywhere, which is what earns a concept the human-reviewed trust tier.
+  rpc VerifyMemoryConcept(VerifyMemoryConceptRequest) returns (VerifyMemoryConceptResponse);
+
+  // Mark a concept deprecated. Content is preserved (OKF supersession).
+  rpc DeprecateMemoryConcept(DeprecateMemoryConceptRequest) returns (DeprecateMemoryConceptResponse);
+
+  // Hard-delete a concept file. The management-UI-only escape hatch.
+  rpc DeleteMemoryConcept(DeleteMemoryConceptRequest) returns (DeleteMemoryConceptResponse);
+}
+
+// SandboxService — south-bound API (sandbox → Broker)
+// All calls require SPIFFE SVID mTLS — no OIDC.
+service SandboxService {
+  // Sandbox submits a plan for validation
+  rpc SubmitPlan(SubmitPlanRequest) returns (aikonos.plan.v1.PlanValidationResult);
+
+  // Sandbox invokes a tool (proxied through Tool Proxy)
+  rpc InvokeTool(InvokeToolRequest) returns (InvokeToolResponse);
+
+  // Sandbox reports status updates
+  rpc EmitStatus(EmitStatusRequest) returns (EmitStatusResponse);
+
+  // Sandbox requests a sub-agent (depth-limited)
+  // Reserved: unimplemented Phase-4 surface; delegation-scope derivation tracked by the security workstream.
+  rpc RequestSubagent(RequestSubagentRequest) returns (SubagentHandle);
+
+  // Gateway scheduler ticker claims due scheduled runs to fire. SPIFFE-gated to
+  // the agent-gateway identity (these advance state, so not any sandbox).
+  rpc ClaimDueScheduledRuns(ClaimDueScheduledRunsRequest) returns (ClaimDueScheduledRunsResponse);
+
+  // Gateway reports the outcome of a fired scheduled run.
+  rpc ReportScheduledRunResult(ReportScheduledRunResultRequest) returns (ReportScheduledRunResultResponse);
+
+  // Gateway queries which MCP connections an agent may access (FGA filtered).
+  // SPIFFE-gated to the agent-gateway identity — NOT tenant-admin.
+  // Called during session build for a non-admin user's agent.
+  rpc ListAccessibleMcpServersForAgent(ListAccessibleMcpServersRequest) returns (ListAccessibleMcpServersResponse);
+
+  // Gateway lists the tools exposed by an MCP server the agent may access.
+  // SPIFFE-gated to the agent-gateway identity — NOT tenant-admin.
+  rpc ListMcpServerToolsSouth(ListMcpServerToolsRequest) returns (ListMcpServerToolsResponse);
+
+  // Gateway reads the tenant's configured LLM model override.
+  // SPIFFE-gated to the agent-gateway identity. Returns empty string when no
+  // override is set — the gateway falls back to its env default. Convenience-
+  // only: does not affect any gate, scope, or approval decision.
+  rpc GetTenantModel(GetTenantModelRequest) returns (GetTenantModelResponse);
+
+  // Gateway fetches all enabled LLM providers for the tenant, including api_key.
+  // SPIFFE-gated to the agent-gateway identity.
+  rpc GetLlmProviders(GetLlmProvidersRequest) returns (GetLlmProvidersResponse);
+
+  // Gateway emits token-usage telemetry after each LLM turn.
+  // SPIFFE-gated to the agent-gateway identity.
+  rpc EmitLlmUsage(EmitLlmUsageRequest) returns (EmitLlmUsageResponse);
+
+  // Gateway calls this before each LLM request to check TPM limits.
+  rpc CheckRateLimit(CheckRateLimitRequest) returns (CheckRateLimitResponse);
+
+  // Gateway fetches org governance settings at session-resolution time
+  // (instruction preamble, unattended-mode master, …). SPIFFE-gated to the
+  // gateway identity; read-only. Returns defaults when unset for the tenant.
+  rpc GetOrgSettings(GetOrgSettingsRequest) returns (GetOrgSettingsResponse);
+
+  // Gateway fetches the config of a named agent before building a session.
+  // SPIFFE-gated to the agent-gateway identity. Returns found=false when the
+  // agent id is unknown or agents are disabled — caller falls back to defaults.
+  rpc GetAgentSpec(GetAgentSpecRequest) returns (GetAgentSpecResponse);
+
+  // Gateway creates a task on behalf of a user (south twin of BrokerService.CreateTask).
+  // SPIFFE-gated to the agent-gateway identity; owner is the gateway-asserted user.
+  rpc CreateGatewayTask(CreateGatewayTaskRequest) returns (TaskHandle);
+
+  // Gateway approves a task and mints per-step capability tokens (south twin of
+  // BrokerService.ApproveTask). SPIFFE-gated to the agent-gateway identity.
+  rpc ApproveGatewayTask(ApproveGatewayTaskRequest) returns (ApproveTaskResponse);
+
+  // Gateway resolves a raw API key sha256 hash to the agent + service principal.
+  // SPIFFE-gated to the agent-gateway identity. Returns valid=false on miss/revoke.
+  rpc ResolveAgentApiKey(ResolveAgentApiKeyRequest) returns (ResolveAgentApiKeyResponse);
+
+  // Gateway lists the skills (tool_id → scope) the given user may invoke.
+  // SPIFFE-gated to the agent-gateway identity.
+  // When FGA is disabled the full registry is returned. When FGA is enabled,
+  // each tool is checked with CheckFGA(user:userId, can_invoke, skill:toolId);
+  // tools where the check fails are silently omitted (fail-closed per-tool).
+  rpc ListUserSkills(ListUserSkillsRequest) returns (ListUserSkillsResponse);
+
+  // Gateway lists the agent skill bundles the given user may activate
+  // (CheckFGA(user, can_use, agentskill:<id>)). SPIFFE-gated to the
+  // agent-gateway identity. When FGA is disabled, all tenant bundles are
+  // returned.
+  rpc ListUserAgentSkills(ListUserAgentSkillsRequest) returns (ListUserAgentSkillsResponse);
+
+  // Gateway reads one file out of an agent skill bundle's full tree
+  // for the read_skill_file Pi tool. Re-checks
+  // the same per-bundle CheckFGA(user, can_use, agentskill:<id>) gate as
+  // ListUserAgentSkills. SPIFFE-gated to the agent-gateway identity. NotFound
+  // for an unknown bundle id, an ungranted user, or an unknown path.
+  rpc GetAgentSkillFileSouth(GetAgentSkillFileSouthRequest) returns (GetAgentSkillFileSouthResponse);
+
+  // Gateway persists a private Workflow authored from a session transcript.
+  // SPIFFE-gated to the agent-gateway identity; owner is bound from owner_grant.
+  rpc SaveWorkflow(SaveWorkflowRequest) returns (SaveWorkflowResponse);
+
+  // Gateway fetches a workflow definition for execution. Resolves pin-or-current
+  // version for the requesting user. SPIFFE-gated to the agent-gateway identity;
+  // owner is bound from owner_grant.
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+
+  // Gateway lists the workflows owned by the requesting user.
+  // SPIFFE-gated to the agent-gateway identity; owner is bound from owner_grant.
+  // Requires skill:workflows (deny-by-default).
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+
+  // ── Workflow self-improvement RPCs (CP6b) ─────────────────────────────────
+  // SPIFFE-gated to the agent-gateway identity; owner is bound from owner_grant.
+  rpc RateWorkflowRun(RateWorkflowRunRequest)           returns (RateWorkflowRunResponse);
+  rpc ProposeWorkflowVersion(ProposeWorkflowVersionRequest) returns (ProposeWorkflowVersionResponse);
+  rpc DecideWorkflowVersion(DecideWorkflowVersionRequest)   returns (DecideWorkflowVersionResponse);
+
+  // ── Workflow publish RPC (CP7) ────────────────────────────────────────────
+  // SPIFFE-gated to the agent-gateway identity; owner is bound from owner_grant.
+  rpc PublishWorkflow(PublishWorkflowRequest) returns (PublishWorkflowResponse);
+
+  // ── Workflow fork + version-pin RPCs (CP9) ───────────────────────────────
+  // SPIFFE-gated to the agent-gateway identity; owner is bound from owner_grant.
+  rpc ForkWorkflow(ForkWorkflowRequest) returns (ForkWorkflowResponse);
+  rpc SetWorkflowVersionPin(SetWorkflowVersionPinRequest) returns (SetWorkflowVersionPinResponse);
+  rpc ClearWorkflowVersionPin(ClearWorkflowVersionPinRequest) returns (ClearWorkflowVersionPinResponse);
+  // ListWorkflowVersions returns all versions for a lineage (CP10c version switcher).
+  rpc ListWorkflowVersions(ListWorkflowVersionsRequest) returns (ListWorkflowVersionsResponse);
+
+  // Gateway lists the memory concepts available for auto-recall on one turn:
+  // the user's own bundle, every member group's bundle, and (when agent_id is
+  // passed and that agent's skills include memory.read) the agent's bundle.
+  // SPIFFE-gated to the agent-gateway identity. Frontmatter only, never bodies.
+  // Returns empty — never an error — when the user lacks skill:memory.read, so
+  // revoking the grant silences auto-recall with no gateway change.
+  rpc ListMemoryConceptsSouth(ListMemoryConceptsRequest) returns (ListMemoryConceptsResponse);
+
+  // Gateway lists the caller's own Skills/*/SKILL.md catalog for session-build
+  // union. Frontmatter only,
+  // never bodies. SPIFFE-gated to the agent-gateway identity. Returns empty —
+  // never an error — when the user lacks skill:personal-skills, when FGA
+  // errors, or for a svc-/group- prefixed user_id (no agent/group personal
+  // skills).
+  rpc ListPersonalSkillsSouth(ListPersonalSkillsSouthRequest) returns (ListPersonalSkillsSouthResponse);
+
+  // Gateway fetches one personal skill's body for on-demand load_skill
+  // activation. SPIFFE-gated to the agent-gateway identity. NotFound for a
+  // missing/invalid skill, an ungranted user, an FGA error, or a svc-/group-
+  // prefixed user_id — never a transport error distinguishing those cases.
+  rpc GetPersonalSkillSouth(GetPersonalSkillSouthRequest) returns (GetPersonalSkillSouthResponse);
+
+  // Gateway reads one file out of a personal skill's full tree
+  // for the read_skill_file Pi tool. Same
+  // svc-/group- rejection and skill:personal-skills gating posture as
+  // GetPersonalSkillSouth. SPIFFE-gated to the agent-gateway identity.
+  // NotFound for a missing skill, an ungranted user, or an unknown path.
+  rpc GetPersonalSkillFileSouth(GetPersonalSkillFileSouthRequest) returns (GetPersonalSkillFileSouthResponse);
+}
+
+// ── Task types ────────────────────────────────────────────────────────────────
+
+message CreateTaskRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string prompt = 3;                // Natural language task description
+  int64 cost_budget = 4;            // Max cost units; 0 = use user default
+  google.protobuf.Timestamp deadline = 5;  // 0 = use task class default
+  repeated string skill_hints = 6;  // Suggested skills (agent may ignore)
+  string parent_task_id = 7;        // Set when spawned from an envelope
+  string client_request_id = 8;     // Optional idempotency key; empty = today's behavior
+}
+
+message TaskHandle {
+  string task_id = 1;
+  string trace_id = 2;
+}
+
+message GetTaskStateRequest {
+  string task_id = 1;
+  string tenant_id = 2;
+}
+
+message TaskState {
+  string task_id = 1;
+  TaskStatus status = 2;
+  int64 cost_consumed = 3;
+  int64 cost_budget = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  string current_step_description = 7;
+  repeated string violations = 8;   // If DENIED, why
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  CREATED           = 1;
+  PLANNING          = 2;
+  VALIDATING        = 3;
+  AWAITING_APPROVAL = 4;
+  APPROVED          = 5;
+  EXECUTING         = 6;
+  COMPLETED         = 7;
+  FAILED            = 8;
+  DENIED            = 9;
+  CANCELLED         = 10;
+  TERMINATED        = 11;
+  TIMEOUT           = 12;
+}
+
+message StreamTaskEventsRequest {
+  string task_id = 1;
+  string tenant_id = 2;
+}
+
+message TaskEvent {
+  string event_id = 1;
+  string task_id = 2;
+  TaskEventType type = 3;
+  google.protobuf.Struct payload = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+}
+
+enum TaskEventType {
+  TASK_EVENT_TYPE_UNSPECIFIED = 0;
+  STATUS_CHANGED   = 1;
+  PLAN_PROPOSED    = 2;
+  STEP_STARTED     = 3;
+  STEP_COMPLETED   = 4;
+  STEP_FAILED      = 5;
+  APPROVAL_NEEDED  = 6;
+  APPROVAL_RECEIVED = 7;
+  RESULT_READY     = 8;
+  ERROR            = 9;
+}
+
+message ApproveTaskRequest {
+  string task_id = 1;
+  string tenant_id = 2;
+  bool approved = 3;
+  string reason = 4;
+  string approver_user_id = 5;
+}
+
+message ApproveTaskResponse {
+  bool success = 1;
+  TaskStatus new_status = 2;
+  // Per-step capability tokens minted when this approval resolves the task to
+  // APPROVED, keyed by plan-step seq (base64 Biscuit). Empty unless the
+  // approval just transitioned the task to APPROVED. Mirrors
+  // PlanValidationResult.capability_token_ids for the human-approval path.
+  map<int32, string> capability_token_ids = 3;
+}
+
+message CancelTaskRequest {
+  string task_id = 1;
+  string tenant_id = 2;
+  string reason = 3;
+}
+
+message CancelTaskResponse {
+  bool success = 1;
+}
+
+// ── Envelope types ────────────────────────────────────────────────────────────
+
+message SendEnvelopeRequest {
+  string from_user_id = 1;
+  string tenant_id = 2;
+  EnvelopeRecipient recipient = 3;
+  EnvelopeTask task = 4;
+  EnvelopeDelegation delegation = 5;
+}
+
+message EnvelopeRecipient {
+  oneof target {
+    string user_id = 1;
+    string group_id = 2;
+    string role = 3;
+  }
+}
+
+message EnvelopeTask {
+  string intent = 1;
+  string payload_ref = 2;           // Object storage reference for large payloads
+  repeated string required_skills = 3;
+  google.protobuf.Timestamp deadline = 4;
+  string priority = 5;              // normal | high | low
+  // kind discriminates the envelope's handling path — empty (legacy/ordinary
+  // delegation) or "skill_transfer".
+  // A skill_transfer envelope is rejected by RespondToEnvelope; its accept
+  // path is AcceptSkillTransfer only.
+  string kind = 6;
+}
+
+message EnvelopeDelegation {
+  string capability_token = 1;      // Biscuit token (serialized)
+  repeated string attenuated_scopes = 2;
+  int64 max_cost_units = 3;
+}
+
+message EnvelopeHandle {
+  string envelope_id = 1;
+  string trace_id = 2;
+}
+
+message ListInboxEnvelopesRequest {
+  string user_id = 1;
+  string tenant_id = 2;
+  bool include_accepted = 3;
+  // F19: additive pagination, following the audit-reader cursor convention.
+  // limit=0 (proto3 default) → legacy behavior: the existing 100-row cap,
+  // unpaged.
+  int32  limit  = 4;
+  string cursor = 5; // opaque; empty = first page
+}
+
+message ListInboxEnvelopesResponse {
+  repeated InboxEnvelope envelopes = 1;
+  string next_cursor = 2; // empty = no more (F19)
+}
+
+message InboxEnvelope {
+  string envelope_id = 1;
+  string from_user_id = 2;
+  EnvelopeTask task = 3;
+  google.protobuf.Timestamp received_at = 4;
+  string status = 5;   // pending | accepted | rejected | completed
+  string from_display_name = 6;   // directory display name; empty if unresolved
+}
+
+message RespondToEnvelopeRequest {
+  string envelope_id = 1;
+  string user_id = 2;
+  string tenant_id = 3;
+  bool accepted = 4;
+  string reason = 5;
+}
+
+message RespondToEnvelopeResponse {
+  bool success = 1;
+}
+
+message DismissEnvelopeRequest {
+  string envelope_id = 1;
+  string user_id = 2;
+  string tenant_id = 3;
+}
+
+message DismissEnvelopeResponse {
+  bool success = 1;
+}
+
+message ListDelegatableUsersRequest {
+  string user_id = 1;
+  string tenant_id = 2;
+}
+
+message ListDelegatableUsersResponse {
+  repeated DelegatableUser users = 1;
+  repeated DelegatableGroup groups = 2;
+}
+
+message DelegatableUser {
+  string user_id = 1;
+  string display_name = 2;   // directory label; falls back to user_id when unknown
+}
+
+message DelegatableGroup {
+  string group_id = 1;
+  string display_name = 2;   // directory label; falls back to group_id when unknown
+  int32 member_count = 3;    // members excluding the caller
+}
+
+// ── Personal skills — north RPCs ──
+
+message ListPersonalSkillsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message ListPersonalSkillsResponse {
+  repeated PersonalSkillListEntry skills = 1;
+}
+
+// PersonalSkillListEntry is one of the caller's own Skills/<name>/ rows,
+// backing the Skills view's "My skills" section — PersonalSkillEntry (the
+// south catalog row) plus size_bytes, the folder's total content size.
+message PersonalSkillListEntry {
+  string          name                     = 1;
+  string          description              = 2;
+  repeated string keywords                 = 3;
+  repeated string allowed_tools            = 4;
+  bool            disable_model_invocation = 5;
+  bool            valid                    = 6;
+  string          warning                  = 7;
+  int64           size_bytes               = 8;
+}
+
+message DeletePersonalSkillRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string name      = 3;
+}
+
+message DeletePersonalSkillResponse {}
+
+message SendSkillTransferRequest {
+  string            tenant_id = 1;
+  string            user_id   = 2; // sender, bound via callerIdentity
+  string            name      = 3;
+  // Reuses EnvelopeRecipient (user_id | group_id | role) — the role arm is
+  // rejected the same way SendEnvelope rejects it.
+  EnvelopeRecipient recipient = 4;
+}
+
+message SendSkillTransferResponse {
+  repeated string envelope_ids     = 1; // one per delivered recipient
+  repeated string skipped_user_ids = 2; // group send only: granted-but-skipped members
+}
+
+message GetSkillTransferPreviewRequest {
+  string tenant_id   = 1;
+  string user_id     = 2; // recipient, bound via callerIdentity
+  string envelope_id = 3;
+}
+
+message GetSkillTransferPreviewResponse {
+  string                      skill_name   = 1;
+  string                      from_user_id = 2;
+  string                      body         = 3; // markdown after the frontmatter fence
+  repeated SkillManifestEntry manifest     = 4;
+  repeated string             flags        = 5;
+  string                      content_hash = 6;
+  bool                        conflict     = 7; // recipient already has Skills/<skill_name>/
+}
+
+message SkillManifestEntry {
+  string path = 1;
+  int64  size = 2;
+}
+
+message AcceptSkillTransferRequest {
+  string tenant_id     = 1;
+  string user_id       = 2; // recipient, bound via callerIdentity
+  string envelope_id   = 3;
+  string mode          = 4; // "rename" (default) | "replace"
+  string name_override = 5; // rename mode only; ignored for replace
+}
+
+message AcceptSkillTransferResponse {
+  string installed_name = 1;
+}
+
+// ── Sandbox south-bound types ──────────────────────────────────────────────────
+
+message SubmitPlanRequest {
+  string task_id = 1;
+  string sandbox_spiffe_id = 2;
+  aikonos.plan.v1.Plan plan = 3;
+}
+
+message InvokeToolRequest {
+  string task_id = 1;
+  string step_id = 2;
+  string tool_id = 3;
+  google.protobuf.Struct args = 4;
+  string capability_token = 5;      // Biscuit token for this specific step
+  string sandbox_spiffe_id = 6;
+  // Tenant that owns the task. South-bound calls carry no OIDC tenant, so the
+  // caller echoes it (from its task assignment) for the per-tenant Tool Proxy
+  // workspace path + RLS lookup. Mirrors EmitStatusRequest.tenant_id.
+  string tenant_id = 7;
+  // Owning user — selects the per-user workspace (Root/<tenant>/<user>/) so a
+  // user's documents persist across tasks/conversations. Empty falls back to
+  // the task id (server-side executor path).
+  string user_id = 8;
+  // Agent identity for the per-call RBAC re-check on MCP tool invocations.
+  // Must be set for any mcp:<C>:<tool> call; empty → denied.
+  string agent_id = 9;
+}
+
+message InvokeToolResponse {
+  bool success = 1;
+  google.protobuf.Struct result = 2;
+  string error = 3;
+  int64 cost_units_consumed = 4;
+}
+
+message EmitStatusRequest {
+  string task_id = 1;
+  string sandbox_spiffe_id = 2;
+  TaskStatus status = 3;
+  string description = 4;
+  int64 cost_units_consumed = 5;
+  // Tenant that owns the task. South-bound calls carry no OIDC tenant, so the
+  // sandbox must echo it (from its task assignment) for per-tenant RLS lookup.
+  string tenant_id = 6;
+}
+
+message EmitStatusResponse {}
+
+message RequestSubagentRequest {
+  string parent_task_id = 1;
+  string sandbox_spiffe_id = 2;
+  string intent = 3;
+  repeated string required_skills = 4;
+  int64 cost_budget = 5;
+}
+
+message SubagentHandle {
+  string subtask_id = 1;
+  string capability_token = 2;
+}
+
+// ── Connector (per-user external-storage OAuth) types ────────────────────────
+
+enum ConnectorProvider {
+  CONNECTOR_PROVIDER_UNSPECIFIED = 0;
+  GOOGLE_DRIVE = 1;
+  ONEDRIVE = 2;
+}
+
+message BeginConnectorAuthRequest {
+  // tenant_id (UUID) and user_id are echoed for south-style validation; the
+  // broker prefers the OIDC identity from context when present.
+  string tenant_id = 1;
+  string user_id = 2;
+  ConnectorProvider provider = 3;
+  // Optional scope override; empty → provider defaults.
+  repeated string scopes = 4;
+}
+
+message BeginConnectorAuthResponse {
+  string authorize_url = 1;
+  string state = 2;
+}
+
+message CompleteConnectorAuthRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string code = 3;
+  string state = 4;
+}
+
+message CompleteConnectorAuthResponse {
+  string connector_id = 1;
+  string status = 2;
+  repeated string scopes = 3;
+}
+
+message ListConnectorsRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message ConnectorStatus {
+  string connector_id = 1;
+  ConnectorProvider provider = 2;
+  string display_name = 3;
+  repeated string scopes = 4;
+  string status = 5;
+  google.protobuf.Timestamp connected_at = 6;
+  // True when this connector is under a tenant-wide connection rather than the
+  // user's own per-user OAuth link — Revoke/reconnect don't apply to it.
+  bool managed = 7;
+}
+
+message ListConnectorsResponse {
+  repeated ConnectorStatus connectors = 1;
+}
+
+message ListConnectorProvidersRequest {}
+
+// One provider the deployment can offer. Carries no secrets — display metadata only.
+message ConnectorProviderInfo {
+  ConnectorProvider provider = 1;   // enum (GOOGLE_DRIVE / ONEDRIVE)
+  string key = 2;                   // string(Provider), e.g. "onedrive" — what BeginConnectorAuth expects
+  string display_name = 3;
+  string connector_id = 4;
+}
+
+message ListConnectorProvidersResponse {
+  repeated ConnectorProviderInfo providers = 1;
+}
+
+message RevokeConnectorRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string connector_id = 3;
+}
+
+message RevokeConnectorResponse {
+  bool success = 1;
+}
+
+// ── Admin role/assignment types ──────────────────────────────────────────────
+
+// AssignmentSection groups curated relations into the UI's sections.
+enum AssignmentSection {
+  ASSIGNMENT_SECTION_UNSPECIFIED = 0;
+  GROUP_MEMBERSHIP = 1; // group#member / group#manager
+  TENANT_ROLE = 2;      // tenant admin / member
+  SKILL_ACCESS = 3;     // skill permitted_group
+  AGENT_RELATION = 4;   // agent owner_user / spawned_by / can_delegate_to_user
+  MCP_ACCESS = 5;       // mcp_connector permitted_agent / permitted_group
+}
+
+// RoleTuple is a single OpenFGA relationship in the curated admin surface.
+message RoleTuple {
+  string user = 1;     // "user:alice@example.com" | "group:security-team#member"
+  string relation = 2; // "member" | "admin" | "permitted_group" | "owner_user" ...
+  string object = 3;   // "group:security-team" | "tenant:aikonos-dev" | "skill:web.fetch"
+  AssignmentSection section = 4;
+}
+
+// Principal is a user/group/agent the admin UI can target. Derived today from
+// the Keycloak seed + observed FGA tuples; source marks its provenance.
+message Principal {
+  string id = 1;           // "user:alice@example.com" | "group:security-team" | "agent:alice-agent"
+  string kind = 2;         // "user" | "group" | "agent"
+  string display_name = 3;
+  string source = 4;       // "keycloak" | "fga"
+}
+
+message ListAssignmentsRequest {
+  string tenant_id = 1; // UUID; validated for request identity, FGA object derived server-side
+  string user_id = 2;   // acting admin (echoed; OIDC identity preferred)
+}
+
+message ListAssignmentsResponse {
+  repeated RoleTuple tuples = 1;
+  repeated Principal principals = 2;
+  bool fga_enabled = 3; // false in dev allow-all → UI shows a banner, hides mutations
+  // Per-section read failures (e.g. one object-type read errored). The rest of
+  // the response is still valid — the UI shows these as a degraded-mode notice.
+  repeated string warnings = 4;
+}
+
+message ListSkillsRequest  { string tenant_id = 1; string user_id = 2; }
+message AdminSkill {
+  string tool_id      = 1;
+  string scope        = 2;
+  bool   enabled      = 3;
+  string effect_class = 4; // authoritative rego string (e.g. "write_local")
+  string display_name = 5;
+  string description  = 6;
+  string executor_kind = 7; // "builtin" | "mcp" | "" for capability-only skills
+}
+message ListSkillsResponse { repeated AdminSkill skills = 1; }
+
+message UpsertSkillRequest {
+  string tenant_id    = 1;
+  string user_id      = 2;
+  string tool_id      = 3;
+  string effect_class = 4; // rego string; validated + floored server-side (I4)
+  string display_name = 5;
+  string description  = 6;
+  bool   enabled      = 7;
+  string scope        = 8; // optional; server derives and validates (I3)
+}
+message UpsertSkillResponse { AdminSkill skill = 1; }
+
+message DeleteSkillRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string tool_id   = 3;
+}
+message DeleteSkillResponse {}
+
+message AssignRoleRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  RoleTuple tuple = 3;
+}
+
+message AssignRoleResponse {
+  bool success = 1;
+}
+
+message RevokeRoleRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  RoleTuple tuple = 3;
+}
+
+message RevokeRoleResponse {
+  bool success = 1;
+}
+
+// ── Scheduler types ──────────────────────────────────────────────────────────
+
+enum ScheduleKind {
+  SCHEDULE_KIND_UNSPECIFIED = 0;
+  SCHEDULE_KIND_CRON = 1;   // recurring; cron_expr holds a 5-field crontab spec
+  SCHEDULE_KIND_ONCE = 2;   // one-off; run_at holds the firing time
+}
+
+enum ScheduledRunState {
+  SCHEDULED_RUN_STATE_UNSPECIFIED = 0;
+  SCHEDULED_RUN_ACTIVE = 1;
+  SCHEDULED_RUN_PAUSED = 2;
+  SCHEDULED_RUN_COMPLETED = 3; // a ONCE run that has fired
+  SCHEDULED_RUN_FAILED = 4;
+}
+
+message ScheduledRun {
+  string id = 1;
+  string owner_user_id = 2;
+  string prompt = 3;                          // unset for a workflow-mode schedule
+  ScheduleKind kind = 4;
+  string cron_expr = 5;                       // set for CRON
+  google.protobuf.Timestamp next_fire_at = 6; // unset when paused/completed
+  // Tools pre-authorized to run unattended even if they'd normally need human
+  // approval. Never overrides an OPA DENY or a capability-scope failure.
+  // Always empty on a workflow-mode schedule (approval derives from the
+  // workflow itself at fire time).
+  repeated string approved_tools = 7;
+  ScheduledRunState state = 8;
+  google.protobuf.Timestamp last_fire_at = 9;
+  string last_status = 10;                     // COMPLETED | FAILED (last fire)
+  string last_summary = 11;
+  int32 run_count = 12;
+  string created_by = 13;
+  google.protobuf.Timestamp created_at = 14;
+  // Workflow-mode fields (mutually exclusive with prompt). lineage_id unset
+  // ⇒ prompt-mode schedule.
+  string workflow_lineage_id = 15;
+  map<string, string> workflow_inputs = 16;
+  // Joined display name of the lineage's current approved version (List
+  // only; never denormalized onto the row). Empty for a prompt-mode schedule.
+  string workflow_display_name = 17;
+}
+
+message CreateScheduledRunRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string prompt = 3;                     // required unless workflow_lineage_id is set
+  ScheduleKind kind = 4;
+  string cron_expr = 5;                  // required for CRON
+  google.protobuf.Timestamp run_at = 6;  // required for ONCE; must be in the future
+  // Prompt-mode only; a workflow-mode create must leave this empty.
+  repeated string approved_tools = 7;
+  // Set to create a workflow-mode schedule instead of a prompt schedule;
+  // mutually exclusive with prompt/approved_tools.
+  string workflow_lineage_id = 8;
+  map<string, string> workflow_inputs = 9;
+}
+
+message CreateScheduledRunResponse {
+  ScheduledRun run = 1;
+}
+
+message ListScheduledRunsRequest {
+  string tenant_id = 1;
+  string user_id = 2;       // acting principal (OIDC identity preferred)
+  // Empty → the caller's own runs. Set (including listing all via a sentinel the
+  // gateway never sends) → tenant-admin gated filter by owner username.
+  string owner_filter = 3;
+}
+
+message ListScheduledRunsResponse {
+  repeated ScheduledRun runs = 1;
+  bool fga_enabled = 2;
+  repeated string warnings = 3;
+}
+
+message UpdateScheduledRunRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string id = 3;
+  // Definition fields — applied when desired_state is UNSPECIFIED (a full edit).
+  // On a workflow-mode row only kind/cron_expr/run_at (timing) may change;
+  // prompt/approved_tools/workflow_lineage_id/workflow_inputs must echo the
+  // row's existing (empty/immutable) values or the broker rejects the edit.
+  string prompt = 4;
+  ScheduleKind kind = 5;
+  string cron_expr = 6;
+  google.protobuf.Timestamp run_at = 7;
+  repeated string approved_tools = 8;
+  // When set to ACTIVE/PAUSED this is a state-only resume/pause and the
+  // definition fields above are ignored.
+  ScheduledRunState desired_state = 9;
+  string workflow_lineage_id = 10;
+  map<string, string> workflow_inputs = 11;
+}
+
+message UpdateScheduledRunResponse {
+  ScheduledRun run = 1;
+}
+
+message DeleteScheduledRunRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string id = 3;
+}
+
+message DeleteScheduledRunResponse {
+  bool success = 1;
+}
+
+// ── Scheduler south-bound (gateway ticker) types ─────────────────────────────
+
+message ClaimDueScheduledRunsRequest {
+  string tenant_id = 1;
+  google.protobuf.Timestamp now = 2;
+  int32 limit = 3;            // 0 → server default
+}
+
+// DueRun is the minimal payload the gateway needs to fire a run.
+message DueRun {
+  string id = 1;
+  string owner_user_id = 2;
+  string prompt = 3;                    // unset for a workflow-mode run
+  repeated string approved_tools = 4;    // always empty for a workflow-mode run
+  string owner_grant = 5;  // broker-issued HMAC owner-grant token (CP2); gateway echoes back to CreateGatewayTask
+  // Workflow-mode fields (mutually exclusive with prompt/approved_tools).
+  string workflow_lineage_id = 6;
+  map<string, string> workflow_inputs = 7;
+}
+
+message ClaimDueScheduledRunsResponse {
+  repeated DueRun runs = 1;
+}
+
+message ReportScheduledRunResultRequest {
+  string tenant_id = 1;
+  string id = 2;
+  bool success = 3;
+  string summary = 4;
+  string session_id = 5;     // per-fire UUID; the file stem
+  bytes  session_record = 6; // opaque JSON blob built by the gateway, written verbatim
+}
+
+message ReportScheduledRunResultResponse {}
+
+// ── Network access-list types ────────────────────────────────────────────────
+
+// NetworkRule is one host rule in the agent web access-list.
+message NetworkRule {
+  string id = 1;
+  string scope_kind = 2;   // TENANT | GROUP | USER
+  string scope_value = 3;  // group name / user email / "" for tenant
+  string action = 4;       // ALLOW | DENY | ASK
+  string host_pattern = 5; // "api.example.com" | "*.example.com" | "*"
+  string note = 6;
+  string created_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListNetworkRulesRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message ListNetworkRulesResponse {
+  repeated NetworkRule rules = 1;
+}
+
+message AddNetworkRuleRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  NetworkRule rule = 3; // id/created_by/created_at are server-assigned
+}
+
+message AddNetworkRuleResponse {
+  NetworkRule rule = 1;
+}
+
+message DeleteNetworkRuleRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string id = 3;
+}
+
+message DeleteNetworkRuleResponse {
+  bool success = 1;
+}
+
+// ── Provisioning rule types ──────────────────────────────────────────────────
+
+message ProvisioningRule {
+  string id = 1;
+  string matcher = 2;
+  repeated string groups = 3;
+  string created_by = 4;
+  string created_at = 5;
+}
+
+message ListProvisioningRulesRequest  { string tenant_id = 1; string user_id = 2; }
+message ListProvisioningRulesResponse { repeated ProvisioningRule rules = 1; }
+message AddProvisioningRuleRequest    { string tenant_id = 1; string user_id = 2; string matcher = 3; repeated string groups = 4; }
+message AddProvisioningRuleResponse   { ProvisioningRule rule = 1; int32 applied_count = 2; }
+message DeleteProvisioningRuleRequest { string tenant_id = 1; string user_id = 2; string id = 3; }
+message DeleteProvisioningRuleResponse {}
+
+// ── Workspace file types ─────────────────────────────────────────────────────
+
+message WorkspaceFile {
+  string path = 1;                            // relative to the user dir, "/"-separated
+  int64 size_bytes = 2;
+  google.protobuf.Timestamp modified_at = 3;
+  bool is_dir = 4;
+}
+
+message ListWorkspaceFilesRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  // path/recursive scope the listing to a subdirectory. path="" (proto3
+  // default) is the legacy contract: full recursive listing from the
+  // workspace root, byte-identical to today's behavior — recursive is
+  // ignored in that case. path="." means the workspace root, shallow
+  // (immediate entries only) unless recursive=true. A non-empty path lists
+  // that directory's immediate entries; recursive=true widens to everything
+  // beneath it.
+  string path = 3;
+  bool recursive = 4;
+}
+
+message ListWorkspaceFilesResponse {
+  repeated WorkspaceFile files = 1;
+}
+
+message ReadWorkspaceFileRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string path = 3;
+}
+
+message ReadWorkspaceFileResponse {
+  string path = 1;
+  string mime_type = 2;
+  bytes content = 3;
+  int64 size_bytes = 4;
+}
+
+message UploadWorkspaceFileRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string path = 3;
+  bytes content = 4;
+}
+
+message UploadWorkspaceFileResponse {
+  WorkspaceFile file = 1;
+}
+
+message DeleteWorkspaceFileRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string path = 3;
+}
+
+message DeleteWorkspaceFileResponse {
+  bool success = 1;
+}
+
+message MoveWorkspaceFileRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string from_path = 3;
+  string to_path = 4;
+}
+
+message MoveWorkspaceFileResponse {
+  WorkspaceFile file = 1;
+}
+
+message CreateWorkspaceDirRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string path = 3;
+}
+
+message CreateWorkspaceDirResponse {
+  bool success = 1;
+}
+
+// ── MCP connection types ──────────────────────────────────────────────────────
+
+// McpConnection is an admin-managed remote MCP server entry.
+// The bearer token is NEVER returned; it is stored in Vault only.
+message McpConnection {
+  string id = 1;
+  string name = 2;
+  string url = 3;
+  string transport = 4;     // "streamable_http" | "sse"
+  string auth_type = 5;     // "bearer" | "none"
+  string auth_secret_ref = 6; // Vault path for the credential (server-set)
+  string created_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListMcpConnectionsRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message ListMcpConnectionsResponse {
+  repeated McpConnection connections = 1;
+}
+
+message AddMcpConnectionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  McpConnection connection = 3; // id/auth_secret_ref/created_by/created_at are server-assigned
+  string bearer_token = 4;      // write-only; stored in Vault; never echoed back
+}
+
+message AddMcpConnectionResponse {
+  McpConnection connection = 1;
+}
+
+message UpdateMcpConnectionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  McpConnection connection = 3; // id must be set; auth_secret_ref/created_at are ignored
+  string bearer_token = 4;      // write-only; omit to leave the existing credential unchanged
+}
+
+message UpdateMcpConnectionResponse {
+  McpConnection connection = 1;
+}
+
+message DeleteMcpConnectionRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string id = 3;
+}
+
+message DeleteMcpConnectionResponse {
+  bool success = 1;
+}
+
+message ListAccessibleMcpServersRequest {
+  string tenant_id = 1;
+  string agent_id = 2; // "agent:alice-agent" or bare "alice-agent"
+}
+
+message ListAccessibleMcpServersResponse {
+  repeated McpConnection connections = 1;
+}
+
+// McpToolSchema is the discovery result for one tool on an MCP server.
+message McpToolSchema {
+  string name = 1;
+  string description = 2;
+  string input_schema_json = 3; // JSON-encoded inputSchema object
+  bool read_only_hint = 4;      // from MCP tool annotations.readOnlyHint
+}
+
+message ListMcpServerToolsRequest {
+  string tenant_id = 1;
+  string user_id = 2;       // acting admin (echoed; OIDC identity preferred)
+  string connector_id = 3;  // UUID of the MCP connection to discover
+}
+
+message ListMcpServerToolsResponse {
+  repeated McpToolSchema tools = 1;
+}
+
+// ── Audit read-side types ─────────────────────────────────────────────────────
+
+message QueryAuditRequest {
+  // tenant is the caller's — NOT a field here.
+  google.protobuf.Timestamp start_time = 1; // inclusive, optional
+  google.protobuf.Timestamp end_time   = 2; // inclusive, optional
+  string actor_user_id = 3;                 // optional exact match
+  string event_type    = 4;                 // optional exact match
+  aikonos.audit.v1.PolicyDecision decision = 5; // optional; UNSPECIFIED = any
+  int32  limit  = 6;                        // server caps (e.g. 200); 0 → default 50
+  string cursor = 7;                        // opaque; empty = first page
+}
+
+message QueryAuditResponse {
+  repeated aikonos.audit.v1.AuditEvent events = 1; // newest first
+  string next_cursor = 2;                         // empty = no more
+  bool   store_configured = 3;                     // false in logging-only mode
+}
+
+message VerifyAuditChainRequest {}  // tenant = caller's
+
+message ChainBreak {
+  string event_id = 1;
+  string detail   = 2;
+}
+
+message VerifyAuditChainResponse {
+  int32  total            = 1;
+  bool   ok               = 2; // no breaks AND no signature failures
+  bool   signed           = 3; // signing key configured → signatures checked
+  bool   store_configured = 4;
+  string head_event_id    = 5;
+  string tail_event_id    = 6;
+  repeated ChainBreak breaks             = 7; // continuity breaks
+  repeated ChainBreak signature_failures = 8; // HMAC mismatches
+  // ok=true with truncated=true or skipped>0 means only the scanned subset was
+  // verified — the client must treat this as "verified the part I read, not the
+  // whole chain".
+  bool  truncated = 9; // true when the store had more than maxScanObjects objects
+  int32 skipped   = 10; // count of objects that failed to fetch/decode and were skipped
+}
+
+// ── Decision trace ────────────────────────────────────────────────────────────
+
+message GetDecisionTraceRequest {
+  string task_id = 1; // tenant = caller's (from OIDC context)
+}
+
+message GateDecision {
+  string gate    = 1; // "identity" | "access_routing" | "network" | "capability"
+  string outcome = 2; // ALLOW | DENY | NEEDS_HUMAN | NEEDS_STEP_UP | ASK | INFO
+  string rule_id = 3; // empty if n/a
+  string reason  = 4; // human-readable
+  string detail  = 5; // optional extra (scope, host, etc.)
+}
+
+message StepTrace {
+  int32  seq          = 1;
+  string tool_id      = 2;
+  string effect_class = 3;
+  string decision     = 4; // aggregate policy_decision for this step
+  string justification = 5;
+  repeated GateDecision gates = 6;
+}
+
+message GetDecisionTraceResponse {
+  string task_id         = 1;
+  repeated StepTrace steps = 2;
+}
+
+// ── Policy simulator ──────────────────────────────────────────────────────────
+
+message SimulatePolicyRequest {
+  string subject_user_id             = 1; // hypothetical actor (NOT the caller)
+  string tool_id                     = 2;
+  aikonos.plan.v1.EffectClass effect_class = 3;
+  string host                        = 4; // optional; for web egress (netacl)
+  bool   reads_sensitive             = 5;
+  string fga_object                  = 6; // optional; if set, CheckFGA(subject, "can_access", object)
+}
+
+message SimulatePolicyResponse {
+  string outcome                 = 1; // ALLOW | DENY | NEEDS_HUMAN | NEEDS_STEP_UP
+  repeated GateDecision gates    = 2; // identity, access(fga), routing, network, capability
+}
+
+// ── Platform config ───────────────────────────────────────────────────────────
+
+message GetPlatformConfigRequest {}
+
+message ConfigEntry {
+  string key           = 1;
+  string value         = 2; // effective: stored value if set, else default
+  string default_value = 3;
+  string kind          = 4; // "int" | "bool" | "string"
+  string doc           = 5;
+}
+
+message GetPlatformConfigResponse {
+  repeated ConfigEntry entries = 1;
+}
+
+message GetObservabilityInfoRequest {}
+message GetObservabilityInfoResponse {
+  string otel_endpoint  = 1; // AIKONOS_OTEL_ENDPOINT, read at broker startup; empty ⇒ export disabled
+  bool   export_enabled = 2; // true when otel_endpoint is non-empty
+  string exported_job   = 3; // PromQL label to filter broker series (scrape overwrites job→otel-collector)
+}
+
+message SetPlatformConfigRequest {
+  string key   = 1;
+  string value = 2;
+}
+
+message SetPlatformConfigResponse {}
+
+// ── Alerting history ──────────────────────────────────────────────────────────
+
+message ListAlertsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  int32  limit     = 3;  // 0 → server default (100)
+}
+
+message AlertRecord {
+  string alert_id  = 1;
+  string tenant_id = 2;
+  string rule      = 3;
+  string severity  = 4;
+  google.protobuf.Struct summary  = 5;
+  google.protobuf.Timestamp fired_at = 6;
+}
+
+message ListAlertsResponse {
+  repeated AlertRecord alerts = 1;
+}
+
+// ── Agent types ───────────────────────────────────────────────────────────────
+
+message Agent {
+  string id = 1;
+  string name = 2;
+  string llm_model = 3;            // "" = inherit tenant/env default
+  string approval_mode = 4;        // "auto" | "needs_approval"
+  repeated string skills = 5;
+  repeated string mcp_servers = 6;
+  string created_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  repeated string usable_by = 10;  // FGA subjects (read-only, populated by ListAgents)
+  repeated string allowed_providers = 11;
+  string preferred_provider = 12;
+  string soul = 13;
+  bool   gateway_enabled = 14;     // when true, agent is invokable via the external :8090 surface
+}
+
+message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
+message CreateAgentResponse { Agent agent = 1; }
+message ListAgentsRequest  { string tenant_id = 1; string user_id = 2; }
+message ListAgentsResponse { repeated Agent agents = 1; }
+message UpdateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
+message UpdateAgentResponse { Agent agent = 1; }
+message DeleteAgentRequest { string tenant_id = 1; string user_id = 2; string id = 3; }
+message DeleteAgentResponse { bool success = 1; }
+
+message ListMyAgentsRequest  { string tenant_id = 1; string user_id = 2; }
+message MyAgent              { string id = 1; string name = 2; }
+message ListMyAgentsResponse { repeated MyAgent agents = 1; }
+
+// ── Agent soul messages ───────────────────────────────────────────────────────
+
+message GetAgentSoulRequest  { string tenant_id = 1; string user_id = 2; string agent_id = 3; }
+message GetAgentSoulResponse { string soul = 1; }
+message SetAgentSoulRequest  { string tenant_id = 1; string user_id = 2; string agent_id = 3; string soul = 4; }
+message SetAgentSoulResponse { string soul = 1; }
+
+// ── Tenant model override (south-bound, gateway-only) ─────────────────────────
+
+message GetTenantModelRequest {
+  string tenant_id = 1;
+}
+
+message GetTenantModelResponse {
+  // Effective model string (e.g. "anthropic/claude-sonnet-4.6"), or empty
+  // when no tenant override is configured. Empty means use the gateway env
+  // default. Never affects gates or approval decisions.
+  string model = 1;
+}
+
+// ── Agent spec (south-bound, gateway-only) ─────────────────────────────────────
+
+message GetAgentSpecRequest {
+  string tenant_id = 1;
+  string agent_id  = 2;  // bare uuid
+}
+
+message GetAgentSpecResponse {
+  bool              found              = 1;
+  string            name               = 2;
+  string            llm_model          = 3;
+  string            approval_mode      = 4;
+  repeated string   skills             = 5;
+  repeated string   allowed_providers  = 6;
+  string            preferred_provider = 7;
+  string            soul               = 8;
+  bool              gateway_enabled    = 9;
+}
+
+// ── Gateway south task twins (south-bound, gateway-only) ──────────────────────
+
+// CreateGatewayTaskRequest is the south-twin of CreateTaskRequest.
+// owner_grant (field 6) is the broker-issued HMAC token that proves the owner;
+// the broker binds the task owner from the grant, not from owner_user_id.
+message CreateGatewayTaskRequest {
+  string tenant_id      = 1;
+  string owner_user_id  = 2;  // kept for wire compat / logging; NOT trusted for authz — broker derives owner from owner_grant
+  string prompt         = 3;
+  uint64 cost_budget    = 4;  // 0 → server default (1000)
+  string agent_id       = 5;  // optional: binds the task to a named agent; broker enforces skill boundary at SubmitPlan
+  string owner_grant    = 6;  // required (CP2): broker-issued HMAC owner-grant token; absent → PermissionDenied
+  string client_request_id = 7;  // Optional idempotency key; empty = today's behavior
+}
+
+// ApproveGatewayTaskRequest is the south-twin of ApproveTaskRequest.
+// owner_user_id (field 3) is DEPRECATED / ignored for authorization — the
+// broker derives the approver from the stored task row (CP2). Kept for wire
+// compat with pre-CP2 gateway versions.
+message ApproveGatewayTaskRequest {
+  string tenant_id      = 1;
+  string task_id        = 2;
+  string owner_user_id  = 3;  // DEPRECATED (CP2): ignored for authz; broker derives approver from stored task
+  bool   approved       = 4;
+  string reason         = 5;
+}
+
+// ── Agent API key types ───────────────────────────────────────────────────────
+
+message AgentApiKey {
+  string id           = 1;
+  string key_prefix   = 2;  // first 8 chars of tk_… for display
+  string label        = 3;
+  string created_by   = 4;
+  google.protobuf.Timestamp created_at   = 5;
+  google.protobuf.Timestamp last_used_at = 6;  // unset if never used
+}
+
+message MintAgentApiKeyRequest {
+  string tenant_id = 1;
+  string user_id   = 2;  // acting admin (echoed; OIDC identity preferred)
+  string agent_id  = 3;  // bare UUID
+  string label     = 4;  // optional human label
+}
+
+message MintAgentApiKeyResponse {
+  AgentApiKey key     = 1;
+  string      raw_key = 2;  // full tk_… — returned exactly once, never stored
+}
+
+message ListAgentApiKeysRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string agent_id  = 3;  // bare UUID
+}
+
+message ListAgentApiKeysResponse {
+  repeated AgentApiKey keys = 1;
+}
+
+message RevokeAgentApiKeyRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string agent_id  = 3;  // bare UUID
+  string key_id    = 4;  // UUID of the key row
+}
+
+message RevokeAgentApiKeyResponse {
+  bool success = 1;
+}
+
+// ResolveAgentApiKeyRequest carries the sha256(raw_key) hex digest.
+// The gateway computes sha256 locally; the broker applies the pepper.
+message ResolveAgentApiKeyRequest {
+  string key_hash_hex = 1;  // hex-encoded sha256(raw_key)
+  string tenant_id    = 2;  // used for RLS + cross-tenant guard
+}
+
+message ResolveAgentApiKeyResponse {
+  bool   valid       = 1;
+  string agent_id    = 2;   // bare UUID (if valid)
+  string tenant_id   = 3;   // UUID string (if valid)
+  string principal   = 4;   // "svc-<agentId>" (if valid)
+  string owner_grant = 5;   // broker-issued HMAC owner-grant token for "svc-<agentId>" (CP2); gateway threads into CreateGatewayTask
+}
+
+// ── LLM provider messages ─────────────────────────────────────────────────────
+
+message LlmModel {
+  string id               = 1;
+  // price_* (2-5) are the legacy per-model float fields: dead since migration
+  // 042 moved costing to integer micro rates. Kept for models JSONB compat.
+  double price_in         = 2;
+  double price_out        = 3;
+  double price_cache_read = 4;
+  double price_cache_write = 5;
+  int32  context_window   = 6;
+  int32  max_tokens       = 7;
+  // modality this model serves: chat | embedding | image_generation |
+  // audio_speech | audio_transcription | rerank | ocr | moderation.
+  // Empty = "chat".
+  string mode             = 8;
+  // per-model pricing; absent = fall back to the provider's flat token rates.
+  LlmModelPricing pricing = 9;
+}
+
+// LlmModelPricing is one model's unit-discriminated price record. The unit
+// decides which amounts are meaningful: per_mtok uses all four token rates,
+// every other unit uses in_micros as its single per-unit amount.
+message LlmModelPricing {
+  string unit               = 1; // per_mtok | per_image | per_megapixel | per_mchar | per_minute | per_second | per_page | per_1k_queries | per_request | free
+  int64  in_micros          = 2; // micro-USD per unit (per 1M input tokens for per_mtok)
+  int64  out_micros         = 3; // 0 where the unit has no output side
+  int64  cache_read_micros  = 4; // per_mtok only
+  int64  cache_write_micros = 5; // per_mtok only
+  repeated LlmPricingTier tiers = 6; // per_mtok only; context-length-tiered rates
+}
+
+// LlmPricingTier is a context-length-tiered rate override (OpenRouter shape):
+// once the call's input side reaches min_context_tokens, these rates replace
+// the top-level in/out rates. Cache rates are never tiered.
+message LlmPricingTier {
+  int64 min_context_tokens = 1;
+  int64 in_micros          = 2;
+  int64 out_micros         = 3;
+}
+
+message LlmProvider {
+  string            id         = 1;
+  string            name       = 2;
+  string            endpoint   = 3;
+  string            api        = 4;
+  repeated LlmModel models     = 5;
+  bool              enabled    = 6;
+  bool              is_default = 7;
+  bool              has_key    = 8;
+  string            updated_by = 9;
+  string            api_key    = 10; // south GetLlmProviders only; never set on north List
+  string            api_version = 11; // required when api == "azure-openai" (classic Azure deployment route)
+  bool              vision_capable    = 12;
+  bool              is_default_vision = 13;
+  int64             price_in_micros_per_mtok  = 14; // cost fallback: micro-USD per 1M input tokens, 0 = unpriced
+  int64             price_out_micros_per_mtok = 15; // cost fallback: micro-USD per 1M output tokens, 0 = unpriced
+  bool              is_fallback = 16;
+  // family-specific config. Allowed keys per api: aws-bedrock → "region";
+  // every other family → none (azure keeps the api_version field above).
+  map<string, string> config = 17;
+}
+
+// North admin RPCs
+
+message ListLlmProvidersRequest {}
+
+message ListLlmProvidersResponse {
+  repeated LlmProvider providers = 1;
+  // capability → provider id, from llm_provider_defaults. Capabilities:
+  // chat | vision | fallback | embedding | image_generation | audio_speech |
+  // audio_transcription | rerank | ocr. A capability with no default is absent.
+  map<string, string> defaults = 2;
+}
+
+message UpsertLlmProviderRequest {
+  LlmProvider provider = 1;
+  string      api_key  = 2; // write-only; omit to leave existing key unchanged
+}
+
+message UpsertLlmProviderResponse {}
+
+message DeleteLlmProviderRequest {
+  string id = 1;
+}
+
+message DeleteLlmProviderResponse {}
+
+message SetDefaultProviderRequest {
+  string id = 1;
+}
+
+message SetDefaultProviderResponse {}
+
+message SetDefaultVisionProviderRequest {
+  string id = 1;
+}
+
+message SetDefaultVisionProviderResponse {}
+
+message SetFallbackProviderRequest {
+  string id = 1;
+}
+
+message SetFallbackProviderResponse {}
+
+message SetDefaultProviderForRequest {
+  string capability  = 1; // chat | vision | fallback | embedding | image_generation | audio_speech | audio_transcription | rerank | ocr
+  string provider_id = 2; // empty clears the capability's default
+}
+
+message SetDefaultProviderForResponse {}
+
+message TestLlmProviderRequest {
+  LlmProvider provider = 1;
+  string      api_key  = 2; // write-only; omit to reuse the stored key for an existing provider
+  string      mode     = 3; // modality to probe; empty = the first model's mode (default "chat")
+}
+
+message TestLlmProviderResponse {
+  bool   ok          = 1;
+  int32  status_code = 2; // upstream HTTP status (0 if the request never completed)
+  string error       = 3; // human-readable failure reason; empty on success
+  int64  latency_ms  = 4;
+}
+
+// South RPCs
+
+message GetLlmProvidersRequest {
+  string tenant_id = 1;
+}
+
+message GetLlmProvidersResponse {
+  repeated LlmProvider providers = 1;
+  // capability → provider id, same content as ListLlmProvidersResponse.defaults
+  // — lets the gateway resolve e.g. the
+  // tenant's default embedding provider without a second RPC.
+  map<string, string> defaults = 2;
+}
+
+message EmitLlmUsageRequest {
+  string tenant_id   = 1;
+  string user_id     = 2;
+  string agent_id    = 3;
+  string provider    = 4;
+  string model       = 5;
+  int64  tokens_in   = 6;
+  int64  tokens_out  = 7;
+  int64  cache_read  = 8;
+  int64  cache_write = 9;
+  double cost        = 10;
+  // Attribution dimensions for the per-call usage event row
+  //. All optional — a caller that has
+  // no run/session context sends them empty and the event still records.
+  string run_id     = 11; // gateway run id (one chat turn / scheduled fire / reason or vision call)
+  string session_id = 12; // webui chat session id; empty for scheduler/external/test callers
+  string source     = 13; // chat | reason | vision | test | embedding
+  // Non-per_mtok unit-quantity extension: the
+  // billable quantity in the pricing unit's natural denomination (pages,
+  // images, minutes…) plus that unit string, one of the catalog pricing-unit
+  // values. Both zero-valued for token-billed calls — unchanged senders stay
+  // valid.
+  double quantity = 14;
+  string unit     = 15;
+}
+
+message EmitLlmUsageResponse {}
+
+// ── M365 tenant connection messages (Entra OBO) ─────────────────────────────
+
+message M365Connection {
+  string entra_tenant_id = 1;
+  string client_id       = 2;
+  bool   has_secret      = 3; // never carries the secret itself
+  bool   enabled         = 4;
+  string updated_by      = 5;
+  string updated_at      = 6; // RFC3339
+}
+
+message GetM365ConnectionRequest {}
+
+message GetM365ConnectionResponse {
+  M365Connection connection = 1; // zero-value fields when unconfigured
+}
+
+message UpsertM365ConnectionRequest {
+  M365Connection connection    = 1;
+  string         client_secret = 2; // write-only; blank preserves the stored secret
+}
+
+message UpsertM365ConnectionResponse {
+  M365Connection connection = 1;
+}
+
+message DeleteM365ConnectionRequest {}
+
+message DeleteM365ConnectionResponse {}
+
+message TestM365ConnectionRequest {
+  // Optional: test an unsaved connection before upserting it. Omitted fields
+  // (and a blank client_secret) fall back to the tenant's stored connection.
+  M365Connection connection    = 1;
+  string         client_secret = 2;
+}
+
+message TestM365ConnectionResponse {
+  bool   ok     = 1;
+  string detail = 2; // classified AADSTS reason, or a success message
+}
+
+// ── web.search engine config messages ────────────
+
+message WebSearchConfig {
+  string engine       = 1; // e.g. "brave"; empty means unconfigured
+  int32  max_results  = 2;
+  bool   has_key      = 3; // never carries the key itself
+  string updated_by   = 4;
+  string updated_at   = 5; // RFC3339
+}
+
+message GetWebSearchConfigRequest {}
+
+message GetWebSearchConfigResponse {
+  WebSearchConfig config = 1; // zero-value fields when unconfigured
+}
+
+message UpsertWebSearchConfigRequest {
+  WebSearchConfig config  = 1;
+  string          api_key = 2; // write-only; blank preserves the stored key
+}
+
+message UpsertWebSearchConfigResponse {
+  WebSearchConfig config = 1;
+}
+
+message DeleteWebSearchConfigRequest {}
+
+message DeleteWebSearchConfigResponse {}
+
+message TestWebSearchConfigRequest {
+  // Optional: test an unsaved config before upserting it. Omitted fields
+  // (and a blank api_key) fall back to the tenant's stored config.
+  WebSearchConfig config  = 1;
+  string          api_key = 2;
+}
+
+message TestWebSearchConfigResponse {
+  bool   ok     = 1;
+  string detail = 2; // upstream probe result, or a failure reason
+}
+
+// ── Workspace-backend preference messages (CP5) ─────────────────────────────
+
+message WorkspaceBackendPref {
+  string backend               = 1; // "local" | "onedrive"
+  string onedrive_folder_path  = 2; // relative to the OneDrive drive root
+}
+
+message GetWorkspaceBackendRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message GetWorkspaceBackendResponse {
+  WorkspaceBackendPref pref               = 1;
+  bool                 onedrive_available = 2; // false when the tenant has no usable M365/OBO connection
+  string               onedrive_status    = 3; // connectorstore status ("connected"/"reconnect_needed"/"")
+}
+
+message SetWorkspaceBackendRequest {
+  string tenant_id             = 1;
+  string user_id               = 2;
+  string backend               = 3; // "local" | "onedrive"
+  string onedrive_folder_path  = 4; // only consulted when backend="onedrive"
+}
+
+message SetWorkspaceBackendResponse {
+  WorkspaceBackendPref pref = 1;
+}
+
+message ListOneDriveFoldersRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string path      = 3; // relative to the drive root; "" or "." lists the root
+}
+
+message OneDriveFolder {
+  string name = 1;
+  string path = 2; // relative to the drive root
+}
+
+message ListOneDriveFoldersResponse {
+  repeated OneDriveFolder folders = 1;
+}
+
+// ── ListUserSkills messages ───────────────────────────────────────────────────
+
+message ListUserSkillsRequest {
+  string tenant_id = 1;
+  string user_id   = 2; // subject id (without the "user:" prefix)
+}
+
+message SkillItem {
+  string tool_id = 1;
+  string scope   = 2;
+}
+
+message ListUserSkillsResponse {
+  repeated SkillItem skills = 1;
+}
+
+// ── Agent skill bundle types ──────────────────────────────────────────────────
+
+// AgentSkillBundle is the wire representation of an agent_skill DB row.
+// tenant_id is implicit from the auth context — not present in north request bodies.
+message AgentSkillBundle {
+  string          id                       = 1;
+  string          name                     = 2;
+  string          description              = 3;
+  string          body                     = 4;
+  repeated string allowed_tools            = 5;  // deprecated: dormant, not consumed
+  bool            context_fork             = 6;
+  bool            disable_model_invocation = 7;
+  string          created_by               = 8;
+  repeated string keywords                 = 9;  // admin-editable auto-load match terms; normalized (lowercase/trim/dedup) server-side
+  repeated string file_paths               = 10; // full-tree file paths (relative, sorted ascending), no content — 
+}
+
+// North admin RPCs
+
+message UpsertAgentSkillRequest {
+  string          tenant_id                = 1;
+  string          user_id                  = 2;
+  string          id                       = 3;  // UUID; server-assigned on first insert when empty
+  string          name                     = 4;
+  string          description              = 5;
+  string          body                     = 6;
+  repeated string allowed_tools            = 7;
+  bool            context_fork             = 8;
+  bool            disable_model_invocation = 9;
+  repeated string keywords                 = 10;
+  map<string, bytes> files                 = 11; // relpath -> file content, stored verbatim into agent_skill.extras
+}
+
+message UpsertAgentSkillResponse {
+  AgentSkillBundle bundle = 1;
+}
+
+message ListAgentSkillsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message ListAgentSkillsResponse {
+  repeated AgentSkillBundle bundles = 1;
+}
+
+message GetAgentSkillRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string id        = 3;  // UUID of the bundle
+}
+
+message GetAgentSkillResponse {
+  AgentSkillBundle bundle = 1;
+}
+
+message DeleteAgentSkillRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string id        = 3;  // UUID of the bundle
+}
+
+message DeleteAgentSkillResponse {}
+
+// South RPC
+
+message ListUserAgentSkillsRequest {
+  string tenant_id = 1;
+  string user_id   = 2; // subject id (without the "user:" prefix)
+}
+
+message ListUserAgentSkillsResponse {
+  repeated AgentSkillBundle bundles = 1;
+}
+
+message GetAgentSkillFileSouthRequest {
+  string tenant_id = 1;
+  string user_id   = 2; // subject id (without the "user:" prefix)
+  string id        = 3; // UUID of the bundle
+  string path      = 4; // relative path within the bundle's file tree
+}
+
+message GetAgentSkillFileSouthResponse {
+  bytes content = 1;
+}
+
+// ── Rate limit messages ───────────────────────────────────────────────────────
+
+message RateLimitPolicy {
+  string id         = 1;
+  string tenant_id  = 2;
+  string agent_id   = 3; // empty = applies to all agents
+  string provider   = 4; // empty = applies to all providers
+  int32  rpm_limit  = 5; // 0 = deny-all; absent/−1 = unconstrained
+  int32  tpm_limit  = 6;
+  string created_by = 7;
+}
+
+// North admin RPCs
+
+message ListRateLimitPoliciesRequest {
+  string tenant_id = 1;
+}
+
+message ListRateLimitPoliciesResponse {
+  repeated RateLimitPolicy policies = 1;
+}
+
+message SetRateLimitPolicyRequest {
+  string tenant_id = 1;
+  string agent_id  = 2;
+  string provider  = 3;
+  int32  rpm_limit = 4;
+  int32  tpm_limit = 5;
+}
+
+message SetRateLimitPolicyResponse {
+  string id = 1;
+}
+
+message DeleteRateLimitPolicyRequest {
+  string tenant_id = 1;
+  string id        = 2;
+}
+
+message DeleteRateLimitPolicyResponse {}
+
+// South RPC — gateway calls before each LLM request
+
+message CheckRateLimitRequest {
+  string tenant_id = 1;
+  string agent_id  = 2;
+  string provider  = 3;
+  string user_id   = 4; // additive — enables the per-user spend-cap check
+}
+
+message CheckRateLimitResponse {
+  bool   allowed    = 1;
+  string limit_type = 2; // "tpm_agent" | "tpm_provider" | "tpm_global" | "spend_org" | "spend_user" | "spend_agent"
+}
+
+// ── Spend cap messages ────────────────────────────
+// Monthly (UTC calendar-month) LLM budget caps, scoped org/user/agent, checked
+// after RPM/TPM in CheckRateLimit. cap_micros / spend_micros are integer
+// micro-USD (1 USD = 1_000_000 micros).
+
+message SpendCap {
+  string id         = 1;
+  string tenant_id  = 2;
+  string scope      = 3; // "org" | "user" | "agent"
+  string subject_id = 4; // "" for scope="org"
+  int64  cap_micros = 5;
+  string created_by = 6;
+}
+
+// North admin RPCs
+
+message ListSpendCapsRequest {
+  string tenant_id = 1;
+}
+
+message ListSpendCapsResponse {
+  repeated SpendCap caps = 1;
+}
+
+message SetSpendCapRequest {
+  string tenant_id  = 1;
+  string scope      = 2;
+  string subject_id = 3;
+  int64  cap_micros = 4;
+}
+
+message SetSpendCapResponse {
+  string id = 1;
+}
+
+message DeleteSpendCapRequest {
+  string tenant_id = 1;
+  string id        = 2;
+}
+
+message DeleteSpendCapResponse {}
+
+message SpendSummaryUserRow {
+  string user_id      = 1;
+  int64  spend_micros = 2;
+  int64  cap_micros   = 3; // 0 = unset
+}
+
+message SpendSummaryAgentRow {
+  string agent_id     = 1;
+  int64  spend_micros = 2;
+  int64  cap_micros   = 3; // 0 = unset
+}
+
+message GetSpendSummaryRequest {
+  string tenant_id = 1;
+}
+
+message GetSpendSummaryResponse {
+  int64                         org_spend_micros = 1;
+  int64                         org_cap_micros   = 2; // 0 = unset
+  repeated SpendSummaryUserRow  users            = 3;
+  repeated SpendSummaryAgentRow agents           = 4;
+}
+
+// ── Per-session usage ──────────────────────────
+// One (provider, model) rollup of a single session's billable LLM calls, read
+// from llm_usage_events — the same analytics table the LLM Spend dashboard
+// bills from, so the figure the user sees and the figure an admin sees agree.
+message SessionUsageRow {
+  string provider    = 1;
+  string model       = 2;
+  int64  tokens_in   = 3;
+  int64  tokens_out  = 4;
+  int64  cache_read  = 5;
+  int64  cache_write = 6;
+  int64  cost_micros = 7;
+  int64  calls       = 8;
+}
+
+message GetSessionUsageRequest {
+  string tenant_id  = 1;
+  string session_id = 2;
+}
+
+message GetSessionUsageResponse {
+  repeated SessionUsageRow rows = 1;
+}
+
+// ── Org governance settings (A-series) ──────────────────────────────────────
+// One settings object per tenant. Every field is `optional` so UpdateOrgSettings
+// can carry a partial patch: only present fields are merged, absent fields are
+// left untouched. GetOrgSettings responses populate every field with its
+// effective value (stored value, or the documented default).
+message OrgSettings {
+  // A1 — org-global instruction preamble prepended to every session's system
+  // prompt, ahead of the agent soul, as a governance-level (non-overridable)
+  // block. Empty = no preamble.
+  optional string instruction_preamble = 1;
+
+  // A8 — org master for unattended / auto-approve mode. When false, an agent
+  // configured with approval_mode:auto is downgraded to human-in-the-loop for
+  // interactive runs regardless of its per-agent setting. Unset = true (allowed).
+  optional bool unattended_allowed = 2;
+
+  // A6 — org master over workflow sharing (Aikonos's user-authored, shareable
+  // artifact). When false, PublishWorkflow is refused org-wide so members cannot
+  // publish workflows to groups regardless of their skill:workflows grant.
+  // Unset = true (allowed).
+  optional bool workflow_sharing_allowed = 3;
+
+  // A7 — connector install allowlist. When connector_allowlist_enabled is true,
+  // BeginConnectorAuth is refused unless the provider id is in connector_allowlist.
+  // When false (default), any configured connector may be linked. Provider ids
+  // are the connector.Provider strings ("google_drive", "onedrive"). The two
+  // fields travel together: presence of the enabled flag on an update applies both.
+  optional bool   connector_allowlist_enabled = 4;
+  repeated string connector_allowlist         = 5;
+
+  // A2 — org capability master switches. Wrapped in a message so the repeated
+  // list has proto3 presence: an update carrying `capabilities` replaces the
+  // disabled set; an update without it leaves the set untouched.
+  optional CapabilityPolicy capabilities = 6;
+
+  // Audit / provenance (read-only; ignored on update).
+  string updated_by = 100;
+  string updated_at = 101; // RFC3339
+}
+
+// CapabilityPolicy is the org-wide capability kill-switch set. A tool whose
+// authoritative effect class appears here is denied at InvokeTool org-wide,
+// before the per-user FGA/capability gates — a master switch above delegation.
+message CapabilityPolicy {
+  // EffectClass enum names (e.g. "NETWORK_EGRESS", "WRITE_EXTERNAL").
+  repeated string disabled_effect_classes = 1;
+}
+
+message GetOrgSettingsRequest {
+  string tenant_id = 1;
+}
+
+message GetOrgSettingsResponse {
+  OrgSettings settings = 1;
+}
+
+message UpdateOrgSettingsRequest {
+  string tenant_id = 1;
+  // Only the fields set on `settings` are applied (partial merge).
+  OrgSettings settings = 2;
+}
+
+message UpdateOrgSettingsResponse {
+  OrgSettings settings = 1; // the full, post-merge object
+}
+
+// A3 — unified members roster.
+message MemberInfo {
+  string subject       = 1; // OIDC subject (stable authz key)
+  string email         = 2;
+  string name          = 3; // display name
+  string last_seen     = 4; // RFC3339; empty if never seen
+  bool   provisioned   = 5; // true if JIT-provisioned (provisioned_at set)
+  string provisioned_at = 6; // RFC3339; empty if manual
+  bool   is_admin      = 7; // holds the tenant admin relation
+}
+
+message ListMembersRequest {
+  string tenant_id = 1;
+}
+
+message ListMembersResponse {
+  repeated MemberInfo members = 1;
+}
+
+// ── Workflow authoring RPC types (CP3) ───────────────────────────────────────
+
+// SaveWorkflowRequest persists a gateway-authored Workflow as a private
+// version. owner_grant is the broker-issued HMAC token that binds the owner
+// identity — the same pattern as CreateGatewayTaskRequest.
+message SaveWorkflowRequest {
+  string tenant_id        = 1;
+  string owner_user_id    = 2; // wire compat / logging; authz uses owner_grant
+  string owner_grant      = 3; // broker-issued HMAC; required
+  string name             = 4;
+  string description      = 5;
+  string definition_json  = 6; // canonical Workflow JSON (workflow.ToJSON output)
+  string visibility_kind  = 7; // "private" (only private accepted at authoring time)
+  // lineage_id: if non-empty, adds a new version under an existing lineage (edit).
+  // If empty, a brand-new lineage is created (first save).
+  string lineage_id       = 8;
+  // F9: agent the workflow was authored under (bare agent UUID). Only honored
+  // when creating a brand-new lineage — edits/proposals/forks inherit the
+  // lineage's existing binding. Empty or non-UUID = personal (unbound) workflow.
+  string agent_id         = 9;
+}
+
+message SaveWorkflowResponse {
+  string workflow_id = 1; // UUID of the new row (id column)
+  string lineage_id  = 2; // UUID of the lineage (new on first save)
+  int32  version     = 3; // 1 for a brand-new lineage
+}
+
+// GetWorkflowRequest fetches the definition for a lineage, resolving the
+// pin-or-current version for the requesting user.
+message GetWorkflowRequest {
+  string tenant_id   = 1;
+  string owner_grant = 2; // broker-issued HMAC; required — binds runner identity
+  string user_id     = 3; // requesting user (used for version-pin lookup)
+  string lineage_id  = 4; // UUID of the workflow lineage
+}
+
+message GetWorkflowResponse {
+  string definition_json = 1; // canonical Workflow JSON (workflow.ToJSON output)
+  int32  version         = 2; // resolved version number
+  string bound_agent_id  = 3; // F9: bare agent UUID the lineage is bound to; empty = personal
+}
+
+// ListWorkflowsRequest lists the workflows owned by the requesting user.
+message ListWorkflowsRequest {
+  string tenant_id   = 1;
+  string owner_grant = 2; // broker-issued HMAC; required — binds owner identity
+  string user_id     = 3; // requesting user (used for logging; authz uses owner_grant)
+  // F19: additive pagination, following the audit-reader cursor convention
+  // (proto/broker.proto QueryAuditRequest). limit=0 (proto3 default) →
+  // legacy behavior: unbounded, every owned+shared workflow returned.
+  int32  limit  = 4;
+  string cursor = 5; // opaque; empty = first page
+}
+
+// WorkflowSummary is one item in a ListWorkflowsResponse: the current version
+// of a lineage, with enough fields for a list card (name, status, visibility).
+message WorkflowSummary {
+  string          lineage_id            = 1;
+  string          name                  = 2;
+  int32           version               = 3;
+  string          visibility_kind       = 4;
+  string          status                = 5;
+  // CP8: access state for the viewing user.
+  // "runnable" — viewer holds all required skills.
+  // "greyed_out" — viewer lacks one or more required skills.
+  string          access_state          = 6;
+  repeated string missing_requirements  = 7; // skills the viewer lacks (non-empty when greyed_out)
+  bool            is_owner              = 8; // true when the viewer owns this lineage
+  // F9: agent binding. bound_agent_id empty = personal workflow. bound_agent_ok
+  // is true when the workflow is unbound, FGA is disabled, or the viewer may
+  // operate the bound agent (can_use, or tenant admin) — the webui gates the
+  // Run button on it; BeginWorkflowRun re-checks server-side.
+  string          bound_agent_id        = 9;
+  bool            bound_agent_ok        = 10;
+}
+
+message ListWorkflowsResponse {
+  repeated WorkflowSummary items = 1;
+  string next_cursor = 2; // empty = no more (F19)
+  // shared_unavailable is true when the shared-workflow half of the listing
+  // could not be resolved (FGA ListObjects or ListVisibleShared errored): the
+  // response then carries own workflows only, and the client can surface a
+  // degraded-listing notice instead of silently hiding shared workflows.
+  bool shared_unavailable = 3;
+}
+
+// ── Agent-bound workflow run authorization (F9) ──────────────────────────────
+
+// BeginWorkflowRunRequest asks the broker to authorize running the lineage's
+// current workflow under its bound agent. Identity comes from the OIDC bearer
+// (north path); owner_user_id is wire compat / logging only.
+message BeginWorkflowRunRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2;
+  string lineage_id    = 3;
+}
+
+// BeginWorkflowRunResponse: both fields empty when the workflow is unbound
+// (personal) — run it on the legacy personal path. When bound, owner_grant is a
+// broker-minted HMAC grant (task owner = the requesting user) and
+// bound_agent_id is the bare agent UUID to run under.
+message BeginWorkflowRunResponse {
+  string owner_grant    = 1;
+  string bound_agent_id = 2;
+}
+
+// ── Workflow self-improvement RPC types (CP6b) ────────────────────────────────
+
+enum WorkflowRating {
+  WORKFLOW_RATING_UNSPECIFIED = 0;
+  RATING_SUCCESS = 1;
+  RATING_BAD     = 2;
+}
+
+// RateWorkflowRun records a qualitative signal for a completed run.
+// A BAD rating is an audit-only signal; it does not automatically create a
+// proposal. The owner/agent calls ProposeWorkflowVersion separately.
+message RateWorkflowRunRequest {
+  string          tenant_id     = 1;
+  string          owner_user_id = 2; // wire compat / logging; authz uses owner_grant
+  string          owner_grant   = 3; // broker-issued HMAC; required
+  string          lineage_id    = 4;
+  int32           version       = 5; // which version was run
+  WorkflowRating  rating        = 6;
+  string          note          = 7; // optional free-text
+}
+
+message RateWorkflowRunResponse {}
+
+// ProposeWorkflowVersion inserts a new proposed version of the workflow.
+// Caller must be the lineage owner. Notifies the owner via an inbox envelope
+// and emits a workflow.proposed audit event.
+message ProposeWorkflowVersionRequest {
+  string tenant_id       = 1;
+  string owner_user_id   = 2; // wire compat / logging; authz uses owner_grant
+  string owner_grant     = 3; // broker-issued HMAC; required
+  string lineage_id      = 4;
+  string definition_json = 5; // proposed workflow definition
+}
+
+message ProposeWorkflowVersionResponse {
+  int32 version = 1; // version number assigned to the proposal
+}
+
+// DecideWorkflowVersion approves or rejects a proposed version.
+// Caller must be the lineage owner.
+message DecideWorkflowVersionRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2; // wire compat / logging; authz uses owner_grant
+  string owner_grant   = 3; // broker-issued HMAC; required
+  string lineage_id    = 4;
+  int32  version       = 5; // proposed version to decide on
+  bool   approved      = 6; // true = approve; false = reject
+  string reason        = 7; // populated on rejection
+}
+
+message DecideWorkflowVersionResponse {
+  string approval_state = 1; // "approved" | "rejected"
+}
+
+// ── Workflow publish messages (CP7) ───────────────────────────────────────────
+
+// PublishWorkflowRequest publishes a success-rated workflow version to the
+// owner's groups. The owner must be a member of every group_id supplied.
+// owner_grant is required on the south path; ignored on the north path (OIDC).
+message PublishWorkflowRequest {
+  string          tenant_id     = 1;
+  string          owner_user_id = 2; // wire compat / logging; authz uses owner_grant (south) or OIDC (north)
+  string          owner_grant   = 3; // broker-issued HMAC; required on south path
+  string          lineage_id    = 4;
+  int32           version       = 5;
+  repeated string group_ids     = 6; // groups to share with; owner must be a member of each
+}
+
+message PublishWorkflowResponse {
+  string          visibility_kind = 1; // "shared"
+  repeated string groups          = 2; // group ids the workflow was published to
+}
+
+// ── Workflow fork + version-pin message types (CP9) ──────────────────────────
+
+// ForkWorkflowRequest creates a new independent lineage copied from the source
+// lineage's current approved definition. The forker becomes the new owner.
+message ForkWorkflowRequest {
+  string tenant_id        = 1;
+  string owner_user_id    = 2; // asserted on south path; ignored on north (identity from bearer)
+  string owner_grant      = 3; // HMAC grant — required on south path only
+  string source_lineage_id = 4; // lineage to fork from
+  string new_name         = 5; // REQUIRED: name for the forked workflow
+}
+
+message ForkWorkflowResponse {
+  string lineage_id = 1; // UUID of the newly created fork lineage
+}
+
+// SetWorkflowVersionPinRequest pins the caller's personal view of a lineage to
+// a specific version. The target version must be in state 'approved'.
+message SetWorkflowVersionPinRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2;
+  string owner_grant   = 3;
+  string lineage_id    = 4;
+  int32  version       = 5;
+}
+
+message SetWorkflowVersionPinResponse {}
+
+// ClearWorkflowVersionPinRequest removes the caller's pin for a lineage,
+// reverting their view to the auto-latest approved version.
+message ClearWorkflowVersionPinRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2;
+  string owner_grant   = 3;
+  string lineage_id    = 4;
+}
+
+message ClearWorkflowVersionPinResponse {}
+
+// ListWorkflowVersionsRequest returns all versions for a lineage. Skill-gated.
+// owner_grant required on the south path; ignored on the north path (OIDC).
+message ListWorkflowVersionsRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2;
+  string owner_grant   = 3;
+  string lineage_id    = 4;
+  // F19: additive pagination, following the audit-reader cursor convention.
+  // limit=0 (proto3 default) → legacy behavior: unbounded, every version
+  // returned.
+  int32  limit  = 5;
+  string cursor = 6; // opaque; empty = first page
+}
+
+// WorkflowVersionSummary is one row in a ListWorkflowVersionsResponse.
+message WorkflowVersionSummary {
+  int32  version        = 1;
+  string approval_state = 2; // "approved" | "proposed" | "rejected"
+  string created_at     = 3; // RFC3339
+}
+
+message ListWorkflowVersionsResponse {
+  repeated WorkflowVersionSummary items = 1;
+  string next_cursor = 2; // empty = no more (F19)
+}
+
+// DeleteWorkflowRequest removes an entire lineage. Owner-only; owner_grant
+// required on the south path, ignored on the north path (identity from bearer).
+message DeleteWorkflowRequest {
+  string tenant_id     = 1;
+  string owner_user_id = 2;
+  string owner_grant   = 3;
+  string lineage_id    = 4;
+}
+
+message DeleteWorkflowResponse {
+  int32 versions_deleted = 1; // number of version rows removed
+}
+
+// ── Workflow document types (no service RPCs — those come in later checkpoints) ──
+
+// WorkflowVisibility declares who can see a workflow.
+// kind must be "private" or "shared".
+message WorkflowVisibility {
+  string          kind   = 1;
+  repeated string groups = 2;
+}
+
+// WorkflowMetadata holds identifying and lifecycle fields for a Workflow.
+message WorkflowMetadata {
+  string             name        = 1;
+  string             description = 2;
+  int32              version     = 3;
+  string             owner       = 4;
+  WorkflowVisibility visibility  = 5;
+}
+
+// WorkflowRequires is the access manifest compared against a runner's grants
+// to determine runnable vs greyed-out state.
+message WorkflowRequires {
+  repeated string scopes = 1;
+  repeated string skills = 2;
+  repeated string agents = 3;
+}
+
+// WorkflowInput declares one parameterized input slot.
+message WorkflowInput {
+  string name = 1;
+  // schema_json carries the JSON Schema fragment as a serialised JSON string.
+  // Proto3 has no map<string,any> type, so the open-typed map[string]any from
+  // the Go struct is JSON-encoded before being placed here. The CP3/CP4 bridge
+  // must json.Marshal on the Go→proto path and json.Unmarshal (treating an
+  // empty string or "null" as an empty map) on the proto→Go path.
+  string schema_json = 2;
+  string default     = 3;
+}
+
+// WorkflowStep is one authored tool invocation in the linear step sequence.
+message WorkflowStep {
+  string skill = 1;
+  // args_json carries the step's args map as a serialised JSON object.
+  // Same impedance as WorkflowInput.schema_json: proto3 cannot represent
+  // map<string,any>, so the Go map[string]any is JSON-encoded before storage.
+  // The CP3/CP4 bridge must guard null→empty-map on the proto→Go path.
+  string args_json = 2;
+}
+
+// Workflow is the canonical representation of a kind: Workflow document.
+// Mirrors broker/internal/workflow.Workflow; stored as JSONB in the DB.
+message Workflow {
+  string          api_version = 1;
+  string          kind        = 2;
+  WorkflowMetadata metadata   = 3;
+  WorkflowRequires requires   = 4;
+  repeated WorkflowInput inputs = 5;
+  repeated WorkflowStep  steps  = 6;
+}
+
+// ── Agent memory management messages ─────────────
+
+// MemoryConceptMeta is one concept's frontmatter, flattened for the wire.
+// Bodies are deliberately absent — every listing surface is frontmatter-only.
+message MemoryConceptMeta {
+  string id          = 1;
+  string scope       = 2;  // "user" | "group" | "agent"
+  string group_id    = 3;  // set only for scope="group"
+  string agent_id    = 4;  // set only for scope="agent"
+  string type        = 5;
+  string title       = 6;
+  string description = 7;
+  repeated string tags = 8;
+  string status      = 9;  // "draft" | "stable" | "deprecated"
+  // trust_tier is derived, never stored: "unverified" | "machine-confirmed" |
+  // "human-reviewed" (any human: entry in `verified` wins).
+  string trust_tier  = 10;
+  bool   stale       = 11; // derived: today >= stale_after
+  string stale_after = 12; // YYYY-MM-DD, empty when unset
+  string generated_by = 13; // server-stamped "user:<sub>" or "agent:<id>"
+  string generated_at = 14; // RFC3339
+}
+
+// MemoryGroup is one group the caller may reach, with the relations that
+// decide which actions the settings UI offers.
+message MemoryGroup {
+  string group_id = 1;
+  bool   member   = 2;
+  bool   manager  = 3; // manager may verify/deprecate/delete the shared bundle
+}
+
+message ListMemoryGroupsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message ListMemoryGroupsResponse {
+  repeated MemoryGroup groups = 1;
+}
+
+// ListMemoryConceptsRequest carries explicit identity fields (north validates
+// them against the bearer via callerIdentity; the SPIFFE-gated south twin
+// trusts the gateway peer) — same shape as GetWorkspaceBackendRequest.
+message ListMemoryConceptsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string scope     = 3; // "user" | "group" | "agent"; ignored by the south twin
+  string group_id  = 4; // required iff scope="group"
+  string agent_id  = 5; // required iff scope="agent"; south: recall the agent bundle
+}
+
+message ListMemoryConceptsResponse {
+  repeated MemoryConceptMeta concepts = 1;
+}
+
+message GetMemoryConceptRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string scope     = 3;
+  string group_id  = 4;
+  string agent_id  = 5;
+  string id        = 6;
+}
+
+message GetMemoryConceptResponse {
+  MemoryConceptMeta meta = 1;
+  string            body = 2;
+}
+
+message VerifyMemoryConceptRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string scope     = 3;
+  string group_id  = 4;
+  string agent_id  = 5;
+  string id        = 6;
+}
+
+message VerifyMemoryConceptResponse {
+  MemoryConceptMeta meta = 1; // the amended concept, trust_tier recomputed
+}
+
+message DeprecateMemoryConceptRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string scope     = 3;
+  string group_id  = 4;
+  string agent_id  = 5;
+  string id        = 6;
+}
+
+message DeprecateMemoryConceptResponse {
+  MemoryConceptMeta meta = 1;
+}
+
+message DeleteMemoryConceptRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string scope     = 3;
+  string group_id  = 4;
+  string agent_id  = 5;
+  string id        = 6;
+}
+
+message DeleteMemoryConceptResponse {}
+
+// ── Personal skills — south RPCs ─────────────
+// CP2 scope: only the two south (SPIFFE-gated) session-build RPCs are wired
+// on SandboxService. North management/transfer RPCs are a later checkpoint.
+
+message ListPersonalSkillsSouthRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message ListPersonalSkillsSouthResponse {
+  repeated PersonalSkillEntry skills = 1;
+}
+
+// PersonalSkillEntry is one discovered personal skill's catalog row
+// (frontmatter only — no body). name is always the directory name.
+message PersonalSkillEntry {
+  string          name                     = 1;
+  string          description              = 2;
+  repeated string keywords                 = 3;
+  repeated string allowed_tools            = 4;  // deprecated: dormant, not consumed
+  bool            disable_model_invocation = 5;
+  // valid is false when the skill is excluded from the catalog (missing/
+  // unparseable/oversize SKILL.md, or a missing description); warning then
+  // carries the human-readable reason. warning may also be set with valid
+  // still true, on a frontmatter/directory name mismatch.
+  bool   valid   = 6;
+  string warning = 7;
+}
+
+message GetPersonalSkillSouthRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string name      = 3;
+}
+
+message GetPersonalSkillSouthResponse {
+  string          body          = 1; // markdown after the frontmatter fence
+  repeated string allowed_tools = 2; // deprecated: dormant, not consumed
+  repeated string file_paths    = 3; // full-tree file paths under Skills/<name>/ minus SKILL.md (relative, sorted ascending)
+}
+
+message GetPersonalSkillFileSouthRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string name      = 3;
+  string path      = 4; // relative path within Skills/<name>/, excluding SKILL.md
+}
+
+message GetPersonalSkillFileSouthResponse {
+  bytes content = 1;
+}

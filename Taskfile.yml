@@ -1,0 +1,175 @@
+version: '3'
+
+# Aikonos is deployed via docker compose only. See deploy/compose/README.md for
+# the operator guide and compose.yaml for the stack. Profiles: core / full / obs.
+
+tasks:
+  # ── Build / codegen ──────────────────────────────────────────────────────────
+  proto:gen:
+    desc: Generate protobuf code (Go + Python + TypeScript) into gen/ (gitignored)
+    cmds:
+      - ./scripts/proto-gen.sh
+
+  aikonos:build:
+    desc: Build the aikonos scaffolding CLI
+    cmds:
+      - go build -o bin/aikonos ./broker/cmd/aikonos
+
+  broker:build:
+    desc: Build the broker binary
+    cmds:
+      - go build -o bin/broker ./broker/cmd/broker
+
+  webui:build:
+    desc: Install deps and build the unified webui Vue app (web/dist)
+    cmds:
+      - npm --prefix webui/web install
+      - npm --prefix webui/web run build
+
+  # ── Tests / lint ─────────────────────────────────────────────────────────────
+  broker:test:
+    desc: Run broker unit tests
+    cmds:
+      - go test ./broker/...
+
+  policy:test:
+    desc: Run OPA policy unit tests
+    cmds:
+      - opa test policies/opa/ -v
+
+  gateway:test:
+    desc: Run agent-gateway unit tests (needs npm ci'd agent-gateway/node_modules and gen/ts stubs — run `task proto:gen` first if gen/ts is missing)
+    cmds:
+      - npm --prefix agent-gateway test -- --run
+
+  webui:test:
+    desc: Run webui unit tests (Vue app + proxy server, sequential)
+    cmds:
+      - npm --prefix webui/web test
+      - npm --prefix webui test
+
+  docs-mcp:test:
+    desc: Run docs-mcp unit tests
+    cmds:
+      - npm --prefix docs-mcp test
+
+  test:all:
+    desc: Run every test suite CI runs (broker, policy, gateway, webui, docs-mcp)
+    deps:
+      - broker:test
+      - policy:test
+      - gateway:test
+      - webui:test
+      - docs-mcp:test
+
+  policy:lint:
+    desc: Lint Rego policies
+    cmds:
+      - regal lint policies/opa/
+
+  # ── Docker compose deployment ────────────────────────────────────────────────
+  # No host prep needed for an image build (H6): each service Dockerfile generates
+  # its own proto stubs in-image, so `docker compose build` works from a clean
+  # checkout. `task proto:gen` is still needed for LOCAL builds/tests (broker
+  # binary, go test, gateway npm test) that read gen/ from disk.
+  compose:up:
+    desc: Start the core stack (infra + broker + agent-gateway + webui)
+    cmds:
+      - docker compose --profile core up -d
+
+  compose:full:
+    desc: Start the full app stack (alias of core)
+    cmds:
+      - docker compose --profile full up -d
+
+  compose:obs:
+    desc: Start the observability stack (OTel Collector + Grafana LGTM)
+    cmds:
+      - docker compose --profile obs up -d
+
+  compose:build:
+    desc: Build all app images (images self-generate proto stubs in-image — H6; no host proto:gen needed)
+    cmds:
+      - docker compose --profile full build
+
+  compose:config:
+    desc: Render the canonical merged local compose config (no overlay; docker compose config against root .env)
+    cmds:
+      - docker compose config
+
+  compose:seed:
+    desc: Mint dev TLS certs + provision the broker Vault AppRole + seed OpenFGA + seed sample skill bundle, then recreate the broker to enforce ReBAC
+    cmds:
+      - bash scripts/compose-dev-ca.sh
+      - bash scripts/compose-vault-seed.sh
+      - AIKONOS_SEED_DEMO_TUPLES=1 bash scripts/compose-seed-openfga.sh
+      - bash scripts/compose-seed-skill-bundles.sh
+      - docker compose up -d broker
+
+  compose:verify:
+    desc: Smoke-test the running compose stack (enforcement, audit, UI)
+    cmds:
+      - bash scripts/compose-verify.sh
+
+  compose:verify-llm:
+    desc: Smoke-test F4 LLM providers (admin CRUD + DB invariants; live usage→Prometheus gated on obs)
+    cmds:
+      - bash scripts/verify-llm-providers.sh
+
+  compose:backup:
+    desc: Back up the durable volumes (Postgres incl. OpenFGA, MinIO WORM, workspace)
+    cmds:
+      - bash scripts/compose-backup.sh backup
+
+  compose:down:
+    desc: Stop the stack (add -v manually to wipe volumes)
+    cmds:
+      - docker compose --profile full --profile obs down
+
+  # ── Azure overlay (Traefik + oauth2-proxy + Entra) ───────────────────────────
+  # Laptop-driven azure ops against .env.azure (separate secrets from local .env).
+  # These are compose-native, so --env-file is honored. Seed + verify must run ON
+  # THE VM (they call bare `docker compose`, which only reads root .env) — see
+  # deploy/azure/README.md.
+  compose:build:azure:
+    desc: Build images with the azure overlay + .env.azure (bakes Entra into webui)
+    cmds:
+      - docker compose --env-file .env.azure -f compose.yaml -f deploy/compose/compose.azure.yaml --profile core build
+  compose:up:azure:
+    desc: Start the azure stack (Traefik + oauth2-proxy + core) with .env.azure
+    cmds:
+      - docker compose --env-file .env.azure -f compose.yaml -f deploy/compose/compose.azure.yaml --profile core up -d
+  compose:down:azure:
+    desc: Stop the azure stack (add -v manually to wipe volumes)
+    cmds:
+      - docker compose --env-file .env.azure -f compose.yaml -f deploy/compose/compose.azure.yaml --profile core down
+  compose:config:azure:
+    desc: Validate the merged azure compose config
+    cmds:
+      - docker compose --env-file .env.azure -f compose.yaml -f deploy/compose/compose.azure.yaml config
+
+  # ── On-prem overlay (external Traefik + Entra, no edge auth proxy) ────────────
+  # Laptop-driven ops against .env.onprem (separate secrets from local .env).
+  # Seed + verify must run ON THE SERVER (they call bare `docker compose`, which
+  # only reads root .env) — see deploy/onprem/README.md.
+  compose:build:onprem:
+    desc: Build images with the on-prem overlay + .env.onprem (bakes Entra into webui)
+    cmds:
+      - docker compose --env-file .env.onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml --profile core build
+  compose:up:onprem:
+    desc: Start the on-prem stack (Traefik + core; SPA does OIDC itself, no edge auth proxy) with .env.onprem
+    cmds:
+      - docker compose --env-file .env.onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml --profile core up -d
+  compose:down:onprem:
+    desc: Stop the on-prem stack (add -v manually to wipe volumes)
+    cmds:
+      - docker compose --env-file .env.onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml --profile core down
+  compose:config:onprem:
+    desc: Validate the merged on-prem compose config
+    cmds:
+      - docker compose --env-file .env.onprem -f compose.yaml -f deploy/compose/compose.onprem.yaml config
+
+  clean:
+    desc: Remove generated build artifacts (not configs, not volumes)
+    cmds:
+      - rm -rf bin/ broker/broker

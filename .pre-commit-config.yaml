@@ -1,0 +1,82 @@
+repos:
+  # ── Secret detection (run FIRST — fail fast on accidental secrets) ──────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: Detect secrets (gitleaks)
+
+  # ── General file hygiene ────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: no-commit-to-branch
+        args: [--branch, main]
+      - id: detect-private-key
+      - id: check-executables-have-shebangs
+
+  # ── Go ───────────────────────────────────────────────────────────────────────
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        files: ^broker/|^toolproxy/|^sandbox-runtime/
+      - id: go-vet
+        files: ^broker/|^toolproxy/|^sandbox-runtime/
+
+  # ── Python ──────────────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.6
+    hooks:
+      - id: ruff
+        files: ^skills/
+      - id: ruff-format
+        files: ^skills/
+
+  # ── Rego (OPA) ───────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: opa-fmt
+        name: OPA format
+        language: system
+        entry: opa fmt -w
+        types: [file]
+        files: \.rego$
+      - id: opa-test
+        name: OPA policy tests
+        language: system
+        entry: opa test policies/opa/ -v
+        pass_filenames: false
+        files: \.rego$
+      - id: regal-lint
+        name: Regal OPA lint
+        language: system
+        entry: regal lint policies/opa/
+        pass_filenames: false
+        files: \.rego$
+
+  # ── Protobuf ─────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: proto-lint
+        name: Protobuf lint
+        language: system
+        entry: bash -c 'for f in proto/*.proto; do protoc --proto_path=. "$f" --descriptor_set_out=/dev/null 2>&1; done'
+        pass_filenames: false
+        files: \.proto$
+
+  # ── YAML lint ─────────────────────────────────────────────────────────────────
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml]
+        files: \.(yaml|yml)$

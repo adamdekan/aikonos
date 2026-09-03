@@ -1,0 +1,47 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: aikonos-security
+    folder: Aikonos Security
+    interval: 1m
+    rules:
+      - uid: baseline-drift-detected
+        title: Agent Baseline Drift Detected
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: increase(aikonos_broker_agent_baseline_drift_total{exported_job="aikonos-broker"}[5m])
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: Agent behavior drifted from its learned baseline
+          description: "{{ $labels.agent }} in tenant {{ $labels.tenant }} drifted from its learned baseline ({{ $labels.kind }}). Check the aikonos.agent.baseline_drift audit trail and docs/agents/baselines.md."
+        labels:
+          severity: warning
+          team: security
+        isPaused: false

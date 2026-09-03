@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package aikonos.plan.v1;
+option go_package = "github.com/adamdekan/aikonos/gen/go/plan/v1;planv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// EffectClass is the primary risk taxonomy for all skills and tool calls.
+// Declared in the skill manifest; re-validated at invocation.
+// Determines approval requirements, sandbox runtime, DLP hooks.
+enum EffectClass {
+  EFFECT_CLASS_UNSPECIFIED = 0;
+  READ_ONLY        = 1;   // No state change — list, get, query, search
+  WRITE_LOCAL      = 2;   // Writes inside user workspace only
+  WRITE_INTERNAL   = 3;   // Writes to tenant-shared resources
+  WRITE_EXTERNAL   = 4;   // Writes outside Aikonos (external API, email, Slack)
+  NETWORK_EGRESS   = 5;   // Arbitrary external network access
+  CREDENTIAL_ACCESS = 6;  // Reads secrets, tokens, keys
+  DESTRUCTIVE      = 7;   // Deletes, truncates, disables
+  INFRASTRUCTURE   = 8;   // Modifies Aikonos itself — control-plane only
+}
+
+// Plan is a structured execution plan proposed by the agent (LLM).
+// The Broker validates each step against policy before any execution.
+// Agents never execute steps directly — only after Broker approval.
+message Plan {
+  string plan_id = 1;
+  string task_id = 2;
+  string tenant_id = 3;
+
+  // The maximum effect class in this plan — used for sandbox runtime selection
+  // (gVisor for READ_ONLY/WRITE_LOCAL, Kata for WRITE_EXTERNAL+)
+  EffectClass effect_class_ceiling = 4;
+
+  repeated PlanStep steps = 5;
+
+  // Total estimated cost units across all steps
+  int64 estimated_total_cost = 6;
+
+  // Optional: hash of workspace paths this plan intends to read
+  repeated string required_workspace_paths = 7;
+
+  // True if the plan has been reviewed by a DLP pipeline before external writes
+  bool has_dlp_attestation = 8;
+
+  google.protobuf.Timestamp created_at = 9;
+}
+
+// PlanStep is one atomic action in a plan.
+// Each step is individually policy-checked and gets its own capability token.
+message PlanStep {
+  int32 seq = 1;
+
+  // Registered tool/skill ID — must exist in the Broker's registry
+  string tool_id = 2;
+
+  // Arguments for this tool call (schema-validated against tool's registered schema)
+  google.protobuf.Struct args = 3;
+
+  // Agent-provided justification — required for DESTRUCTIVE and CREDENTIAL_ACCESS
+  string justification = 4;
+
+  // The effect class this step will have (declared by agent, verified by Broker)
+  EffectClass effect_class = 5;
+
+  // Estimated cost units for this step (LLM tokens + compute estimate)
+  int64 estimated_cost = 6;
+
+  // Deprecated: ignored on the enforcement path. The broker derives sensitivity server-side from the routed effect
+  // class (effectclass.ReadsSensitive) instead of trusting this client-sent
+  // value. Field kept for wire compatibility only — no renumber.
+  bool reads_sensitive = 7 [deprecated = true];
+
+  // Workspace paths this step needs (validated against task's approved paths)
+  repeated string workspace_paths_needed = 8;
+
+  // Extensions for future use
+  google.protobuf.Struct extensions = 9;
+}
+
+// PlanValidationResult returned by the Broker after validating a plan.
+message PlanValidationResult {
+  string plan_id = 1;
+
+  ValidationOutcome outcome = 2;
+
+  // Per-step decisions
+  repeated StepDecision step_decisions = 3;
+
+  // Human-readable violations (returned to agent for replanning)
+  // IMPORTANT: never include internal policy rule details
+  repeated string violations = 4;
+
+  // Capability token IDs minted for approved steps (matched by step seq)
+  map<int32, string> capability_token_ids = 5;
+}
+
+enum ValidationOutcome {
+  VALIDATION_OUTCOME_UNSPECIFIED = 0;
+  APPROVED     = 1;   // All steps approved, execution can begin
+  DENIED       = 2;   // One or more steps denied; agent may replan
+  NEEDS_HUMAN  = 3;   // Requires human approval via frontend
+  NEEDS_STEP_UP = 4;  // Requires step-up authentication
+}
+
+message StepDecision {
+  int32 seq = 1;
+  bool approved = 2;
+  string deny_reason = 3;   // Human-readable, safe to show to agent
+  string policy_rule_id = 4; // Internal reference for audit
+}

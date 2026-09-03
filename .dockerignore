@@ -1,0 +1,12 @@
+# Default ignore for repo-root build contexts (planner). The proto stubs are
+# generated in-image (H6), so host gen/ is excluded to keep the in-image stubs
+# authoritative; proto/ stays in context so the build can generate from it.
+.vm/
+.git/
+bin/
+gen/
+talos/clusterconfig/
+planner/.venv/
+**/__pycache__/
+*.log
+.env.local

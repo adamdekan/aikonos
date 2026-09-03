@@ -1,0 +1,11 @@
+# Build context is the repo root (compose: context: .), but the gateway image
+# only needs agent-gateway/ + proto/. Exclude everything else to keep the
+# context small, and exclude host-generated stubs so the in-image gen wins.
+*
+!agent-gateway/
+!proto/
+agent-gateway/node_modules
+agent-gateway/gen
+agent-gateway/.svid
+**/__pycache__
+*.log

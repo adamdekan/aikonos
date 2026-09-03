@@ -1,0 +1,166 @@
+# deploy/compose/compose.onprem.yaml
+#
+# On-premises overlay. Routes the app through a pre-existing external Traefik
+# instance (with company-issued certs). The SPA handles Entra OIDC login itself
+# (PKCE flow); the broker validates every bearer token server-side. No separate
+# edge auth proxy is needed — the static SPA files are not sensitive.
+#
+# Assumptions:
+#   - Traefik is already running on this host and joined to the `traefik_net`
+#     Docker network (external, created by Traefik's own compose stack).
+#   - A certificate covering ${AIKONOS_FQDN} and ${AIKONOS_API_FQDN} (SANs) is
+#     served by Traefik using the `default` TLS options set (reserved name in
+#     Traefik v3 — use "default", not "default@file").
+#   - The HTTP→HTTPS redirect is handled by Traefik's static config.
+#
+# NOTE: the base file's `*hardening` YAML anchor does not cross compose files,
+# so the new services below inline the equivalent least-privilege fields.
+
+networks:
+  # Pre-existing Traefik network. Must exist before `docker compose up`.
+  # Verify: docker network ls | grep traefik_net
+  traefik_net:
+    external: true
+    name: traefik_net
+
+volumes:
+  vault-data:     # Durable Vault `file` storage backend (CP1.1) — replaces dev-mode inmem.
+
+services:
+
+  # ── OpenFGA: loopback-only host publish for the seed script + admin curls ──
+  # deploy/onprem/README.md documents running `bash scripts/compose-seed-openfga.sh`
+  # and ad-hoc `curl localhost:8082` calls from the deploy host (SSH'd in), so the
+  # port stays published — but bound to 127.0.0.1, not every interface.
+  #
+  # OpenFGA runs with no authentication (no OPENFGA_AUTHN_METHOD is set anywhere),
+  # and its write API is what grants group membership and skill access. A
+  # 0.0.0.0 publish therefore let anyone who could reach TCP 8082 on this host
+  # rewrite the authorization tuples that SubmitPlan and InvokeTool depend on —
+  # bypassing the ReBAC gate without touching the broker, OIDC, or Biscuit. The
+  # on-prem network is not a trust boundary: NATS logs on this same host show
+  # completed TCP connections from outside its subnet.
+  #
+  # Loopback keeps every documented workflow working (they all run on the host)
+  # and closes the remote path. Azure drops the publish entirely (`!reset []`).
+  # `mesh` network membership (separate from the port) predates this and is
+  # left as-is.
+  #
+  # `!override` is required, not decoration: a plain `ports:` list here MERGES
+  # with the base file's, so the rendered config kept both 0.0.0.0:8082 and
+  # 127.0.0.1:8082 and the interface stayed open. Verify any change to this block
+  # against the rendered output, not the source:
+  #   docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml \
+  #     config --format json | jq '.services.openfga.ports'
+  openfga:
+    networks: [backend, mesh]
+    ports: !override
+      - "127.0.0.1:8082:8080"
+
+  # ── NATS: no host publish ────────────────────────────────────────────────────
+  # Base compose.yaml publishes 4222 (client) + 8222 (monitoring) for local dev.
+  # NATS runs unauthenticated and carries the audit event stream, so a host
+  # publish means anyone reachable can subscribe to `aikonos.audit.>` and read
+  # every audit event, or publish forged events into the subject the gateway's
+  # audit consumer trusts. Nothing off-host needs either port: broker→NATS and
+  # gateway→NATS both ride the `mesh` network.
+  nats:
+    ports: !reset []
+
+  # Base compose.yaml keeps minio's `ports:` for local-dev convenience (console
+  # browser access). On-prem is network-reachable, so close it here.
+  minio:
+    ports: !reset []
+
+  # ── Vault: durable `file` storage backend, no dev-mode ───────────────────────
+  # Base compose.yaml's vault service stays dev-mode for local dev; this overlay
+  # drops it for a real deploy. Init/unseal is a manual first-boot step — see
+  # docs/OPS-RUNBOOK.md "Vault operations". In-network reachability (plain HTTP,
+  # 0.0.0.0:8200 inside the `backend` network) is unchanged from dev-mode, so
+  # AIKONOS_VAULT_ADDR needs no edit — only the host port publish is dropped below.
+  vault:
+    # No explicit `-config` arg: the image's own entrypoint always injects
+    # `-config=/vault/config` for the `server` subcommand (verified against
+    # hashicorp/vault:1.17's docker-entrypoint.sh) — passing our own `-config`
+    # flag on top duplicates the listener stanza and the container fails to
+    # start ("address already in use"). Mounting vault.hcl into that directory
+    # (below) is sufficient.
+    command: ["server"]
+    # Dev-mode env vars (VAULT_DEV_*) are meaningless once -dev is dropped —
+    # reset rather than leave stale. SKIP_SETCAP: without IPC_LOCK/CAP_SETFCAP
+    # (dropped below — disable_mlock=true in vault.hcl instead), the entrypoint's
+    # unconditional `setcap cap_ipc_lock=+ep` on the vault binary fails outright
+    # and the container crash-loops.
+    environment: !override
+      SKIP_SETCAP: "true"
+    # IPC_LOCK dropped: vault.hcl sets disable_mlock=true instead. SETGID/SETUID
+    # kept: the image entrypoint still steps down from root via su-exec.
+    cap_add: !override
+      - SETGID
+      - SETUID
+    volumes:
+      - ./deploy/compose/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - vault-data:/vault/file
+    # read_only rootfs: file storage + config are on mounts above; /tmp is Vault's
+    # only other write target.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    # Base compose.yaml keeps vault's `ports:` for local-dev convenience (Vault
+    # CLI). On-prem is network-reachable, so close it here — a durable prod Vault
+    # has no reason to be host-reachable; its listener is still TLS-disabled.
+    # Every consumer (broker via AIKONOS_VAULT_ADDR=http://vault:8200, the seed
+    # script, operator init/unseal) reaches it in-network or via
+    # `docker compose exec`.
+    ports: !reset []
+
+  # ── SPA: Traefik → webui directly (no edge auth proxy) ───────────────────────
+  # The SPA performs OIDC PKCE login with Entra itself. Every API call carries
+  # an Entra bearer token validated by the broker — the static HTML/JS files
+  # are the only thing publicly reachable without a token, which is acceptable.
+  webui:
+    ports: !reset []
+    networks: [mesh, traefik_net]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_net"
+      - "traefik.http.routers.aikonos.rule=Host(`${AIKONOS_FQDN}`)"
+      - "traefik.http.routers.aikonos.entrypoints=websecure"
+      - "traefik.http.routers.aikonos.tls=true"
+      - "traefik.http.routers.aikonos.tls.options=default"
+      - "traefik.http.services.aikonos.loadbalancer.server.port=4200"
+
+  # ── External API surface (:8090, API-key auth) ────────────────────────────────
+  agent-gateway:
+    ports: !reset []
+    networks: [mesh, traefik_net]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_net"
+      - "traefik.http.routers.aikonos-ext.rule=Host(`${AIKONOS_API_FQDN}`)"
+      - "traefik.http.routers.aikonos-ext.entrypoints=websecure"
+      - "traefik.http.routers.aikonos-ext.tls=true"
+      - "traefik.http.routers.aikonos-ext.tls.options=default"
+      - "traefik.http.routers.aikonos-ext.service=aikonos-ext"
+      - "traefik.http.services.aikonos-ext.loadbalancer.server.port=8090"
+
+  # ── Docs site: same host as the webui, routed by PathPrefix ──────────────────
+  # Built with DOCS_BASE=/docs so the site's own links resolve under /docs/;
+  # files physically live at html/docs/ in the image, so no strip-prefix
+  # middleware is needed. This router's rule (Host && PathPrefix) is longer
+  # than the webui's bare Host rule above, so Traefik ranks it higher and
+  # /docs requests land here instead of falling through to the SPA.
+  docs-site:
+    networks: [mesh, traefik_net]
+    build:
+      args:
+        DOCS_BASE: /docs
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_net"
+      - "traefik.http.routers.aikonos-docs.rule=Host(`${AIKONOS_FQDN}`) && PathPrefix(`/docs`)"
+      - "traefik.http.routers.aikonos-docs.entrypoints=websecure"
+      - "traefik.http.routers.aikonos-docs.tls=true"
+      - "traefik.http.routers.aikonos-docs.tls.options=default"
+      - "traefik.http.routers.aikonos-docs.service=aikonos-docs"
+      - "traefik.http.services.aikonos-docs.loadbalancer.server.port=8080"

@@ -1,0 +1,47 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: aikonos-security
+    folder: Aikonos Security
+    interval: 1m
+    rules:
+      - uid: rate-limit-exceeded
+        title: Rate Limit Exceeded
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: increase(rate_limit_hits_total{result="denied", exported_job="aikonos-broker"}[5m])
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: C
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: Rate limit exceeded for a Aikonos tenant
+          description: "{{ $labels.tenant }} exceeded rate limit ({{ $labels.limit_type }}). Check broker logs and admin rate-limits panel."
+        labels:
+          severity: warning
+          team: security
+        isPaused: false

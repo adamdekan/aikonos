@@ -1,0 +1,116 @@
+# OTel Collector — S3-compatible archive config (AIKONOS_OBS_ARCHIVE=s3)
+#
+# Archive sink: awss3exporter targeting AWS S3 or any S3-compatible endpoint
+# (MinIO in-compose, Cloudflare R2, Backblaze B2, on-prem Ceph, etc.) via
+# OBS_S3_ENDPOINT override.
+#
+# Settings from env:
+#   OBS_S3_BUCKET       — S3 bucket name
+#   OBS_S3_REGION       — AWS region (default: us-east-1; ignored for custom endpoints)
+#   OBS_S3_ENDPOINT     — override endpoint URL (e.g. http://minio:9000 for in-compose MinIO)
+#   OBS_S3_PATH_STYLE   — set true for path-style (required for MinIO/custom endpoints)
+#   AWS_ACCESS_KEY_ID   — access key (or MINIO_ROOT_USER for in-compose MinIO)
+#   AWS_SECRET_ACCESS_KEY — secret key
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        id: docker_json
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%fZ"
+      - type: move
+        from: attributes.log
+        to: body
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+      - type: remove
+        field: attributes.time
+      # Extract container id and 12-char short prefix from log.file.path.
+      # include_file_path: true writes the path into attributes["log.file.path"]
+      # in stanza's entry model (resource promotion happens later in stanza→OTLP).
+      # docker.sock NOT mounted — assume-breach hardening (H1/H2).
+      # on_error: send — parse miss never drops the record.
+      - type: regex_parser
+        id: extract_container_id
+        parse_from: attributes["log.file.path"]
+        regex: '/var/lib/docker/containers/(?P<container_id>(?P<container_short>[a-f0-9]{12})[a-f0-9]{52})/'
+        on_error: send
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  redaction:
+    allow_all_keys: true
+    blocked_key_patterns:
+      - "(?i).*authorization.*"
+      - "(?i).*bearer.*"
+      - "(?i).*password.*"
+      - "(?i).*passwd.*"
+      - "(?i).*secret.*"
+      - "(?i).*api.?key.*"
+      - "(?i).*token.*"
+      - "(?i).*conn.*string.*"
+      - "(?i).*connection.?string.*"
+    blocked_values:
+      # Bearer token values
+      - "(?i)bearer\\s+[a-zA-Z0-9\\-._~+/]+=*"
+      # Generic long base64-ish secrets (40+ chars) — intentionally broad in a dev stack
+      - "[a-zA-Z0-9+/]{40,}={0,2}"
+    summary: silent
+
+exporters:
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Exporter appends /v1/logs, so base must be …/otlp (not …:3100).
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Archive (S3-compatible) — targets AWS S3 or any S3-compatible endpoint.
+  # Set OBS_S3_ENDPOINT=http://minio:9000 to archive to the in-compose MinIO.
+  # Defaults allow otelcol validate to pass without env vars set.
+  awss3:
+    s3uploader:
+      region: "${env:OBS_S3_REGION:-us-east-1}"
+      s3_bucket: "${env:OBS_S3_BUCKET:-aikonos-obs}"
+      s3_prefix: "aikonos-obs"
+      endpoint: "${env:OBS_S3_ENDPOINT:-}"
+      s3_force_path_style: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, redaction]
+      exporters: [otlp/tempo, awss3]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [batch, redaction]
+      exporters: [otlphttp/loki, awss3]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

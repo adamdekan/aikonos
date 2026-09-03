@@ -1,0 +1,8 @@
+node_modules
+.env
+.env.local
+.svid
+*.log
+Dockerfile
+.dockerignore
+# gen/ is intentionally NOT ignored — the prebuilt ts-proto stubs are copied in.

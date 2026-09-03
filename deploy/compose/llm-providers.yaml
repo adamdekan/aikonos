@@ -1,0 +1,51 @@
+# LLM provider seed — loaded once into the DB on broker boot (idempotent).
+#
+# The broker reads this file (AIKONOS_LLM_PROVIDERS_SEED_FILE) and, for the dev
+# tenant (AIKONOS_TENANT_ID), inserts any provider id not already present. After
+# the first boot the DB is authoritative — edit providers in the admin UI
+# (Admin → LLM Providers); changes here only seed brand-new provider ids.
+#
+# apiKey supports ${ENV} interpolation, resolved in the broker container. The
+# key is written to Vault (secret/data/providers/<tenant>/<id>) and NEVER stored
+# in Postgres. A blank/unset key seeds the provider with has_key=false — set the
+# key later via the admin UI. Never commit a literal key here.
+#
+# Per-token USD prices flow straight into the model's cost block; Pi prices each
+# turn from them, so token+cost land in the audit trail and the Grafana
+# "LLM Analytics" dashboard.
+
+- id: openrouter
+  name: OpenRouter
+  endpoint: https://openrouter.ai/api/v1
+  api: openai-completions
+  enabled: true
+  is_default: true
+  apiKey: ${OPENROUTER_API_KEY}
+  models:
+    - id: anthropic/claude-sonnet-4.6
+      priceIn: 0.000003          # $3.00 / 1M input tokens
+      priceOut: 0.000015         # $15.00 / 1M output tokens
+      priceCacheRead: 0.0000003  # $0.30 / 1M cached-read tokens
+      priceCacheWrite: 0.00000375 # $3.75 / 1M cache-write tokens
+      contextWindow: 200000
+      maxTokens: 8192
+
+# Azure AI Foundry (classic deployment route, api-key auth). Uncomment and fill in
+# your resource + deployment. `api` must be azure-openai and `api_version` is
+# required; each model `id` is the Azure *deployment name*. The gateway proxy
+# rewrites requests to {endpoint}/openai/deployments/<id>/chat/completions?api-version=<ver>
+# and sends the key as the `api-key` header.
+# - id: azure-foundry
+#   name: Azure AI Foundry
+#   endpoint: https://<resource>.openai.azure.com
+#   api: azure-openai
+#   api_version: "2024-10-21"
+#   enabled: true
+#   is_default: false
+#   apiKey: ${AZURE_FOUNDRY_API_KEY}
+#   models:
+#     - id: gpt-4o            # the Azure deployment name
+#       priceIn: 0.0000025
+#       priceOut: 0.00001
+#       contextWindow: 128000
+#       maxTokens: 16384

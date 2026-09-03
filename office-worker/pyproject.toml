@@ -1,0 +1,19 @@
+[project]
+name = "office-worker"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+# Checkpoint 2 (script-runtime ops): openpyxl/pandas/reportlab/pdfplumber/
+# pytesseract/pdf2image/markitdown. Checkpoint 3 (LibreOffice ops) adds pypdf.
+dependencies = [
+    "markitdown[pptx]>=0.1.6",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.3",
+    "pdf2image>=1.17.0",
+    "pdfplumber>=0.11.10",
+    "pypdf>=6.14.2",
+    "pytesseract>=0.3.13",
+    "reportlab>=5.0.0",
+]
+
+[tool.uv]
+package = false

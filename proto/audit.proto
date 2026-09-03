@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package aikonos.audit.v1;
+option go_package = "github.com/adamdekan/aikonos/gen/go/audit/v1;auditv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// AuditEvent is the single canonical audit record emitted by every Aikonos service.
+// Written append-only to MinIO with object lock. Hash-chained for tamper evidence.
+// ALL fields except context are indexed; context is free-form per event type.
+message AuditEvent {
+  // Unique event ID (UUIDv7 — sortable by time)
+  string event_id = 1;
+
+  // OpenTelemetry trace ID — links this event to the full call graph
+  string trace_id = 2;
+
+  // Tenant this event belongs to (always present, even in single-tenant MVP)
+  string tenant_id = 3;
+
+  // When the event occurred (not when it was written)
+  google.protobuf.Timestamp occurred_at = 4;
+
+  // SPIFFE ID of the workload that emitted this event
+  // e.g. spiffe://aikonos.com/broker
+  string actor_spiffe_id = 5;
+
+  // Human user who triggered this action (empty for system/meta-agent events)
+  string actor_user_id = 6;
+
+  // Human-readable actor label (OIDC email / preferred_username). Display only —
+  // actor_user_id remains the stable authz key. Empty for system/SPIFFE events.
+  string actor_email = 13;
+
+  // Structured event type — dot-separated namespace
+  // Examples:
+  //   aikonos.broker.task.created
+  //   aikonos.broker.plan.validated
+  //   aikonos.broker.policy.denied
+  //   aikonos.broker.capability.minted
+  //   aikonos.broker.tool.invoked
+  //   aikonos.broker.envelope.routed
+  //   aikonos.sandbox.started
+  //   aikonos.sandbox.terminated
+  //   aikonos.workspace.document.ingested
+  //   aikonos.workspace.erased
+  //   aikonos.kill_switch.activated
+  string event_type = 7;
+
+  // Resource this event is about (URN format)
+  // e.g. aikonos:task:uuid, aikonos:workspace:user-id, aikonos:skill:web.fetch
+  string resource_ref = 8;
+
+  // Policy decision for this event (empty if not a policy event)
+  PolicyDecision decision = 9;
+
+  // Event-specific context — flexible per event_type
+  google.protobuf.Struct context = 10;
+
+  // Hash of the previous audit event — chains events for tamper detection
+  // First event in a chain has empty prior_event_hash
+  string prior_event_hash = 11;
+
+  // HMAC signature of this event's canonical form (signed by Broker)
+  string signature = 12;
+
+  // KV-v2 version of the audit signing key used to produce `signature`.
+  // 0 = the AIKONOS_AUDIT_SIGNING_KEY env/static fallback (Vault unavailable
+  // at emission time); >0 = the Vault "broker/audit-signing-key" KV-v2
+  // version in use when the event was signed. VerifyChain resolves the key
+  // per event by this field, so a chain may legitimately span a rotation.
+  int32 signing_key_version = 14;
+}
+
+enum PolicyDecision {
+  POLICY_DECISION_UNSPECIFIED = 0;
+  ALLOW = 1;
+  DENY = 2;
+  APPROVAL_REQUIRED = 3;
+  STEP_UP_REQUIRED = 4;
+}
+
+// AuditService — write-only sink. Implementations write to MinIO object store.
+service AuditService {
+  // Emit a single audit event (fire-and-forget; locally spooled on failure)
+  rpc Emit(EmitRequest) returns (EmitResponse);
+
+  // EmitBatch for high-throughput paths
+  rpc EmitBatch(EmitBatchRequest) returns (EmitBatchResponse);
+}
+
+message EmitRequest {
+  AuditEvent event = 1;
+}
+
+message EmitResponse {
+  string event_id = 1;
+  // Object storage path where the event was written
+  string storage_path = 2;
+}
+
+message EmitBatchRequest {
+  repeated AuditEvent events = 1;
+}
+
+message EmitBatchResponse {
+  int32 accepted = 1;
+  int32 failed = 2;
+}

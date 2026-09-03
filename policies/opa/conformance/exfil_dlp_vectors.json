@@ -1,0 +1,20 @@
+{
+  "exfil_dlp": {
+    "vector_count": 13,
+    "vectors": [
+      {"name": "write-external-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "write_external", "has_dlp_attestation": false, "exfil_rule_fires": true},
+      {"name": "write-external-sensitive-with-dlp", "reads_sensitive": true, "effect_class": "write_external", "has_dlp_attestation": true, "exfil_rule_fires": false},
+      {"name": "write-external-not-sensitive-no-dlp", "reads_sensitive": false, "effect_class": "write_external", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "write-external-not-sensitive-with-dlp", "reads_sensitive": false, "effect_class": "write_external", "has_dlp_attestation": true, "exfil_rule_fires": false},
+      {"name": "network-egress-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "network_egress", "has_dlp_attestation": false, "exfil_rule_fires": true},
+      {"name": "network-egress-sensitive-with-dlp", "reads_sensitive": true, "effect_class": "network_egress", "has_dlp_attestation": true, "exfil_rule_fires": false},
+      {"name": "network-egress-not-sensitive-no-dlp", "reads_sensitive": false, "effect_class": "network_egress", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "network-egress-not-sensitive-with-dlp", "reads_sensitive": false, "effect_class": "network_egress", "has_dlp_attestation": true, "exfil_rule_fires": false},
+      {"name": "read-only-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "read_only", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "write-local-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "write_local", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "credential-access-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "credential_access", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "destructive-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "destructive", "has_dlp_attestation": false, "exfil_rule_fires": false},
+      {"name": "infrastructure-sensitive-no-dlp", "reads_sensitive": true, "effect_class": "infrastructure", "has_dlp_attestation": false, "exfil_rule_fires": false}
+    ]
+  }
+}

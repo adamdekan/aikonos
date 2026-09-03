@@ -1,0 +1,264 @@
+# policies/fga/tuples/dev-seed.yaml
+# Development seed tuples — applied by bootstrap/argocd or manually.
+# In production: managed via GitOps PR + four-eyes review.
+#
+# Apply with:
+#   fga tuple write --store-id $FGA_STORE_ID --file policies/fga/tuples/dev-seed.yaml
+#
+# !! DEMO / LOCAL-DEV ONLY !!
+# The Keycloak test accounts below (alice@example.com, bob@example.com,
+# admin@example.com, plus their agent/peer/group tuples) are local
+# demo fixtures that MUST NOT be seeded in production or on-prem deployments.
+# compose-seed-openfga.sh only writes these when AIKONOS_SEED_DEMO_TUPLES=1
+# (default OFF / fail closed); the dev `task compose:seed` path sets it.
+# On-prem (on-prem, Azure, …): leave AIKONOS_SEED_DEMO_TUPLES unset — the script
+# seeds only the model — then grant real Entra OIDs via the admin console or a
+# deployment-specific tuples file.
+
+tuples:
+  # ── Tenant membership ───────────────────────────────────────────────────────
+  - user: user:admin@example.com
+    relation: admin
+    object: tenant:aikonos-dev
+
+  # Running this stack against Entra instead of Keycloak? Entra's authorization
+  # principal is the immutable `oid` claim, not an email address, so add your own
+  # admin tuple keyed on that oid:
+  #
+  #   - user: user:<your-entra-oid>
+  #     relation: admin
+  #     object: tenant:aikonos-dev
+  #
+  # The Keycloak entries below stay keyed on email because this realm sets
+  # SUBJECT_CLAIM=preferred_username.
+
+  - user: user:alice@example.com
+    relation: member
+    object: tenant:aikonos-dev
+
+  - user: user:bob@example.com
+    relation: member
+    object: tenant:aikonos-dev
+
+  # ── Groups ──────────────────────────────────────────────────────────────────
+  - user: user:alice@example.com
+    relation: member
+    object: group:security-team
+
+  - user: user:bob@example.com
+    relation: member
+    object: group:security-team
+
+  - user: user:alice@example.com
+    relation: manager
+    object: group:security-team
+
+  - user: user:alice@example.com
+    relation: member
+    object: group:office-users
+
+  - user: user:bob@example.com
+    relation: member
+    object: group:office-users
+
+  - user: user:alice@example.com
+    relation: member
+    object: group:memory-users
+
+  - user: user:bob@example.com
+    relation: member
+    object: group:memory-users
+
+  - user: user:alice@example.com
+    relation: member
+    object: group:skill-authors
+
+  - user: user:bob@example.com
+    relation: member
+    object: group:skill-authors
+
+  - user: user:alice@example.com
+    relation: member
+    object: group:subagent-users
+
+  - user: user:bob@example.com
+    relation: member
+    object: group:subagent-users
+
+  # ── Skill assignments ────────────────────────────────────────────────────────
+  # security-team can invoke web.fetch, web.search, and doc.write
+  - user: group:security-team#member
+    relation: permitted_group
+    object: skill:web.fetch
+
+  - user: group:security-team#member
+    relation: permitted_group
+    object: skill:web.search
+
+  - user: group:security-team#member
+    relation: permitted_group
+    object: skill:doc.write
+
+  # email.draft is write_external — only managers (Alice) can invoke
+  - user: user:alice@example.com
+    relation: permitted_group
+    object: skill:email.draft
+
+  # ── Scheduler skill ──────────────────────────────────────────────────────────
+  # skill:scheduler gates who may schedule unattended agentic runs. Granted via a
+  # dedicated group (alice in, bob out) so the deny path is testable. Admins
+  # extend access from the admin console's "Skill access" tab.
+  - user: user:alice@example.com
+    relation: member
+    object: group:schedulers
+
+  - user: group:schedulers#member
+    relation: permitted_group
+    object: skill:scheduler
+
+  # ── Workflows skill ───────────────────────────────────────────────────────────
+  # skill:workflows gates who may save, fetch, and list workflows. Granted to
+  # security-team (alice + bob) so both allow and deny paths are testable
+  # (add a user outside the group to test deny). Admins extend via Access Control.
+  - user: group:security-team#member
+    relation: permitted_group
+    object: skill:workflows
+
+  # ── Office document tools skill ───────────────────────────────────────────────
+  # office-users can invoke every docx/xlsx/pptx/pdf/office.convert tool id.
+  # Granted via a dedicated group so the deny path stays testable (mirrors the
+  # security-team → web.fetch pattern above).
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:docx.create
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:docx.edit
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:docx.extract
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:xlsx.create
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:xlsx.edit
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:xlsx.extract
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:xlsx.recalc
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pptx.create
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pptx.edit
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pptx.extract
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pptx.thumbnail
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pdf.create
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pdf.transform
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:pdf.extract
+
+  - user: group:office-users#member
+    relation: permitted_group
+    object: skill:office.convert
+
+  # ── Memory tools skill ────────────────────────────────────────────────────────
+  # memory-users can invoke memory.read and memory.write tools.
+  - user: group:memory-users#member
+    relation: permitted_group
+    object: skill:memory.read
+
+  - user: group:memory-users#member
+    relation: permitted_group
+    object: skill:memory.write
+
+  # ── Personal skills capability ────────────────────────────────────────────────
+  # skill-authors can author/manage personal skill folders (skill:personal-skills
+  # is a capability skill, not an invokable tool — see skills_admin.go).
+  - user: group:skill-authors#member
+    relation: permitted_group
+    object: skill:personal-skills
+
+  # ── Subagent handoff capability ───────────────────────────────────────────────
+  # subagent-users can fan out subtasks to subagent children (skill:subagents is
+  # a capability skill, not an invokable tool — see skills_admin.go).
+  - user: group:subagent-users#member
+    relation: permitted_group
+    object: skill:subagents
+
+  # ── Delegation ───────────────────────────────────────────────────────────────
+  # Alice (manager) can delegate to Bob (direct report)
+  - user: user:alice@example.com
+    relation: owner_user
+    object: agent:alice-agent
+
+  - user: user:bob@example.com
+    relation: owner_user
+    object: agent:bob-agent
+
+  - user: user:alice@example.com
+    relation: can_delegate_to_user
+    object: agent:alice-agent
+
+  # ── MCP connector access ────────────────────────────────────────────────
+  # alice-agent has direct access to the sample MCP connector.
+  - user: agent:alice-agent
+    relation: permitted_agent
+    object: mcp_connector:sample
+
+  # security-team members can access the sample connector via group membership.
+  - user: group:security-team#member
+    relation: permitted_group
+    object: mcp_connector:sample
+
+  # ── Agent-skill bundle grants ────────────────────────────────────────────────
+  # security-team members can use the sample research bundle.
+  # NOTE: the broker checks FGA by the bundle's UUID (agentskill:<row.id>), so this
+  # object MUST be the fixed SAMPLE_BUNDLE_ID seeded by compose-seed-skill-bundles.sh,
+  # not the bundle name. Keep the two in sync.
+  - user: group:security-team#member
+    relation: can_use
+    object: agentskill:a5111d00-0000-4000-8000-000000000001
+
+  # ── User→user delegation (SendEnvelope CheckFGA) ───────────────────────────
+  # Alice and Bob are peers, so either may delegate a task to the other.
+  - user: user:alice@example.com
+    relation: peer
+    object: user:bob@example.com
+
+  - user: user:bob@example.com
+    relation: peer
+    object: user:alice@example.com
+
+  # ── Delegation group (DL1) ─────────────────────────────────────────────────
+  # Marks group:security-team a delegation cohort: every member may delegate a
+  # task to every other member (self-delegation still denied by the broker).
+  - user: group:security-team#member
+    relation: delegatable
+    object: group:security-team

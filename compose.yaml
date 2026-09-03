@@ -1,0 +1,1010 @@
+# compose.yaml — Aikonos platform under Docker Compose
+#
+# Usage:
+#   cp deploy/compose/.env.local.example .env  # fill in OPENROUTER_API_KEY at minimum
+#   scripts/compose-dev-ca.sh            # mint dev TLS certs (idempotent)
+#   docker compose --profile core up     # infra + broker + agent-gateway + webui
+#   docker compose --profile core --profile obs up  # core + observability together
+#
+# Profiles:
+#   core    — postgres, openfga, minio, vault, nats, keycloak, opa,
+#             broker, agent-gateway, webui
+#             (one-shots: dev-ca-mint, openfga-migrate, migrate)
+#   full    — alias of core (the unified webui is the only UI; the legacy
+#             frontend / admin / observability consoles were removed)
+#   obs     — otel-collector, grafana, loki, tempo, prometheus
+#           Set AIKONOS_OBS_ARCHIVE=file|s3|azure|siem (default: file → obs-archive volume)
+#           Set AIKONOS_OTEL_ENDPOINT=otel-collector:4317 in .env to wire broker traces.
+#
+# mTLS: all broker↔gateway traffic uses the dev-CA certs from
+# deploy/compose/tls/ (minted by scripts/compose-dev-ca.sh).
+# The compose service name IS the cert DNS-SAN — do not rename broker or
+# agent-gateway without regenerating certs.
+#
+# DEV ONLY — not for production use.
+
+name: aikonos
+
+# ── Assume-breach hardening (see ) ──────────────
+# Applied to every service via `<<: *hardening`. Least-privilege as the starting
+# point: no privilege escalation, zero Linux capabilities, resource ceilings.
+# Services that provably need a capability add it back explicitly with their own
+# `cap_add:` (postgres step-down, vault mlock). The four app services already
+# run non-root.
+#
+# Resource limits (H2 tier 1): containment ceilings — generous so nothing flaps
+# under normal load; sized to stop fork-bombs and memory exhaustion, not for QoS.
+# Override per-service where legitimately heavier (e.g. agent-gateway 2 g).
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 512
+  mem_limit: 1g
+  cpus: "2"
+
+# Postgres-family images start as root, fix data-dir ownership, then step down to
+# the service user — so they need exactly these caps back (and nothing else).
+x-postgres-caps: &postgres-caps
+  - CHOWN
+  - DAC_OVERRIDE
+  - FOWNER
+  - SETGID
+  - SETUID
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+# Three-tier least-privilege topology (see  §3c):
+#   mesh    — bridge with egress: broker, gateway, webui, nats, keycloak.
+#             Must NOT be internal: broker (web.fetch SSRF-guarded egress, connector
+#             OAuth refresh) and agent-gateway (OpenRouter LLM, OAuth) need outbound
+#             internet. dev-ca-mint also needs no isolation.
+#   backend — internal: datastores (postgres, vault, minio, opa, openfga) + one-shots.
+#             Only the broker joins both backend AND mesh — the trusted intermediary.
+#   obs     — bridge: telemetry services (otel-collector, grafana, loki, tempo,
+#             prometheus). otel-collector also joins mesh to receive OTLP from
+#             broker/gateway. Not internal — Grafana/Prometheus need host-port browser
+#             access and the collector needs egress for the (future) Azure archive sink.
+# `backend` is internal (no outbound internet for its members), but `internal: true`
+# does NOT stop Docker from publishing a service's `ports:` to the host — the two are
+# independent. openfga/minio/vault deliberately keep host `ports:` here for local-dev
+# convenience (Vault CLI at :8200, the MinIO console at :9001, the host-run OpenFGA
+# seed script hitting 127.0.0.1:8082) on a trusted single-user loopback. The deployed
+# overlays (azure/onprem) reset these to closed via `ports: !reset []` (onprem keeps
+# openfga's port for its documented host seed/admin workflow) — see
+#  CP5 item 1.
+networks:
+  mesh:
+    # Stable explicit name so external compose projects (e.g. a self-hosted MCP
+    # server container) can attach to this network deterministically, regardless
+    # of the compose project directory name. To attach an external container:
+    #   networks:
+    #     aikonos_mesh:
+    #       external: true
+    #   services:
+    #     <svc>: { networks: [default, aikonos_mesh] }
+    # then register it in Aikonos by its container DNS name (http://<container>:<port>),
+    # not a raw 172.x IP, and set AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true on the
+    # broker (the mesh subnet is RFC1918, which the broker SSRF guard blocks by default).
+    name: aikonos_mesh
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+  # office — internal: dedicated two-member network. Deliberately NOT
+  # backend: office-worker executes model-authored scripts, and backend hosts
+  # postgres/vault/minio/opa/openfga — sharing it would give those scripts
+  # lateral reach no other Aikonos component has.
+  office:
+    driver: bridge
+    internal: true
+  obs:
+    driver: bridge
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+  minio-data:
+  workspace-data:
+  obs-archive:   # reserved for CP4 observability archival (fileexporter → /archive)
+  vault-data:    # Durable Vault `file` storage — all variants now
+
+# ── Services ──────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+  # Infra services (postgres, minio, vault, nats, keycloak, opa) carry no
+  # `profiles:` — they are always-on and shared by every profile. A bare
+  # `docker compose up` starts infra only; add --profile core/full for apps.
+
+  postgres:
+    <<: *hardening
+    cap_add: *postgres-caps
+    # read_only omitted: postgres writes its data directory to rootfs (/var/lib/postgresql);
+    # already isolated on the backend-internal network (H1) → low marginal value.
+    image: postgres:16-alpine
+    networks: [backend]
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # One-shot: run OpenFGA schema migration then exit.
+  # Depends on postgres healthy; openfga service depends on this completing.
+  openfga-migrate:
+    <<: *hardening
+    image: openfga/openfga:v1.5.3
+    profiles: [core, full]
+    networks: [backend]
+    command:
+      - migrate
+      - --datastore-engine=postgres
+      - --datastore-uri=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/openfga?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # migrate creates the openfga DB; openfga-migrate runs after
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  openfga:
+    <<: *hardening
+    # read_only omitted: OpenFGA writes runtime state to rootfs; already isolated
+    # on the backend-internal network (H1).
+    image: openfga/openfga:v1.5.3
+    profiles: [core, full]
+    networks: [backend]
+    command: ["run"]
+    environment:
+      OPENFGA_DATASTORE_ENGINE:   postgres
+      OPENFGA_DATASTORE_URI:      postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/openfga?sslmode=disable
+      OPENFGA_DATASTORE_USERNAME: ${POSTGRES_USER}
+      OPENFGA_DATASTORE_PASSWORD: ${POSTGRES_PASSWORD}
+      OPENFGA_HTTP_ADDR:          "0.0.0.0:8080"
+      OPENFGA_GRPC_ADDR:          "0.0.0.0:8081"
+      OPENFGA_LOG_LEVEL:          info
+    ports:
+      - "8082:8080"   # OpenFGA HTTP (host:8082 avoids clash with Keycloak on 8080)
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # openfga is distroless (no wget/curl); it ships grpc_health_probe.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  minio:
+    <<: *hardening
+    # read_only omitted: MinIO writes runtime state to rootfs paths alongside its
+    # data volume; already isolated on the backend-internal network (H1).
+    image: minio/minio:latest
+    networks: [backend]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"   # MinIO API
+      - "9001:9001"   # MinIO console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  vault:
+    <<: *hardening
+    # Durable `file` storage replaces dev-mode:
+    # KV survives restart, so LLM keys / connector tokens / capability + audit
+    # keys no longer vanish on every `up`. Same config the azure/onprem overlays
+    # mount; local dev is auto-unsealed by the vault-init sidecar below.
+    # read_only omitted: Vault writes its keyring + storage to /vault/file (a
+    # volume) and may touch /tmp; already isolated on the backend-internal net.
+    image: hashicorp/vault:1.17
+    networks: [backend]
+    # No explicit `-config` flag: the image entrypoint injects
+    # `-config=/vault/config` for `server`; passing our own double-loads the
+    # listener ("address already in use") and crash-loops. Mounting vault.hcl
+    # into that dir is sufficient.
+    command: ["server"]
+    environment:
+      # Dev-mode env (VAULT_DEV_*) is meaningless without `-dev`. SKIP_SETCAP:
+      # without IPC_LOCK the entrypoint's unconditional `setcap cap_ipc_lock`
+      # fails and crash-loops — vault.hcl sets disable_mlock=true instead.
+      SKIP_SETCAP:               "true"
+      VAULT_ADDR:                "http://127.0.0.1:8200"
+    volumes:
+      - vault-data:/vault/file
+      - ./deploy/compose/vault/vault.hcl:/vault/config/vault.hcl:ro
+    ports:
+      - "8200:8200"
+    # IPC_LOCK dropped: disable_mlock=true in vault.hcl. SETGID/SETUID kept: the
+    # entrypoint still steps down from root via su-exec.
+    cap_add:
+      - SETGID
+      - SETUID
+    # Health = UNSEALED: `vault status` exits 2 while sealed, so this stays
+    # unhealthy until vault-init (dev) or the operator (azure/onprem) unseals.
+    # Broker's `vault: service_healthy` dependency is thus correct in both.
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Auto-init + auto-unseal for local dev only.
+  # Gated inside the script on AIKONOS_VAULT_AUTO_UNSEAL: no-ops (exit 0) for
+  # azure/onprem so their manual-unseal posture is untouched, while satisfying
+  # broker's `service_completed_successfully` dependency uniformly. Gates on
+  # vault `service_started` (NOT service_healthy) — it produces the unsealed
+  # state the healthcheck checks, so waiting on that would deadlock.
+  vault-init:
+    <<: *hardening
+    image: hashicorp/vault:1.17
+    networks: [backend]
+    # Run as the vault user (uid 100): the vault service's entrypoint chowns
+    # /vault/file to vault:vault, so the sidecar must share that uid to persist
+    # init.env there — and the seed script, exec'ing the vault container (also
+    # uid 100), can then read the umask-077 file back.
+    user: "vault"
+    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    environment:
+      VAULT_ADDR:                "http://vault:8200"
+      AIKONOS_VAULT_AUTO_UNSEAL:  ${AIKONOS_VAULT_AUTO_UNSEAL:-false}
+    volumes:
+      - vault-data:/vault/file
+      - ./deploy/compose/vault/vault-init.sh:/vault-init.sh:ro
+    depends_on:
+      vault:
+        condition: service_started
+    restart: "no"
+
+  nats:
+    <<: *hardening
+    # read_only omitted: NATS JetStream writes its store to /data/jetstream (rootfs
+    # by default in dev); mesh-isolated, low marginal value.
+    image: nats:2.10-alpine
+    networks: [mesh]
+    command:
+      - --port=4222
+      - --http_port=8222
+      - --server_name=nats-0
+      - --js
+      - --store_dir=/data/jetstream
+    ports:
+      - "4222:4222"   # NATS client
+      - "8222:8222"   # NATS monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  keycloak:
+    <<: *hardening
+    # read_only omitted: Keycloak writes H2 DB + runtime state to rootfs; would
+    # require extensive tmpfs mapping; mesh-isolated, low marginal value.
+    # Heavier memory ceiling: Keycloak JVM needs ~1.5 g at startup (MaxRAMPercentage=70).
+    mem_limit: 2g
+    image: quay.io/keycloak/keycloak:24.0
+    networks: [mesh]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN:          ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HTTP_ENABLED:         "true"
+      KC_HOSTNAME_STRICT:      "false"
+      # Browser-facing issuer (split-horizon): the SPA performs auth-code+PKCE
+      # from the host, reaching Keycloak at http://localhost:18080, so the issuer
+      # Keycloak stamps into tokens (`iss`) MUST be the browser-facing URL or the
+      # SPA's login redirect points at an unreachable host. The broker validates
+      # `iss` against this URL (AIKONOS_OIDC_ISSUER) but fetches JWKS over the
+      # container network (AIKONOS_OIDC_JWKS_URL=http://keycloak:8080/...) — the
+      # decoupling the broker's OIDC validator supports. KC_HOSTNAME_STRICT=false
+      # keeps backchannel JWKS reachable at keycloak:8080 inside compose.
+      KC_HOSTNAME:             "localhost"
+      KC_HOSTNAME_PORT:        "18080"
+      KC_PROXY:                "edge"
+    volumes:
+      - ./deploy/compose/keycloak-realm.json:/opt/keycloak/data/import/aikonos-realm.json:ro,bind
+    ports:
+      - "18080:8080"  # Keycloak (host:18080 to avoid local port 8080 conflicts)
+    healthcheck:
+      # The keycloak image has no curl/wget, but it has bash — probe the port
+      # with bash's /dev/tcp (listening on :8080 == ready enough for dev).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  opa:
+    <<: *hardening
+    # read_only omitted: OPA static image is distroless but writes decision-log
+    # buffer to rootfs; already isolated on backend-internal network (H1).
+    image: openpolicyagent/opa:0.70.0-static
+    networks: [backend]
+    command:
+      - run
+      - --server
+      - --addr=:8181
+      - --diagnostic-addr=:8282
+      - --log-level=info
+      - --set=decision_logs.console=true
+      - --ignore=.*
+      - /policies
+    volumes:
+      - ./policies/opa:/policies:ro
+    ports:
+      - "8181:8181"
+    # opa:*-static is distroless (no shell/wget/curl) and has no self-probe
+    # subcommand, so an in-container healthcheck is impossible. Dependents wait
+    # on service_started; OPA is ready within ~1s of start.
+    restart: unless-stopped
+
+  # ── One-shots ────────────────────────────────────────────────────────────────
+
+  # Mints dev-CA certs if absent (idempotent). Must run before broker/gateway
+  # so the TLS files exist when those services start.
+  dev-ca-mint:
+    <<: *hardening
+    image: alpine/openssl:latest
+    profiles: [core, full]
+    networks: [mesh]
+    entrypoint: ["/bin/sh", "/scripts/compose-dev-ca.sh"]
+    volumes:
+      - ./scripts/compose-dev-ca.sh:/scripts/compose-dev-ca.sh:ro
+      - ./deploy/compose/tls:/deploy/compose/tls
+    restart: "no"
+
+  # Applies broker DB migrations idempotently (001–011) + creates openfga DB.
+  # Ported from Taskfile.yml db:migrate. Re-run is a no-op.
+  migrate:
+    <<: *hardening
+    image: postgres:16-alpine
+    profiles: [core, full]
+    networks: [backend]
+    environment:
+      PGHOST:     postgres
+      PGPORT:     "5432"
+      PGUSER:     ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      # Password for the non-superuser broker role aikonos_app that migrate.sh
+      # provisions so RLS enforces (the broker connects as it, below).
+      AIKONOS_DB_APP_PASSWORD: ${AIKONOS_DB_APP_PASSWORD}
+      # Password for the SELECT-only role aikonos_grafana that migrate.sh
+      # provisions for the "LLM Spend" dashboard (grafana service, below).
+      AIKONOS_GRAFANA_DB_PASSWORD: ${AIKONOS_GRAFANA_DB_PASSWORD:-aikonos-grafana-dev}
+    entrypoint: ["/bin/sh", "/deploy/compose/migrate.sh"]
+    volumes:
+      - ./broker/internal/db/migrations:/migrations:ro
+      - ./deploy/compose/migrate.sh:/deploy/compose/migrate.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Chowns the workspace volume root to the broker's distroless nonroot uid
+  # (65532) so it can mkdir tenant dirs. Named volumes are created root:root;
+  # the broker has no shell and zero caps, so it can't fix this itself.
+  # Non-recursive: only the volume root — the broker owns everything below.
+  workspace-init:
+    <<: *hardening
+    image: alpine:3.20
+    profiles: [core, full]
+    network_mode: none
+    user: "0:0"
+    cap_add: [CHOWN]
+    entrypoint: ["chown", "65532:65532", "/workspace"]
+    volumes:
+      - workspace-data:/workspace
+    restart: "no"
+
+  # ── Application services ──────────────────────────────────────────────────────
+
+  broker:
+    <<: *hardening
+    # read_only rootfs (H2 tier 2): broker writes only to /workspace (volume —
+    # already writable) and /tmp (tsx/Go runtime). Distroless image — no shell
+    # or package dirs to worry about.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    build:
+      context: .
+      dockerfile: broker/Dockerfile
+    profiles: [core, full]
+    networks: [backend, mesh, office]
+    environment:
+      AIKONOS_BROKER_TENANT_ID:             ${AIKONOS_BROKER_TENANT_ID}
+      AIKONOS_OTEL_ENDPOINT:                ${AIKONOS_OTEL_ENDPOINT:-}
+      AIKONOS_POLICY_OPENFGA_ENDPOINT:      http://openfga:8080
+      AIKONOS_POLICY_OPENFGA_STORE_ID:      ${AIKONOS_POLICY_OPENFGA_STORE_ID:-}
+      AIKONOS_POLICY_OPA_ENDPOINT:          http://opa:8181
+      AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER}
+      AIKONOS_OIDC_JWKS_URL:                ${AIKONOS_OIDC_JWKS_URL:-}
+      AIKONOS_OIDC_AUDIENCE:                ${AIKONOS_OIDC_AUDIENCE}
+      AIKONOS_OIDC_SUBJECT_CLAIM:           ${AIKONOS_OIDC_SUBJECT_CLAIM:-sub}
+      AIKONOS_OIDC_TENANT_CLAIM:            ${AIKONOS_OIDC_TENANT_CLAIM}
+      AIKONOS_SPIFFE_SANDBOX_PATH_PREFIX:   ""
+      AIKONOS_CAPABILITY_ROOT_KEY:          ${AIKONOS_CAPABILITY_ROOT_KEY}
+      AIKONOS_DEV_MODE:                     ${AIKONOS_DEV_MODE:-true}
+      AIKONOS_NATS_URL:                     ${AIKONOS_NATS_URL}
+      AIKONOS_AUDIT_MINIO_ENDPOINT:         ${AIKONOS_AUDIT_MINIO_ENDPOINT}
+      AIKONOS_AUDIT_BUCKET:                 ${AIKONOS_AUDIT_BUCKET}
+      AIKONOS_AUDIT_ACCESS_KEY:             ${AIKONOS_AUDIT_ACCESS_KEY}
+      AIKONOS_AUDIT_SECRET_KEY:             ${AIKONOS_AUDIT_SECRET_KEY}
+      AIKONOS_AUDIT_SIGNING_KEY:            ${AIKONOS_AUDIT_SIGNING_KEY}
+      AIKONOS_AUDIT_RETENTION_DAYS:         ${AIKONOS_AUDIT_RETENTION_DAYS}
+      AIKONOS_WORKSPACE_SESSION_SIGNING_KEY: ${AIKONOS_WORKSPACE_SESSION_SIGNING_KEY:-}
+      AIKONOS_DB_HOST:                      postgres
+      AIKONOS_DB_PORT:                      "5432"
+      AIKONOS_DB_NAME:                      ${POSTGRES_DB}
+      # Connect as the restricted, non-superuser role so RLS enforces. The owner
+      # role (${POSTGRES_USER}) is used only by the migrate one-shot for DDL.
+      AIKONOS_DB_USER:                      aikonos_app
+      AIKONOS_DB_PASSWORD:                  ${AIKONOS_DB_APP_PASSWORD}
+      AIKONOS_TOOLPROXY_WORKSPACE_ROOT:     /workspace
+      # DEV ONLY: lets the broker-side MCP client reach private-IP MCP servers
+      # (the mcp-echo compose service). Keep false unless testing MCP.
+      AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE:  ${AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE:-false}
+      # office-worker is a broker dependency that always starts alongside it
+      # under core/full; empty URL makes the
+      # office.* toolproxy plugins report unavailable instead of failing.
+      AIKONOS_OFFICE_WORKER_URL:            ${AIKONOS_OFFICE_WORKER_URL:-http://office-worker:8081}
+      AIKONOS_OFFICE_JOB_TIMEOUT_MS:        ${AIKONOS_OFFICE_JOB_TIMEOUT_MS:-120000}
+      AIKONOS_OFFICE_MAX_CONCURRENCY:       ${AIKONOS_OFFICE_MAX_CONCURRENCY:-4}
+      AIKONOS_VAULT_ADDR:                   ${AIKONOS_VAULT_ADDR}
+      AIKONOS_VAULT_AUTH_METHOD:            ${AIKONOS_VAULT_AUTH_METHOD:-approle}
+      AIKONOS_VAULT_ROLE:                   ${AIKONOS_VAULT_ROLE}
+      AIKONOS_VAULT_ROLE_ID:                ${AIKONOS_VAULT_ROLE_ID:-}
+      AIKONOS_VAULT_SECRET_ID:              ${AIKONOS_VAULT_SECRET_ID:-}
+      AIKONOS_CONNECTORS_REDIRECT_URI:      ${AIKONOS_CONNECTORS_REDIRECT_URI}
+      AIKONOS_CONNECTORS_GOOGLE_CLIENT_ID:  ${AIKONOS_CONNECTORS_GOOGLE_CLIENT_ID}
+      AIKONOS_CONNECTORS_GOOGLE_CLIENT_SECRET: ${AIKONOS_CONNECTORS_GOOGLE_CLIENT_SECRET}
+      AIKONOS_CONNECTORS_MICROSOFT_CLIENT_ID:  ${AIKONOS_CONNECTORS_MICROSOFT_CLIENT_ID}
+      AIKONOS_CONNECTORS_MICROSOFT_TENANT:     ${AIKONOS_CONNECTORS_MICROSOFT_TENANT}
+      AIKONOS_CONNECTORS_MICROSOFT_CLIENT_SECRET: ${AIKONOS_CONNECTORS_MICROSOFT_CLIENT_SECRET}
+      AIKONOS_API_KEY_PEPPER:               ${AIKONOS_API_KEY_PEPPER:-}
+      # F4: LLM provider seed (idempotent, upsert-if-absent on boot). OPENROUTER_API_KEY
+      # is resolved here (os.ExpandEnv) and written to Vault — never stored in Postgres.
+      AIKONOS_LLM_PROVIDERS_SEED_FILE:      ${AIKONOS_LLM_PROVIDERS_SEED_FILE:-/seed/llm-providers.yaml}
+      OPENROUTER_API_KEY:                  ${OPENROUTER_API_KEY:-}
+      # CP1 file-based mTLS (replaces SPIFFE Workload API in compose)
+      AIKONOS_BROKER_TLS_CERT_FILE:         /tls/broker.crt
+      AIKONOS_BROKER_TLS_KEY_FILE:          /tls/broker.key
+      AIKONOS_BROKER_TLS_CA_FILE:           /tls/ca.crt
+      # Automated agent behavioral baseline learning.
+      AIKONOS_BASELINE_ENABLED:                    ${AIKONOS_BASELINE_ENABLED:-true}
+      AIKONOS_BASELINE_WINDOW_SECONDS:              ${AIKONOS_BASELINE_WINDOW_SECONDS:-60}
+      AIKONOS_BASELINE_LEARN_INTERVAL_SECONDS:      ${AIKONOS_BASELINE_LEARN_INTERVAL_SECONDS:-3600}
+      AIKONOS_BASELINE_MIN_SAMPLE_WINDOWS:          ${AIKONOS_BASELINE_MIN_SAMPLE_WINDOWS:-30}
+      AIKONOS_BASELINE_DRIFT_MULTIPLIER:            ${AIKONOS_BASELINE_DRIFT_MULTIPLIER:-2.0}
+      AIKONOS_BASELINE_RETENTION_WINDOWS:           ${AIKONOS_BASELINE_RETENTION_WINDOWS:-10080}
+    volumes:
+      - ./deploy/compose/tls:/tls:ro
+      - ./deploy/compose/llm-providers.yaml:/seed/llm-providers.yaml:ro
+      - workspace-data:/workspace
+    ports:
+      - "9090:9090"   # broker north (gRPC)
+      - "9091:9091"   # broker south (gRPC)
+      - "9092:9092"   # broker metrics
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      openfga:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      opa:
+        condition: service_started
+      dev-ca-mint:
+        condition: service_completed_successfully
+      workspace-init:
+        condition: service_completed_successfully
+    # No healthcheck: the broker image is distroless (no shell/nc/grpc_health_probe)
+    # and its gRPC ports are mTLS, so an in-container probe isn't possible.
+    # Dependents wait on service_started and retry the gRPC connection.
+    restart: unless-stopped
+
+  # docx/xlsx/pptx/pdf create/edit/extract/convert.
+  # Zero-authority confinement: no Vault/OAuth/broker credentials, no internet
+  # egress, no datastore reach — the `office` network's only other member is
+  # the broker, which calls it over plain internal HTTP (OPA/OpenFGA precedent).
+  office-worker:
+    <<: *hardening
+    # LibreOffice headroom — deliberate override of the 1g hardening anchor.
+    mem_limit: 2g
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    build:
+      context: office-worker
+      dockerfile: Dockerfile
+    profiles: [core, full]
+    networks: [office]
+    environment:
+      PORT:                   "8081"
+      OFFICE_JOB_TIMEOUT_MS:  ${AIKONOS_OFFICE_JOB_TIMEOUT_MS:-120000}
+      OFFICE_MAX_CONCURRENCY: ${AIKONOS_OFFICE_MAX_CONCURRENCY:-4}
+    healthcheck:
+      # node:22-slim ships no curl/wget; probe /healthz with node's http client.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8081/healthz',res=>process.exit(res.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  agent-gateway:
+    <<: *hardening
+    # H3 Phase 2+3: the gateway process splits into a trusted PARENT (supervisor +
+    # credential-host: Fastify :8080/:8090, GovernanceBridge, BrokerClients/SVID,
+    # per-run OIDC bearers + ownerGrants, provider keys, HITL approver, local
+    # LLM-egress proxy) and forked CHILD processes (Pi AgentSession loop; holds no
+    # long-lived secret). The child inherits the container fs via fork(), so
+    # read_only:true + the tmpfs below already cover it — the child writes only to
+    # /tmp (tsx module cache, Node scratch), which the existing 128m tmpfs covers.
+    # Phase 3 (per-user child pool, live): children keyed by (tenantId,userId,agentId)
+    # via AIKONOS_GATEWAY_CHILD_KEYING=per-user. Pool capped at 8 children
+    # (AIKONOS_GATEWAY_MAX_CHILDREN=8). Sizing: parent ~400 MB + 8 children × ~300 MB
+    # ≈ 2.8 GB; 4g gives headroom for burst + egress proxy. Code default remains
+    # "single" (safe for tests/CLI); production mode = compose env "per-user".
+    # The verify script measures the real pid/thread count at runtime to confirm
+    # headroom under pids_limit:512.
+    mem_limit: 4g
+    # read_only rootfs (H2 tier 2): tsx writes compiled module cache to
+    # /tmp/tsx-<uid>/; npm update-notifier writes to /home/node/.npm/.
+    # Both are RAM-backed tmpfs so a compromised gateway can't persist payloads
+    # to the image filesystem.
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+      - /home/node/.npm:size=32m
+    build:
+      context: .
+      dockerfile: agent-gateway/Dockerfile
+    profiles: [core, full]
+    networks: [mesh]
+    environment:
+      OPENROUTER_API_KEY:        ${OPENROUTER_API_KEY}
+      AIKONOS_LLM_MODEL:          ${AIKONOS_LLM_MODEL}
+      AIKONOS_BROKER_NORTH_ADDR:  ${AIKONOS_BROKER_NORTH_ADDR}
+      AIKONOS_BROKER_SOUTH_ADDR:  ${AIKONOS_BROKER_SOUTH_ADDR}
+      AIKONOS_BROKER_SERVER_NAME: ${AIKONOS_BROKER_SERVER_NAME}
+      AIKONOS_TLS_CERT:           ${AIKONOS_TLS_CERT}
+      AIKONOS_TLS_KEY:            ${AIKONOS_TLS_KEY}
+      AIKONOS_TLS_CA:             ${AIKONOS_TLS_CA}
+      AIKONOS_GATEWAY_SPIFFE_ID:  ${AIKONOS_GATEWAY_SPIFFE_ID}
+      AIKONOS_TENANT_ID:          ${AIKONOS_TENANT_ID}
+      # OIDC: the gateway validates the browser's bearer (jose) against the
+      # container-facing JWKS while checking `iss` against the browser-facing
+      # issuer (split-horizon — see deploy/compose/.env.local.example). It forwards the
+      # verified token north; it no longer mints tokens (ROPC removed).
+      AIKONOS_OIDC_ISSUER:        ${AIKONOS_OIDC_ISSUER}
+      AIKONOS_OIDC_JWKS_URL:      ${AIKONOS_OIDC_JWKS_URL:-}
+      AIKONOS_OIDC_AUDIENCE:      ${AIKONOS_OIDC_AUDIENCE}
+      # Claim names for principal + tenant. Default sub/tenant_id (Keycloak);
+      # Entra needs oid/tid. Without these the bearer's tenant resolves empty
+      # and verifyBearer 401s every real Entra token.
+      AIKONOS_OIDC_SUBJECT_CLAIM: ${AIKONOS_OIDC_SUBJECT_CLAIM:-sub}
+      AIKONOS_OIDC_TENANT_CLAIM:  ${AIKONOS_OIDC_TENANT_CLAIM:-tenant_id}
+      AIKONOS_SCHEDULER_ENABLED:  ${AIKONOS_SCHEDULER_ENABLED}
+      AIKONOS_SCHEDULER_TICK_MS:  ${AIKONOS_SCHEDULER_TICK_MS}
+      # NATS for the in-gateway audit SSE bridge (absorbed from the removed
+      # observability console). webui /audit/stream → gateway /api/audit/stream.
+      AIKONOS_NATS_URL:           nats://nats:4222
+      PORT:                      "8080"
+      AIKONOS_API_KEY_PEPPER:     ${AIKONOS_API_KEY_PEPPER:-}
+      AIKONOS_EXTERNAL_PORT:      "8090"
+      AIKONOS_EXTERNAL_CORS_ORIGINS: ${AIKONOS_EXTERNAL_CORS_ORIGINS:-}
+      AIKONOS_EXTERNAL_RATE_LIMIT:   ${AIKONOS_EXTERNAL_RATE_LIMIT:-60}
+      # H3 Phase 3 (live): per-user child pool is production mode. Code default is
+      # "single" (safe for tests/CLI); compose sets "per-user" here. Cap 8 = parent
+      # ~400 MB + 8 × ~300 MB ≈ 2.8 GB, within mem_limit:4g. Raise MAX_CHILDREN
+      # only after verifying pids_limit:512 still holds for the pod count.
+      AIKONOS_GATEWAY_CHILD_KEYING:  ${AIKONOS_GATEWAY_CHILD_KEYING:-per-user}
+      AIKONOS_GATEWAY_CHILD_TTL_MS:  ${AIKONOS_GATEWAY_CHILD_TTL_MS:-1800000}
+      AIKONOS_GATEWAY_MAX_CHILDREN:  ${AIKONOS_GATEWAY_MAX_CHILDREN:-8}
+      # spawn_subagents fan-out: width bounds concurrent branch children per
+      # call, timeout bounds each branch's wall clock. Keep width meaningfully
+      # below MAX_CHILDREN above (8 here) — one fan-out at width==MAX_CHILDREN
+      # would consume the entire interactive child pool.
+      AIKONOS_GATEWAY_SUBAGENT_MAX_WIDTH:          ${AIKONOS_GATEWAY_SUBAGENT_MAX_WIDTH:-3}
+      AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS:  ${AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS:-180000}
+    volumes:
+      - ./deploy/compose/tls:/tls:ro
+    ports:
+      - "8080:8080"
+      - "8090:8090"
+    depends_on:
+      broker:
+        condition: service_started
+      keycloak:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      dev-ca-mint:
+        condition: service_completed_successfully
+    healthcheck:
+      # The node image has no wget/curl; probe the listen port with node itself.
+      test: ["CMD", "node", "-e", "require('net').connect(8080,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  webui:
+    <<: *hardening
+    # read_only rootfs (H2 tier 2): Node server.mjs serves static SPA and
+    # proxies to gateway — no data writes; /tmp for Node runtime scratch.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    build:
+      context: webui
+      dockerfile: Dockerfile
+      args:
+        VITE_OIDC_AUTHORITY:    ${AIKONOS_WEBUI_OIDC_AUTHORITY:-http://localhost:18080/realms/aikonos}
+        VITE_OIDC_CLIENT_ID:    ${AIKONOS_WEBUI_OIDC_CLIENT:-aikonos-webui}
+        VITE_OIDC_REDIRECT_URI: ${AIKONOS_WEBUI_OIDC_REDIRECT_URI:-http://localhost:4200/auth/callback}
+        VITE_OIDC_SCOPE:        ${AIKONOS_WEBUI_OIDC_SCOPE:-openid profile}
+        VITE_OIDC_TOKEN:        ${AIKONOS_WEBUI_OIDC_TOKEN:-access}
+    profiles: [core, full]
+    networks: [mesh]
+    environment:
+      # server.mjs reads GATEWAY_URL / OBSERVABILITY_URL (not AIKONOS_*).
+      GATEWAY_URL:       http://agent-gateway:8080
+      OBSERVABILITY_URL: http://agent-gateway:8080
+      PORT:              "4200"
+    ports:
+      - "4200:4200"
+    depends_on:
+      agent-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Static end-user/admin documentation site (Astro Starlight, docs-site/).
+  # No profiles: — always starts regardless of COMPOSE_PROFILES, so the
+  # on-prem git-push deploy hook brings it up unconditionally. Root build (no
+  # DOCS_BASE) here for local dev; the on-prem overlay overrides build.args
+  # with DOCS_BASE=/docs for the Traefik PathPrefix deploy.
+  docs-site:
+    <<: *hardening
+    # read_only rootfs: nginx-unprivileged writes only pid/cache/client-body
+    # scratch under /tmp; the served dist/ is baked into the image.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    build:
+      context: docs-site
+      dockerfile: Dockerfile
+    networks: [mesh]
+    restart: unless-stopped
+
+  aikonos-docs-mcp:
+    <<: *hardening
+    # read_only rootfs: corpus is accessed via read-only bind mounts; /tmp is
+    # the only write target (Node runtime scratch), covered by the tmpfs below.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    build:
+      context: docs-mcp
+      dockerfile: Dockerfile
+    profiles: [docs-mcp]
+    networks: [mesh]
+    environment:
+      CORPUS_ROOT: /corpus
+      PORT: "8060"
+    # Port published for local-test convenience.
+    # In production, dials aikonos-docs-mcp:8060 by container DNS over the mesh.
+    ports:
+      - "8060:8060"
+    volumes:
+      - ./docs:/corpus/docs:ro
+      - ./README.md:/corpus/README.md:ro
+      - ./ROADMAP.md:/corpus/ROADMAP.md:ro
+      - ./SECURITY.md:/corpus/SECURITY.md:ro
+    healthcheck:
+      # The slim image has no wget/curl; probe the listen port with node itself.
+      test: ["CMD", "node", "-e", "require('net').connect(8060,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Grafana MCP server (mcp-grafana profile) ─────────────────────────────────
+  # Upstream grafana/mcp-grafana, dialed by the broker at
+  # http://aikonos-mcp-grafana:8000/mcp over the mesh. Requires
+  # AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true on the broker (mesh is RFC1918) —
+  # see deploy/onprem/README.md "Attaching a self-hosted MCP server".
+  aikonos-mcp-grafana:
+    <<: *hardening
+    image: grafana/mcp-grafana:1.0.0
+    profiles: [mcp-grafana]
+    networks: [mesh]
+    # read_only rootfs: the server is stateless; Go's runtime only needs /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    # Plain ${} on purpose, not ${VAR:?required}: compose interpolates the whole
+    # file before it filters by profile, so a required-variable marker here would
+    # fail every `docker compose` call on a stack that never starts this profile.
+    environment:
+      GRAFANA_URL: ${AIKONOS_GRAFANA_MCP_URL:-}
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${AIKONOS_GRAFANA_MCP_TOKEN:-}
+    # Grafana's cert is issued by an internal CA the debian base image does not
+    # trust, and the server sends no intermediate — so the full chain must be
+    # supplied rather than skipping verification (the service-account token
+    # travels over this connection). Build the file per deploy/onprem/README.md
+    # "Attaching the Grafana MCP server"; it needs the issuing CA *and* the root,
+    # concatenated, or verification still fails.
+    volumes:
+      - ${AIKONOS_GRAFANA_MCP_CA_FILE:-./deploy/compose/tls/grafana-ca.crt}:/certs/grafana-ca.crt:ro
+    # The image's own ENTRYPOINT hardcodes `--transport sse`; the broker's MCP
+    # client speaks streamable HTTP only, so replace it rather than append.
+    #
+    # --allowed-hosts is required, not decoration: unset, mcp-grafana derives its
+    # Host allowlist from --address and permits loopback names only, so a dial to
+    # aikonos-mcp-grafana:8000 is answered 403 "host not allowed".
+    #
+    # --enabled-tools exists only to add `runpanelquery`. Without it a dashboard
+    # question can only be answered with the dashboard's JSON definition: the
+    # dashboard tools return the definition by design, and run_panel_query — the
+    # one tool that executes a panel's own query and returns rows — sits in a
+    # category upstream leaves out of its default list.
+    #
+    # The flag REPLACES the default list rather than extending it, so everything
+    # else here is upstream's v1.0.0 default verbatim (cmd/mcp-grafana/main.go).
+    # Re-sync it when bumping the image tag, or a category upstream adds silently
+    # stays off. Deliberately still omitted: admin, and every default-off
+    # datasource category (athena/clickhouse/cloudwatch/elasticsearch/graphite/
+    # influxdb/quickwit/snowflake) — add one only once a dashboard needs it.
+    #
+    # ── No --disable-write, deliberately. Read deploy/onprem/README.md before
+    # ── reinstating it: this is a posture decision, not an oversight.
+    #
+    # The dashboards this server exists to answer questions about are backed by a
+    # postgres datasource. run_panel_query refuses it (its switch handles only
+    # prometheus/loki/clickhouse/cloudwatch/influxdb/bigquery) and mcp-grafana
+    # ships no SQL query tool at all, so the sole route to those rows is Grafana's
+    # own POST /api/ds/query — reachable only through the generic
+    # `grafana_api_request` tool. --disable-write does not narrow that tool's
+    # endpoints; it swaps the whole implementation for a GET-only one
+    # (tools/api.go AddAPITools), which cannot issue the POST. Keeping the flag
+    # therefore means no panel data, ever, for this deployment.
+    #
+    # Dropping it also re-registers the write tools of every enabled category
+    # (update/patch dashboard, annotation writes, create_incident,
+    # alerting_manage_rules, snapshot create/delete). The boundary that stops
+    # those is not this flag: it is the Grafana service account's Viewer role,
+    # which rejects them server-side. Mint that account any higher and this
+    # becomes a genuine write path — the README step that mints it says so too.
+    entrypoint:
+      - /app/mcp-grafana
+      - --transport=streamable-http
+      - --address=0.0.0.0:8000
+      - --allowed-hosts=aikonos-mcp-grafana:8000
+      - --tls-ca-file=/certs/grafana-ca.crt
+      - --enabled-tools=search,datasource,incident,prometheus,loki,alerting,dashboard,folder,oncall,asserts,sift,pyroscope,navigation,proxied,annotations,rendering,snapshot,plugin,api,config,provisioning,runpanelquery
+    restart: unless-stopped
+
+  # DEV ONLY — unauthenticated MCP echo server for development/testing. Use --profile dev to start. Never include in production deployments.
+  mcp-echo:
+    <<: *hardening
+    # read_only rootfs: server.js holds no state and writes nothing.
+    read_only: true
+    build:
+      context: test/mcp-echo-server
+      dockerfile: Dockerfile
+    profiles: [dev]
+    networks: [mesh]
+    environment:
+      PORT: "8000"
+    restart: unless-stopped
+
+  # ── Observability stack (obs profile) ────────────────────────────────────────
+  # Bring up alongside core or full:
+  #   docker compose --profile core --profile obs up
+  #
+  # Archive sink selected by AIKONOS_OBS_ARCHIVE (default: file):
+  #   file  → obs-archive volume at /archive/aikonos-obs  (zero external deps)
+  #   s3    → awss3exporter; set OBS_S3_* + AWS_ACCESS_KEY_ID/SECRET
+  #   azure → azureblobexporter (native); set AIKONOS_OBS_AZURE_* in .env
+  #   siem  → otlphttp exporter to a SIEM (Splunk/Datadog/Elastic all ingest
+  #           OTLP natively); set AIKONOS_SIEM_OTLP_ENDPOINT + AIKONOS_SIEM_OTLP_AUTH_HEADER
+  #
+  # When obs is running, set AIKONOS_OTEL_ENDPOINT=otel-collector:4317
+  # (host:port, no scheme) in .env so the broker forwards OTLP traces to the collector.
+
+  otel-collector:
+    <<: *hardening
+    # read_only omitted: otel-collector writes to obs-archive volume + internal
+    # scratch paths; runs as root (DEV) for the file exporter; obs-isolated.
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    profiles: [obs]
+    networks: [mesh, obs]
+    # DEV: run as root so the file exporter can write the root-owned obs-archive
+    # volume. (Prod: pre-create /archive with the collector uid, or use object
+    # storage, instead of granting root.)
+    user: "0:0"
+    # The contrib image is distroless (no /bin/sh), so the archive sink is
+    # selected by env substitution in the config path, not a shell entrypoint.
+    # AIKONOS_OBS_ARCHIVE ∈ {file,s3,azure,siem} → otel-collector-config-<mode>.yaml.
+    command: ["--config=/etc/otelcol-contrib/otel-collector-config-${AIKONOS_OBS_ARCHIVE:-file}.yaml"]
+    environment:
+      # Archive mode selector. Set AIKONOS_OBS_ARCHIVE=s3, azure, or siem in .env
+      # to switch sinks; default empty → file exporter (no cloud creds needed).
+      AIKONOS_OBS_ARCHIVE: ${AIKONOS_OBS_ARCHIVE:-file}
+      # S3-compatible archive settings (used when AIKONOS_OBS_ARCHIVE=s3)
+      OBS_S3_REGION:    ${OBS_S3_REGION:-us-east-1}
+      OBS_S3_BUCKET:    ${OBS_S3_BUCKET:-aikonos-obs}
+      OBS_S3_ENDPOINT:  ${OBS_S3_ENDPOINT:-}
+      # Azure Blob settings (used when AIKONOS_OBS_ARCHIVE=azure). auth_type ∈
+      # {connection_string, system_managed_identity, user_managed_identity,
+      # service_principal}; account_url required for all but connection_string;
+      # tenant/client/secret used by service_principal (+ client_id by user_managed_identity).
+      AIKONOS_OBS_AZURE_AUTH_TYPE:         ${AIKONOS_OBS_AZURE_AUTH_TYPE:-connection_string}
+      AIKONOS_OBS_AZURE_CONNECTION_STRING: ${AIKONOS_OBS_AZURE_CONNECTION_STRING:-}
+      AIKONOS_OBS_AZURE_ACCOUNT_URL:       ${AIKONOS_OBS_AZURE_ACCOUNT_URL:-}
+      AIKONOS_OBS_AZURE_TENANT_ID:         ${AIKONOS_OBS_AZURE_TENANT_ID:-}
+      AIKONOS_OBS_AZURE_CLIENT_ID:         ${AIKONOS_OBS_AZURE_CLIENT_ID:-}
+      AIKONOS_OBS_AZURE_CLIENT_SECRET:     ${AIKONOS_OBS_AZURE_CLIENT_SECRET:-}
+      # S3 credentials — set in .env for s3 mode
+      AWS_ACCESS_KEY_ID:     ${OBS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${OBS_SECRET_ACCESS_KEY:-}
+      # Generic SIEM OTLP-HTTP settings (used when AIKONOS_OBS_ARCHIVE=siem).
+      # AUTH_HEADER carries the full Authorization header value (e.g. "Bearer <token>").
+      AIKONOS_SIEM_OTLP_ENDPOINT:    ${AIKONOS_SIEM_OTLP_ENDPOINT:-}
+      AIKONOS_SIEM_OTLP_AUTH_HEADER: ${AIKONOS_SIEM_OTLP_AUTH_HEADER:-}
+    volumes:
+      - ./deploy/compose/obs:/etc/otelcol-contrib:ro
+      # Archive volume — written to only when AIKONOS_OBS_ARCHIVE=file
+      - obs-archive:/archive
+      # Docker container logs (read-only) for filelog receiver.
+      # Host source is the Docker data-root/containers dir — override
+      # AIKONOS_DOCKER_CONTAINERS_DIR when the daemon's data-root is relocated
+      # (e.g. /data/docker on hosts with a dedicated data disk). The in-container
+      # destination stays fixed so the filelog config path never changes.
+      - ${AIKONOS_DOCKER_CONTAINERS_DIR:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics endpoint (scraped by prometheus service)
+    # No healthcheck: the contrib image is distroless (no shell/nc). Nothing
+    # depends on the collector's health; it is a sink, not a dependency.
+    restart: unless-stopped
+
+  grafana:
+    <<: *hardening
+    # read_only omitted: Grafana writes session state + plugin data to rootfs;
+    # obs-isolated (internal network), low marginal value.
+    image: grafana/grafana:11.4.0
+    profiles: [obs]
+    # Deviation from "obs services never touch datastores": the "LLM Spend"
+    # dashboard queries Postgres directly, so grafana also joins backend.
+    # Bounded by construction — it connects as aikonos_grafana, which has SELECT
+    # (no DML, no BYPASSRLS) on five analytics tables and nothing else.
+    # Rationale: .
+    networks: [obs, backend]
+    environment:
+      GF_SECURITY_ADMIN_USER:     ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED:  "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_FEATURE_TOGGLES_ENABLE:  traceqlEditor
+      # Read by datasources.yaml via $__env{} — the aikonos_grafana credentials.
+      GRAFANA_PG_RO_PASSWORD:     ${AIKONOS_GRAFANA_DB_PASSWORD:-aikonos-grafana-dev}
+      GRAFANA_PG_DATABASE:        ${POSTGRES_DB}
+    volumes:
+      - ./deploy/compose/obs/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3030:3000"   # host:3030 avoids clash with frontend on 3000
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  loki:
+    <<: *hardening
+    # read_only omitted: Loki writes index + chunk data to rootfs; obs-isolated.
+    image: grafana/loki:3.3.2
+    profiles: [obs]
+    networks: [obs]
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./deploy/compose/obs/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+    ports:
+      - "3100:3100"   # Loki HTTP (OTLP ingest + query API)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  tempo:
+    <<: *hardening
+    # read_only omitted: Tempo writes trace data to rootfs; obs-isolated.
+    image: grafana/tempo:2.7.1
+    profiles: [obs]
+    networks: [obs]
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    volumes:
+      - ./deploy/compose/obs/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+    ports:
+      - "3200:3200"   # Tempo HTTP query API
+      # 4317/4318 already exposed on otel-collector; Tempo's own OTLP ports
+      # are internal-only (collector → tempo on the aikonos network).
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  prometheus:
+    <<: *hardening
+    # read_only omitted: Prometheus writes TSDB to rootfs; obs-isolated.
+    image: prom/prometheus:v3.1.0
+    profiles: [obs]
+    networks: [obs]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--web.enable-remote-write-receiver"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./deploy/compose/obs/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports:
+      - "9095:9090"   # host:9095 avoids clash with broker's 9090/9091
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped

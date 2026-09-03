@@ -1,0 +1,255 @@
+syntax = "proto3";
+
+package aikonos.workspace.v1;
+option go_package = "github.com/adamdekan/aikonos/gen/go/workspace/v1;workspacev1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// WorkspaceManager service — called by Broker only (SPIFFE-auth enforced)
+service WorkspaceManager {
+  // Lifecycle
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceHandle);
+  rpc DestroyWorkspace(DestroyWorkspaceRequest) returns (google.protobuf.Empty);
+  rpc GetWorkspaceInfo(GetWorkspaceInfoRequest) returns (WorkspaceInfo);
+  rpc SetQuota(SetQuotaRequest) returns (google.protobuf.Empty);
+
+  // Mount management — called by Broker for each sandbox task
+  rpc RequestMount(MountRequest) returns (MountHandle);
+  rpc ReleaseMount(ReleaseMountRequest) returns (google.protobuf.Empty);
+
+  // Document management
+  rpc IngestDocument(IngestDocumentRequest) returns (DocumentHandle);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (google.protobuf.Empty);
+  rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+
+  // Artifact management
+  rpc RegisterArtifact(RegisterArtifactRequest) returns (ArtifactHandle);
+  rpc ListArtifacts(ListArtifactsRequest) returns (ListArtifactsResponse);
+
+  // Config (personality, preferences)
+  rpc GetConfig(GetConfigRequest) returns (WorkspaceConfig);
+  rpc UpdateConfig(UpdateConfigRequest) returns (WorkspaceConfig);
+
+  // RAG queries
+  rpc QueryRAG(QueryRAGRequest) returns (QueryRAGResponse);
+
+  // Right-to-erasure
+  rpc EraseWorkspace(EraseWorkspaceRequest) returns (EraseReceipt);
+}
+
+message CreateWorkspaceRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  int64 quota_bytes = 3;   // 0 = use tenant default (20GB)
+}
+
+message WorkspaceHandle {
+  string user_id = 1;
+  string tenant_id = 2;
+  string pvc_name = 3;
+  WorkspaceStatus status = 4;
+}
+
+enum WorkspaceStatus {
+  WORKSPACE_STATUS_UNSPECIFIED = 0;
+  ACTIVE      = 1;
+  SUSPENDED   = 2;
+  ERASING     = 3;
+  ERASED      = 4;
+}
+
+message DestroyWorkspaceRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  bool gdpr_erasure = 3;   // If true, records erasure event with regulation reference
+  string regulation_ref = 4;  // e.g. "GDPR Art.17", "DORA RTS"
+}
+
+message GetWorkspaceInfoRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message WorkspaceInfo {
+  string user_id = 1;
+  string tenant_id = 2;
+  WorkspaceStatus status = 3;
+  int64 used_bytes = 4;
+  int64 quota_bytes = 5;
+  int32 document_count = 6;
+  int32 artifact_count = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp last_accessed_at = 9;
+}
+
+message SetQuotaRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  int64 quota_bytes = 3;
+}
+
+// MountRequest specifies exactly what subpath to mount into a sandbox pod.
+// The Broker decides the subpath based on the approved plan.
+message MountRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string task_id = 3;
+  string pod_name = 4;
+  string pod_namespace = 5;
+  repeated MountSpec mounts = 6;
+}
+
+message MountSpec {
+  string subpath = 1;         // e.g. "documents/q3-incidents"
+  MountMode mode = 2;
+  string mount_point = 3;     // e.g. "/workspace/data"
+}
+
+enum MountMode {
+  MOUNT_MODE_UNSPECIFIED = 0;
+  READ_ONLY   = 1;
+  READ_WRITE  = 2;
+  APPEND_ONLY = 3;
+}
+
+message MountHandle {
+  string mount_id = 1;
+  repeated string mount_points = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ReleaseMountRequest {
+  string mount_id = 1;
+  string task_id = 2;
+  bool wipe_scratch = 3;    // Always true for sandbox teardown
+}
+
+message IngestDocumentRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string filename = 3;
+  string mime_type = 4;
+  bytes content = 5;         // For MVP; use multipart/streaming for large files later
+  repeated string tags = 6;
+  string sensitivity_label = 7;  // public | internal | confidential | restricted
+}
+
+message DocumentHandle {
+  string doc_id = 1;
+  string rag_status = 2;    // pending | indexed | failed
+}
+
+message DeleteDocumentRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string doc_id = 3;
+}
+
+message ListDocumentsRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListDocumentsResponse {
+  repeated DocumentSummary documents = 1;
+  string next_page_token = 2;
+}
+
+message DocumentSummary {
+  string doc_id = 1;
+  string filename = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  string rag_status = 5;
+  repeated string tags = 6;
+  google.protobuf.Timestamp uploaded_at = 7;
+}
+
+message RegisterArtifactRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string task_id = 3;
+  string name = 4;
+  string mime_type = 5;
+  bytes content = 6;
+}
+
+message ArtifactHandle {
+  string artifact_id = 1;
+  string storage_path = 2;
+}
+
+message ListArtifactsRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string task_id = 3;   // Filter by task; empty = all artifacts
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListArtifactsResponse {
+  repeated ArtifactSummary artifacts = 1;
+  string next_page_token = 2;
+}
+
+message ArtifactSummary {
+  string artifact_id = 1;
+  string name = 2;
+  string task_id = 3;
+  int64 size_bytes = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message GetConfigRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+}
+
+message WorkspaceConfig {
+  string personality_json = 1;   // JSON string of personality.json
+  string preferences_json = 2;   // JSON string of preferences.json
+}
+
+message UpdateConfigRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string personality_json = 3;
+  string preferences_json = 4;
+}
+
+message QueryRAGRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string task_id = 3;
+  string query = 4;
+  int32 top_k = 5;
+  repeated string doc_ids = 6;   // Filter to specific docs; empty = all
+}
+
+message QueryRAGResponse {
+  repeated RAGChunk chunks = 1;
+}
+
+message RAGChunk {
+  string doc_id = 1;
+  string filename = 2;
+  string chunk_text = 3;
+  float relevance_score = 4;
+  int32 chunk_index = 5;
+}
+
+message EraseWorkspaceRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string regulation_ref = 3;
+  string requester_id = 4;
+}
+
+message EraseReceipt {
+  string erasure_id = 1;
+  string audit_event_id = 2;
+  google.protobuf.Timestamp erased_at = 3;
+}

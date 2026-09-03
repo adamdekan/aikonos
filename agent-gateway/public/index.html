@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aikonos — Agent Console</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --panel2:#1c2430; --line:#2b3340;
+          --fg:#e6edf3; --muted:#8b98a9; --accent:#4f9cf9; --ok:#3fb950;
+          --warn:#d29922; --deny:#f85149; --tool:#a371f7; --deleg:#3fb0d0; }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body { display:flex; flex-direction:column; height:100vh; overflow:hidden;
+         background:var(--bg); color:var(--fg);
+         font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+
+  /* pinned header */
+  header { flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:12px 18px;
+           border-bottom:1px solid var(--line); background:var(--panel); position:relative; z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.3px; }
+  header .tag { color:var(--muted); font-size:12px; }
+  header .spacer { flex:1; }
+  header select, header button.hbtn { background:var(--panel2); color:var(--fg);
+           border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  header button.hbtn:hover { border-color:var(--accent); }
+  .badge { display:inline-block; min-width:18px; text-align:center; margin-left:6px;
+           background:var(--deny); color:#fff; border-radius:999px; font-size:11px; padding:0 6px; }
+  .badge.zero { display:none; }
+
+  /* scrolling chat area (only this scrolls) */
+  #main { flex:1 1 auto; overflow-y:auto; padding:18px; }
+  .log { display:flex; flex-direction:column; gap:10px; max-width:860px; margin:0 auto; min-height:100%; }
+  .msg { padding:10px 14px; border-radius:10px; max-width:88%; white-space:pre-wrap; word-wrap:break-word; }
+  .user { align-self:flex-end; background:#1f3050; border:1px solid #294a73; }
+  .assistant { align-self:flex-start; background:var(--panel); border:1px solid var(--line); }
+  .card { align-self:flex-start; max-width:88%; border-radius:10px; padding:10px 14px;
+          border:1px solid var(--line); background:var(--panel2); font-size:13px; }
+  .card .h { display:flex; align-items:center; gap:8px; font-weight:600; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); }
+  .tool .h { color:var(--tool); }
+  .approve { border-color:var(--warn); background:#241d10; }
+  .approve .h { color:var(--warn); }
+  .deleg { border-color:var(--deleg); background:#10222a; }
+  .deleg .h { color:var(--deleg); }
+  .deny .h { color:var(--deny); }
+  .ok .h { color:var(--ok); }
+  pre { margin:6px 0 0; background:#0b0f14; border:1px solid var(--line); border-radius:8px;
+        padding:8px; overflow:auto; font-size:12px; color:#c9d4e0; max-height:220px; }
+  .btns { margin-top:8px; display:flex; gap:8px; }
+  button.act { cursor:pointer; border-radius:7px; border:1px solid var(--line); padding:7px 14px; font-weight:600; }
+  .b-approve { background:var(--ok); color:#06210f; border-color:var(--ok); }
+  .b-deny { background:var(--deny); color:#2a0a08; border-color:var(--deny); }
+  .muted { color:var(--muted); }
+
+  /* pinned composer */
+  #composer { flex:0 0 auto; border-top:1px solid var(--line); background:var(--bg); padding:12px 18px; }
+  #composer .inner { max-width:860px; margin:0 auto; display:flex; gap:10px; }
+  #prompt { flex:1; background:var(--panel); color:var(--fg); border:1px solid var(--line);
+            border-radius:10px; padding:11px 14px; font-size:14px; }
+  #send { background:var(--accent); color:#04183a; border-color:var(--accent); }
+  #send:disabled { opacity:.5; cursor:default; }
+
+  /* popovers */
+  .pop { position:absolute; top:52px; right:18px; width:360px; background:var(--panel);
+         border:1px solid var(--line); border-radius:10px; padding:14px; z-index:10;
+         box-shadow:0 12px 30px rgba(0,0,0,.45); display:none; }
+  .pop.open { display:block; }
+  .pop h3 { margin:0 0 10px; font-size:13px; }
+  .pop label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  .pop input, .pop textarea, .pop select { width:100%; background:var(--panel2); color:var(--fg);
+         border:1px solid var(--line); border-radius:7px; padding:8px; font-size:13px; }
+  .inbox-item { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; cursor:pointer; }
+  .inbox-item:hover { border-color:var(--deleg); }
+  .inbox-empty { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>aikonos</h1><span class="tag">Governed intelligence through trusted control.</span>
+  <span class="spacer"></span>
+  <button class="hbtn" id="delegateBtn">⇄ Delegate</button>
+  <button class="hbtn" id="inboxBtn">📥 Inbox<span class="badge zero" id="inboxBadge">0</span></button>
+  <label class="muted">acting as&nbsp;</label>
+  <select id="user">
+    <option value="alice@example.com">alice@example.com</option>
+    <option value="bob@example.com">bob@example.com</option>
+  </select>
+
+  <!-- delegate popover -->
+  <div class="pop" id="delegatePop">
+    <h3>Delegate a task</h3>
+    <label>From</label><input id="delFrom" readonly />
+    <label>To</label>
+    <select id="delTo"><option value="bob@example.com">bob@example.com</option><option value="alice@example.com">alice@example.com</option></select>
+    <label>Intent</label><textarea id="delIntent" rows="2">Triage the SIEM alert backlog and summarise findings.</textarea>
+    <label>Attenuated scopes (comma-separated; ⊆ your scopes)</label>
+    <input id="delScopes" value="siem:read" />
+    <div class="btns"><button class="act b-approve" id="delSend">Send delegation</button>
+      <button class="act" id="delCancel">Cancel</button></div>
+    <div class="muted" id="delMsg" style="margin-top:8px"></div>
+  </div>
+
+  <!-- inbox popover -->
+  <div class="pop" id="inboxPop">
+    <h3>Inbox — pending delegations</h3>
+    <div id="inboxList"><div class="inbox-empty">No pending delegations.</div></div>
+  </div>
+</header>
+
+<div id="main"></div>
+
+<div id="composer"><div class="inner">
+  <input id="prompt" placeholder="Ask the agent to do something…"
+         value="Fetch https://example.com and write a one-paragraph summary to summary.md" />
+  <button class="act" id="send">Send</button>
+</div></div>
+
+<script>
+const $main = document.getElementById("main");
+const $prompt = document.getElementById("prompt");
+const $send = document.getElementById("send");
+const $user = document.getElementById("user");
+const state = { user: $user.value };
+// Stable thread per user (per page load) → continuous conversation with memory.
+const threadIds = {};
+function threadFor(user){ if(!threadIds[user]) threadIds[user]=(crypto.randomUUID?crypto.randomUUID():String(Math.random())); return threadIds[user]; }
+
+function esc(s){ return (s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function scrollBottom(){ $main.scrollTop = $main.scrollHeight; }
+
+// ── per-user chat flows ───────────────────────────────────────────────
+const logs = {};
+function logFor(user){
+  if(!logs[user]){ const d=document.createElement("div"); d.className="log"; d.style.display="none"; $main.appendChild(d); logs[user]=d; }
+  return logs[user];
+}
+function add(user, cls, html){
+  const d=document.createElement("div"); d.className=cls; if(html!=null) d.innerHTML=html;
+  logFor(user).appendChild(d); if(user===state.user) scrollBottom(); return d;
+}
+function showUser(user){
+  state.user=user; logFor(user);
+  Object.entries(logs).forEach(([u,d])=>d.style.display = u===user?"flex":"none");
+  document.getElementById("delFrom").value = user;
+  document.getElementById("delTo").value = (user.startsWith("alice")?"bob":"alice")+"@example.com";
+  refreshInbox(); scrollBottom();
+}
+$user.onchange = ()=>{ closePops(); showUser($user.value); };
+
+// ── streaming a run for a given user ──────────────────────────────────
+async function run(){
+  const prompt=$prompt.value.trim(); if(!prompt) return;
+  const user=state.user;
+  $prompt.value=""; // clear the input as soon as the message is sent
+  $send.disabled=true; $prompt.disabled=true;
+  add(user,"msg user",esc(prompt));
+  let assistantEl=null; const toolEls={};
+  const appendAssistant=(delta)=>{ if(!assistantEl){ assistantEl=add(user,"msg assistant",""); } assistantEl.textContent+=delta; if(user===state.user) scrollBottom(); };
+  const endAssistant=()=>{ assistantEl=null; };
+  const toolCard=(id,name)=>{ endAssistant(); toolEls[id]=add(user,"card tool",`<div class="h">▶ ${esc(name)} <span class="pill">governed</span></div><pre>{}</pre>`); };
+  const toolResult=(id,content,isError)=>{ const d=toolEls[id]; const pre=`<pre>${esc(content).slice(0,1200)}</pre>`;
+    if(d){ d.className="card "+(isError?"deny":"ok"); const h=d.querySelector(".h"); h.innerHTML=(isError?"✖ ":"✔ ")+h.textContent.replace(/^[▶✔✖]\s*/,""); d.insertAdjacentHTML("beforeend",pre); }
+    else add(user,"card "+(isError?"deny":"ok"),`<div class="h">${isError?"✖":"✔"} ${esc(id)}</div>${pre}`); if(user===state.user) scrollBottom(); };
+  const approvalCard=(info)=>{ endAssistant();
+    const d=add(user,"card approve",
+      `<div class="h">⚠ approval required — ${esc(info.toolId)} <span class="pill">${info.stepUp?"STEP-UP":"human"}</span></div>
+       <div class="muted">${esc(info.reason)}</div><pre>${esc(JSON.stringify(info.args,null,2))}</pre>
+       <div class="btns"><button class="act b-approve">Approve</button><button class="act b-deny">Deny</button></div>`);
+    const done=(ok)=>{ d.querySelectorAll("button").forEach(b=>b.disabled=true);
+      d.querySelector(".btns").innerHTML = ok?'<span class="muted">✔ approved</span>':'<span class="muted">✖ denied</span>';
+      fetch("/approve/"+encodeURIComponent(info.toolCallId),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({approved:ok})}); };
+    d.querySelector(".b-approve").onclick=()=>done(true); d.querySelector(".b-deny").onclick=()=>done(false); };
+
+  const handle=(ev)=>{ switch(ev.type){
+    case "TEXT_MESSAGE_CONTENT": appendAssistant(ev.delta); break;
+    case "TEXT_MESSAGE_END": endAssistant(); break;
+    case "TOOL_CALL_START": toolCard(ev.toolCallId, ev.toolCallName); break;
+    case "TOOL_CALL_ARGS": { const d=toolEls[ev.toolCallId]; if(d){ try{ d.querySelector("pre").textContent=JSON.stringify(JSON.parse(ev.delta),null,2);}catch{} } break; }
+    case "TOOL_CALL_RESULT": toolResult(ev.toolCallId, ev.content, false); break;
+    case "CUSTOM":
+      if(ev.name==="aikonos.approval.request") approvalCard(ev.value);
+      else if(ev.name==="aikonos.tool.error") toolResult(ev.value.toolCallId, ev.value.content, true); break;
+    case "RUN_ERROR": add(user,"card deny",`<div class="h">✖ run error</div><pre>${esc(ev.message)}</pre>`); break;
+    case "RUN_FINISHED": endAssistant(); break;
+  } };
+
+  try{
+    const resp=await fetch("/agui",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user,prompt,threadId:threadFor(user)})});
+    const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf="";
+    for(;;){ const {value,done}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true});
+      let i; while((i=buf.indexOf("\n\n"))>=0){ const chunk=buf.slice(0,i); buf=buf.slice(i+2);
+        const line=chunk.split("\n").find(l=>l.startsWith("data:")); if(!line) continue;
+        try{ handle(JSON.parse(line.slice(5).trim())); }catch(e){} } }
+  }catch(e){ add(user,"card deny",`<div class="h">✖ connection error</div><pre>${esc(String(e))}</pre>`); }
+  $send.disabled=false; $prompt.disabled=false; $prompt.focus();
+}
+$send.onclick=run;
+$prompt.addEventListener("keydown",e=>{ if(e.key==="Enter") run(); });
+
+// ── popovers ──────────────────────────────────────────────────────────
+const $delPop=document.getElementById("delegatePop"), $inboxPop=document.getElementById("inboxPop");
+function closePops(){ $delPop.classList.remove("open"); $inboxPop.classList.remove("open"); }
+document.getElementById("delegateBtn").onclick=(e)=>{ e.stopPropagation(); const open=$delPop.classList.contains("open"); closePops(); if(!open){ document.getElementById("delFrom").value=state.user; $delPop.classList.add("open"); } };
+document.getElementById("inboxBtn").onclick=(e)=>{ e.stopPropagation(); const open=$inboxPop.classList.contains("open"); closePops(); if(!open){ $inboxPop.classList.add("open"); refreshInbox(true); } };
+document.body.addEventListener("click",(e)=>{ if(!e.target.closest(".pop") && !e.target.closest("header button")) closePops(); });
+document.getElementById("delCancel").onclick=closePops;
+
+// ── delegate ──────────────────────────────────────────────────────────
+document.getElementById("delSend").onclick=async ()=>{
+  const from=state.user, to=document.getElementById("delTo").value;
+  const intent=document.getElementById("delIntent").value.trim();
+  const scopes=document.getElementById("delScopes").value.split(",").map(s=>s.trim()).filter(Boolean);
+  const $m=document.getElementById("delMsg"); $m.textContent="Sending…";
+  const r=await fetch("/delegate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({from,to,intent,scopes})});
+  const j=await r.json();
+  if(j.ok){ $m.textContent="✔ delegated (envelope "+j.envelopeId.slice(0,8)+"…)";
+    add(from,"card deleg",`<div class="h">⇄ delegated to ${esc(to)}</div><div>${esc(intent)}</div><pre>scopes: ${esc(scopes.join(", "))}</pre>`);
+    setTimeout(()=>{ closePops(); refreshInbox(); },700);
+  } else { $m.textContent="✖ "+(j.error||"denied by policy"); }
+};
+
+// ── inbox ─────────────────────────────────────────────────────────────
+let lastInbox=[];
+async function refreshInbox(render){
+  try{
+    const r=await fetch("/inbox?user="+encodeURIComponent(state.user));
+    // The broker returns unresolved envelopes with status "delivered" (pending).
+    const j=await r.json(); const env=(j.envelopes||[]).filter(e=>["delivered","pending"].includes(e.status||"delivered"));
+    lastInbox=env;
+    const $b=document.getElementById("inboxBadge"); $b.textContent=env.length; $b.className="badge"+(env.length?"":" zero");
+    if(render) renderInbox();
+  }catch(e){}
+}
+function renderInbox(){
+  const $l=document.getElementById("inboxList");
+  if(!lastInbox.length){ $l.innerHTML='<div class="inbox-empty">No pending delegations.</div>'; return; }
+  $l.innerHTML="";
+  lastInbox.forEach(env=>{
+    const it=document.createElement("div"); it.className="inbox-item";
+    it.innerHTML=`<div><b>from ${esc(env.fromUserId)}</b></div><div class="muted">${esc(env.task?.intent||"(no intent)")}</div><div class="muted" style="font-size:11px">click to view in chat</div>`;
+    it.onclick=()=>{ closePops(); injectDelegation(env); };
+    $l.appendChild(it);
+  });
+}
+function injectDelegation(env){
+  const user=state.user;
+  const d=add(user,"card deleg",
+    `<div class="h">📥 delegation from ${esc(env.fromUserId)}</div>
+     <div>${esc(env.task?.intent||"(no intent)")}</div>
+     <div class="btns"><button class="act b-approve">Accept</button><button class="act b-deny">Reject</button></div>`);
+  const done=async(ok)=>{ d.querySelectorAll("button").forEach(b=>b.disabled=true);
+    const r=await fetch("/inbox/"+encodeURIComponent(env.envelopeId)+"/respond",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user,accepted:ok})});
+    const j=await r.json();
+    d.querySelector(".btns").innerHTML = ok
+      ? (j.success?'<span class="muted">✔ accepted — a task was created for you</span>':'<span class="muted">✖ accept failed</span>')
+      : '<span class="muted">✖ rejected</span>';
+    if(ok && j.success){ $prompt.value=env.task?.intent||""; $prompt.focus(); }
+    refreshInbox();
+  };
+  d.querySelector(".b-approve").onclick=()=>done(true); d.querySelector(".b-deny").onclick=()=>done(false);
+}
+
+// boot
+showUser(state.user);
+setInterval(()=>refreshInbox(false), 5000);
+</script>
+</body>
+</html>

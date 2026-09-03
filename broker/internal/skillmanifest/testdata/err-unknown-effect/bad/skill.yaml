@@ -1,0 +1,8 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: bad.unknown.effect
+spec:
+  capability_scope: something:read
+  effect_class: totally_made_up
+  tools: []

@@ -1,0 +1,13 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: web.fetch
+  version: 0.1.0
+  description: Fetch a URL and return its text content.
+spec:
+  capability_scope: web:read
+  effect_class: read_only
+  tools:
+    - name: fetch_url
+      effect_class: read_only
+      description: Fetch the text content of a URL.

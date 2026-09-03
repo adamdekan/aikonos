@@ -1,0 +1,196 @@
+# deploy/compose/compose.azure.yaml
+#
+# Azure VM overlay. Layers a Traefik edge + an oauth2-proxy tenant gate on top of
+# the base stack, and routes the public FQDN through them. Apply on TOP of the
+# base file (the azure .env sets COMPOSE_FILE so bare `docker compose` does this):
+#   docker compose -f compose.yaml -f deploy/compose/compose.azure.yaml --profile core up -d
+#
+# Identity: this overlay does NOT change the app's own OIDC — that swaps to Entra
+# via env (.env.azure: AIKONOS_OIDC_*, AIKONOS_WEBUI_OIDC_*). oauth2-proxy is an
+# ADDITIONAL edge gate ("hide the app"); the broker still validates the SPA's
+# Entra bearer to bind task ownership. Both point at the same single-tenant Entra
+# app → SSO → one login. Single-tenant app registration = "my tenant only".
+#
+# NOTE: the base file's `*hardening` YAML anchor does not cross compose files, so
+# the two new services inline the equivalent least-privilege fields.
+
+volumes:
+  traefik-acme:   # Let's Encrypt account + issued certs (acme.json)
+  vault-data:     # Durable Vault `file` storage backend (CP1.1) — replaces dev-mode inmem.
+
+services:
+
+  # ── Vault: durable `file` storage backend, no dev-mode ───────────────────────
+  # Base compose.yaml's vault service stays dev-mode for local dev; this overlay
+  # drops it for a real deploy. Init/unseal is a manual first-boot step — see
+  # docs/OPS-RUNBOOK.md "Vault operations". In-network reachability (plain HTTP,
+  # 0.0.0.0:8200 inside the `backend` network) is unchanged from dev-mode, so
+  # AIKONOS_VAULT_ADDR needs no edit — only the host port publish is dropped below.
+  vault:
+    # No explicit `-config` arg: the image's own entrypoint always injects
+    # `-config=/vault/config` for the `server` subcommand (verified against
+    # hashicorp/vault:1.17's docker-entrypoint.sh) — passing our own `-config`
+    # flag on top duplicates the listener stanza and the container fails to
+    # start ("address already in use"). Mounting vault.hcl into that directory
+    # (below) is sufficient.
+    command: ["server"]
+    # Dev-mode env vars (VAULT_DEV_*) are meaningless once -dev is dropped —
+    # reset rather than leave stale. SKIP_SETCAP: without IPC_LOCK/CAP_SETFCAP
+    # (dropped below — disable_mlock=true in vault.hcl instead), the entrypoint's
+    # unconditional `setcap cap_ipc_lock=+ep` on the vault binary fails outright
+    # and the container crash-loops.
+    environment: !override
+      SKIP_SETCAP: "true"
+    # IPC_LOCK dropped: vault.hcl sets disable_mlock=true instead. SETGID/SETUID
+    # kept: the image entrypoint still steps down from root via su-exec.
+    cap_add: !override
+      - SETGID
+      - SETUID
+    volumes:
+      - ./deploy/compose/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - vault-data:/vault/file
+    # read_only rootfs: file storage + config are on mounts above; /tmp is Vault's
+    # only other write target.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    # Base compose.yaml keeps vault's `ports:` for local-dev convenience (Vault
+    # CLI). Azure is network-reachable, so close it here — a durable prod Vault
+    # has no reason to be host-reachable; its listener is still TLS-disabled.
+    # Every consumer (broker via AIKONOS_VAULT_ADDR=http://vault:8200, the seed
+    # script, operator init/unseal) reaches it in-network or via
+    # `docker compose exec`.
+    ports: !reset []
+
+  # Base compose.yaml keeps openfga's/minio's `ports:` for local-dev convenience
+  # (host-run OpenFGA seed, MinIO console). Azure is network-reachable, so close
+  # both here — reach them via `docker compose exec <svc> ...` or in-network.
+  openfga:
+    ports: !reset []
+
+  minio:
+    ports: !reset []
+
+  # ── Edge reverse proxy: TLS termination + routing + ACME ─────────────────────
+  traefik:
+    image: traefik:v3.3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE   # bind :80/:443 despite cap_drop ALL
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: "1"
+    networks: [mesh]
+    ports:
+      - "80:80"
+      - "443:443"
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      # compose project name is `aikonos` (compose.yaml `name:`), so the mesh
+      # network is `aikonos_mesh`. Traefik dials backends over it.
+      - --providers.docker.network=aikonos_mesh
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/acme/acme.json
+    volumes:
+      # read-only docker socket: Traefik reads container labels for routing.
+      # Socket access is a known attack surface — acceptable for a dev VM; revisit
+      # (socket-proxy / file provider) before any prod promotion.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/acme
+    depends_on:
+      webui:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Tenant gate: oauth2-proxy (generic OIDC provider against single-tenant Entra) ─
+  # Generic `oidc` provider is the documented choice for a single-tenant app with
+  # no group-based authz. The single-tenant issuer is itself the "my tenant only"
+  # gate — a non-tenant account can never obtain a token.
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: "1"
+    networks: [mesh]
+    environment:
+      OAUTH2_PROXY_PROVIDER:        oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0
+      OAUTH2_PROXY_CLIENT_ID:       ${OAUTH2_PROXY_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET:   ${OAUTH2_PROXY_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET:   ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL:    https://${AIKONOS_FQDN}/oauth2/callback
+      OAUTH2_PROXY_HTTP_ADDRESS:    0.0.0.0:4180
+      OAUTH2_PROXY_REVERSE_PROXY:   "true"
+      # Pure forward-auth gate — no real upstream proxied through oauth2-proxy.
+      OAUTH2_PROXY_UPSTREAMS:       static://200
+      OAUTH2_PROXY_EMAIL_DOMAINS:   "*"
+      OAUTH2_PROXY_SCOPE:           "openid profile email"
+      # Entra v2 id_tokens may omit `email`; key the session on preferred_username
+      # and don't require email_verified (Entra doesn't send it).
+      OAUTH2_PROXY_OIDC_EMAIL_CLAIM: preferred_username
+      OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL: "true"
+      OAUTH2_PROXY_COOKIE_SECURE:   "true"
+      OAUTH2_PROXY_WHITELIST_DOMAINS: ${AIKONOS_FQDN}
+      # Auto-redirect to Entra instead of showing the oauth2-proxy sign-in button.
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # Make the verified access token available upstream if needed (defence-in-depth;
+      # the SPA still presents its own PKCE bearer to the gateway).
+      OAUTH2_PROXY_SET_AUTHORIZATION_HEADER: "true"
+      OAUTH2_PROXY_PASS_ACCESS_TOKEN:        "true"
+    labels:
+      - traefik.enable=true
+      # /oauth2/* (sign_in, start, callback, auth) — served by oauth2-proxy, NOT gated.
+      - traefik.http.routers.oauth2.rule=Host(`${AIKONOS_FQDN}`) && PathPrefix(`/oauth2/`)
+      - traefik.http.routers.oauth2.entrypoints=websecure
+      - traefik.http.routers.oauth2.tls.certresolver=le
+      - traefik.http.routers.oauth2.service=oauth2-proxy
+      - traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180
+      # forwardAuth middleware: protected routers call /oauth2/auth (200=pass, 401=deny).
+      - traefik.http.middlewares.oauth2-forwardauth.forwardauth.address=http://oauth2-proxy:4180/oauth2/auth
+      - traefik.http.middlewares.oauth2-forwardauth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.oauth2-forwardauth.forwardauth.authResponseHeaders=X-Auth-Request-User,X-Auth-Request-Email,X-Auth-Request-Access-Token,Authorization,Set-Cookie
+      # errors middleware: turn the 401 from forwardAuth into a 302 to the Entra
+      # sign-in (preserving the original URL via rd) — this is what redirects the
+      # browser to log in.
+      - traefik.http.middlewares.oauth2-errors.errors.status=401-403
+      - traefik.http.middlewares.oauth2-errors.errors.service=oauth2-proxy
+      - traefik.http.middlewares.oauth2-errors.errors.query=/oauth2/sign_in?rd={url}
+    restart: unless-stopped
+
+  # ── Route the SPA through the gate ───────────────────────────────────────────
+  webui:
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.webui.rule=Host(`${AIKONOS_FQDN}`)
+      - traefik.http.routers.webui.entrypoints=websecure
+      - traefik.http.routers.webui.tls.certresolver=le
+      # errors first (catch 401 → redirect), then forwardAuth (do the check).
+      - traefik.http.routers.webui.middlewares=oauth2-errors@docker,oauth2-forwardauth@docker
+      - traefik.http.services.webui.loadbalancer.server.port=4200
+
+  # ── External API surface (:8090, API-key auth) — bypasses the oauth2-proxy gate ─
+  # API-key clients carry no browser cookie, so this router has NO forwardAuth.
+  # The north port (:8080) is intentionally NOT routed publicly — the webui server
+  # reaches it in-mesh.
+  agent-gateway:
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.aikonos-ext.rule=Host(`${AIKONOS_API_FQDN}`)
+      - traefik.http.routers.aikonos-ext.entrypoints=websecure
+      - traefik.http.routers.aikonos-ext.tls.certresolver=le
+      - traefik.http.routers.aikonos-ext.service=aikonos-ext
+      - traefik.http.services.aikonos-ext.loadbalancer.server.port=8090

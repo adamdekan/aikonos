@@ -1,0 +1,73 @@
+apiVersion: aikonos.com/v1
+kind: Skill
+metadata:
+  name: doc.write
+  version: 0.1.0
+  description: Write a document to the user's workspace. Write-local only — no external access.
+  author: aikonos-platform
+  source_repo: https://github.com/YOUR_ORG/aikonos
+spec:
+  capability_scope: doc:write
+  effect_class: write_local
+
+  runtime: python-3.12
+
+  required_scopes:
+    - "fs:write:workspace/*/artifacts/*"
+
+  tools:
+    - name: write_document
+      description: Write content to a document in the user's workspace artifacts directory.
+      effect_class: write_local
+      input_schema:
+        type: object
+        required: [filename, content]
+        additionalProperties: false
+        properties:
+          filename:
+            type: string
+            pattern: "^[a-zA-Z0-9_\\-\\.]+\\.(md|txt|json|csv|html)$"
+            description: Filename. Alphanumeric, hyphens, underscores, dots. Safe extensions only.
+          content:
+            type: string
+            maxLength: 1000000   # 1MB text cap
+          format:
+            type: string
+            enum: [markdown, plaintext, json, csv, html]
+            default: markdown
+          overwrite:
+            type: boolean
+            default: false
+            description: If false and file exists, operation fails rather than overwriting.
+      output_schema:
+        type: object
+        properties:
+          artifact_id: {type: string}
+          filename: {type: string}
+          size_bytes: {type: integer}
+          written_at: {type: string, format: date-time}
+
+    - name: append_document
+      description: Append content to an existing document in the workspace.
+      effect_class: write_local
+      input_schema:
+        type: object
+        required: [artifact_id, content]
+        properties:
+          artifact_id: {type: string}
+          content: {type: string, maxLength: 100000}
+      output_schema:
+        type: object
+        properties:
+          artifact_id: {type: string}
+          new_size_bytes: {type: integer}
+
+  resource_limits:
+    cpu_cores: 0.25
+    memory_mb: 128
+    timeout_seconds: 10
+    max_tool_calls: 50
+    max_tokens: 5000
+
+  signature: ""
+  sbom_ref: ""

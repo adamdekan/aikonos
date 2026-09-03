@@ -1,0 +1,6 @@
+# DEV-ONLY generated cert material — do not commit private keys or certs.
+# Regenerate with: scripts/compose-dev-ca.sh
+*.crt
+*.key
+*.srl
+*.csr

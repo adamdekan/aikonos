@@ -1,0 +1,18 @@
+# provisioning.yaml.example — seed file for email-based JIT provisioning rules.
+#
+# Set AIKONOS_PROVISIONING_SEED_FILE to the path of a copy of this file
+# (with real matchers/groups) and bind-mount it into the broker container.
+# The broker inserts rules whose matchers are not already present on each boot.
+# Admin edits via the Provisioning tab win: existing matchers are never
+# overwritten.
+#
+# NOT auto-mounted; you must add the bind-mount and env var explicitly.
+#
+# rules:
+#   - matcher: "*@your-domain.com"     # domain wildcard: applied JIT at first login
+#     groups:
+#       - security-team
+#   - matcher: "alice@your-domain.com" # exact address: also applied immediately to
+#     groups:                           # already-seen users at rule creation time
+#       - security-team
+#       - admins
