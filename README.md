@@ -1,7 +1,13 @@
-<h1 align="center">Aikonos</h1>
+<p align="center">
+  <img src="docs/img/aikonos-wordmark.png" alt="Aikonos" height="80" />
+</p>
 
 <p align="center">
-  <strong>Run AI agents inside an enterprise without giving them the keys.</strong>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/eu-mark-dark.png" />
+    <img src="docs/img/eu-mark.png" alt="European Union" height="20" />
+  </picture>
+  &nbsp;<strong>AI control OS for enterprises</strong>
 </p>
 
 <p align="center">
