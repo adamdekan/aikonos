@@ -2,13 +2,13 @@
   <img src="docs/img/aikonos-wordmark.png" alt="Aikonos" height="80" />
 </p>
 
-<p align="center">
+<h3 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/eu-mark-dark.png" />
-    <img src="docs/img/eu-mark.png" alt="European Union" height="20" />
+    <img src="docs/img/eu-mark.png" alt="European Union" height="24" />
   </picture>
-  &nbsp;<strong>AI control OS for enterprises</strong>
-</p>
+  &nbsp;AI control OS for enterprises
+</h3>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0" /></a>
