@@ -198,6 +198,11 @@ package URL (purl). Listing every installed file would add thousands of entries
 per image and no further components; the signed digest already covers file
 integrity.
 
+The broker's own Go module is the one entry syft cannot version: Go keeps the
+version flags out of a binary built with `-trimpath`, and the build has no `.git`
+to stamp from. [`scripts/release-sbom-version.sh`](../scripts/release-sbom-version.sh)
+records it at the release version in both SBOMs before they are signed.
+
 CycloneDX is pinned to 1.6 and SPDX to 2.3, the versions current tooling reads.
 To feed one to a scanner or to Dependency-Track:
 

@@ -147,6 +147,74 @@ mkdir -p "${WORKDIR}/occupied" && touch "${WORKDIR}/occupied/leftover"
 run_case "assemble: refuses a non-empty output directory" nonzero assemble "${IMAGES}" "${WORKDIR}/occupied"
 
 # ---------------------------------------------------------------------------
+# release-sbom-version.sh: fills in this repository's own Go module version,
+# which syft lists as UNKNOWN for the broker, and touches nothing else.
+# ---------------------------------------------------------------------------
+echo "=== release-sbom-version.sh ==="
+SBOM_VERSION="${ROOT}/scripts/release-sbom-version.sh"
+MODULE="$(awk '$1 == "module" { print $2; exit }' "${ROOT}/go.mod")"
+SB="${WORKDIR}/sbom"
+mkdir -p "${SB}"
+
+# sbom_fixtures <dir> <module version>: a CycloneDX and an SPDX SBOM listing the
+# module at the given version, next to a dependency that has its own version.
+sbom_fixtures() {
+  mkdir -p "$1"
+  jq -n --arg m "${MODULE}" --arg v "$2" '{bomFormat: "CycloneDX", specVersion: "1.6", components: [
+    {type: "library", name: $m, version: $v, purl: ("pkg:golang/" + $m)},
+    {type: "library", name: "google.golang.org/grpc", version: "v1.65.0", purl: "pkg:golang/google.golang.org/grpc@v1.65.0"}]}' > "$1/s.cdx.json"
+  jq -n --arg m "${MODULE}" --arg v "$2" '{spdxVersion: "SPDX-2.3", packages: [
+    {name: $m, versionInfo: $v, externalRefs: [{referenceCategory: "PACKAGE-MANAGER", referenceType: "purl", referenceLocator: ("pkg:golang/" + $m)}]},
+    {name: "google.golang.org/grpc", versionInfo: "v1.65.0", externalRefs: [{referenceCategory: "PACKAGE-MANAGER", referenceType: "purl", referenceLocator: "pkg:golang/google.golang.org/grpc@v1.65.0"}]}]}' > "$1/s.spdx.json"
+}
+
+# expect_json <name> <file> <jq expression> <expected value>
+expect_json() {
+  local got
+  got="$(jq -r "$3" "$2")"
+  if [[ "${got}" == "$4" ]]; then
+    echo "PASS: $1"; pass=$((pass + 1))
+  else
+    echo "FAIL: $1 (got '${got}', expected '$4')"; fail=$((fail + 1))
+  fi
+}
+
+sbom_fixtures "${SB}/unknown" UNKNOWN
+run_case "sbom-version: fills an UNKNOWN module" 0 bash "${SBOM_VERSION}" "${VERSION}" "${SB}/unknown/s.cdx.json" "${SB}/unknown/s.spdx.json"
+assert_contains "sbom-version: reports one entry per format" "1 CycloneDX, 1 SPDX entries"
+expect_json "sbom-version: CycloneDX version" "${SB}/unknown/s.cdx.json" \
+  ".components[] | select(.name == \"${MODULE}\") | .version" "${VERSION}"
+expect_json "sbom-version: CycloneDX purl" "${SB}/unknown/s.cdx.json" \
+  ".components[] | select(.name == \"${MODULE}\") | .purl" "pkg:golang/${MODULE}@${VERSION}"
+expect_json "sbom-version: SPDX versionInfo" "${SB}/unknown/s.spdx.json" \
+  ".packages[] | select(.name == \"${MODULE}\") | .versionInfo" "${VERSION}"
+expect_json "sbom-version: SPDX purl" "${SB}/unknown/s.spdx.json" \
+  ".packages[] | select(.name == \"${MODULE}\") | .externalRefs[] | select(.referenceType == \"purl\") | .referenceLocator" \
+  "pkg:golang/${MODULE}@${VERSION}"
+expect_json "sbom-version: dependencies untouched (CycloneDX)" "${SB}/unknown/s.cdx.json" \
+  '.components[] | select(.name == "google.golang.org/grpc") | .version + " " + .purl' \
+  "v1.65.0 pkg:golang/google.golang.org/grpc@v1.65.0"
+expect_json "sbom-version: dependencies untouched (SPDX)" "${SB}/unknown/s.spdx.json" \
+  '.packages[] | select(.name == "google.golang.org/grpc") | .versionInfo' "v1.65.0"
+
+sbom_fixtures "${SB}/devel" "(devel)"
+run_case "sbom-version: fills a (devel) module" 0 bash "${SBOM_VERSION}" "${VERSION}" "${SB}/devel/s.cdx.json" "${SB}/devel/s.spdx.json"
+expect_json "sbom-version: (devel) replaced" "${SB}/devel/s.cdx.json" \
+  ".components[] | select(.name == \"${MODULE}\") | .version" "${VERSION}"
+
+sbom_fixtures "${SB}/known" v1.2.3
+before="$(cat "${SB}/known/s.cdx.json" "${SB}/known/s.spdx.json")"
+run_case "sbom-version: leaves a module that has a version" 0 bash "${SBOM_VERSION}" "${VERSION}" "${SB}/known/s.cdx.json" "${SB}/known/s.spdx.json"
+assert_contains "sbom-version: reports nothing filled" "0 CycloneDX, 0 SPDX entries"
+if [[ "$(cat "${SB}/known/s.cdx.json" "${SB}/known/s.spdx.json")" == "${before}" ]]; then
+  echo "PASS: sbom-version: files with nothing to fill are not rewritten"; pass=$((pass + 1))
+else
+  echo "FAIL: sbom-version: a file with nothing to fill was rewritten"; fail=$((fail + 1))
+fi
+
+run_case "sbom-version: refuses a missing SBOM" nonzero bash "${SBOM_VERSION}" "${VERSION}" "${SB}/none.cdx.json" "${SB}/none.spdx.json"
+
+# ---------------------------------------------------------------------------
 # verify-release.sh against the assembled release, with a cosign test double.
 # ---------------------------------------------------------------------------
 BIN="${WORKDIR}/bin"

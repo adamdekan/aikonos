@@ -33,20 +33,13 @@ RUN protoc --proto_path=. --proto_path=/usr/include \
     --go-grpc_out=. --go-grpc_opt=module=github.com/adamdekan/aikonos \
     proto/*.proto
 
-# Release version and commit, passed by scripts/release-image.sh. The -X flags
-# below are recorded in the binary's build info (`go version -m /broker`), which
-# is where SBOM tools read the broker's own version. .git is not in the build
-# context (Dockerfile.dockerignore), so a local build records these defaults.
-ARG VERSION=dev
-ARG REVISION=unknown
-
 # Build static binary — CGO disabled for distroless compatibility
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
     -trimpath \
     -ldflags="-s -w -extldflags=-static \
-      -X main.version=${VERSION} \
-      -X main.commit=${REVISION} \
+      -X main.version=$(git describe --tags --always 2>/dev/null || echo dev) \
+      -X main.commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
       -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o /broker \
     ./broker/cmd/broker

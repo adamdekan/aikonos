@@ -114,10 +114,6 @@ BUILD=(
   --label "org.opencontainers.image.version=${VERSION}"
   --label "org.opencontainers.image.created=${CREATED}"
   --label "org.opencontainers.image.licenses=Apache-2.0"
-  # Offered to every image; a Dockerfile that declares them uses them. The
-  # broker records them in its binary, where the SBOM reads its own version.
-  --build-arg "VERSION=${VERSION}"
-  --build-arg "REVISION=${REVISION}"
   --metadata-file "${WORKDIR}/metadata.json"
 )
 if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
@@ -151,6 +147,11 @@ SYFT_CHECK_FOR_APP_UPDATE=false SYFT_FILE_METADATA_SELECTION=none \
     --source-version "${VERSION}" \
     --output "cyclonedx-json@1.6=${OUT_DIR}/${NAME}.cdx.json" \
     --output "spdx-json@2.3=${OUT_DIR}/${NAME}.spdx.json"
+
+# syft cannot read the broker's own module version from its binary (see the
+# script); write the release version into both SBOMs before one is attested.
+bash "${SCRIPT_DIR}/release-sbom-version.sh" "${VERSION}" \
+  "${OUT_DIR}/${NAME}.cdx.json" "${OUT_DIR}/${NAME}.spdx.json"
 
 components="$(jq '[.components[]? | select(.type != "file")] | length' "${OUT_DIR}/${NAME}.cdx.json")"
 [[ "${components}" -gt 0 ]] || die "the SBOM for ${TAGGED} lists no components; refusing to publish an empty SBOM"
