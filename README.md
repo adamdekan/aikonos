@@ -203,7 +203,12 @@ running stack rather than only unit-tested.
 | Tool execution through the gates to the document service | Alert delivery to webhook or SMTP |
 | Agent isolation and credential separation | n-of-m approvals with production approver data |
 | Skill bundle grants, and denial for a non-admin | Independent security audit |
-| External agent API keys, mint through revoke | A tagged release through the signing pipeline |
+| External agent API keys, mint through revoke | |
+
+Release images are signed and carry SBOMs and build provenance.
+[v0.6.0](https://github.com/adamdekan/aikonos/releases/tag/v0.6.0) is the first,
+verified end to end from outside CI; see
+[`docs/14-signed-releases.md`](docs/14-signed-releases.md).
 
 Admin RPCs assume one tenant per broker. Three zero-trust findings are open by
 decision rather than oversight, each documented with its reasoning in
