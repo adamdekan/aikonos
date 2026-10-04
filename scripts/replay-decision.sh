@@ -136,7 +136,10 @@ fi
 
 # ── 3. Same policy, same input, same result ────────────────────────────────────
 server_version="$(jqr -r '.opa.opa_version // ""' "${WORK}/record.json")"
-local_version="$("${OPA_BIN}" version 2>/dev/null | awk '/^Version:/ { print $2; exit }')"
+# Captured first, then parsed: an awk that stops reading early would SIGPIPE
+# opa, and under pipefail that aborts the script.
+opa_version_out="$("${OPA_BIN}" version 2>/dev/null || true)"
+local_version="$(printf '%s\n' "${opa_version_out}" | awk '/^Version:/ { v = $2 } END { print v }')"
 if [[ -n "${server_version}" && "${server_version}" != "${local_version}" ]]; then
   say "  [!!] opa ${local_version:-unknown} here, ${server_version} on the server: a mismatch below may come from the engine, not the policy"
 fi
