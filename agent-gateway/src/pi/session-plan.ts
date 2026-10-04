@@ -16,8 +16,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  AuthStorage,
-  ModelRegistry,
   SessionManager,
   SettingsManager,
   DefaultResourceLoader,
@@ -31,6 +29,7 @@ import { Type } from "typebox";
 import type { InitMessage, McpTool, ConvMessage, SkillBundleEntry } from "../ipc/protocol.js";
 import type { BridgeClientLike } from "../ipc/bridge-client.js";
 import { makeTools, TOOL_NAMES } from "./tools.js";
+import { createInMemoryModelRuntime } from "./model-runtime.js";
 import { allowedPiToolNames, computeActiveToolNames, resolveEnvModel, type AgentSpec } from "./session.js";
 import { chatCandidates, type ChatProviderLike } from "../llm/provider-fallback.js";
 import { buildSkillCatalogText, makeLoadSkillTool, PERSONAL_SKILL_PREFIX } from "./load-skill.js";
@@ -237,9 +236,9 @@ export type CreateAgentSessionFn = (
 // CreateSessionDeps is the seam that createSessionFromPlan injects for tests.
 // The real Pi createAgentSession is the default; tests inject a fake.
 export interface CreateSessionDeps {
-  // Spy: called when a provider is registered into the model registry.
+  // Spy: called when a provider is registered into the model runtime.
   // Injected so tests can assert baseUrl + apiKey without touching the
-  // opaque ModelRegistry.
+  // opaque ModelRuntime.
   onRegisterProvider?: (providerId: string, baseUrl: string, apiKey: string) => void;
   // Override the Pi createAgentSession (default: the real SDK function).
   createAgentSession?: CreateAgentSessionFn;
@@ -486,8 +485,7 @@ export async function createSessionFromPlan(
 ): Promise<{ session: SessionLike; modelId: string }> {
   const doCreateAgentSession = deps.createAgentSession ?? piCreateAgentSession;
 
-  const authStorage = AuthStorage.inMemory();
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  const modelRuntime = await createInMemoryModelRuntime();
 
   // Determine provider registration params.
   const baseUrl = opts.useProxy ? plan.proxyBaseUrl : "https://openrouter.ai/api/v1";
@@ -496,7 +494,7 @@ export async function createSessionFromPlan(
   }
   const apiKey = opts.useProxy ? DUMMY_KEY : (deps.realApiKey ?? DUMMY_KEY);
 
-  modelRegistry.registerProvider("openrouter", {
+  modelRuntime.registerProvider("openrouter", {
     name: "OpenRouter",
     baseUrl,
     apiKey,
@@ -518,9 +516,7 @@ export async function createSessionFromPlan(
 
   deps.onRegisterProvider?.("openrouter", baseUrl, apiKey);
 
-  modelRegistry.refresh();
-
-  const model = modelRegistry.find("openrouter", plan.modelId);
+  const model = modelRuntime.getModel("openrouter", plan.modelId);
   if (!model) throw new Error(`createSessionFromPlan: could not resolve model openrouter/${plan.modelId}`);
 
   // Static tools filtered to allowedToolNames.
@@ -688,8 +684,7 @@ export async function createSessionFromPlan(
     cwd: process.cwd(),
     model,
     thinkingLevel: "off",
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     customTools,
     tools: activeToolNames,
     resourceLoader: loader,

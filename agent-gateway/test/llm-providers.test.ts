@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { resolveProviderModel } from "../src/pi/session";
+import { createInMemoryModelRuntime } from "../src/pi/model-runtime";
 import type { LlmModel, LlmProvider } from "../gen/ts/proto/broker";
 
 function mkModel(id: string, priceIn = 0, priceOut = 0): LlmModel {
@@ -88,10 +88,10 @@ test("resolveProviderModel: preference to a disabled provider falls back to defa
 
 // ── registerProviderModels: prices land in the model cost block ──────────────
 
-test("registered provider prices become the model cost block (Pi prices from this)", () => {
+test("registered provider prices become the model cost block (Pi prices from this)", async () => {
   // Inlines the provider-registration shape (name/baseUrl/apiKey/models/cost)
   // and asserts the cost block Pi actually prices turns from.
-  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  const registry = await createInMemoryModelRuntime();
   const provider = mkProvider({
     id: "openrouter",
     isDefault: true,
@@ -113,8 +113,7 @@ test("registered provider prices become the model cost block (Pi prices from thi
       maxTokens: 8192,
     })),
   });
-  registry.refresh();
-  const model = registry.find("openrouter", "sonnet");
+  const model = registry.getModel("openrouter", "sonnet");
   assert.ok(model);
   assert.equal(model.cost.input, 0.000003);
   assert.equal(model.cost.output, 0.000015);

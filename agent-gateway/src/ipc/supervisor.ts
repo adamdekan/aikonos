@@ -36,7 +36,7 @@ import { failedPreconditionError } from "../http-errors.js";
 // Allowlist rationale (each var justified by what the child actually reads):
 //   PATH                         — needed if Node or any subprocess resolves a
 //                                  binary by name (e.g. Pi SDK internal tooling)
-//   HOME                         — Pi SDK AuthStorage/SettingsManager use home
+//   HOME                         — Pi SDK ModelRuntime/SettingsManager use home
 //                                  dir as a fallback; all storage here is in-
 //                                  memory, but the SDK may still read HOME
 //   TMPDIR / TMP / TEMP          — os.tmpdir() reads these; createSessionFromPlan
