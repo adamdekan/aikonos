@@ -219,7 +219,32 @@ cosign verify-attestation --type cyclonedx \
   | jq -r '.payload' | head -n 1 | base64 -d | jq '.predicate' > sbom.cdx.json
 ```
 
-No vulnerability report or VEX ships with a release yet.
+---
+
+## The vulnerability gate
+
+Before an image is signed, the release workflow matches its CycloneDX SBOM
+against [grype](https://github.com/anchore/grype)'s vulnerability database.
+
+| Finding | Effect |
+|---------|--------|
+| Critical, and a fixed version exists | The release fails. The image stays unsigned, so it can never verify as part of a release |
+| Critical with no fix yet, or any lower severity | Reported, not blocked |
+
+The second row exists because base images carry distribution packages whose
+maintainers have not shipped a fix, for example in Debian 12. Blocking on those
+would block every release without making any image safer. They stay visible:
+the SBOMs are published, so you can run the same scan, on your own schedule,
+against the database of your choice.
+
+Each image's full report is kept as the run's `vulnerabilities-<name>` artifact
+for 30 days, and the run summary lists the counts per severity. The gate is a
+floor for what ships, not a statement that an image has no known
+vulnerabilities. A dry run applies the same gate, so a blocked image shows up
+before the tag does.
+
+No VEX statement ships with a release yet: a finding the code cannot reach is
+still listed as a finding.
 
 ---
 
@@ -254,7 +279,8 @@ No vulnerability report or VEX ships with a release yet.
    git push origin v1.2.3
    ```
 
-3. The workflow builds, pushes, signs and attests the images, assembles and
+3. The workflow builds and pushes the images, passes each through the
+   vulnerability gate, signs and attests them, assembles and
    signs the release files, verifies all of it with
    `scripts/verify-release.sh --provenance`, checks the images are public, and
    publishes the GitHub release. A tag with a pre-release suffix (`v1.2.3-rc.1`)
@@ -275,9 +301,9 @@ built from source.
 ### Updating the pipeline's tools
 
 The release workflow runs GitHub's own actions pinned by commit, BuildKit pinned
-by digest, and the cosign and syft binaries pinned by version and SHA-256. To bump
-cosign or syft, verify the new release with its publisher's signature first,
-then copy the checksum into the `env:` block of `release.yml`:
+by digest, and the cosign, syft and grype binaries pinned by version and SHA-256.
+To bump one of them, verify the new release with its publisher's signature
+first, then copy the checksum into the `env:` block of `release.yml`:
 
 ```bash
 # cosign: each binary is signed by the Sigstore project
@@ -289,11 +315,16 @@ cosign verify-blob --bundle cosign-linux-amd64.sigstore.json \
 cosign verify-blob --bundle syft_<version>_checksums.txt.sigstore.json \
   --certificate-identity https://github.com/anchore/syft/.github/workflows/release.yaml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com syft_<version>_checksums.txt
+
+# grype: signed the same way, by grype's own release workflow
+cosign verify-blob --bundle grype_<version>_checksums.txt.sigstore.json \
+  --certificate-identity https://github.com/anchore/grype/.github/workflows/release.yaml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com grype_<version>_checksums.txt
 ```
 
-Those two identities were correct for cosign v3.1.3 and syft v1.54.0. If a
-publisher changes how it signs, confirm the new identity from their documentation.
-Do not loosen the check to make it pass.
+Those identities were correct for cosign v3.1.3, syft v1.54.0 and grype
+v0.120.0. If a publisher changes how it signs, confirm the new identity from
+their documentation. Do not loosen the check to make it pass.
 
 ---
 
@@ -301,5 +332,6 @@ Do not loosen the check to make it pass.
 
 - `linux/amd64` only. The broker build cross-compiles for amd64 explicitly.
 - Not reproducible bit for bit yet (see above).
-- Third-party images are pinned, not re-signed.
-- No vulnerability report or VEX in a release yet.
+- Third-party images are pinned, not re-signed, and the vulnerability gate
+  does not scan them.
+- The gate blocks only Critical findings that have a fix. No VEX ships yet.

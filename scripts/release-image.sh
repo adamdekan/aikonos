@@ -8,12 +8,15 @@
 #
 #   PUBLISH=false (default) — dry run. Builds into the local Docker image store
 #     and writes the SBOMs from that image. Nothing leaves the machine. Safe to
-#     run locally to check that an image builds and what its SBOM contains.
+#     run locally to check that an image builds, what its SBOM contains and
+#     whether it passes the vulnerability gate.
 #   PUBLISH=true — release. Pushes "${IMAGE_PREFIX}/<name>:${VERSION}", takes the
 #     pushed digest from buildx's metadata, scans the image back from the
 #     registry by that digest so the SBOM describes exactly what was pushed,
-#     then signs the digest with cosign (keyless) and attests the CycloneDX SBOM
-#     to it. Refuses to run outside GitHub Actions: release signatures are
+#     then, if the vulnerability gate passes, signs the digest with cosign
+#     (keyless) and attests the CycloneDX SBOM to it. An image that fails the
+#     gate stays unsigned, so it can never verify as part of a release.
+#     Refuses to run outside GitHub Actions: release signatures are
 #     verified against the release workflow's identity, so an image pushed and
 #     signed from a laptop would only fail verification.
 #
@@ -21,15 +24,22 @@
 #   <name>.ref        "<compose service> <image>:<version>@<digest>"
 #   <name>.cdx.json   CycloneDX 1.6 SBOM
 #   <name>.spdx.json  SPDX 2.3 SBOM
+# in SCAN_DIR (default dist/scans):
+#   <name>.grype.json the full vulnerability report the gate was decided on
 # and, when GITHUB_OUTPUT is set, the step outputs `image` and `digest`.
 # In a dry run the digest is the local image ID: there is no registry manifest.
+#
+# The vulnerability gate fails the image when grype finds a vulnerability rated
+# Critical that already has a fixed version. Findings with no fix yet (often
+# distribution packages their maintainers have not patched) and lower
+# severities are reported, not blocked: the SBOMs let anyone track them.
 #
 # Usage:
 #   IMAGE_PREFIX=ghcr.io/<owner>/aikonos VERSION=v1.2.3 \
 #     scripts/release-image.sh --name broker --service broker \
 #       --context . --dockerfile broker/Dockerfile [--build-arg KEY=VALUE ...]
 #
-# Requires docker with buildx, syft and jq; cosign when publishing.
+# Requires docker with buildx, syft, grype and jq; cosign when publishing.
 
 set -euo pipefail
 
@@ -67,6 +77,7 @@ done
 : "${VERSION:?VERSION is required, e.g. v1.2.3}"
 PUBLISH="${PUBLISH:-false}"
 OUT_DIR="${OUT_DIR:-dist/images}"
+SCAN_DIR="${SCAN_DIR:-dist/scans}"
 
 # A Docker tag: no leading '.' or '-', at most 128 characters.
 [[ "${VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "VERSION is not a valid image tag: ${VERSION}"
@@ -81,7 +92,7 @@ case "${PUBLISH}" in
   false) ;;
   *) die "PUBLISH must be true or false, got: ${PUBLISH}" ;;
 esac
-for tool in docker syft jq; do
+for tool in docker syft grype jq; do
   command -v "${tool}" >/dev/null 2>&1 || die "${tool} not found on PATH"
 done
 
@@ -156,6 +167,32 @@ bash "${SCRIPT_DIR}/release-sbom-version.sh" "${VERSION}" \
 components="$(jq '[.components[]? | select(.type != "file")] | length' "${OUT_DIR}/${NAME}.cdx.json")"
 [[ "${components}" -gt 0 ]] || die "the SBOM for ${TAGGED} lists no components; refusing to publish an empty SBOM"
 log "  ${components} components"
+
+# The vulnerability gate (see the header). The report keeps every finding; the
+# gate counts only Critical ones with a fixed version available.
+log "Scanning the SBOM for known vulnerabilities..."
+mkdir -p "${SCAN_DIR}"
+REPORT="${SCAN_DIR}/${NAME}.grype.json"
+GRYPE_CHECK_FOR_APP_UPDATE=false \
+  grype "sbom:${OUT_DIR}/${NAME}.cdx.json" --quiet --output "json=${REPORT}"
+summary="$(jq -r '
+  [.matches[].vulnerability | {severity, fixed: (.fix.state == "fixed")}]
+  | group_by(.severity)
+  | map("\(.[0].severity) \(length) (\(map(select(.fixed)) | length) with a fix)")
+  | join(", ")' "${REPORT}")"
+log "  ${summary:-no known vulnerabilities}"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf '**%s**: %s\n\n' "${NAME}" "${summary:-no known vulnerabilities}" >> "${GITHUB_STEP_SUMMARY}"
+fi
+blocking="$(jq -r '
+  .matches[]
+  | select(.vulnerability.severity == "Critical" and .vulnerability.fix.state == "fixed")
+  | "\(.vulnerability.id) in \(.artifact.type) \(.artifact.name) \(.artifact.version), fixed in \(.vulnerability.fix.versions | join(" or "))"
+  ' "${REPORT}" | sort -u)"
+if [[ -n "${blocking}" ]]; then
+  printf '[release-image] Critical vulnerabilities with a fix available:\n%s\n' "${blocking}" >&2
+  die "${TAGGED} failed the vulnerability gate; update the packages above and rebuild (report: ${REPORT})"
+fi
 
 if [[ "${PUBLISH}" == "true" ]]; then
   # Keyless: the signing certificate is issued to this workflow run's GitHub
