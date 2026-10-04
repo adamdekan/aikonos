@@ -50,7 +50,9 @@ describe("router", () => {
     expect(router.currentRoute.value.matched.length).toBeGreaterThan(0);
     const component = router.currentRoute.value.matched[0]?.components?.default;
     expect(component).toBeTruthy();
-  });
+    // The first lazy route import transforms the whole chat view; on a cold
+    // transform cache that alone can exceed vitest's 5s default.
+  }, 30_000);
 
   // Regression: /skills (personal) and /admin/skills (admin bundles) must
   // resolve to DISTINCT components. A duplicate `Skills` import binding once
