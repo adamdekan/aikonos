@@ -232,11 +232,13 @@ No vulnerability report or VEX ships with a release yet.
    identity, so whoever can push one can produce a release that verifies.
 2. **Turn on immutable releases** in the repository settings. A published
    release's assets and tag then cannot be changed.
-3. **Make the packages public.** GHCR creates new packages as private. On the
-   first release the workflow pushes and signs the images, then stops before
-   publishing: a release whose images only the maintainer can pull is one
-   nobody else can verify. Set each `aikonos/<name>` package's visibility to
-   public (Package settings), then re-run the failed job.
+3. **Keep the packages public.** The workflow refuses to publish while any
+   image cannot be pulled anonymously: a release whose images only the
+   maintainer can pull is one nobody else can verify. For this repository GHCR
+   created the `aikonos/<name>` packages public with the first release
+   (v0.6.0), but GitHub documents private as the default for a new package. If
+   the check ever stops a release, set that package's visibility to public
+   (Package settings) and re-run the failed job.
 
 ### Each release
 

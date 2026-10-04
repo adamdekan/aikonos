@@ -245,8 +245,9 @@ jobs:
           cp "$PROVENANCE_BUNDLE" dist/release/provenance.sigstore.json
           bash scripts/verify-release.sh "$VERSION" --repo "$GITHUB_REPOSITORY" --dir dist/release --provenance
 
-      # GHCR creates new packages as private. A release whose images only the
-      # maintainer can pull is one nobody else can verify, so stop here.
+      # A new GHCR package can come out private (GitHub's documented default).
+      # A release whose images only the maintainer can pull is one nobody else
+      # can verify, so stop here.
       - name: Check the images are public
         if: env.PUBLISH == 'true'
         run: |
