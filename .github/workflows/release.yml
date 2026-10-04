@@ -74,7 +74,9 @@ jobs:
             version="$REF_NAME"
             publish=true
           else
-            version="dryrun-${GITHUB_SHA::12}"
+            # Shaped like a pre-release version so a dry run exercises what a
+            # release does with one (e.g. the broker SBOM reads it as v0.0.0-dryrun).
+            version="v0.0.0-dryrun.${GITHUB_SHA::12}"
             publish=false
           fi
           case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
