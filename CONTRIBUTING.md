@@ -19,8 +19,11 @@ task compose:verify  # smoke-test a running stack
 ```
 
 CI runs the same suites plus a compose config drift check, a migrations check,
-and an OpenSSF Scorecard scan. A pull request that fails locally will fail
-there too.
+an OpenSSF Scorecard scan, and `govulncheck`, which fails on any known
+vulnerability the broker can reach, in its dependencies or in the Go standard
+library it is built with. A pull request that fails locally will fail there
+too. A govulncheck failure can appear without any code change, when a new
+advisory is published; the fix is to update the affected module or Go version.
 
 A new service that compose builds from source also needs an entry in
 `.github/release-images.json`, so that releases build, sign and ship it. See
