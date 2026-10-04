@@ -114,6 +114,10 @@ BUILD=(
   --label "org.opencontainers.image.version=${VERSION}"
   --label "org.opencontainers.image.created=${CREATED}"
   --label "org.opencontainers.image.licenses=Apache-2.0"
+  # Offered to every image; a Dockerfile that declares them uses them. The
+  # broker records them in its binary, where the SBOM reads its own version.
+  --build-arg "VERSION=${VERSION}"
+  --build-arg "REVISION=${REVISION}"
   --metadata-file "${WORKDIR}/metadata.json"
 )
 if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
