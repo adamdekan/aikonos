@@ -30,7 +30,7 @@ architecture, not preferences.
 |---|---|
 | Kubernetes deployment (Helm chart, operator) | Compose-only deployment ends most enterprise evaluations before they start |
 | Independent security audit | A security product asserting its own posture is not evidence |
-| Signed releases, SBOM, reproducible images | Supply-chain expectations for anything in an authorization path |
+| Reproducible image builds | Release images are signed and carry SBOMs, which proves who built them. Only a bit-for-bit rebuild lets a third party confirm they follow from the source alone |
 | Agent inventory and lifecycle | Discovering, onboarding and retiring agent identities is currently manual |
 
 ## Under consideration

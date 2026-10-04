@@ -262,6 +262,13 @@ jobs:
       - name: Run env-drift check
         run: bash scripts/check-env-drift.sh
 
+      # The release workflow runs only on tags; this runs its local logic
+      # (scripts/release-assemble.sh, scripts/verify-release.sh) on every push.
+      # It also fails when compose.yaml gains a service that is built from
+      # source but has no entry in .github/release-images.json.
+      - name: Release scripts (overlay coverage, assembly, verification)
+        run: bash scripts/tests/release-scripts.test.sh
+
   scorecard:
     name: OpenSSF Scorecard
     runs-on: ubuntu-latest

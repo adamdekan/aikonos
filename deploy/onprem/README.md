@@ -129,13 +129,14 @@ broker ↔ agent-gateway mTLS.
 ### 4. Build and start the core stack
 
 ```bash
-# Build webui first — OIDC vars are baked into the SPA at build time.
-docker compose build webui
-
-# Bring up the full core stack (postgres, vault, nats, openfga, broker, gateway, webui).
-# Migrations run automatically before the broker starts.
+# Bring up the full core stack (postgres, vault, nats, openfga, broker, gateway, webui),
+# building the app images on the first run. Migrations run automatically before the broker
+# starts. The webui reads its OIDC settings from .env at container start.
 docker compose up -d
 ```
+
+To run the signed images of a tagged release instead of building from source, see
+[Signed release images](#signed-release-images-instead-of-building) below.
 
 ### 5. Seed Vault, OpenFGA, and skill bundles
 
@@ -436,11 +437,12 @@ cd ~/apps/aikonos
 docker compose up -d --force-recreate <service>
 ```
 
-**After any `AIKONOS_WEBUI_OIDC_*` change**, rebuild the webui:
+**After any `AIKONOS_WEBUI_OIDC_*` change**, recreate the webui. The SPA reads these at
+container start (`/runtime-config.js`), so no rebuild is needed:
 
 ```bash
 cd ~/apps/aikonos
-docker compose build webui && docker compose up -d --force-recreate webui
+docker compose up -d --force-recreate webui
 ```
 
 ---
@@ -460,7 +462,42 @@ COMPOSE_FILE=compose.yaml:deploy/compose/compose.onprem.yaml:deploy/compose/comp
 Refresh cadence: every dependency bump. Regenerate from a machine with Docker + network access
 (not necessarily on-prem itself) via `bash scripts/pin-image-digests.sh`, commit the result, then
 redeploy. Locally built images (broker, agent-gateway, webui) are pinned by the deployed commit,
-not by this file.
+not by this file, unless you run a release's signed images (next section).
+
+---
+
+## Signed release images (instead of building)
+
+A tagged release publishes every first-party image signed with cosign, with a CycloneDX SBOM
+and SLSA provenance, plus a `compose.release.yaml` overlay that runs those images by digest
+instead of building them on this server.
+
+The deploy directory must hold the compose files of the same tag: the overlay is supported only
+with the `compose.yaml` it was released with. A tag pushed to this host's repository is verified
+by the hook but deploys nothing, so push the tag, put that tag's tree in place, then:
+
+```bash
+cd ~/apps/aikonos
+bash scripts/verify-release.sh v1.2.3 --provenance   # downloads ./aikonos-v1.2.3, stops on any failed check
+cp aikonos-v1.2.3/compose.release.yaml deploy/compose/compose.release.yaml
+```
+
+Add the overlay last in `.env`, then pull and start:
+
+```bash
+# .env
+COMPOSE_FILE=compose.yaml:deploy/compose/compose.onprem.yaml:deploy/compose/compose.digests.yaml:deploy/compose/compose.release.yaml
+```
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+What runs is then what the release workflow built and signed, not a build from this server's
+checkout. While `.env` lists the overlay, do not deploy by pushing a branch: the hook would
+combine the overlay with that branch's compose files. Take the overlay out of `COMPOSE_FILE`
+first to return to building from source. Details, including verification without a checkout
+and air-gapped mirrors: [`docs/14-signed-releases.md`](../../docs/14-signed-releases.md).
 
 ---
 

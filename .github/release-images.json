@@ -1,0 +1,8 @@
+[
+  { "name": "broker",        "service": "broker",           "context": ".",             "dockerfile": "broker/Dockerfile" },
+  { "name": "agent-gateway", "service": "agent-gateway",    "context": ".",             "dockerfile": "agent-gateway/Dockerfile" },
+  { "name": "webui",         "service": "webui",            "context": "webui",         "dockerfile": "webui/Dockerfile" },
+  { "name": "office-worker", "service": "office-worker",    "context": "office-worker", "dockerfile": "office-worker/Dockerfile" },
+  { "name": "docs-site",     "service": "docs-site",        "context": "docs-site",     "dockerfile": "docs-site/Dockerfile", "build-arg": "DOCS_BASE=/docs" },
+  { "name": "docs-mcp",      "service": "aikonos-docs-mcp", "context": "docs-mcp",      "dockerfile": "docs-mcp/Dockerfile" }
+]

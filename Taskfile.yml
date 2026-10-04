@@ -67,6 +67,17 @@ tasks:
     cmds:
       - regal lint policies/opa/
 
+  # ── Releases (signed images + SBOMs; docs/14-signed-releases.md) ─────────────
+  release:verify:
+    desc: "Verify a published release before deploying it: task release:verify -- v1.2.3 [--provenance]"
+    cmds:
+      - bash scripts/verify-release.sh {{.CLI_ARGS}}
+
+  release:test:
+    desc: Test the release scripts (overlay coverage, assembly, verification); needs jq + docker compose, no registry
+    cmds:
+      - bash scripts/tests/release-scripts.test.sh
+
   # ── Docker compose deployment ────────────────────────────────────────────────
   # No host prep needed for an image build (H6): each service Dockerfile generates
   # its own proto stubs in-image, so `docker compose build` works from a clean

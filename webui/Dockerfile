@@ -5,7 +5,10 @@ WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-# OIDC config is baked into the SPA at build time by Vite (import.meta.env.VITE_*).
+# OIDC config is baked into the SPA at build time by Vite (import.meta.env.VITE_*)
+# as a fallback: at runtime server.mjs serves the container's AIKONOS_WEBUI_OIDC_*
+# values as /runtime-config.js, and those win. Release images are built without
+# these ARGs, so one image serves any identity provider (docs/14-signed-releases.md).
 # The ARGs must be declared here so Docker exposes them as env vars for npm run build.
 ARG VITE_OIDC_AUTHORITY
 ARG VITE_OIDC_CLIENT_ID

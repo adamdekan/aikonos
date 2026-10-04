@@ -1,0 +1,287 @@
+name: Release
+
+# Builds, signs and publishes a release when a vMAJOR.MINOR.PATCH tag is pushed.
+# Each first-party image listed in .github/release-images.json is
+#   - pushed to GHCR for linux/amd64 and addressed by digest,
+#   - signed with cosign, keylessly: the certificate names this workflow at this
+#     tag, and the signature is recorded in Sigstore's public transparency log,
+#   - given a CycloneDX SBOM, attached as a signed attestation and published
+#     (with an SPDX copy) as a release asset,
+#   - given SLSA build provenance through GitHub artifact attestations.
+# The GitHub release then carries the SBOMs, a compose overlay that pins the
+# images by digest, the source tarball, and SHA256SUMS signed the same way. It
+# is published only after scripts/verify-release.sh passes against all of it.
+#
+# Run it by hand (Actions > Release > Run workflow) on any branch for a dry run:
+# it builds every image, writes every SBOM and assembles the release files,
+# but pushes, signs and publishes nothing.
+#
+# Third-party code is kept to GitHub's own actions, pinned by commit, and the
+# cosign and syft CLIs, pinned by version and checksum, for the same reason as
+# the scorecard job in ci.yml. Cutting and verifying a release:
+# docs/14-signed-releases.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  COSIGN_VERSION: v3.1.3
+  COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+  SYFT_VERSION: 1.54.0
+  SYFT_SHA256: 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860
+  BUILDKIT_IMAGE: moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      publish: ${{ steps.meta.outputs.publish }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      image-prefix: ${{ steps.meta.outputs.image-prefix }}
+      images: ${{ steps.meta.outputs.images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the version and the image list
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            # The tag is part of the signing identity verifiers pin, so only a
+            # well-formed release version is allowed to publish.
+            if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag '$REF_NAME' is not vMAJOR.MINOR.PATCH[-PRERELEASE]; nothing was published"
+              exit 1
+            fi
+            version="$REF_NAME"
+            publish=true
+          else
+            version="dryrun-${GITHUB_SHA::12}"
+            publish=false
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "prerelease=$prerelease"
+            echo "image-prefix=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "images=$(jq -c . .github/release-images.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "**${version}** (publish: ${publish})" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    name: Image ${{ matrix.name }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read       # checkout
+      packages: write      # push the image, its signature and its attestations to GHCR
+      id-token: write      # keyless Sigstore signing (cosign and actions/attest)
+      attestations: write  # SLSA build provenance
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.images) }}
+    env:
+      IMAGE_PREFIX: ${{ needs.prepare.outputs.image-prefix }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cosign and syft
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum -c
+          install -m 0755 cosign bin/cosign
+          curl -sSfL -o syft.tar.gz "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  syft.tar.gz" | sha256sum -c
+          tar -xzf syft.tar.gz -C bin syft
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          bin/cosign version
+          bin/syft version
+
+      # A BuildKit container rather than the Docker daemon's builder: it pushes
+      # straight to the registry and reports the pushed digest. Pinned by digest.
+      - name: Set up BuildKit
+        run: |
+          docker buildx create --name release --driver docker-container \
+            --driver-opt "image=${BUILDKIT_IMAGE}" --bootstrap --use
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+
+      - name: Build, write the SBOMs, push and sign
+        id: image
+        env:
+          NAME: ${{ matrix.name }}
+          SERVICE: ${{ matrix.service }}
+          CONTEXT: ${{ matrix.context }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          BUILD_ARG: ${{ matrix.build-arg }}
+        run: |
+          set -euo pipefail
+          args=(--name "$NAME" --service "$SERVICE" --context "$CONTEXT" --dockerfile "$DOCKERFILE")
+          if [ -n "$BUILD_ARG" ]; then args+=(--build-arg "$BUILD_ARG"); fi
+          bash scripts/release-image.sh "${args[@]}"
+
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.image }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+
+      - name: Hand the image record and SBOMs to the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.name }}
+          path: dist/images/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Release
+    needs: [prepare, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write      # create the GitHub release
+      packages: read       # read the images back to verify them
+      id-token: write      # keyless signing of SHA256SUMS
+      attestations: write  # SLSA provenance of the release files
+    env:
+      IMAGE_PREFIX: ${{ needs.prepare.outputs.image-prefix }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum -c
+          install -m 0755 cosign bin/cosign
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          bin/cosign version
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-*
+          path: dist/images
+          merge-multiple: true
+
+      # Also fails the release if compose.yaml has a service that would still
+      # be built from source, so no first-party image ships unsigned.
+      - name: Assemble the release files and check the overlay
+        run: bash scripts/release-assemble.sh
+
+      - name: Sign SHA256SUMS
+        if: env.PUBLISH == 'true'
+        run: cosign sign-blob --yes --bundle dist/release/SHA256SUMS.sigstore.json dist/release/SHA256SUMS
+
+      - name: Attest provenance of the release files
+        id: attest
+        if: env.PUBLISH == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/release/SHA256SUMS
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+
+      # The same checks a user runs, against exactly what is about to ship.
+      - name: Verify the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$PROVENANCE_BUNDLE" dist/release/provenance.sigstore.json
+          bash scripts/verify-release.sh "$VERSION" --repo "$GITHUB_REPOSITORY" --dir dist/release --provenance
+
+      # GHCR creates new packages as private. A release whose images only the
+      # maintainer can pull is one nobody else can verify, so stop here.
+      - name: Check the images are public
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          private=""
+          while read -r ref; do
+            repo="${ref#ghcr.io/}"
+            repo="${repo%%:*}"
+            token="$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty' || true)"
+            if [ -z "$token" ] || ! curl -fsS -o /dev/null -H "Authorization: Bearer ${token}" \
+                -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json" \
+                "https://ghcr.io/v2/${repo}/manifests/${ref##*@}"; then
+              private="${private} ${repo}"
+            fi
+          done < dist/release/images.txt
+          if [ -n "$private" ]; then
+            echo "::error::not publicly pullable:${private}. Set each package's visibility to Public (Package settings > Danger Zone), then re-run this job."
+            exit 1
+          fi
+
+      - name: Publish the GitHub release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=(--verify-tag --title "$VERSION" --notes-file dist/release-notes.md --generate-notes)
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$VERSION" dist/release/* --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+
+      - name: Keep the dry-run output
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dry-run
+          path: |
+            dist/release/
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 7

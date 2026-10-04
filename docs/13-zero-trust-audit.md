@@ -44,7 +44,7 @@ verdict.
 | 5 | Output content filtering (PII/creds) | PASS |
 | 5 | Spotlighting (untrusted content demarcation) | WARN |
 | 6 | AI-BOM (OWASP) | PASS |
-| 6 | Signed compose / service images | RISK-ACCEPTED |
+| 6 | Signed compose / service images | **WARN (2026-10-04)** |
 | 7 | Audit HMAC signing key (KMS) | PASS |
 | 7 | Vault durable storage (was: inmem in dev) | **PASS (2026-08-07)** |
 | 7 | Per-agent-type distinct Vault credential | RISK-ACCEPTED |
@@ -56,9 +56,10 @@ Zero unaccepted Enterprise-tier ❌ **FAIL** remain. Applying the spec's certifi
 literally — flip to CERTIFIED only if no Enterprise ❌ remains unaccepted; RISK-ACCEPTED rows are
 not blockers. **Enterprise is now ✅ CERTIFIED.**
 
-Two E-tier rows are WARN, not FAIL — they do not block certification per the rule above, but are
-recorded here as explicit non-blocking caveats rather than silently dropped (a third, Vault inmem
-in dev, cleared to PASS on 2026-08-07 — see the update section below):
+Three E-tier rows are WARN, not FAIL — they do not block certification per the rule above, but are
+recorded here as explicit non-blocking caveats rather than silently dropped (a fourth, Vault inmem
+in dev, cleared to PASS on 2026-08-07 — see the update section below; signed service images moved
+up from RISK-ACCEPTED on 2026-10-04 — see Domain 6):
 
 - **Spotlighting (Domain 5)** — model-compliance, not structurally enforced. The instruction is
   present and pinned by a red-first test, but a sufficiently capable prompt-injection could still
@@ -68,6 +69,10 @@ in dev, cleared to PASS on 2026-08-07 — see the update section below):
   (`git-deploy-hook.sh`) but defaults to warn-and-proceed until `AIKONOS_DEPLOY_ALLOWED_SIGNERS`
   is configured, and only covers the on-prem git-push deploy path (azure/local have no
   equivalent).
+- **Signed service images (Domain 6)** — built, not yet exercised, and adoption-gated. The release
+  workflow signs every first-party image and attests its SBOM and provenance, but no tagged release
+  has run through it yet, and a deployment that builds from source (local, the on-prem git-push
+  hook) still runs unsigned local builds.
 
 No other Enterprise-tier row was found unaccepted on this census — the automated baseline
 learner closed the one real remaining gap; there was no second gap hiding behind it.
@@ -316,11 +321,11 @@ auto-recall, and closes no class.
 |---------|------|--------|----------|
 | `go.sum` + `package-lock.json` present | F | ✅ PASS | Dependency graph reproducible; no floating version resolution |
 | MCP server authentication required | F | ⚠️ RISK-ACCEPTED | Not enforced at registration, but MCP connection is admin-only — admins vet each local server (trust boundary = admin, already higher-privilege). `mcp-echo` gated to `dev` profile. Reopens if MCP attach becomes non-admin. `ROADMAP.md` → ZT6. **Extends to `aikonos-mcp-grafana`** (`compose.yaml:758-827`) on the same terms — see the 2026-08-07 note below for why, and for the one property that differs |
-| CI / automated build and test gate | F | ✅ PASS | `.github/workflows/ci.yml` — 7 blocking jobs (`broker-test` `:14`, `policy-test` `:43`, `gateway-test` `:62`, `webui-test` `:92`, `docs-mcp-test` `:122`, `migrations` `:144`, `compose-config` `:210`) plus an informational, checksum-pinned `scorecard` job (`:265`, `continue-on-error: true` at `:274`); all official GitHub-maintained actions |
+| CI / automated build and test gate | F | ✅ PASS | `.github/workflows/ci.yml` — 7 blocking jobs (`broker-test` `:14`, `policy-test` `:43`, `gateway-test` `:62`, `webui-test` `:92`, `docs-mcp-test` `:122`, `migrations` `:144`, `compose-config` `:210`) plus an informational, checksum-pinned `scorecard` job (`:272`, `continue-on-error: true` at `:281`); all official GitHub-maintained actions |
 | Docker image versioned tags | F | ✅ PASS | Azure/onprem prod overlays now pin every pulled image by digest: `scripts/pin-image-digests.sh` resolves `RepoDigests` for every `image:` across the base + overlays and writes the checked-in `deploy/compose/compose.digests.yaml`; documented prod invocation appends `-f deploy/compose/compose.digests.yaml` (`deploy/compose/README.md` "Supply chain", `deploy/onprem/README.md`); `compose-config` CI parses base+azure+digests and base+onprem+digests. Local dev deliberately keeps mutable tags (fast iteration) — that scope is unchanged and not a gap |
 | OpenSSF Scorecard in CI | F | ✅ PASS | `scorecard` job in `.github/workflows/ci.yml` — checksum-pinned Scorecard CLI v5.5.0, informational (non-blocking), uploads results artifact |
 | AI-BOM (OWASP) | E | ✅ PASS | `scripts/generate-ai-bom.sh` generates the committed `docs/AI-BOM.md` — LLM providers (name/dialect/model id/vision capability, never key material; committed form documents dev/test rows are deliberately excluded and regenerates against a live deployment with `--live-db`), skill bundles + `sbom_ref`, Pi harness + broker versions |
-| Signed compose / service images | E | ⚠️ RISK-ACCEPTED | `scripts/git-deploy-hook.sh` verifies the pushed ref's tip commit/tag SSH/GPG signature against an allowed-signers file before checkout+build on the on-prem git-push deploy path — this signs the **source tree** the images are built from, not the built images themselves. Registry-based cosign image signing is deferred — it would reopen if images are ever pushed to a registry. The source-signing mechanism itself is adoption-gated: defaults to warn-and-proceed if `AIKONOS_DEPLOY_ALLOWED_SIGNERS` is absent; `AIKONOS_DEPLOY_REQUIRE_SIGNED=true` fails closed once the file exists (`deploy/onprem/README.md` "Signing setup") |
+| Signed compose / service images | E | ⚠️ WARN | `.github/workflows/release.yml`, on a `v*` tag: each first-party image in `.github/release-images.json` is pushed to GHCR by digest, signed with cosign keyless (certificate identity = this workflow at this tag, logged in Sigstore's public transparency log), given a signed CycloneDX SBOM attestation (`scripts/release-image.sh`) and SLSA provenance (`actions/attest`). The release carries a digest-pinned `compose.release.yaml` and `SHA256SUMS` signed the same way (`scripts/release-assemble.sh`); `scripts/verify-release.sh` checks all of it, and the workflow runs it against everything before publishing. **WARN, not PASS:** no tagged release has run through it yet, and a deployment that builds from source (local, the on-prem git-push path) still runs unsigned local builds — for that path `scripts/git-deploy-hook.sh`'s source-tree signature check remains the control, adoption-gated as before (`AIKONOS_DEPLOY_ALLOWED_SIGNERS`, `AIKONOS_DEPLOY_REQUIRE_SIGNED=true`). Flips to PASS once a tagged release has published and verified and the deploy guides default to the release overlay. See `docs/14-signed-releases.md` |
 | Immutable MCP server hosting | A | ❌ FAIL | No immutable registry; local builds via `--build` |
 
 **Remediation:**
@@ -354,6 +359,11 @@ Viewer and this becomes a genuine write path — reopen this row if that happens
 ever becomes non-admin.
 
 **2026-07-04 update (CP3.1/CP3.2/CP3.3).** Three rows move: (1) Docker image versioned tags WARN→PASS — prod overlays now pin by digest via the new `pin-image-digests.sh`/`compose.digests.yaml` pair, resolving the digest-pin remediation bullet (removed above); (2) AI-BOM FAIL→PASS — `generate-ai-bom.sh` + committed `docs/AI-BOM.md`; (3) Signed compose / service images FAIL→RISK-ACCEPTED — `git-deploy-hook.sh`'s new source-tree signature verification is a deliberate substitute for registry image signing (cosign stays a documented non-goal), not the row's literal ask; the substitute is itself adoption-gated per the evidence above.
+
+**2026-10-04 update — signed release images.** The reopen condition recorded above ("if images are ever pushed to a registry") is now met, so the row is re-assessed rather than left accepted. The literal ask is built: a tag-triggered release workflow pushes, signs and attests every first-party image, and publishes a compose overlay that runs those images by digest in place of local builds. The row moves RISK-ACCEPTED→WARN, not to PASS, for two stated reasons: the pipeline is unexercised until the first `v*` tag, and building from source remains a supported path that does not use it. Three properties are worth recording for the next pass:
+- The signing identity is pinned exactly (`--certificate-identity`, never a regexp), so a fork, a branch, another workflow file or another tag fails verification; `scripts/tests/release-scripts.test.sh` asserts the exact flags `verify-release.sh` passes to cosign.
+- Whoever can push a `v*` tag can produce a release that verifies. Tag protection, documented in `docs/14-signed-releases.md`, is the control; it is a repository setting, not code, so this pass cannot evidence it.
+- The release overlay cannot silently leave a service unsigned: `release-assemble.sh` fails the release if any service outside the test-only `dev` profile would still be built from source, and CI runs the same check on every push (`compose-config` job).
 
 ---
 
@@ -503,6 +513,7 @@ All Foundation-tier governance controls now in place. One Advanced gap remains.
 | P3 | 5 | Add spotlighting delimiters to Pi system prompt template | ✅ done |
 | P3 | 5 | Add output credential-pattern scan before SSE flush | ✅ done |
 | P3 | 6 | Pin Docker image tags to digests in `compose.yaml` | ✅ done — `scripts/pin-image-digests.sh` + `deploy/compose/compose.digests.yaml`, prod overlays |
+| P3 | 6 | Sign first-party service images, with SBOM and provenance | ✅ built — `.github/workflows/release.yml` + `scripts/verify-release.sh` (2026-10-04); first tagged release pending, see Domain 6 |
 | P3 | 1 | Gate `mcp-echo` to dev/test compose profiles only | ✅ done |
 
 ---

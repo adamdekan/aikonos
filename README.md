@@ -203,7 +203,7 @@ running stack rather than only unit-tested.
 | Tool execution through the gates to the document service | Alert delivery to webhook or SMTP |
 | Agent isolation and credential separation | n-of-m approvals with production approver data |
 | Skill bundle grants, and denial for a non-admin | Independent security audit |
-| External agent API keys, mint through revoke | |
+| External agent API keys, mint through revoke | A tagged release through the signing pipeline |
 
 Admin RPCs assume one tenant per broker. Three zero-trust findings are open by
 decision rather than oversight, each documented with its reasoning in
@@ -219,6 +219,7 @@ decision rather than oversight, each documented with its reasoning in
 | [`docs/02-policy-model.md`](docs/02-policy-model.md) | Access, routing and capability model |
 | [`docs/04-threat-model.md`](docs/04-threat-model.md) | Threat model |
 | [`docs/10-enable-enforcement.md`](docs/10-enable-enforcement.md) | Turning enforcement on and validating it |
+| [`docs/14-signed-releases.md`](docs/14-signed-releases.md) | Signed release images, SBOMs and provenance: verifying a release and deploying from it |
 | [`docs/OPS-RUNBOOK.md`](docs/OPS-RUNBOOK.md) | Startup, operations, incident response |
 | [`deploy/compose/README.md`](deploy/compose/README.md) | Operator guide: profiles, volumes, backup, recovery |
 | [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability, scope, known limitations |

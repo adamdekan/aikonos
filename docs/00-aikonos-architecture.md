@@ -279,5 +279,5 @@ column is what the Compose deployment actually runs.
 | Inter-agent bus | NATS JetStream (mTLS + JWT accounts) | NATS JetStream Compose service |
 | Capabilities | Biscuit tokens | Biscuit tokens (root key read-or-created in Vault) |
 | Audit | OpenTelemetry + Falco + Tetragon + immutable object store | OpenTelemetry (obs profile) + MinIO WORM object-lock |
-| Artifact signing | Sigstore/cosign + in-toto attestations | deferred |
+| Artifact signing | Sigstore/cosign + in-toto attestations | Release images signed with cosign keyless, with in-toto CycloneDX SBOM and SLSA provenance attestations (`.github/workflows/release.yml`, `docs/14-signed-releases.md`); skills and MCP servers are not signed |
 | Broker | Python or Go service | Go service |

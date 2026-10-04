@@ -14,12 +14,17 @@ Run what CI runs:
 task broker:test     # Go unit tests
 task policy:test     # OPA policy tests
 task test:all        # gateway, webui and docs-mcp suites
+task release:test    # release scripts; fails if a built service has no release image
 task compose:verify  # smoke-test a running stack
 ```
 
 CI runs the same suites plus a compose config drift check, a migrations check,
 and an OpenSSF Scorecard scan. A pull request that fails locally will fail
 there too.
+
+A new service that compose builds from source also needs an entry in
+`.github/release-images.json`, so that releases build, sign and ship it. See
+[`docs/14-signed-releases.md`](docs/14-signed-releases.md).
 
 ## Two conventions that are enforced
 

@@ -405,7 +405,7 @@ image (postgres, vault, nats, keycloak, minio, opa, openfga, otel-collector, gra
 tempo, prometheus, traefik, oauth2-proxy, ...) to a `@sha256:...` digest instead of a mutable
 tag. Locally built services (broker, agent-gateway, webui, aikonos-docs-mcp, mcp-echo)
 have no upstream pulled image and are not covered — they're pinned by the git commit that builds
-them.
+them, or, from a tagged release, by the release overlay below.
 
 **Prod deploys** append it with an extra `-f` (or add it to `.env`'s `COMPOSE_FILE` colon-list,
 same mechanism the azure/onprem overlays already use):
@@ -429,6 +429,28 @@ The script needs Docker + network access to `docker pull` each image; it never e
 `compose.yaml` or the overlays, and fails loud (naming the image) if any pull or digest
 resolution fails — it never writes a partial file. CI parses the digests overlay on top of both
 prod variants but does not run the pin script (it needs live pulls).
+
+---
+
+## Supply chain — signed release images (prod)
+
+Every tagged release publishes the first-party services (broker, agent-gateway, webui,
+office-worker, docs-site, aikonos-docs-mcp) as images signed with cosign, each with a CycloneDX
+SBOM attestation and SLSA build provenance. The release's `compose.release.yaml` is the
+counterpart of `compose.digests.yaml` for those services: it replaces their source builds with
+the release images, pinned by digest. Layer it last, after the digest pins:
+
+```bash
+scripts/verify-release.sh v1.2.3      # check signatures, SBOMs and checksums; downloads the overlay
+cp aikonos-v1.2.3/compose.release.yaml deploy/compose/compose.release.yaml
+# .env: COMPOSE_FILE=compose.yaml:deploy/compose/compose.onprem.yaml:deploy/compose/compose.digests.yaml:deploy/compose/compose.release.yaml
+docker compose pull && docker compose up -d
+```
+
+The overlay belongs to one version: use it with the compose files from the same tag. The webui
+reads its OIDC settings at container start, so the pulled image needs no rebuild. What the
+signatures prove, mirrors and air-gapped sites, and cutting a release:
+[`docs/14-signed-releases.md`](../../docs/14-signed-releases.md).
 
 ---
 

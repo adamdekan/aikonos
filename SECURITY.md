@@ -24,6 +24,22 @@ with you and credit you in the advisory unless you ask otherwise.
 
 Pre-1.0. Only the latest tagged release receives fixes. There are no backports.
 
+## Verifying a release
+
+The images of every tagged release are signed with cosign by this repository's
+release workflow, without a long-lived key, and each carries a CycloneDX SBOM
+attestation and SLSA build provenance. Verify a release before you deploy it:
+
+```bash
+scripts/verify-release.sh v1.2.3 --provenance
+```
+
+Accept exactly one signer:
+`https://github.com/adamdekan/aikonos/.github/workflows/release.yml@refs/tags/<version>`,
+issued by `https://token.actions.githubusercontent.com`. What a valid signature
+proves, and what it does not, is set out in
+[docs/14-signed-releases.md](docs/14-signed-releases.md).
+
 ## Scope
 
 In scope: anything that lets a principal act outside its granted authority.

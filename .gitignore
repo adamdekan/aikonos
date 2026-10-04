@@ -68,6 +68,13 @@ charts/*.tgz
 .vm/
 repos/
 
+# ── Releases (docs/14-signed-releases.md) ────────────────────────────────────
+# A release's compose overlay pins one version's image digests and is fetched
+# per deployment, never committed. /aikonos-v*/ is where
+# scripts/verify-release.sh downloads a release by default.
+/deploy/compose/compose.release.yaml
+/aikonos-v*/
+
 # ── Tooling caches ───────────────────────────────────────────────────────────
 
 # ── Temporary ────────────────────────────────────────────────────────────────
