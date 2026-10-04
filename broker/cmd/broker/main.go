@@ -147,6 +147,13 @@ func main() {
 	viper.SetDefault("policy.openfga_store_id", "") // empty → CheckFGA dev stub (allow-all)
 	viper.SetDefault("policy.openfga_model_id", "")
 	viper.SetDefault("policy.opa_endpoint", "http://localhost:8181") // OPA sidecar
+	// The broker serves OPA its policy (policy_serving.go): the Rego under
+	// bundle_dir, archived per revision before OPA can load it. Empty → OPA
+	// loads its own policy and decisions carry no revision.
+	viper.SetDefault("policy.bundle_dir", "")
+	viper.SetDefault("policy.bundle_http_addr", ":9092")
+	viper.SetDefault("policy.bundle_reload_seconds", 30)
+	viper.SetDefault("policy.fga_model_refresh_seconds", 30)
 	// OIDC north-bound auth. Empty issuer → validation disabled (local dev).
 	viper.SetDefault("oidc.issuer", "")
 	viper.SetDefault("oidc.audience", "aikonos-broker")
@@ -503,15 +510,21 @@ func main() {
 	}
 	defer auditEmitter.Close()
 
+	// Serve OPA its policy, archiving each revision first, so decisions can
+	// name (and be replayed against) the exact policy that made them.
+	policyBundle := startPolicyBundle(ctx, auditEmitter, viper.GetString("broker.tenant_id"), log)
+
 	policyEngine, err := policy.NewEngine(ctx, policy.Config{
 		OpenFGAEndpoint: viper.GetString("policy.openfga_endpoint"),
 		OPAEndpoint:     viper.GetString("policy.opa_endpoint"),
 		OpenFGAStoreID:  viper.GetString("policy.openfga_store_id"),
 		OpenFGAModelID:  viper.GetString("policy.openfga_model_id"),
+		PolicyBundle:    policyBundle,
 	})
 	if err != nil {
 		log.Fatal("Failed to init policy engine", zap.Error(err))
 	}
+	startFGAModelRefresh(ctx, policyEngine, auditEmitter, viper.GetString("broker.tenant_id"), log)
 	// Register extra tool-call gates from config (restrict-only). Each entry
 	// must be present in the opa-policies ConfigMap before the broker starts.
 	if rawGates := viper.GetString("policy.tool_gates"); rawGates != "" {

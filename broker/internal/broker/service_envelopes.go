@@ -80,7 +80,8 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 	}
 
 	// ReBAC: sender must be allowed to delegate to recipient (OpenFGA stub allows).
-	fgaOK, _ := s.deps.Policy.CheckFGA(ctx, "user:"+req.FromUserId, "can_delegate_to_user", "user:"+recipient)
+	fgaDirect, _ := s.deps.Policy.CheckFGA(ctx, "user:"+req.FromUserId, "can_delegate_to_user", "user:"+recipient)
+	fgaOK := fgaDirect
 	// Delegation-group fallback: when no direct peer/manager edge grants the
 	// send, allow it if sender and recipient share a delegatable group. Runs
 	// only on the deny path, so the peer/manager case costs no extra FGA calls.
@@ -104,6 +105,25 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 		s.deps.Logger.Error("SendEnvelope: policy error", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "policy evaluation failed")
 	}
+	envOutcome, envAudit := "allow", auditv1.PolicyDecision_ALLOW
+	if !dec.Allow {
+		envOutcome, envAudit = "deny", auditv1.PolicyDecision_DENY
+	}
+	emitPolicyDecision(ctx, s.deps.Audit, s.deps.Logger, &auditv1.AuditEvent{
+		TraceId:     traceID,
+		TenantId:    req.TenantId,
+		ActorUserId: req.FromUserId,
+		ResourceRef: "user:" + recipient,
+		Decision:    envAudit,
+	}, decisionRecord{
+		Kind: decisionKindEnvelopeSend,
+		Outcome: decisionOutcome{Decision: envOutcome, DecidedBy: "opa:aikonos/envelope_send",
+			Reasons: append(append([]string{}, dec.ScopeViolations...), dec.DenyReasons...)},
+		OPA: dec.Evidence,
+		FGA: &fgaRecord{ModelID: s.deps.Policy.FGAModelID(), User: "user:" + req.FromUserId,
+			Relation: "can_delegate_to_user", Object: "user:" + recipient, Allowed: fgaDirect},
+		Settings: map[string]any{"delegation_group_fallback": !fgaDirect && fgaOK},
+	})
 	if !dec.Allow {
 		reasons := append(append([]string{}, dec.ScopeViolations...), dec.DenyReasons...)
 		s.emitEnvelopeAudit(ctx, traceID, req.TenantId, req.FromUserId, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")

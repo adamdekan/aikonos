@@ -279,7 +279,7 @@ func TestEvaluateGate_Direct(t *testing.T) {
 			defer srv.Close()
 			e := newTestEngine(t, srv.URL)
 
-			gr, err := e.evaluateGate(context.Background(), "aikonos/test_gate", map[string]any{"x": 1})
+			gr, _, _, err := e.evaluateGate(context.Background(), "aikonos/test_gate", map[string]any{"x": 1})
 			if err != nil {
 				t.Fatalf("evaluateGate: %v", err)
 			}

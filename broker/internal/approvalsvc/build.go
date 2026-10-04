@@ -41,6 +41,16 @@ type BuildInput struct {
 	NSteps        int
 }
 
+// Gate summarises the approval gate Build created, for the decision record.
+type Gate struct {
+	RequiredApprovals int  `json:"required_approvals"` // n: raised by config, never below the floor
+	Floor             int  `json:"floor"`              // 1 for human approval, 2 for step-up
+	ConfiguredN       int  `json:"configured_n"`       // approval_required_n in tenant config; 0 when unset
+	Approvers         int  `json:"approvers"`          // eligible approvers after separation of duty
+	SeparationOfDuty  bool `json:"separation_of_duty"` // the requester is excluded (n >= 2)
+	ExpiryHours       int  `json:"expiry_hours"`
+}
+
 // Build constructs the approval-gate request for a plan outcome that
 // resolved to NEEDS_HUMAN or NEEDS_STEP_UP: the n-of-m threshold
 // (config-raised, never lowered below the step-up floor of 2), the approver
@@ -51,7 +61,7 @@ type BuildInput struct {
 // Was the inline block in SubmitPlan (service_plan.go) — see
 //  CP4 (C6). Pure extraction: same threshold,
 // same SoD exclusion, same audit event, same CreateApprovalRequest shape.
-func Build(ctx context.Context, in BuildInput) error {
+func Build(ctx context.Context, in BuildInput) (Gate, error) {
 	expiryHours := in.Config.GetInt(ctx, in.TenantID, "approval_expiry_hours")
 
 	// FU5: n-of-m approval threshold with separation-of-duty.
@@ -138,8 +148,15 @@ func Build(ctx context.Context, in BuildInput) error {
 		ExpiresAt:   time.Now().UTC().Add(time.Duration(expiryHours) * time.Hour),
 	}); err != nil {
 		in.Logger.Error("approvalsvc.Build: create approval failed", zap.Error(err))
-		return status.Errorf(codes.Internal, "failed to create approval request")
+		return Gate{}, status.Errorf(codes.Internal, "failed to create approval request")
 	}
 
-	return nil
+	return Gate{
+		RequiredApprovals: requiresN,
+		Floor:             floor,
+		ConfiguredN:       cfgN,
+		Approvers:         len(approverSet),
+		SeparationOfDuty:  requiresN >= 2,
+		ExpiryHours:       expiryHours,
+	}, nil
 }

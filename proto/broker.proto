@@ -168,6 +168,12 @@ service BrokerService {
   rpc GetDecisionTrace(GetDecisionTraceRequest) returns (GetDecisionTraceResponse);
   rpc SimulatePolicy(SimulatePolicyRequest) returns (SimulatePolicyResponse);
 
+  // Export one audit event with what is needed to re-check it offline: the
+  // event as stored, its signature status and chain hash, and the archived
+  // policy snapshot its decision names (docs/15-decision-replay.md).
+  // Tenant-admin gated.
+  rpc GetDecisionEvidence(GetDecisionEvidenceRequest) returns (GetDecisionEvidenceResponse);
+
   // ── Workspace files: per-user browser file explorer ───────────────────────
   // The acting user (verified OIDC subject) operates on their OWN workspace
   // (Root/<tenant>/<user>/) — the same dir agents read via workspace.read/doc.read.
@@ -1559,6 +1565,19 @@ message StepTrace {
 message GetDecisionTraceResponse {
   string task_id         = 1;
   repeated StepTrace steps = 2;
+}
+
+// ── Decision evidence ─────────────────────────────────────────────────────────
+
+message GetDecisionEvidenceRequest {
+  string event_id = 1; // tenant = caller's
+}
+
+message GetDecisionEvidenceResponse {
+  // A JSON document of kind "aikonos.decision-evidence/v1", the input to
+  // scripts/replay-decision.sh. Bytes rather than fields so the stored event
+  // and snapshot pass through unchanged.
+  bytes evidence_json = 1;
 }
 
 // ── Policy simulator ──────────────────────────────────────────────────────────

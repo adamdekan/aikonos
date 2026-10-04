@@ -49,13 +49,15 @@ type GateResult struct {
 
 // evaluateGate queries OPA at path with input and deserialises the response
 // into a GateResult. An undefined (empty) OPA document leaves all fields at
-// their zero values — the caller interprets that as "no opinion".
-func (e *Engine) evaluateGate(ctx context.Context, path string, input any) (GateResult, error) {
+// their zero values — the caller interprets that as "no opinion". It also
+// returns the raw result document and OPA's provenance for the evidence.
+func (e *Engine) evaluateGate(ctx context.Context, path string, input any) (GateResult, map[string]any, opaMeta, error) {
 	var res GateResult
-	if err := e.queryOPA(ctx, path, input, &res); err != nil {
-		return GateResult{}, err
+	doc, meta, err := e.queryOPA(ctx, path, input, &res)
+	if err != nil {
+		return GateResult{}, nil, meta, err
 	}
-	return res, nil
+	return res, doc, meta, nil
 }
 
 // ToolGate is an additional OPA policy path evaluated alongside the core
@@ -97,9 +99,10 @@ func gateIsDeny(r GateResult) bool {
 // applying monotonic-stricter semantics: extras can only escalate, never permit.
 // On an evaluateGate error the gate is treated as a deny (fail-closed); the
 // error is not propagated so one broken optional gate does not 500 every call.
-func (e *Engine) aggregateExtraGates(ctx context.Context, input any, core GateResult) (GateResult, string) {
+// It also returns each extra gate's evidence, in evaluation order.
+func (e *Engine) aggregateExtraGates(ctx context.Context, input any, core GateResult) (GateResult, string, []GateEvidence) {
 	if len(e.extraToolGates) == 0 {
-		return core, "opa:tool_invocation"
+		return core, "opa:tool_invocation", nil
 	}
 
 	anyDeny := gateIsDeny(core)
@@ -107,9 +110,15 @@ func (e *Engine) aggregateExtraGates(ctx context.Context, input any, core GateRe
 	needsStepUp := core.RequireStepUp
 	reasons := append([]string(nil), core.DenyReasons...)
 	decidingPath := "opa:tool_invocation"
+	evidence := make([]GateEvidence, 0, len(e.extraToolGates))
 
 	for _, gate := range e.extraToolGates {
-		gr, err := e.evaluateGate(ctx, gate.Path, input)
+		gr, doc, meta, err := e.evaluateGate(ctx, gate.Path, input)
+		gev := GateEvidence{Query: gate.Path, Revision: meta.Revision, DecisionID: meta.DecisionID, Result: doc}
+		if err != nil {
+			gev.Error = err.Error()
+		}
+		evidence = append(evidence, gev)
 		if err != nil {
 			// Fail-closed: treat broken extra gate as a deny.
 			reason := fmt.Sprintf("policy gate %q evaluation failed", gate.Name)
@@ -152,5 +161,5 @@ func (e *Engine) aggregateExtraGates(ctx context.Context, input any, core GateRe
 		RequireStepUp:   needsStepUp,
 		Deny:            anyDeny,
 		DenyReasons:     reasons,
-	}, decidingPath
+	}, decidingPath, evidence
 }

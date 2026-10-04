@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
@@ -80,7 +81,13 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	// Tasks without an agent_id (normal human north tasks) are completely unaffected.
 	if task.AgentID != nil {
 		if violation := s.checkAgentSkills(ctx, tenantID, task.AgentID.String(), plan); violation != "" {
-			s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY)
+			s.recordPlanDecision(ctx, traceID, tenantID, req, task, auditv1.PolicyDecision_DENY, decisionRecord{
+				Kind:    decisionKindAgentSkills,
+				Outcome: decisionOutcome{Decision: "deny", DecidedBy: "broker:agent_skills", Reason: violation},
+			})
+			s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+				"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
+			})
 			return &planv1.PlanValidationResult{
 				PlanId:     plan.PlanId,
 				Outcome:    planv1.ValidationOutcome_DENIED,
@@ -100,9 +107,20 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		s.deps.Logger.Error("SubmitPlan: plan policy error", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "policy evaluation failed")
 	}
+	planOutcome, planAudit := "allow", auditv1.PolicyDecision_ALLOW
+	if !planDec.Allow {
+		planOutcome, planAudit = "deny", auditv1.PolicyDecision_DENY
+	}
+	s.recordPlanDecision(ctx, traceID, tenantID, req, task, planAudit, decisionRecord{
+		Kind:    decisionKindPlanValidation,
+		Outcome: decisionOutcome{Decision: planOutcome, DecidedBy: "opa:aikonos/plan_validation", Reasons: planDec.Violations},
+		OPA:     planDec.Evidence,
+	})
 	if !planDec.Allow {
 		// Structural violations — agent must replan. Task stays in VALIDATING.
-		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY)
+		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+			"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
+		})
 		return &planv1.PlanValidationResult{
 			PlanId:     plan.PlanId,
 			Outcome:    planv1.ValidationOutcome_DENIED,
@@ -148,8 +166,9 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		// OpenFGA object (the id carries colons) — checking it 400s and fails
 		// closed, which would deny every MCP tool from an interactive session.
 		fgaDec := ""
+		var fgaRec *fgaRecord
 		if task.AgentID == nil && !strings.HasPrefix(step.ToolId, "mcp:") {
-			fgaDec = s.userSkillDecision(ctx, task.OwnerUserID, step.ToolId)
+			fgaDec, fgaRec = s.userSkillDecision(ctx, task.OwnerUserID, step.ToolId)
 		}
 
 		// Network access-list (web egress): governed plan-time decision so the
@@ -213,8 +232,24 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			}, scope, "skill_disabled", nil, nil)
 		}
 
+		category := classifyDecision(dec)
+		layers, decidedBy := routeLayers(dec, rtrace)
+		ecSettings := map[string]any{"declared": effectclass.RegoString(step.EffectClass), "routed": effectclass.RegoString(routingClass)}
+		if authKnown {
+			ecSettings["registry"] = effectclass.RegoString(authEC)
+		}
+		s.recordStepDecision(ctx, traceID, tenantID, req, task, auditDecisionFor(category), decisionRecord{
+			Kind:     decisionKindToolInvocation,
+			Outcome:  decisionOutcome{Decision: decisionString(category), DecidedBy: decidedBy, Reason: dec.Reason, Reasons: dec.Reasons},
+			Step:     &stepRef{TaskID: req.TaskId, PlanID: plan.PlanId, Seq: step.Seq, ToolID: step.ToolId},
+			OPA:      dec.Evidence,
+			Layers:   layers,
+			Settings: map[string]any{"effect_class": ecSettings},
+			FGA:      fgaRec,
+		})
+
 		pd := db.PolicyAllow
-		switch classifyDecision(dec) {
+		switch category {
 		case stepDeny:
 			anyDeny = true
 			pd = db.PolicyDeny
@@ -314,6 +349,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	}
 
 	var capTokens map[int32]string
+	var gate *approvalsvc.Gate
 	switch outcome {
 	case planv1.ValidationOutcome_APPROVED:
 		if err := taskStore.Transition(ctx, tenantID, req.TaskId, db.TaskStateValidating, db.TaskStateApproved); err != nil {
@@ -342,7 +378,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		if s.deps.Policy != nil {
 			pol = s.deps.Policy
 		}
-		if err := approvalsvc.Build(ctx, approvalsvc.BuildInput{
+		g, err := approvalsvc.Build(ctx, approvalsvc.BuildInput{
 			Store:         taskStore,
 			Policy:        pol,
 			Config:        s.cfg(),
@@ -358,9 +394,11 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			Outcome:       outcome,
 			PlanID:        plan.PlanId,
 			NSteps:        len(plan.Steps),
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
+		gate = &g
 	}
 
 	auditDecision := auditv1.PolicyDecision_ALLOW
@@ -369,7 +407,11 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	} else if outcome != planv1.ValidationOutcome_APPROVED {
 		auditDecision = auditv1.PolicyDecision_APPROVAL_REQUIRED
 	}
-	s.emitPlanAudit(ctx, traceID, tenantID, req, auditDecision)
+	planCtx := map[string]any{"plan_id": plan.PlanId, "outcome": outcome.String(), "steps": len(plan.Steps)}
+	if gate != nil {
+		planCtx["approval"] = gate
+	}
+	s.emitPlanAudit(ctx, traceID, tenantID, req, auditDecision, planCtx)
 
 	planEventType := "PLAN_PROPOSED"
 	if outcome == planv1.ValidationOutcome_NEEDS_HUMAN || outcome == planv1.ValidationOutcome_NEEDS_STEP_UP {
@@ -460,23 +502,55 @@ func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID
 //
 // Returns "allow" on grant, "deny" on no-grant or error.  On error it fails
 // closed — this is a security gate; consistent with the platform principle.
-func (s *SandboxService) userSkillDecision(ctx context.Context, ownerUserID, toolID string) string {
+// The check itself is returned for the decision record; nil when FGA is off.
+func (s *SandboxService) userSkillDecision(ctx context.Context, ownerUserID, toolID string) (string, *fgaRecord) {
 	sp := s.skillPolicyFor()
 	if sp == nil || !sp.FGAEnabled() {
-		return "allow"
+		return "allow", nil
 	}
-	granted, err := sp.CheckFGA(ctx, "user:"+ownerUserID, "can_invoke", "skill:"+toolID)
+	rec := &fgaRecord{User: "user:" + ownerUserID, Relation: "can_invoke", Object: "skill:" + toolID}
+	if m, ok := sp.(interface{ FGAModelID() string }); ok {
+		rec.ModelID = m.FGAModelID()
+	}
+	granted, err := sp.CheckFGA(ctx, rec.User, rec.Relation, rec.Object)
 	if err != nil {
 		s.deps.Logger.Warn("userSkillDecision: CheckFGA error — failing closed",
 			zap.String("user", ownerUserID),
 			zap.String("tool", toolID),
 			zap.Error(err))
-		return "deny"
+		rec.Error = err.Error()
+		return "deny", rec
 	}
+	rec.Allowed = granted
 	if granted {
-		return "allow"
+		return "allow", rec
 	}
-	return "deny"
+	return "deny", rec
+}
+
+// recordPlanDecision emits a plan-level decision record for the task.
+func (s *SandboxService) recordPlanDecision(ctx context.Context, traceID, tenantID string, req *brokerv1.SubmitPlanRequest, task *db.Task, decision auditv1.PolicyDecision, rec decisionRecord) {
+	rec.Plan = &planRef{TaskID: req.TaskId, PlanID: req.Plan.GetPlanId()}
+	emitPolicyDecision(ctx, s.deps.Audit, s.deps.Logger, &auditv1.AuditEvent{
+		TraceId:       traceID,
+		TenantId:      tenantID,
+		ActorUserId:   task.OwnerUserID,
+		ActorSpiffeId: req.SandboxSpiffeId,
+		ResourceRef:   "aikonos:task:" + req.TaskId,
+		Decision:      decision,
+	}, rec)
+}
+
+// recordStepDecision emits the decision record of one plan step.
+func (s *SandboxService) recordStepDecision(ctx context.Context, traceID, tenantID string, req *brokerv1.SubmitPlanRequest, task *db.Task, decision auditv1.PolicyDecision, rec decisionRecord) {
+	emitPolicyDecision(ctx, s.deps.Audit, s.deps.Logger, &auditv1.AuditEvent{
+		TraceId:       traceID,
+		TenantId:      tenantID,
+		ActorUserId:   task.OwnerUserID,
+		ActorSpiffeId: req.SandboxSpiffeId,
+		ResourceRef:   fmt.Sprintf("aikonos:task:%s#%d", req.TaskId, rec.Step.Seq),
+		Decision:      decision,
+	}, rec)
 }
 
 // advanceToValidating walks a task into VALIDATING using only legal transitions.
@@ -496,7 +570,17 @@ func (s *SandboxService) advanceToValidating(ctx context.Context, tenantID strin
 	}
 }
 
-func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID string, req *brokerv1.SubmitPlanRequest, decision auditv1.PolicyDecision) {
+// emitPlanAudit records the plan's overall outcome. details (plan id,
+// outcome, step count, the approval gate) becomes the event context; the
+// per-decision detail is in the PolicyDecisionEvent records.
+func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID string, req *brokerv1.SubmitPlanRequest, decision auditv1.PolicyDecision, details map[string]any) {
+	var ctxStruct *structpb.Struct
+	if len(details) > 0 {
+		var err error
+		if ctxStruct, err = recordStruct(details); err != nil {
+			s.deps.Logger.Error("plan audit context could not be encoded", zap.Error(err))
+		}
+	}
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
 		EventId:       ids.EventID(),
 		TraceId:       traceID,
@@ -506,6 +590,7 @@ func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID st
 		EventType:     "aikonos.broker.plan.validated",
 		ResourceRef:   "aikonos:task:" + req.TaskId,
 		Decision:      decision,
+		Context:       ctxStruct,
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.plan.validated")
 	}

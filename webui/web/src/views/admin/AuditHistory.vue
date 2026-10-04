@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from "vue";
-import { get } from "../../api/client.js";
+import { get, download } from "../../api/client.js";
 import Icon from "../../components/Icon.vue";
 import DataTable from "../../components/ui/DataTable.vue";
 import EmptyState from "../../components/ui/EmptyState.vue";
@@ -30,6 +30,12 @@ const verifyLoading = ref(false);
 
 // ── Side inspector ────────────────────────────────────────────────────────────
 const selectedEvent = ref(null);
+
+// Decision records can be exported with the archived policy they name and
+// re-checked offline (scripts/replay-decision.sh, docs/15-decision-replay.md).
+const DECISION_EVENT   = "aikonos.broker.policy.decision";
+const evidenceLoading  = ref(false);
+const evidenceError    = ref("");
 
 // The last filter params used for the initial search — reused on "Load more".
 let lastParams = null;
@@ -94,6 +100,24 @@ async function verify() {
 
 function selectRow(ev) {
   selectedEvent.value = selectedEvent.value?.event_id === ev.event_id ? null : ev;
+  evidenceError.value = "";
+}
+
+async function downloadEvidence(ev) {
+  evidenceLoading.value = true;
+  evidenceError.value   = "";
+  try {
+    const res = await download(`/admin/audit/evidence/${ev.event_id}`);
+    if (res.forbidden) {
+      evidenceError.value = "Exporting evidence requires a tenant admin.";
+      return;
+    }
+    downloadBlob(res.text, `aikonos-evidence-${ev.event_id}.json`, "application/json");
+  } catch (e) {
+    evidenceError.value = e.message;
+  } finally {
+    evidenceLoading.value = false;
+  }
 }
 
 function closeInspector() {
@@ -323,6 +347,23 @@ const TABLE_COLS = [
             </button>
           </div>
           <EventDetail :ev="selectedEvent" />
+          <div v-if="selectedEvent.event_type === DECISION_EVENT" class="evidence" data-testid="evidence-panel">
+            <button
+              data-testid="evidence-btn"
+              class="btn-ghost"
+              :disabled="evidenceLoading"
+              @click="downloadEvidence(selectedEvent)"
+            >
+              <Spinner v-if="evidenceLoading" size="sm" />
+              <Icon v-else name="download" :size="14" />
+              Download evidence
+            </button>
+            <p class="evidence-hint">
+              The decision with the archived policy that made it.
+              <code>scripts/replay-decision.sh</code> re-runs it offline and names the rule that decided.
+            </p>
+            <p v-if="evidenceError" class="evidence-error" data-testid="evidence-error">{{ evidenceError }}</p>
+          </div>
         </div>
       </div>
 
@@ -529,6 +570,18 @@ const TABLE_COLS = [
   border-radius: var(--radius-sm);
 }
 .close-btn:hover { color: var(--text); }
+
+.evidence {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.evidence .btn-ghost { align-self: flex-start; display: inline-flex; align-items: center; gap: var(--space-2); }
+.evidence-hint { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.evidence-hint code { font-size: 11px; }
+.evidence-error { margin: 0; font-size: 12px; color: var(--danger); }
 
 /* ── DataTable row styling (scoped, applies via :deep) ── */
 :deep(.dt-table td) {

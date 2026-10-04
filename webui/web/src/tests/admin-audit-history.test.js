@@ -7,10 +7,11 @@ import { createRouter, createMemoryHistory } from "vue-router";
 import { useUserStore } from "../store/user.js";
 
 vi.mock("../api/client.js", () => ({
-  get:   vi.fn(),
-  post:  vi.fn(),
-  del:   vi.fn(),
-  patch: vi.fn(),
+  get:      vi.fn(),
+  post:     vi.fn(),
+  del:      vi.fn(),
+  patch:    vi.fn(),
+  download: vi.fn(),
 }));
 
 import AuditHistory from "../views/admin/AuditHistory.vue";
@@ -191,5 +192,63 @@ describe("AuditHistory.vue", () => {
     await flushPromises();
 
     expect(w.find("[data-testid='forbidden']").exists()).toBe(true);
+  });
+
+  // ── Case 4: decision evidence ──────────────────────────────────────────────
+  const DECISION_EVENT = {
+    event_id: "0199a4f0-3c2e-7d41-9b6a-1f2e3d4c5b6a",
+    event_type: "aikonos.broker.policy.decision",
+    actor_user_id: "alice@example.com",
+    resource_ref: "aikonos:task:t1#1",
+    decision: 3,
+    occurred_at: { seconds: 1700000002, nanos: 0 },
+  };
+
+  async function mountWith(events) {
+    client.get.mockResolvedValue({ events, nextCursor: "", storeConfigured: true });
+    const router = makeRouter();
+    await router.push("/admin/audit/history");
+    const w = mount(AuditHistory, { global: { plugins: [router] } });
+    await w.find("[data-testid='search-btn']").trigger("click");
+    await flushPromises();
+    await w.find("[data-testid='audit-history-row']").trigger("click");
+    await flushPromises();
+    return w;
+  }
+
+  it("a decision record offers its evidence as a download, saved unchanged", async () => {
+    const doc = '{"kind":"aikonos.decision-evidence/v1"}';
+    client.download.mockResolvedValue({ text: doc });
+    const created = [];
+    globalThis.URL.createObjectURL = vi.fn((blob) => { created.push(blob); return "blob:evidence"; });
+    globalThis.URL.revokeObjectURL = vi.fn();
+
+    const w = await mountWith([DECISION_EVENT]);
+    expect(w.find("[data-testid='evidence-panel']").exists()).toBe(true);
+    await w.find("[data-testid='evidence-btn']").trigger("click");
+    await flushPromises();
+
+    expect(client.download).toHaveBeenCalledWith(`/admin/audit/evidence/${DECISION_EVENT.event_id}`);
+    expect(created).toHaveLength(1);
+    const saved = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(created[0]);
+    });
+    expect(saved).toBe(doc);
+    expect(w.find("[data-testid='evidence-error']").exists()).toBe(false);
+  });
+
+  it("other events have no evidence panel", async () => {
+    const w = await mountWith([SAMPLE_EVENT]);
+    expect(w.find("[data-testid='evidence-panel']").exists()).toBe(false);
+  });
+
+  it("a non-admin is told evidence export needs a tenant admin", async () => {
+    client.download.mockResolvedValue({ forbidden: true });
+    const w = await mountWith([DECISION_EVENT]);
+    await w.find("[data-testid='evidence-btn']").trigger("click");
+    await flushPromises();
+    expect(w.find("[data-testid='evidence-error']").text()).toContain("tenant admin");
   });
 });

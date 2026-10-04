@@ -67,6 +67,12 @@ tasks:
     cmds:
       - regal lint policies/opa/
 
+  # ── Decision replay (docs/15-decision-replay.md) ─────────────────────────────
+  audit:replay:
+    desc: "Re-run an exported decision against the policy that made it: task audit:replay -- evidence.json"
+    cmds:
+      - bash scripts/replay-decision.sh {{.CLI_ARGS}}
+
   # ── Releases (signed images + SBOMs; docs/14-signed-releases.md) ─────────────
   release:verify:
     desc: "Verify a published release before deploying it: task release:verify -- v1.2.3 [--provenance]"

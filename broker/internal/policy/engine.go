@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,7 +33,17 @@ type Config struct {
 	OPAEndpoint     string
 	OpenFGAStoreID  string // empty → CheckFGA runs in dev stub mode (allow-all)
 	OpenFGAModelID  string // optional; pins an authorization model version
+	// PolicyBundle names the OPA bundle that carries the policy (the broker's
+	// own bundle server, see bundle_server.go). When set, every OPA decision
+	// must report a revision for it: a decision without one means OPA has not
+	// loaded the archived policy, and it fails closed. Empty → OPA loads its
+	// policy some other way and decisions are recorded without a revision.
+	PolicyBundle string
 }
+
+// ErrPolicyNotLoaded means OPA answered without the configured policy bundle
+// active, so the decision cannot be attributed to an archived policy.
+var ErrPolicyNotLoaded = errors.New("opa has not loaded the policy bundle")
 
 // Decision is the outcome of a single tool-call / effect-class evaluation.
 type Decision struct {
@@ -40,15 +51,17 @@ type Decision struct {
 	NeedsApproval bool
 	NeedsStepUp   bool
 	Deny          bool
-	Reason        string   // Human-readable; safe to surface to user/agent
-	Reasons       []string // Individual deny reasons (from OPA)
-	PolicyRuleID  string   // Internal ref for audit
+	Reason        string    // Human-readable; safe to surface to user/agent
+	Reasons       []string  // Individual deny reasons (from OPA)
+	PolicyRuleID  string    // Internal ref for audit
+	Evidence      *Evidence // what OPA evaluated, for the decision record
 }
 
 // PlanDecision is the outcome of structural plan validation.
 type PlanDecision struct {
 	Allow      bool
-	Violations []string // Human-readable; returned to the agent for replanning
+	Violations []string  // Human-readable; returned to the agent for replanning
+	Evidence   *Evidence // input redacted, see redactPlanInput
 }
 
 // PlanContext carries the task/actor attributes the plan_validation policy
@@ -91,45 +104,99 @@ func NewEngine(ctx context.Context, cfg Config) (*Engine, error) {
 	return e, nil
 }
 
-// queryOPA POSTs {"input": input} to /v1/data/<path> and unmarshals the
-// returned document into out. A missing/empty result leaves out at its zero
-// value (an undefined OPA document is a valid "nothing matched" outcome).
-func (e *Engine) queryOPA(ctx context.Context, path string, input any, out any) error {
+// queryOPA POSTs {"input": input} to /v1/data/<path>?provenance=true and
+// unmarshals the returned document into out. A missing/empty result leaves out
+// at its zero value (an undefined OPA document is a valid "nothing matched"
+// outcome). It returns the raw result document (nil when undefined) and OPA's
+// provenance: which policy revision decided, and OPA's decision id.
+func (e *Engine) queryOPA(ctx context.Context, path string, input any, out any) (map[string]any, opaMeta, error) {
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
-		return fmt.Errorf("marshal opa input: %w", err)
+		return nil, opaMeta{}, fmt.Errorf("marshal opa input: %w", err)
 	}
 
-	url := e.opaBase + "/v1/data/" + path
+	url := e.opaBase + "/v1/data/" + path + "?provenance=true"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build opa request: %w", err)
+		return nil, opaMeta{}, fmt.Errorf("build opa request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("opa request: %w", err)
+		return nil, opaMeta{}, fmt.Errorf("opa request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opa returned status %d for %s", resp.StatusCode, path)
+		return nil, opaMeta{}, fmt.Errorf("opa returned status %d for %s", resp.StatusCode, path)
 	}
 
 	var envelope struct {
-		Result json.RawMessage `json:"result"`
+		Result     json.RawMessage `json:"result"`
+		DecisionID string          `json:"decision_id"`
+		Provenance struct {
+			Version string `json:"version"`
+			Bundles map[string]struct {
+				Revision string `json:"revision"`
+			} `json:"bundles"`
+		} `json:"provenance"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return fmt.Errorf("decode opa response: %w", err)
+		return nil, opaMeta{}, fmt.Errorf("decode opa response: %w", err)
+	}
+	meta := opaMeta{OPAVersion: envelope.Provenance.Version, DecisionID: envelope.DecisionID}
+	if e.cfg.PolicyBundle != "" {
+		meta.Revision = envelope.Provenance.Bundles[e.cfg.PolicyBundle].Revision
+		if meta.Revision == "" {
+			return nil, meta, fmt.Errorf("%w %q (querying %s)", ErrPolicyNotLoaded, e.cfg.PolicyBundle, path)
+		}
 	}
 	if len(envelope.Result) == 0 || string(envelope.Result) == "null" {
-		return nil // no document — caller's zero value stands (deny-by-default)
+		return nil, meta, nil // no document — caller's zero value stands (deny-by-default)
 	}
 	if err := json.Unmarshal(envelope.Result, out); err != nil {
-		return fmt.Errorf("unmarshal opa result: %w", err)
+		return nil, meta, fmt.Errorf("unmarshal opa result: %w", err)
 	}
-	return nil
+	var doc map[string]any
+	if err := json.Unmarshal(envelope.Result, &doc); err != nil {
+		// A non-object result (a bare value) still decides; record it under "value".
+		var v any
+		_ = json.Unmarshal(envelope.Result, &v)
+		doc = map[string]any{"value": v}
+	}
+	return doc, meta, nil
+}
+
+// newEvidence builds the decision record for one evaluation. redact, when set,
+// rewrites the recorded copy of the input (never the input OPA saw).
+func newEvidence(path string, input any, result map[string]any, meta opaMeta, redact func(map[string]any) ([]string, error)) (*Evidence, error) {
+	digest, err := digestJSON(input)
+	if err != nil {
+		return nil, fmt.Errorf("digest opa input: %w", err)
+	}
+	doc, err := jsonDoc(input)
+	if err != nil {
+		return nil, fmt.Errorf("record opa input: %w", err)
+	}
+	ev := &Evidence{
+		Query:       path,
+		Revision:    meta.Revision,
+		OPAVersion:  meta.OPAVersion,
+		DecisionID:  meta.DecisionID,
+		Input:       doc,
+		InputSHA256: digest,
+		Result:      result,
+	}
+	if ev.Result == nil {
+		ev.Result = map[string]any{}
+	}
+	if redact != nil {
+		if ev.Redacted, err = redact(doc); err != nil {
+			return nil, fmt.Errorf("redact opa input: %w", err)
+		}
+	}
+	return ev, nil
 }
 
 // DecidePlan runs the whole-plan structural policy (aikonos/plan_validation).
@@ -141,16 +208,22 @@ func (e *Engine) DecidePlan(ctx context.Context, plan *planv1.Plan, pctx PlanCon
 		Allow      bool     `json:"allow"`
 		Violations []string `json:"violations"`
 	}
-	if err := e.queryOPA(ctx, "aikonos/plan_validation", input, &res); err != nil {
+	doc, meta, err := e.queryOPA(ctx, "aikonos/plan_validation", input, &res)
+	if err != nil {
 		return nil, err
 	}
+	ev, err := newEvidence("aikonos/plan_validation", input, doc, meta, redactPlanInput)
+	if err != nil {
+		return nil, err
+	}
+	ev.Fields = planDecisionFields
 
 	e.logger.Debug("policy.DecidePlan",
 		zap.String("plan_id", plan.PlanId),
 		zap.Bool("allow", res.Allow),
 		zap.Int("violations", len(res.Violations)),
 	)
-	return &PlanDecision{Allow: res.Allow, Violations: res.Violations}, nil
+	return &PlanDecision{Allow: res.Allow, Violations: res.Violations, Evidence: ev}, nil
 }
 
 // DecideToolCall evaluates whether a tool/step may run given its effect class
@@ -159,13 +232,19 @@ func (e *Engine) DecidePlan(ctx context.Context, plan *planv1.Plan, pctx PlanCon
 func (e *Engine) DecideToolCall(ctx context.Context, q ToolQuery) (*Decision, error) {
 	input := e.buildToolInput(q)
 
-	core, err := e.evaluateGate(ctx, "aikonos/tool_invocation", input)
+	core, doc, meta, err := e.evaluateGate(ctx, "aikonos/tool_invocation", input)
 	if err != nil {
 		return nil, err
 	}
+	ev, err := newEvidence("aikonos/tool_invocation", input, doc, meta, nil)
+	if err != nil {
+		return nil, err
+	}
+	ev.Fields = toolDecisionFields
 
 	// Aggregate extra gates (monotonic-stricter). No-op when none are registered.
-	res, policyRuleID := e.aggregateExtraGates(ctx, input, core)
+	res, policyRuleID, gates := e.aggregateExtraGates(ctx, input, core)
+	ev.Gates = gates
 
 	reason := ""
 	if len(res.DenyReasons) > 0 {
@@ -192,6 +271,7 @@ func (e *Engine) DecideToolCall(ctx context.Context, q ToolQuery) (*Decision, er
 		Reason:        reason,
 		Reasons:       res.DenyReasons,
 		PolicyRuleID:  policyRuleID,
+		Evidence:      ev,
 	}, nil
 }
 
@@ -217,6 +297,7 @@ type EnvelopeDecision struct {
 	RequireManualAccept bool
 	ScopeViolations     []string
 	DenyReasons         []string
+	Evidence            *Evidence
 }
 
 // DecideEnvelopeSend evaluates a delegation against aikonos/envelope_send:
@@ -259,9 +340,15 @@ func (e *Engine) DecideEnvelopeSend(ctx context.Context, maxCostUnits int64, att
 		ScopeViolations     []string `json:"scope_violations"`
 		DenyReasons         []string `json:"deny_reasons"`
 	}
-	if err := e.queryOPA(ctx, "aikonos/envelope_send", input, &res); err != nil {
+	doc, meta, err := e.queryOPA(ctx, "aikonos/envelope_send", input, &res)
+	if err != nil {
 		return nil, err
 	}
+	ev, err := newEvidence("aikonos/envelope_send", input, doc, meta, nil)
+	if err != nil {
+		return nil, err
+	}
+	ev.Fields = envelopeDecisionFields
 
 	e.logger.Debug("policy.DecideEnvelopeSend",
 		zap.Bool("allow", res.Allow),
@@ -275,6 +362,7 @@ func (e *Engine) DecideEnvelopeSend(ctx context.Context, maxCostUnits int64, att
 		RequireManualAccept: res.RequireManualAccept,
 		ScopeViolations:     res.ScopeViolations,
 		DenyReasons:         res.DenyReasons,
+		Evidence:            ev,
 	}, nil
 }
 
@@ -342,6 +430,34 @@ func (e *Engine) WriteRelations(ctx context.Context, rels ...Relation) error {
 // must not silently no-op (e.g. an admin tuple write) gate on this — the dev
 // stub allows reads to return empty but can't actually persist a mutation.
 func (e *Engine) FGAEnabled() bool { return e.fga.enabled() }
+
+// FGAModelID returns the OpenFGA authorization model checks run against: the
+// configured one, or the store's latest as last resolved by RefreshFGAModel.
+// "" when OpenFGA is off or no model has been resolved yet.
+func (e *Engine) FGAModelID() string {
+	if !e.fga.enabled() {
+		return ""
+	}
+	return e.fga.model()
+}
+
+// RefreshFGAModel resolves the store's latest authorization model and, when it
+// differs, makes later checks run against it. A configured model id is never
+// replaced. It returns the id before and after.
+func (e *Engine) RefreshFGAModel(ctx context.Context) (prev, next string, err error) {
+	prev = e.FGAModelID()
+	if !e.fga.enabled() || e.fga.modelPinned {
+		return prev, prev, nil
+	}
+	latest, err := e.fga.latestModel(ctx)
+	if err != nil || latest == "" {
+		return prev, prev, err
+	}
+	if latest != prev {
+		e.fga.setModel(latest)
+	}
+	return prev, latest, nil
+}
 
 // ReadFilter is a partial tuple query for ReadTuples — any field empty matches
 // all, and Object may be a bare type prefix (e.g. "group:").

@@ -157,7 +157,7 @@ For the full model, see [`docs/02-policy-model.md`](docs/02-policy-model.md).
 | Scheduling | One-off and cron runs, fired as their owner, with pre-authorized tool allowlists standing in for human consent |
 | Tools and connectors | Web fetch with a host allowlist, an isolated document service, Google Drive and OneDrive (each needs your own OAuth app), and any MCP server an admin approves |
 | Governance | Per-call access checks, human-in-the-loop approvals, network allowlists, spend caps, rate limits, kill switches |
-| Audit | Hash-chained signed events to a WORM object store, queryable and verifiable in the console, streamed live over SSE |
+| Audit | Hash-chained signed events to a WORM object store, queryable and verifiable in the console, streamed live over SSE. Each policy decision names the archived policy revision behind it and can be re-run offline with the stock OPA binary |
 | Isolation | Provider credentials never enter the agent loop; each user's agent runs in its own process |
 
 The [documentation site](docs-site/) ships with the stack and answers at
@@ -225,6 +225,7 @@ decision rather than oversight, each documented with its reasoning in
 | [`docs/04-threat-model.md`](docs/04-threat-model.md) | Threat model |
 | [`docs/10-enable-enforcement.md`](docs/10-enable-enforcement.md) | Turning enforcement on and validating it |
 | [`docs/14-signed-releases.md`](docs/14-signed-releases.md) | Signed release images, SBOMs and provenance: verifying a release and deploying from it |
+| [`docs/15-decision-replay.md`](docs/15-decision-replay.md) | Re-running a recorded decision against the policy that made it, and what that proves |
 | [`docs/OPS-RUNBOOK.md`](docs/OPS-RUNBOOK.md) | Startup, operations, incident response |
 | [`deploy/compose/README.md`](deploy/compose/README.md) | Operator guide: profiles, volumes, backup, recovery |
 | [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability, scope, known limitations |

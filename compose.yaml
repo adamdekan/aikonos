@@ -349,22 +349,27 @@ services:
     # buffer to rootfs; already isolated on backend-internal network (H1).
     image: openpolicyagent/opa:0.70.0-static
     networks: [backend]
+    # The policy is not mounted here: OPA downloads it from the broker as the
+    # "aikonos" bundle (deploy/compose/opa.yaml), which the broker archives in
+    # the audit store before serving. Each decision then names the revision
+    # that made it (docs/15-decision-replay.md), and OPA's API refuses writes
+    # under the bundle's root. Decision logging is configured in opa.yaml.
     command:
       - run
       - --server
       - --addr=:8181
       - --diagnostic-addr=:8282
       - --log-level=info
-      - --set=decision_logs.console=true
-      - --ignore=.*
-      - /policies
+      - --config-file=/config/opa.yaml
     volumes:
-      - ./policies/opa:/policies:ro
+      - ./deploy/compose/opa.yaml:/config/opa.yaml:ro
     ports:
       - "8181:8181"
     # opa:*-static is distroless (no shell/wget/curl) and has no self-probe
     # subcommand, so an in-container healthcheck is impossible. Dependents wait
-    # on service_started; OPA is ready within ~1s of start.
+    # on service_started. OPA has no policy until it has fetched the broker's
+    # bundle (seconds after the broker starts); until then every decision
+    # fails closed.
     restart: unless-stopped
 
   # ── One-shots ────────────────────────────────────────────────────────────────
@@ -447,6 +452,8 @@ services:
       AIKONOS_POLICY_OPENFGA_ENDPOINT:      http://openfga:8080
       AIKONOS_POLICY_OPENFGA_STORE_ID:      ${AIKONOS_POLICY_OPENFGA_STORE_ID:-}
       AIKONOS_POLICY_OPA_ENDPOINT:          http://opa:8181
+      # The broker serves OPA this policy, archiving each revision first.
+      AIKONOS_POLICY_BUNDLE_DIR:            /policies
       AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER}
       AIKONOS_OIDC_JWKS_URL:                ${AIKONOS_OIDC_JWKS_URL:-}
       AIKONOS_OIDC_AUDIENCE:                ${AIKONOS_OIDC_AUDIENCE}
@@ -510,11 +517,12 @@ services:
     volumes:
       - ./deploy/compose/tls:/tls:ro
       - ./deploy/compose/llm-providers.yaml:/seed/llm-providers.yaml:ro
+      - ./policies/opa:/policies:ro
       - workspace-data:/workspace
     ports:
       - "9090:9090"   # broker north (gRPC)
       - "9091:9091"   # broker south (gRPC)
-      - "9092:9092"   # broker metrics
+      - "9092:9092"   # broker HTTP: the policy bundle OPA downloads
     depends_on:
       migrate:
         condition: service_completed_successfully

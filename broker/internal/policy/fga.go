@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -28,23 +29,76 @@ import (
 type fgaClient struct {
 	endpoint   string // base URL, e.g. http://openfga:8080
 	storeID    string
-	modelID    string // optional; pins an authorization model version
 	httpClient *http.Client
 	logger     *zap.Logger
+
+	// modelPinned is true when the model id came from configuration; it is
+	// then never replaced. Otherwise the id is the store's latest model,
+	// resolved at startup and refreshed (Engine.RefreshFGAModel), so every
+	// check names the model it ran against instead of "latest at that moment".
+	modelPinned bool
+	modelMu     sync.RWMutex
+	modelID     string
 }
 
 func newFGAClient(endpoint, storeID, modelID string, logger *zap.Logger) *fgaClient {
+	modelID = strings.TrimSpace(modelID)
 	return &fgaClient{
-		endpoint:   strings.TrimRight(endpoint, "/"),
-		storeID:    strings.TrimSpace(storeID),
-		modelID:    strings.TrimSpace(modelID),
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-		logger:     logger,
+		endpoint:    strings.TrimRight(endpoint, "/"),
+		storeID:     strings.TrimSpace(storeID),
+		httpClient:  &http.Client{Timeout: 5 * time.Second},
+		logger:      logger,
+		modelPinned: modelID != "",
+		modelID:     modelID,
 	}
 }
 
 // enabled reports whether a real store is configured.
 func (c *fgaClient) enabled() bool { return c != nil && c.storeID != "" }
+
+// model returns the authorization model id checks run against; "" until one
+// is configured or resolved (OpenFGA then uses the store's latest).
+func (c *fgaClient) model() string {
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+	return c.modelID
+}
+
+func (c *fgaClient) setModel(id string) {
+	c.modelMu.Lock()
+	c.modelID = id
+	c.modelMu.Unlock()
+}
+
+// latestModel asks OpenFGA for the store's newest authorization model.
+// OpenFGA lists models newest first. "" with no error: the store has none yet.
+func (c *fgaClient) latestModel(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/stores/%s/authorization-models?page_size=1", c.endpoint, c.storeID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build fga models request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fga models request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fga models returned status %d", resp.StatusCode)
+	}
+	var out struct {
+		AuthorizationModels []struct {
+			ID string `json:"id"`
+		} `json:"authorization_models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode fga models: %w", err)
+	}
+	if len(out.AuthorizationModels) == 0 {
+		return "", nil
+	}
+	return out.AuthorizationModels[0].ID, nil
+}
 
 type fgaCheckRequest struct {
 	TupleKey             fgaTupleKey `json:"tuple_key"`
@@ -76,7 +130,7 @@ type fgaTupleKeys struct {
 func (c *fgaClient) check(ctx context.Context, user, relation, object string) (bool, error) {
 	reqBody := fgaCheckRequest{
 		TupleKey:             fgaTupleKey{User: user, Relation: relation, Object: object},
-		AuthorizationModelID: c.modelID,
+		AuthorizationModelID: c.model(),
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -228,7 +282,7 @@ func (c *fgaClient) listObjects(ctx context.Context, user, relation, objectType 
 		Type:                 objectType,
 		Relation:             relation,
 		User:                 user,
-		AuthorizationModelID: c.modelID,
+		AuthorizationModelID: c.model(),
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
