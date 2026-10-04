@@ -223,3 +223,70 @@ test("/api/* response falls back to application/json when upstream omits content
   // on send() — pre-existing behavior, unrelated to the CP4 passthrough fix.
   assert.ok(res.headers["content-type"].startsWith("application/json"), res.headers["content-type"]);
 });
+
+// Runtime config: build an app with an explicit env and fetch /runtime-config.js.
+async function getRuntimeConfig(t, env) {
+  const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: "/nonexistent", env });
+  await app.ready();
+  t.after(() => app.close());
+  return app.inject({ method: "GET", url: "/runtime-config.js" });
+}
+
+// Runs a /runtime-config.js body the way a browser would and returns what it
+// assigned to window.__AIKONOS_CONFIG__.
+function evalRuntimeConfig(js) {
+  const window = {};
+  new Function("window", js)(window);
+  return window.__AIKONOS_CONFIG__;
+}
+
+test("GET /runtime-config.js serves the AIKONOS_WEBUI_OIDC_* env as window.__AIKONOS_CONFIG__", async (t) => {
+  const res = await getRuntimeConfig(t, {
+    AIKONOS_WEBUI_OIDC_AUTHORITY: "https://login.example.com/tenant/v2.0",
+    AIKONOS_WEBUI_OIDC_CLIENT: "client-123",
+    AIKONOS_WEBUI_OIDC_REDIRECT_URI: "https://aikonos.example.com/auth/callback",
+    AIKONOS_WEBUI_OIDC_SCOPE: "openid profile email",
+    AIKONOS_WEBUI_OIDC_TOKEN: "id",
+  });
+  assert.equal(res.statusCode, 200);
+  assert.ok(res.headers["content-type"].startsWith("application/javascript"), res.headers["content-type"]);
+  assert.equal(res.headers["cache-control"], "no-store");
+  assert.deepEqual(evalRuntimeConfig(res.payload), {
+    oidc: {
+      authority: "https://login.example.com/tenant/v2.0",
+      clientId: "client-123",
+      redirectUri: "https://aikonos.example.com/auth/callback",
+      scope: "openid profile email",
+      token: "id",
+    },
+  });
+});
+
+test("GET /runtime-config.js leaves out unset and blank settings so build-time values apply", async (t) => {
+  const res = await getRuntimeConfig(t, {
+    AIKONOS_WEBUI_OIDC_CLIENT: "   ",
+    AIKONOS_WEBUI_OIDC_SCOPE: "",
+    AIKONOS_WEBUI_OIDC_TOKEN: " access ",
+  });
+  assert.deepEqual(evalRuntimeConfig(res.payload), { oidc: { token: "access" } });
+
+  const empty = await getRuntimeConfig(t, {});
+  assert.deepEqual(evalRuntimeConfig(empty.payload), { oidc: {} });
+});
+
+test("GET /runtime-config.js exposes only the OIDC settings, never other env", async (t) => {
+  const res = await getRuntimeConfig(t, {
+    AIKONOS_WEBUI_OIDC_CLIENT: "client-123",
+    AIKONOS_API_KEY_PEPPER: "pepper-must-not-leak",
+    OPENROUTER_API_KEY: "key-must-not-leak",
+  });
+  assert.ok(!res.payload.includes("must-not-leak"), res.payload);
+  assert.deepEqual(evalRuntimeConfig(res.payload), { oidc: { clientId: "client-123" } });
+});
+
+test("a runtime-config value cannot break out of the assignment", async (t) => {
+  const hostile = '"};globalThis.pwned=1;//</script><script>';
+  const res = await getRuntimeConfig(t, { AIKONOS_WEBUI_OIDC_SCOPE: hostile });
+  assert.equal(evalRuntimeConfig(res.payload).oidc.scope, hostile);
+  assert.equal(globalThis.pwned, undefined);
+});

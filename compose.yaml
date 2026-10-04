@@ -690,6 +690,15 @@ services:
       GATEWAY_URL:       http://agent-gateway:8080
       OBSERVABILITY_URL: http://agent-gateway:8080
       PORT:              "4200"
+      # The same OIDC settings as the build args above, served to the SPA at
+      # runtime (/runtime-config.js) and taking precedence over the baked-in
+      # copy. A pulled release image needs no rebuild per identity provider, and
+      # changing one of these needs only `docker compose up -d webui`.
+      AIKONOS_WEBUI_OIDC_AUTHORITY:    ${AIKONOS_WEBUI_OIDC_AUTHORITY:-http://localhost:18080/realms/aikonos}
+      AIKONOS_WEBUI_OIDC_CLIENT:       ${AIKONOS_WEBUI_OIDC_CLIENT:-aikonos-webui}
+      AIKONOS_WEBUI_OIDC_REDIRECT_URI: ${AIKONOS_WEBUI_OIDC_REDIRECT_URI:-http://localhost:4200/auth/callback}
+      AIKONOS_WEBUI_OIDC_SCOPE:        ${AIKONOS_WEBUI_OIDC_SCOPE:-openid profile}
+      AIKONOS_WEBUI_OIDC_TOKEN:        ${AIKONOS_WEBUI_OIDC_TOKEN:-access}
     ports:
       - "4200:4200"
     depends_on:

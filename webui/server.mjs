@@ -4,6 +4,7 @@
 // service, forwarding the Authorization header from the browser.
 //
 //   GET  /healthz
+//   GET  /runtime-config.js → deployment settings for the SPA (from env)
 //   ALL  /api/*             → gateway (strip /api prefix)  — JSON, buffered OK
 //   POST /agui              → gateway /agui                — SSE, must NOT buffer
 //   GET  /audit/stream      → observability /api/audit/stream — SSE, must NOT buffer
@@ -22,13 +23,37 @@ const here = dirname(fileURLToPath(import.meta.url));
 // the proxy can forward them to the gateway verbatim (original Content-Type + body).
 export const UPLOAD_MEDIA_TYPES = ["text/markdown", "text/plain", "application/zip"];
 
+// OIDC settings the SPA reads at startup from /runtime-config.js (see
+// web/src/auth/oidc.js). They come from the container environment, so one
+// published image serves any identity provider without a rebuild. An unset or
+// empty variable is left out and the SPA falls back to the value baked in at
+// build time (VITE_OIDC_*). Only these keys are ever exposed: they are public
+// client settings, the same values a built bundle already carries.
+export const RUNTIME_OIDC_ENV = {
+  authority: "AIKONOS_WEBUI_OIDC_AUTHORITY",
+  clientId: "AIKONOS_WEBUI_OIDC_CLIENT",
+  redirectUri: "AIKONOS_WEBUI_OIDC_REDIRECT_URI",
+  scope: "AIKONOS_WEBUI_OIDC_SCOPE",
+  token: "AIKONOS_WEBUI_OIDC_TOKEN",
+};
+
+export function runtimeConfig(env = process.env) {
+  const oidc = {};
+  for (const [key, name] of Object.entries(RUNTIME_OIDC_ENV)) {
+    const value = (env[name] ?? "").trim();
+    if (value) oidc[key] = value;
+  }
+  return { oidc };
+}
+
 // buildApp creates and configures the Fastify instance without starting it.
 // opts.distDir defaults to the real web/dist; pass a non-existent path in tests
-// to skip static serving.
+// to skip static serving. opts.env defaults to process.env (runtime config).
 export async function buildApp({
   gatewayUrl,
   observabilityUrl,
   distDir = join(here, "web", "dist"),
+  env = process.env,
 } = {}) {
   const GATEWAY_URL = (gatewayUrl ?? process.env.GATEWAY_URL ?? "http://agent-gateway.aikonos-platform.svc.cluster.local:8080").replace(/\/$/, "");
   const OBSERVABILITY_URL = (observabilityUrl ?? process.env.OBSERVABILITY_URL ?? "http://observability.aikonos-platform.svc.cluster.local:4000").replace(/\/$/, "");
@@ -53,6 +78,18 @@ export async function buildApp({
   }
 
   app.get("/healthz", async () => ({ ok: true, gateway: GATEWAY_URL, observability: OBSERVABILITY_URL || null }));
+
+  // Loaded by a classic <script> in index.html, which runs before the deferred
+  // app bundle. JSON.stringify output is a valid JS literal, so no value can
+  // break out of the assignment. no-store: a changed setting applies on the next
+  // page load, not after a cache expires.
+  const runtimeConfigJs = `window.__AIKONOS_CONFIG__ = ${JSON.stringify(runtimeConfig(env))};\n`;
+  app.get("/runtime-config.js", async (_req, reply) => {
+    reply
+      .header("content-type", "application/javascript; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(runtimeConfigJs);
+  });
 
   // SSE passthrough helper — must write directly to the raw socket so Fastify
   // cannot buffer the response. Caller is responsible for calling this from a

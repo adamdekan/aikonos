@@ -86,8 +86,9 @@ re-run it, then `docker compose up -d --force-recreate broker`. (See
   cookie (proves the ext router skips the edge gate).
 
 ## Notes / gotchas
-- **webui OIDC is build-time.** Changing any `AIKONOS_WEBUI_OIDC_*` requires
-  `docker compose build webui` (Vite bakes them into the SPA).
+- **webui OIDC is read at container start.** The SPA gets the `AIKONOS_WEBUI_OIDC_*` values
+  from `/runtime-config.js`, so changing one needs only `docker compose up -d webui`. Vite
+  still bakes them in at build time as a fallback; the runtime values win.
 - **Keycloak still runs but is unused** on azure (kept only to satisfy the base
   `depends_on`; it is not routed and is not the IdP). Idle cost ~1-2 GB.
 - **Vault is in-memory.** After any Vault restart, re-run

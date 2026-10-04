@@ -42,8 +42,8 @@ Entra is one public URL reachable identically by the browser and the containers.
 
 ## Two Entra models: login-only vs OneDrive/OBO
 
-The webui sends **one** bearer to the broker; which token it sends is chosen at
-build time by `AIKONOS_WEBUI_OIDC_TOKEN`. Pick the model by whether the tenant
+The webui sends **one** bearer to the broker; which token it sends is chosen by
+`AIKONOS_WEBUI_OIDC_TOKEN`, read when the webui container starts. Pick the model by whether the tenant
 wants OneDrive — a login-only customer needs **no** exposed API and **no**
 `access_as_user`.
 
@@ -93,12 +93,13 @@ no custom claim mapping required.
 
 ## Test (dev/personal tenant)
 
-1. Put the Entra values from the table into `.env` (and the webui build env). For a
+1. Put the Entra values from the table into `.env` (the webui's as `AIKONOS_WEBUI_OIDC_*`). For a
    local/personal-tenant test the commented block in `deploy/compose/.env.local.example`
    lists them; for the Azure VM deployment use `deploy/compose/.env.azure.example`
    (Entra is the active config there) — see `deploy/azure/README.md`.
-2. Rebuild + recreate webui (build-time `VITE_*`) and recreate broker + gateway:
-   `docker compose build webui && docker compose up -d --force-recreate broker agent-gateway webui`.
+2. Recreate webui, broker and gateway. The webui reads `AIKONOS_WEBUI_OIDC_*` at container
+   start, so no rebuild is needed:
+   `docker compose up -d --force-recreate broker agent-gateway webui`.
 3. Sign in at http://localhost:4200 → decode the access token once → copy your `oid`.
 4. Seed yourself as tenant-admin: write `user:<oid> admin tenant:<AIKONOS_BROKER_TENANT_ID>`
    (extend `scripts/compose-seed-openfga.sh`'s admin tuple to your `oid`), then recreate the broker.
@@ -147,8 +148,8 @@ no OneDrive option.
 ## Migrate to the enterprise tenant (later)
 
 1. Register the app in the enterprise tenant (single-tenant), expose the API, grant consent.
-2. Re-point `AIKONOS_OIDC_*`, `AIKONOS_TENANT_ID`, and the webui `VITE_OIDC_*` at the
+2. Re-point `AIKONOS_OIDC_*`, `AIKONOS_TENANT_ID`, and the webui `AIKONOS_WEBUI_OIDC_*` at the
    enterprise tenant/app. **Keep `AIKONOS_BROKER_TENANT_ID`.**
 3. Re-seed FGA tuples (group membership, tenant-admin, skill access) for the real
    users' `oid`s.
-4. No code change, no rebuild beyond the webui's build-time `VITE_*` values.
+4. No code change and no rebuild: the webui reads its settings at container start.

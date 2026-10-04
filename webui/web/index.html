@@ -43,6 +43,11 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
+  <!-- Deployment settings (OIDC), served by server.mjs from the container's
+       environment so one image serves any identity provider. A classic script
+       runs before the deferred app module, so auth/oidc.js sees the values when
+       it loads; if this request fails, the build-time values apply instead. -->
+  <script src="/runtime-config.js"></script>
 </head>
 <body>
   <div id="app"></div>

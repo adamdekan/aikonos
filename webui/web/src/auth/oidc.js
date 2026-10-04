@@ -1,7 +1,11 @@
 // OIDC client wrapper around oidc-client-ts UserManager.
-// Authority and client config come from Vite env vars (VITE_OIDC_AUTHORITY,
-// VITE_OIDC_CLIENT_ID, VITE_OIDC_REDIRECT_URI) so the values are baked at
-// build time per deployment and are not in localStorage.
+// Authority and client config are deployment settings, never kept in
+// localStorage. They resolve in this order (see resolveOidcConfig):
+//   1. runtime: window.__AIKONOS_CONFIG__.oidc, set by /runtime-config.js, which
+//      server.mjs builds from the container's AIKONOS_WEBUI_OIDC_* env vars;
+//   2. build time: the VITE_OIDC_* values Vite baked into the bundle;
+//   3. the local-Keycloak defaults below.
+// Runtime first means one published image serves any identity provider.
 //
 // Token storage: both the PKCE state (stateStore) and the user object
 // (userStore) are explicitly bound to sessionStorage — tokens do not survive
@@ -11,21 +15,44 @@
 
 import { UserManager, WebStorageStateStore } from "oidc-client-ts";
 
-const authority   = import.meta.env.VITE_OIDC_AUTHORITY   ?? "http://localhost:18080/realms/aikonos";
-const clientId    = import.meta.env.VITE_OIDC_CLIENT_ID   ?? "aikonos-webui";
-const redirectUri = import.meta.env.VITE_OIDC_REDIRECT_URI ?? `${window.location.origin}/auth/callback`;
-// Keycloak stamps aud=aikonos-broker via the client-level "webui-audience"
-// protocol mapper (scope-independent), so the default requests only the standard
-// OIDC scopes — requesting "aikonos-broker" as a scope fails ("Invalid scopes")
-// since no such client scope exists in the realm. Entra needs the broker's
-// exposed API scope in the access token's aud, so it sets VITE_OIDC_SCOPE
-// explicitly (e.g. "openid profile api://<broker-app-id>/access_as_user").
-const scope       = import.meta.env.VITE_OIDC_SCOPE       ?? "openid profile";
-// Which token the broker/gateway accept as the bearer. "access" (default) suits
-// Keycloak and any Entra app that exposes an API; "id" suits Entra deployments
-// that do NOT expose an API (login-only, e.g. Graph User.Read only). See
-// selectBrokerToken for the full rationale.
-const brokerTokenKind = import.meta.env.VITE_OIDC_TOKEN   ?? "access";
+/**
+ * Resolves the OIDC settings from the runtime config, the build-time env, and
+ * the defaults, in that order. Pure and exported for unit tests. An empty or
+ * whitespace-only value counts as unset at every level, so a blank variable
+ * falls through instead of yielding an unusable empty authority or scope.
+ *
+ * scope: Keycloak stamps aud=aikonos-broker via the client-level "webui-audience"
+ * protocol mapper (scope-independent), so the default requests only the standard
+ * OIDC scopes — requesting "aikonos-broker" as a scope fails ("Invalid scopes")
+ * since no such client scope exists in the realm. Entra needs the broker's
+ * exposed API scope in the access token's aud, so it sets the scope explicitly
+ * (e.g. "openid profile api://<broker-app-id>/access_as_user").
+ *
+ * tokenKind: which token the broker/gateway accept as the bearer. "access"
+ * (default) suits Keycloak and any Entra app that exposes an API; "id" suits
+ * Entra deployments that do NOT expose an API (login-only, e.g. Graph User.Read
+ * only). See selectBrokerToken for the full rationale.
+ */
+export function resolveOidcConfig(runtime, buildEnv = {}, origin = "") {
+  const rt = runtime && typeof runtime === "object" ? runtime : {};
+  const pick = (...values) =>
+    values.find((v) => typeof v === "string" && v.trim() !== "")?.trim();
+  return {
+    authority: pick(rt.authority, buildEnv.VITE_OIDC_AUTHORITY) ?? "http://localhost:18080/realms/aikonos",
+    clientId: pick(rt.clientId, buildEnv.VITE_OIDC_CLIENT_ID) ?? "aikonos-webui",
+    redirectUri: pick(rt.redirectUri, buildEnv.VITE_OIDC_REDIRECT_URI) ?? `${origin}/auth/callback`,
+    scope: pick(rt.scope, buildEnv.VITE_OIDC_SCOPE) ?? "openid profile",
+    tokenKind: pick(rt.token, buildEnv.VITE_OIDC_TOKEN) ?? "access",
+  };
+}
+
+const {
+  authority,
+  clientId,
+  redirectUri,
+  scope,
+  tokenKind: brokerTokenKind,
+} = resolveOidcConfig(window.__AIKONOS_CONFIG__?.oidc, import.meta.env, window.location.origin);
 
 const mgr = new UserManager({
   authority,
@@ -78,7 +105,7 @@ export async function getUser() {
 
 /**
  * Returns the ID token string (aud=client_id) directly. The broker bearer is
- * normally chosen by selectBrokerToken/VITE_OIDC_TOKEN; this getter is kept for
+ * normally chosen by selectBrokerToken/tokenKind; this getter is kept for
  * callers that specifically need the ID token.
  */
 export async function getIdToken() {
@@ -88,8 +115,9 @@ export async function getIdToken() {
 }
 
 /**
- * Selects the bearer the broker/gateway will accept, per the VITE_OIDC_TOKEN
- * build knob. Pure (no I/O) and exported so it can be unit-tested directly.
+ * Selects the bearer the broker/gateway will accept, per the tokenKind setting
+ * (AIKONOS_WEBUI_OIDC_TOKEN at runtime, VITE_OIDC_TOKEN at build time). Pure
+ * (no I/O) and exported so it can be unit-tested directly.
  *
  *   - "access" (default): the access token. Correct for Keycloak (aud=aikonos-broker
  *     stamped by the webui-audience mapper) and for Entra apps that expose an API
@@ -109,7 +137,7 @@ export function selectBrokerToken(user, kind = brokerTokenKind) {
 
 /**
  * Returns the bearer to send to the broker/gateway — the access token by default,
- * or the ID token when VITE_OIDC_TOKEN=id (see selectBrokerToken). Null when the
+ * or the ID token when tokenKind is "id" (see selectBrokerToken). Null when the
  * session has expired and silent renew has not yet run.
  */
 export async function getAccessToken() {

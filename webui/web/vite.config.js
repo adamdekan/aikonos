@@ -9,6 +9,7 @@ export default defineConfig({
       "/api": { target: "http://127.0.0.1:4200", changeOrigin: true },
       "/agui": { target: "http://127.0.0.1:4200", changeOrigin: true },
       "/audit/stream": { target: "http://127.0.0.1:4200", changeOrigin: true },
+      "/runtime-config.js": { target: "http://127.0.0.1:4200", changeOrigin: true },
     },
   },
   build: { outDir: "dist", emptyOutDir: true },
