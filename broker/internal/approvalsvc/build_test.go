@@ -176,7 +176,7 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 			emitter := &recordingEmitter{}
 			cfg := &fakeConfig{requiredN: tc.cfgN, expiryHours: 24}
 
-			err := Build(context.Background(), BuildInput{
+			_, err := Build(context.Background(), BuildInput{
 				Store:       store,
 				Policy:      tc.policy,
 				Config:      cfg,
@@ -242,7 +242,7 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 // into — Build must guard with `in.Policy != nil` before FGAEnabled/ReadTuples.
 func TestBuild_FGADisabledDoesNotDereferenceNilPolicy(t *testing.T) {
 	store := &fakeApprovalStore{}
-	err := Build(context.Background(), BuildInput{
+	_, err := Build(context.Background(), BuildInput{
 		Store:       store,
 		Policy:      nil, // must not panic
 		Config:      &fakeConfig{requiredN: 1, expiryHours: 24},

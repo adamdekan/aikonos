@@ -274,8 +274,8 @@ func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 			logger.Warn("audit: list tenants for chain resume failed", zap.Error(obj.Err))
 			return
 		}
-		if !strings.HasSuffix(obj.Key, "/") {
-			continue // tenant prefixes are "directories"
+		if !strings.HasSuffix(obj.Key, "/") || strings.HasPrefix(obj.Key, "_") {
+			continue // tenant prefixes are "directories"; "_policy/" etc. are not tenants
 		}
 		tenant := strings.TrimSuffix(obj.Key, "/")
 		key, ok := e.newestUnder(ctx, obj.Key)

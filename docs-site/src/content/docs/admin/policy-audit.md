@@ -45,6 +45,11 @@ watching live when something happened.
   the specific event, so you can jump straight to it instead of scanning the whole log.
 - Export JSON and Export CSV download the current filtered result.
 - Clicking a row opens a side inspector panel with its full detail.
+- For a policy decision (event type `aikonos.broker.policy.decision`), the inspector also offers
+  **Download evidence**: the decision together with an archived copy of the exact policy that made
+  it. Anyone with that file can re-run the decision offline with the standard OPA tool, using
+  `scripts/replay-decision.sh` from the repository, and see which rule decided. Downloading evidence
+  is itself recorded in the audit log.
 
 ## Decisions (Decision Trace)
 

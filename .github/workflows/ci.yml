@@ -37,6 +37,16 @@ jobs:
       - name: Generate proto stubs
         run: bash scripts/proto-gen.sh
 
+      # The decision-replay integration test (broker/internal/policy) runs the
+      # real OPA the stack uses — keep in lockstep with compose.yaml's opa image
+      # and the policy-test job — and scripts/replay-decision.sh (bash + jq).
+      - name: Install OPA (decision-replay integration test)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/opa" https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+          echo "00d114b94fdb1606a48cccdfc73c9ccdc62c38721150131ae578d5ff3df5c084  $RUNNER_TEMP/opa" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "AIKONOS_TEST_OPA=$RUNNER_TEMP/opa" >> "$GITHUB_ENV"
+
       - name: Run broker tests
         run: go test ./broker/...
 
@@ -54,10 +64,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same OPA version as compose.yaml's opa image: tests should pass on the
+      # engine that decides.
       - name: Install OPA
         run: |
-          curl -sL -o opa https://openpolicyagent.org/downloads/v0.68.0/opa_linux_amd64_static
-          echo "dfd5081fc6f930dfeaf2a225e31e616fc227dc0c7b43019b73d6f8fb8a1de1aa  opa" | sha256sum -c
+          curl -sL -o opa https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+          echo "00d114b94fdb1606a48cccdfc73c9ccdc62c38721150131ae578d5ff3df5c084  opa" | sha256sum -c
           chmod +x opa
           sudo mv opa /usr/local/bin/opa
           opa version

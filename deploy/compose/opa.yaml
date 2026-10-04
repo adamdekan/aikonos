@@ -1,0 +1,27 @@
+# OPA configuration: the policy comes from the broker, not from a mounted
+# directory. The broker serves the Rego under policies/opa as the "aikonos"
+# bundle, named by a digest of its files, and archives each revision in the
+# audit store before serving it. OPA reports that revision with every decision,
+# so each decision record names the exact policy behind it
+# (docs/15-decision-replay.md).
+#
+# Owning the "aikonos" root also means OPA's REST API refuses to write
+# policies or data under it: the policy that decides can only change through
+# the broker, and every change is recorded.
+services:
+  broker:
+    url: http://broker:9092
+
+bundles:
+  aikonos:
+    service: broker
+    resource: /opa/bundles/aikonos.tar.gz
+    persist: false
+    polling:
+      min_delay_seconds: 5
+      max_delay_seconds: 15
+
+# Decision logs to stdout, as before. The broker records its own decision
+# events in the audit trail; these are OPA's view, joined by decision_id.
+decision_logs:
+  console: true

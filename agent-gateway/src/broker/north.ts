@@ -99,6 +99,8 @@ import type {
   VerifyAuditChainResponse,
   GetDecisionTraceRequest,
   GetDecisionTraceResponse,
+  GetDecisionEvidenceRequest,
+  GetDecisionEvidenceResponse,
   SimulatePolicyRequest,
   SimulatePolicyResponse,
   GetPlatformConfigRequest,
@@ -526,6 +528,13 @@ export class NorthClient {
     token?: string,
   ): Promise<GetDecisionTraceResponse> {
     return unary((r, m, o, cb) => this.client.getDecisionTrace(r, m, o, cb), req, bearer(token));
+  }
+
+  getDecisionEvidence(
+    req: GetDecisionEvidenceRequest,
+    token?: string,
+  ): Promise<GetDecisionEvidenceResponse> {
+    return unary((r, m, o, cb) => this.client.getDecisionEvidence(r, m, o, cb), req, bearer(token));
   }
 
   simulatePolicy(

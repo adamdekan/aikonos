@@ -1325,6 +1325,33 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
     },
   );
 
+  // ── Decision evidence (admin) ──────────────────────────────────────────────
+  // One audit event plus the archived policy it names, as the download
+  // scripts/replay-decision.sh reads (docs/15-decision-replay.md). Passed
+  // through byte for byte. Tenant-admin gated in the broker.
+  app.get<{ Params: { eventId: string } }>(
+    "/admin/audit/evidence/:eventId",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      const { eventId } = req.params;
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(eventId)) {
+        reply.code(400).send({ error: "event id must be a lowercase UUID" });
+        return;
+      }
+      try {
+        const resp = await clients.north.getDecisionEvidence({ eventId }, principal.token);
+        reply
+          .header("content-type", "application/json; charset=utf-8")
+          .header("content-disposition", `attachment; filename="aikonos-evidence-${eventId}.json"`)
+          .header("cache-control", "no-store")
+          .send(Buffer.from(resp.evidenceJson ?? new Uint8Array(0)));
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
   // ── Agents: admin CRUD ─────────────────────────────────────────────────────
   app.get("/admin/agents", async (req, reply) => {
     const principal = await requireUser(req, reply, jwksResolver, verifyOpts);

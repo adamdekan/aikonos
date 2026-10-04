@@ -61,6 +61,9 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // Authorized addition: GET /sessions/:id/usage — per-session model/tokens/cost
 // for the chat view's usage strip. Self-service (not admin-gated); the broker
 // scopes the read to the verified caller's own sessions.
+// Decision replay authorized addition: GET /admin/audit/evidence/:eventId —
+// one decision record plus the archived policy it names, the input to
+// scripts/replay-decision.sh (broker-enforced, tenant-admin gated).
 const EXPECTED_ROUTES = [
   "DELETE /admin/agents/:id",
   "DELETE /admin/agents/:id/keys/:keyId",
@@ -82,6 +85,7 @@ const EXPECTED_ROUTES = [
   "GET /admin/agents/:id/keys",
   "GET /admin/alerts",
   "GET /admin/assignments",
+  "GET /admin/audit/evidence/:eventId",
   "GET /admin/audit/query",
   "GET /admin/audit/verify",
   "GET /admin/config",

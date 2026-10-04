@@ -458,9 +458,11 @@ another, e.g. `-p 3031:3000`) and find the dashboards under the **Aikonos** fold
 
 ### T-01: Unauthorized policy change
 1. `git log --oneline policies/` — check recent commits
-2. If unauthorized: revert commit, rebuild + recreate OPA: `docker compose up -d --force-recreate opa`
-3. Check the Vault and broker logs for any policy-related calls
-4. Review access to the Git repo signing keys
+2. In Audit history, filter on `aikonos.broker.policy.loaded`: every policy revision OPA has used, when it took effect, its files, and the revision it replaced. Each revision is archived under `_policy/bundles/` in the audit bucket
+3. If unauthorized: revert the commit on the host. The broker re-reads `policies/opa` within 30s and OPA picks up the reverted revision; no restart is needed
+4. Find what the unauthorized revision decided: `aikonos.broker.policy.decision` events whose `opa.revision` is that revision. Export any of them and replay it (`task audit:replay`, [`15-decision-replay.md`](15-decision-replay.md))
+5. Check the Vault and broker logs for any policy-related calls
+6. Review access to the Git repo signing keys
 
 ### E-08: Broker compromise suspected
 1. Kill switch the affected tenant's users (`aikonosctl kill-switch user …` per user)

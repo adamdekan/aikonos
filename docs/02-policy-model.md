@@ -311,10 +311,10 @@ policies/
 1. PR with policy change
 2. CI runs: syntax check, unit tests, policy linter (Regal for OPA), simulation against historical decisions
 3. Reviewed by security team + resource owner
-4. Merge → policies bind-mounted into the `opa` compose service; recreate to apply (`docker compose up -d --force-recreate opa broker`)
+4. Merge → the broker serves `policies/opa` to OPA as a bundle named by a digest of its files, archiving each revision in the audit store first; a changed file is picked up within about 45 seconds, no restart (see [`15-decision-replay.md`](15-decision-replay.md))
 5. Canary rollout with shadow mode (evaluate new + old, compare, alert on divergence)
 6. Promote to production
-7. Old policy versions retained for audit replay
+7. Every revision stays archived, and every decision records the revision that made it, so any past decision can be re-run against its own policy (`task audit:replay`)
 
 **Testing example** (OPA):
 

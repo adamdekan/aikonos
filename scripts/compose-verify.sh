@@ -144,6 +144,38 @@ else
   bad "audit MinIO sink not active"
 fi
 
+# 4a. Decision replay (docs/15-decision-replay.md): the broker serves OPA its
+# policy as a bundle archived in the audit store, OPA's decisions name that
+# revision, and OPA refuses API writes under the bundle's root. The OPA probes
+# need its published port; without it (on-prem hides it) they are skipped.
+SERVED_LINE="$(grep 'policy bundle: serving revision' <<<"$BROKER_LOG" | tail -1)"
+POLICY_REV="$(grep -oE 'sha256:[0-9a-f]{64}' <<<"$SERVED_LINE" | head -1)"
+if [ -n "$POLICY_REV" ] && grep -qE '"archived": ?true' <<<"$SERVED_LINE"; then
+  ok "policy bundle archived and served to OPA (${POLICY_REV:0:19}…)"
+else
+  bad "broker is not serving an archived policy bundle (check policy.bundle_dir and the audit store)"
+fi
+OPA_URL="${OPA_URL:-http://localhost:8181}"
+OPA_PROVENANCE="$(curl -s --max-time 8 -X POST -H 'content-type: application/json' -d '{"input":{}}' \
+  "$OPA_URL/v1/data/aikonos/tool_invocation?provenance=true" 2>/dev/null)"
+if [ -z "$OPA_PROVENANCE" ]; then
+  skip "OPA not reachable at $OPA_URL — decision provenance not probed"
+else
+  if grep -qF "\"revision\":\"$POLICY_REV\"" <<<"${OPA_PROVENANCE// /}"; then
+    ok "OPA decisions carry the archived policy revision"
+  else
+    bad "OPA decisions do not name the broker's policy revision (bundle not active yet?)"
+  fi
+  WRITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -X PUT \
+    --data-binary $'package aikonos.compose_verify\nallow := true\n' "$OPA_URL/v1/policies/compose-verify" 2>/dev/null)"
+  if [ "$WRITE_CODE" = "200" ]; then
+    curl -s -o /dev/null --max-time 8 -X DELETE "$OPA_URL/v1/policies/compose-verify" 2>/dev/null
+    bad "OPA accepted a policy write under the aikonos root"
+  else
+    ok "OPA refuses policy writes under the aikonos root ($WRITE_CODE)"
+  fi
+fi
+
 # 4b. Capability root key sourced from Vault via the AppRole — NOT the ephemeral
 # fallback (which means the broker failed to authenticate to Vault).
 if grep -q 'EPHEMERAL key' <<<"$BROKER_LOG"; then

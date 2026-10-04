@@ -55,6 +55,30 @@ export const put   = (path, opts = {}) => request(path, { ...opts, method: "PUT"
 export const del   = (path, opts = {}) => request(path, { ...opts, method: "DELETE" });
 export const patch = (path, opts = {}) => request(path, { ...opts, method: "PATCH" });
 
+// download fetches a file the gateway serves as an attachment and returns its
+// exact text, unparsed, so a document checked byte for byte (decision
+// evidence) is saved unchanged. 403 → { forbidden: true }, like request.
+export async function download(path) {
+  const token = await getAccessToken();
+  if (!token) throw new Error("no token — user is not authenticated");
+
+  const res = await fetch(resolveUrl(path), { headers: { "Authorization": `Bearer ${token}` } });
+  const text = await res.text();
+  if (res.status === 403) return { forbidden: true };
+  if (!res.ok) {
+    let message = `request failed (${res.status})`;
+    try {
+      message = JSON.parse(text).error || message;
+    } catch {
+      /* not JSON */
+    }
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
+  }
+  return { text };
+}
+
 // upload sends a raw (non-JSON) body with an explicit content-type.
 // Used for SKILL.md text/markdown upload where JSON serialization would corrupt the body.
 // method defaults to POST; pass method: "PUT" for update-in-place.

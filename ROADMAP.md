@@ -28,7 +28,7 @@ architecture, not preferences.
 
 | Item | Why it blocks |
 |---|---|
-| Decision replay | An audit event records allow or deny and a reason, but not which version of which rules produced it. An auditor cannot re-check a past decision against the policy that was in force, only read that it happened |
+| Audit store hardening | Default retention is off unless `audit.retention_days` is set, and governance mode lets an account with bypass rights delete events. An event whose write fails after retries is dropped while the chain head moves on, so the trail shows a break rather than an explained gap. Verification reads at most 5,000 events, and it orders them by id while the chain is in emit order, so concurrent writes can show as false breaks |
 | Connectors against real tenants | Microsoft 365, OneDrive and Google Drive are unit-tested only. The documents that regulated organisations want agents to work on live in exactly these systems |
 | OpenBao in place of Vault | Vault is licensed under BUSL-1.1, which is not open source. OpenBao is its MPL-2.0 fork with the same API |
 | Security advisories and VEX | Release images are scanned and refused when they carry a fixable critical vulnerability. There are no published advisories yet, and no VEX statements for findings the code cannot reach |
@@ -80,6 +80,10 @@ Not committed, listed so the direction is visible.
   would let a third party confirm they follow from the source alone.
 - **Agent inventory and lifecycle.** Discovering, onboarding and retiring
   agent identities is manual today.
+- **Access-decision replay.** Policy decisions replay against the archived
+  policy that made them. Access checks record the OpenFGA model and their
+  result, but not the relationship tuples behind it; archiving tuple history
+  would let them replay too.
 
 ## Deferred by design
 
