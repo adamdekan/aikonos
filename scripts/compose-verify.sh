@@ -149,7 +149,7 @@ fi
 # revision, and OPA refuses API writes under the bundle's root. The OPA probes
 # need its published port; without it (on-prem hides it) they are skipped.
 SERVED_LINE="$(grep 'policy bundle: serving revision' <<<"$BROKER_LOG" | tail -1)"
-POLICY_REV="$(grep -oE 'sha256:[0-9a-f]{64}' <<<"$SERVED_LINE" | head -1)"
+POLICY_REV="$(grep -m1 -oE 'sha256:[0-9a-f]{64}' <<<"$SERVED_LINE")"
 if [ -n "$POLICY_REV" ] && grep -qE '"archived": ?true' <<<"$SERVED_LINE"; then
   ok "policy bundle archived and served to OPA (${POLICY_REV:0:19}…)"
 else
