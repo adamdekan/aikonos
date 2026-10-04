@@ -28,10 +28,45 @@ architecture, not preferences.
 
 | Item | Why it blocks |
 |---|---|
-| Kubernetes deployment (Helm chart, operator) | Compose-only deployment ends most enterprise evaluations before they start |
+| Decision replay | An audit event records allow or deny and a reason, but not which version of which rules produced it. An auditor cannot re-check a past decision against the policy that was in force, only read that it happened |
+| Connectors against real tenants | Microsoft 365, OneDrive and Google Drive are unit-tested only. The documents that regulated organisations want agents to work on live in exactly these systems |
+| OpenBao in place of Vault | Vault is licensed under BUSL-1.1, which is not open source. OpenBao is its MPL-2.0 fork with the same API |
+| Security advisories and VEX | Release images are scanned and refused when they carry a fixable critical vulnerability. There are no published advisories yet, and no VEX statements for findings the code cannot reach |
 | Independent security audit | A security product asserting its own posture is not evidence |
-| Reproducible image builds | Release images are signed and carry SBOMs, which proves who built them. Only a bit-for-bit rebuild lets a third party confirm they follow from the source alone |
-| Agent inventory and lifecycle | Discovering, onboarding and retiring agent identities is currently manual |
+| Kubernetes deployment (Helm chart) | Docker Compose suits evaluations and single-host installations. Larger installations standardise on Kubernetes |
+
+## Research
+
+Open questions rather than features. Each can fail, and each result will be
+published under the same licence as the rest, including an unfavourable one.
+
+- **A machine-checkable enforcement model.** A formal model of the gates and a
+  checker that runs against a deployment's own policy and returns a proof or a
+  counterexample: authority never grows along a delegation chain, and nothing
+  outside the granted set executes, whatever the model outputs.
+- **Measured containment.** An adversarial corpus of prompt-injection vectors
+  and a harness that measures how often one reaches an action outside the
+  granted set, published per release with the failing cases. The same
+  measurement decides whether an information-flow layer at the tool call, a
+  risk pre-screen that can only escalate, or a stage that blocks content
+  instead of flagging it actually narrows the gap.
+- **Per-action isolation.** Each tool call in its own sandbox, bound to the
+  capability that authorised it, within a latency budget interactive use
+  tolerates. Capability tokens become single-use as part of the same work.
+- **Sovereign operation.** A deployment profile with a locally hosted model
+  and no external network egress, with a pass or fail tool-use evaluation per
+  candidate model.
+
+## Later
+
+Usability for the people who approve, audit and get refused:
+
+- Accessibility tested against WCAG 2.2 AA, starting with the approval and
+  administration screens.
+- German and English as a per-user setting.
+- Denials in plain language: which rule refused, and what would be needed.
+- Required human approval wherever automation touches a decision about a
+  person.
 
 ## Under consideration
 
@@ -40,11 +75,11 @@ Not committed, listed so the direction is visible.
 - **Delegation interop.** Cross App Access and OIDC-A are converging on how
   one agent calls another system on a user's behalf. Aikonos mints its own
   grants today; speaking a standard would remove an integration cliff.
-- **Content inspection.** Tool results are scanned for injection patterns and
-  annotated, never rewritten. A policy-driven redaction stage would let an
-  operator choose to block rather than only flag.
-- **Adversarial testing in CI.** The policy layer has conformance vectors.
-  The prompt-facing surface has none.
+- **Reproducible image builds.** Release images are signed and carry SBOMs
+  and provenance, which proves who built them. Only a bit-for-bit rebuild
+  would let a third party confirm they follow from the source alone.
+- **Agent inventory and lifecycle.** Discovering, onboarding and retiring
+  agent identities is manual today.
 
 ## Deferred by design
 
