@@ -267,7 +267,7 @@ These files have `moderate` or `complex` knowledge-graph complexity — approach
 
 ### Prerequisites
 - Docker Engine 24+ with Compose v2 (`docker compose`, not `docker-compose`).
-- `openssl` (dev-CA), `task` (Taskfile runner), Go 1.23+, Node 22.
+- `openssl` (dev-CA), `task` (Taskfile runner), Go 1.26+, Node 22.
 
 ### Start a session
 ```bash

@@ -3,7 +3,7 @@
 # Build args allow pinning base image digests in CI for supply-chain hygiene.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM golang:1.23-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 
 WORKDIR /build
 
@@ -19,8 +19,8 @@ RUN go mod download
 # (broker-test job's "Install protoc and Go plugins" step).
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 \
-    && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12 \
+    && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
 # Copy source (gen/ is .dockerignore'd so the in-image stubs are authoritative)
 COPY . .

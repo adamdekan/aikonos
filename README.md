@@ -182,7 +182,7 @@ The [documentation site](docs-site/) ships with the stack and answers at
 
 | Component | Built with |
 |-----------|-----------|
-| broker | Go 1.23, Postgres with row-level security, NATS, Vault, MinIO |
+| broker | Go 1.27, Postgres with row-level security, NATS, Vault, MinIO |
 | agent-gateway | Node 22, TypeScript |
 | webui | Vue 3, Vite, Fastify |
 | Decisions | OpenFGA for access, OPA for routing, Biscuit for capabilities |
