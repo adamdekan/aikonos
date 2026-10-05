@@ -469,7 +469,7 @@ fi
 # published host port in ANY topology (local/Azure/on-prem alike), so unlike
 # webui/gateway above it is ALWAYS probed via `docker compose exec office-worker
 # node -e '...fetch...'` regardless of $MODE — the same idiom compose.yaml's
-# own healthcheck for this service already uses (node:22-slim ships no
+# own healthcheck for this service already uses (node:22-trixie-slim ships no
 # curl/wget). broker itself can't be used as the exec target: it's a
 # distroless static binary with no shell/node to run a probe from.
 office_worker_exec() {

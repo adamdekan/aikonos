@@ -1,7 +1,7 @@
 # docs-mcp image — serves Aikonos Markdown docs over MCP (streamable HTTP).
 # No proto/gRPC generation: this service has no south RPCs.
 # Build context is docs-mcp/ (compose: context: docs-mcp).
-FROM node:22-slim
+FROM node:22-trixie-slim
 WORKDIR /app
 
 # Production deps only; devDeps (test runner) are not needed at runtime.

@@ -3,7 +3,7 @@
 # Build args allow pinning base image digests in CI for supply-chain hygiene.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM golang:1.27-bookworm AS builder
+FROM golang:1.27-trixie AS builder
 
 WORKDIR /build
 
@@ -50,7 +50,7 @@ RUN ldd /broker 2>&1 | grep -q "not a dynamic executable" || \
     (echo "Binary is dynamically linked — distroless will fail" && exit 1)
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 # Copy only the binary
 COPY --from=builder /broker /broker

@@ -1,7 +1,7 @@
 # office-worker image — docx/xlsx/pptx/pdf create/edit/extract/convert,
 # executed in a no-egress, no-credential worker. Build context is office-worker/ (compose: context:
 # office-worker).
-FROM node:22-slim
+FROM node:22-trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -27,7 +27,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# uv manages its own pinned Python 3.12 — bookworm's system python3 is 3.11,
+# uv manages its own pinned Python 3.12 — trixie's system python3 is 3.13,
 # and checkpoints 2-3's openpyxl/pandas/reportlab/pdfplumber/pytesseract
 # scripts need to run under a consistent, uv-locked interpreter + dep set.
 # Pinned to the patch release so a rebuild never quietly picks an older one;
@@ -52,7 +52,7 @@ RUN uv sync --frozen --python 3.12.15 --no-install-project
 
 COPY src ./src
 
-# Non-root: node:22-slim ships a "node" user (uid 1000) — reuse it instead of
+# Non-root: node:22-trixie-slim ships a "node" user (uid 1000) — reuse it instead of
 # adding a new one. Everything under /app is root-owned from the layers
 # above, so chown once rather than per-COPY.
 RUN chown -R node:node /app
