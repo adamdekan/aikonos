@@ -87,7 +87,16 @@ export function createRateLimitBreaker(
     consecutiveFailures = 0;
     openRequestCount = 0;
     if (!resp.allowed) {
-      throw new Error(resp.limitType ? `rate limit exceeded: ${resp.limitType}` : "rate limit exceeded");
+      throw new Error(denialMessage(resp.limitType));
     }
   };
+}
+
+// "spend_unavailable" is the broker failing closed on a spend cap it could not
+// read, not a limit the caller reached, so it says so.
+function denialMessage(limitType: string): string {
+  if (limitType === "spend_unavailable") {
+    return "spend cap could not be checked (spend_unavailable): request refused, try again shortly";
+  }
+  return limitType ? `rate limit exceeded: ${limitType}` : "rate limit exceeded";
 }

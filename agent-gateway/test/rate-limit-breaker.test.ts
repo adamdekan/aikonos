@@ -153,3 +153,16 @@ test("rate-limit breaker: explicit allowed=false never trips the breaker", async
   const breaker2 = createRateLimitBreaker(fn2, { threshold: 5 }, noopLog);
   await assert.doesNotReject(breaker2("t1", "a1", "openrouter"));
 });
+
+test("rate-limit breaker: an unreadable spend cap is refused with its own message, and does not trip the breaker", async () => {
+  const { fn, calls } = fakeCall([
+    { allowed: false, limitType: "spend_unavailable" },
+    { allowed: false, limitType: "spend_org" },
+  ]);
+  const breaker = createRateLimitBreaker(fn, { threshold: 1 }, noopLog);
+  await assert.rejects(breaker("t1", "a1", "openrouter"), /spend cap could not be checked \(spend_unavailable\)/);
+  // An explicit denial is a transport success: with threshold 1 the next call
+  // still reaches the RPC rather than fast-failing.
+  await assert.rejects(breaker("t1", "a1", "openrouter"), /rate limit exceeded: spend_org/);
+  assert.equal(calls.length, 2);
+});
