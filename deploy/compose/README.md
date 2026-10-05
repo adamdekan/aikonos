@@ -480,14 +480,14 @@ Per-service overrides where the default is too tight:
 | Service | `read_only` | `tmpfs` | Reason for omission |
 |---------|------------|---------|---------------------|
 | broker | yes | `/tmp:size=64m` | — |
-| agent-gateway | yes | `/tmp:size=128m`, `/home/node/.npm:size=32m` | tsx module cache + npm notifier |
+| agent-gateway | yes | `/tmp:size=128m` | tsx module cache |
 | webui | yes | `/tmp:size=32m` | — |
 | postgres | **no** | — | Writes DB data to rootfs; backend-isolated (H1) |
 | minio | **no** | — | Writes runtime state alongside data volume; backend-isolated |
 | vault | **no** | — | Dev-mode inmem + rootfs touches; backend-isolated |
 | nats | **no** | — | JetStream store on rootfs; mesh-isolated |
 | keycloak | **no** | — | H2 DB + Quarkus runtime state; mesh-isolated |
-| opa | **no** | — | Decision-log buffer on rootfs; backend-isolated |
+| opa | **no** | — | Not yet verified read-only; backend-isolated |
 | openfga | **no** | — | Runtime state on rootfs; backend-isolated |
 | otel-collector | **no** | — | Archive volume writes + rootfs scratch; runs as root (DEV); obs-isolated |
 | grafana | **no** | — | Session/plugin state on rootfs; obs-isolated |

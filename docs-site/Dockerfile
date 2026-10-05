@@ -12,6 +12,10 @@ ENV DOCS_BASE=${DOCS_BASE}
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.30-alpine
+# Security updates the base image has not picked up yet.
+USER root
+RUN apk upgrade --no-cache
+USER 101
 # dist/ lands at html/docs/ so a request for /docs/... maps directly to a
 # file — no nginx rewrite or strip-prefix config needed. The base image
 # already listens on 8080 and runs non-root with pid/cache under /tmp.
