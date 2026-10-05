@@ -27,6 +27,13 @@ FROM node:22-slim AS run
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
+# npm, npx and corepack are build tools the service never runs, and their
+# bundled dependencies were most of the image's fixable vulnerability findings.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+# Security updates the base image has not picked up yet.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 COPY server.mjs ./
 COPY --from=web /app/web/dist ./web/dist
 ENV NODE_ENV=production

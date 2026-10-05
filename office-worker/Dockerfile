@@ -10,7 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # poppler-utils (pdftoppm/pdftotext), qpdf (pdf.transform), tesseract-ocr with
 # English only (pdf.extract OCR fallback — additional language packs are a
 # later knob per the design's Open questions).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
       pandoc \
       libreoffice \
       poppler-utils \
@@ -22,26 +23,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # uv's blessed container idiom (planner/Dockerfile precedent): copy the static
 # binary rather than installing via curl/pip.
-COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
 # uv manages its own pinned Python 3.12 — bookworm's system python3 is 3.11,
 # and checkpoints 2-3's openpyxl/pandas/reportlab/pdfplumber/pytesseract
 # scripts need to run under a consistent, uv-locked interpreter + dep set.
+# Pinned to the patch release so a rebuild never quietly picks an older one;
+# raise it (and uv above, which must know the build) for Python security fixes.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-RUN uv python install 3.12
+RUN uv python install 3.12.15
 
 # Node deps first for layer caching (production only — no test runner needed
 # at runtime).
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
+# npm, npx and corepack are build tools the service never runs, and their
+# bundled dependencies were most of the image's fixable vulnerability findings.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 # Python deps via uv, frozen against the committed lock (fails closed on
 # pyproject.toml/uv.lock drift). Empty today; checkpoints 2-3 populate
 # pyproject.toml with the script-runtime libraries.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --python 3.12 --no-install-project
+RUN uv sync --frozen --python 3.12.15 --no-install-project
 
 COPY src ./src
 

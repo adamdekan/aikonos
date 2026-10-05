@@ -594,13 +594,11 @@ services:
     # headroom under pids_limit:512.
     mem_limit: 4g
     # read_only rootfs (H2 tier 2): tsx writes compiled module cache to
-    # /tmp/tsx-<uid>/; npm update-notifier writes to /home/node/.npm/.
-    # Both are RAM-backed tmpfs so a compromised gateway can't persist payloads
-    # to the image filesystem.
+    # /tmp/tsx-<uid>/, a RAM-backed tmpfs so a compromised gateway can't
+    # persist payloads to the image filesystem. (The image has no npm.)
     read_only: true
     tmpfs:
       - /tmp:size=128m
-      - /home/node/.npm:size=32m
     build:
       context: .
       dockerfile: agent-gateway/Dockerfile

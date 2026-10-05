@@ -10,8 +10,10 @@
 FROM node:22-slim
 WORKDIR /app
 
-# protoc + the well-known .proto types (libprotobuf-dev) for in-image gen.
-RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
+# protoc + the well-known .proto types (libprotobuf-dev) for in-image gen, and
+# the security updates the base image has not picked up yet.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Full install (incl. devDeps: tsx runs the server, ts-proto generates the stubs)
@@ -33,8 +35,14 @@ RUN mkdir -p gen/ts && for f in proto/*.proto; do \
     "$f"; \
     done
 
+# npm, npx and corepack are build tools the service never runs, and their
+# bundled dependencies were most of the image's fixable vulnerability findings.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 USER node
-CMD ["npm", "start"]
+# What `npm start` runs, without npm.
+CMD ["node_modules/.bin/tsx", "src/server.ts"]
