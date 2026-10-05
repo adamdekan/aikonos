@@ -61,9 +61,10 @@ type AccessPolicy interface {
 
 // ConfigProvider is the tenant-scoped runtime config surface Build needs
 // (approval_expiry_hours, approval_required_n). Satisfied by broker's Config
-// interface (*config.Store / nopConfig) — duck-typed, no import needed.
+// interface (*config.Store / nopConfig) — duck-typed, no import needed. A
+// value that cannot be read is an error, and Build fails closed on it.
 type ConfigProvider interface {
-	GetInt(ctx context.Context, tenant, key string) int
+	GetInt(ctx context.Context, tenant, key string) (int, error)
 }
 
 // AuditEmitter is the audit seam Build uses for the insufficient_approvers

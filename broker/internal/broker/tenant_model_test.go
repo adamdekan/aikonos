@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.uber.org/zap"
@@ -72,5 +73,19 @@ func TestGetTenantModel_EmptyWhenUnset(t *testing.T) {
 	}
 	if resp.Model != "" {
 		t.Fatalf("want empty model when unset, got %q", resp.Model)
+	}
+}
+
+func TestGetTenantModel_UnreadableSettingsUnavailable(t *testing.T) {
+	cfg := newFakeConfigStore()
+	cfg.readErr = map[string]error{"llm_model": errors.New("db down")}
+	svc := NewSandboxService(Deps{
+		Logger:          zap.NewNop(),
+		GatewaySpiffeID: testGateway,
+		Config:          cfg,
+	})
+	_, err := svc.GetTenantModel(gatewayCtx(testGateway), &brokerv1.GetTenantModelRequest{TenantId: testTenant})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable (the gateway then uses its default model), got %v", err)
 	}
 }

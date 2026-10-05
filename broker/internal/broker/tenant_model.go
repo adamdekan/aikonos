@@ -21,6 +21,9 @@ func (s *SandboxService) GetTenantModel(ctx context.Context, req *brokerv1.GetTe
 	if req.TenantId == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id required")
 	}
-	model := s.cfg().GetString(ctx, req.TenantId, "llm_model")
+	model, err := s.cfg().GetString(ctx, req.TenantId, "llm_model")
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+	}
 	return &brokerv1.GetTenantModelResponse{Model: model}, nil
 }

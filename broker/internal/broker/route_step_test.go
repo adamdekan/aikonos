@@ -14,6 +14,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -253,5 +254,31 @@ func TestRouteStep_BothCallersDelegate(t *testing.T) {
 		if !strings.Contains(string(body), "routeStep(ctx, routeStepInput{") {
 			t.Errorf("%s no longer calls routeStep — SubmitPlan and SimulatePolicy must share the same escalation pipeline", f)
 		}
+	}
+}
+
+// TestRouteStep_UnreadableSettingsFailClosed: a tenant setting that cannot be
+// read fails the evaluation (both callers then reject the plan or the
+// simulation) instead of routing on the permissive default.
+func TestRouteStep_UnreadableSettingsFailClosed(t *testing.T) {
+	for _, key := range []string{"disabled_tools", "effect_class_routing"} {
+		t.Run(key, func(t *testing.T) {
+			cfg := newFakeConfigStore()
+			cfg.readErr = map[string]error{key: errors.New("db down")}
+			dec, _, err := routeStep(context.Background(), routeStepInput{
+				Engine:      &fakePolicyEngine{toolDec: &policy.Decision{Allow: true}},
+				Reg:         newTestToolRegistry(),
+				Cfg:         cfg,
+				ToolID:      "doc.write",
+				TenantID:    testTenantUUID,
+				EffectClass: planv1.EffectClass_WRITE_LOCAL,
+			})
+			if err == nil || dec != nil {
+				t.Fatalf("want an error and no decision, got dec=%+v err=%v", dec, err)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error %q should name %s", err, key)
+			}
+		})
 	}
 }

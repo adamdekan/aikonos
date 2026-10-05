@@ -192,7 +192,13 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// Runtime disable check: tenant admin may disable tools via the
 	// disabled_tools config key. Runs before the capability gate so a disabled
 	// tool is denied regardless of token validity (deny-only; cannot grant).
-	if disabled := config.ParseList(s.cfg().GetString(ctx, req.TenantId, "disabled_tools")); toolInList(disabled, req.ToolId) {
+	// Fails closed when the setting cannot be read.
+	disabledTools, err := s.cfg().GetString(ctx, req.TenantId, "disabled_tools")
+	if err != nil {
+		s.emitToolDenied(ctx, req, scope, "settings_check_failed", err, nil)
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+	}
+	if disabled := config.ParseList(disabledTools); toolInList(disabled, req.ToolId) {
 		s.emitToolDenied(ctx, req, scope, "tool_disabled", nil, nil)
 		return nil, status.Errorf(codes.PermissionDenied, "tool %q is disabled", req.ToolId)
 	}

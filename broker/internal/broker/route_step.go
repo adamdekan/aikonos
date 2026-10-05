@@ -174,8 +174,13 @@ func routeStep(ctx context.Context, in routeStepInput) (*policy.Decision, routeT
 		}
 	}
 
-	// Layer 3 — disabled_tools.
-	if disabledList := config.ParseList(in.Cfg.GetString(ctx, in.TenantID, "disabled_tools")); toolInList(disabledList, in.ToolID) {
+	// Layer 3 — disabled_tools. Unreadable settings fail the evaluation
+	// (closed), like an OPA error: no step is routed without them.
+	disabledTools, err := in.Cfg.GetString(ctx, in.TenantID, "disabled_tools")
+	if err != nil {
+		return nil, trace, fmt.Errorf("tenant setting disabled_tools: %w", err)
+	}
+	if toolInList(config.ParseList(disabledTools), in.ToolID) {
 		dec.Allow, dec.Deny, dec.NeedsApproval, dec.NeedsStepUp = false, true, false, false
 		dec.Reason = fmt.Sprintf("tool %q is disabled", in.ToolID)
 		trace.DisabledToolsHit = true
@@ -191,7 +196,11 @@ func routeStep(ctx context.Context, in routeStepInput) (*policy.Decision, routeT
 	}
 
 	// Layer 5 — effect_class_routing config posture (monotonic-stricter only).
-	if ecRouting := config.ParseEffectClassRouting(in.Cfg.GetString(ctx, in.TenantID, "effect_class_routing")); len(ecRouting) > 0 {
+	routing, err := in.Cfg.GetString(ctx, in.TenantID, "effect_class_routing")
+	if err != nil {
+		return nil, trace, fmt.Errorf("tenant setting effect_class_routing: %w", err)
+	}
+	if ecRouting := config.ParseEffectClassRouting(routing); len(ecRouting) > 0 {
 		regoName := effectclass.RegoString(in.EffectClass)
 		if posture, ok := ecRouting[regoName]; ok {
 			if posture.Severity() > decisionSeverity(dec) {
