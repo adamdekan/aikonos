@@ -6,6 +6,7 @@ package broker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -114,58 +115,80 @@ func (c *spendRollupCache) invalidateTenant(tenant string) {
 
 // ── Enforcement (south, called from rate_limits.go's CheckRateLimit) ───────────
 
+// limitSpendUnavailable is the limit type of a call denied because a spend
+// cap, or the spend counted against it, could not be read.
+const limitSpendUnavailable = "spend_unavailable"
+
 // checkSpendCaps evaluates org, then user (if userID set), then agent (if
 // agentID set) monthly spend caps, denying on the first cap whose current-
 // period spend is at or over it. Unset caps never deny. Nil repos disable
-// the check entirely (spend caps not configured).
+// the check entirely (spend caps not configured). It fails closed: a cap or
+// spend that cannot be read denies the call (limitSpendUnavailable), since
+// an unreadable cap is not an absent one.
 func (d Deps) checkSpendCaps(ctx context.Context, tenant, userID, agentID string) (allowed bool, limitType string) {
 	if d.SpendCaps == nil || d.SpendCounters == nil {
 		return true, ""
 	}
 	periodStart := db.SpendPeriodStart(time.Now())
-	if d.spendCapBreached(ctx, tenant, db.SpendCapScopeOrg, "", periodStart) {
-		return false, "spend_org"
+	checks := []struct {
+		scope     db.SpendCapScope
+		subject   string
+		limitType string
+	}{
+		{db.SpendCapScopeOrg, "", "spend_org"},
+		{db.SpendCapScopeUser, userID, "spend_user"},
+		{db.SpendCapScopeAgent, agentID, "spend_agent"},
 	}
-	if userID != "" && d.spendCapBreached(ctx, tenant, db.SpendCapScopeUser, userID, periodStart) {
-		return false, "spend_user"
-	}
-	if agentID != "" && d.spendCapBreached(ctx, tenant, db.SpendCapScopeAgent, agentID, periodStart) {
-		return false, "spend_agent"
+	for _, c := range checks {
+		if c.scope != db.SpendCapScopeOrg && c.subject == "" {
+			continue
+		}
+		breached, err := d.spendCapBreached(ctx, tenant, c.scope, c.subject, periodStart)
+		if err != nil {
+			d.Logger.Warn("spend cap could not be checked, denying the call",
+				zap.String("tenant", tenant), zap.String("scope", c.scope), zap.Error(err))
+			return false, limitSpendUnavailable
+		}
+		if breached {
+			return false, c.limitType
+		}
 	}
 	return true, ""
 }
 
-func (d Deps) spendCapBreached(ctx context.Context, tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) bool {
-	capMicros, spendMicros, hasCap := d.spendRollup(ctx, tenant, scope, subject, periodStart)
-	if !hasCap {
-		return false
+func (d Deps) spendCapBreached(ctx context.Context, tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) (bool, error) {
+	capMicros, spendMicros, hasCap, err := d.spendRollup(ctx, tenant, scope, subject, periodStart)
+	if err != nil || !hasCap {
+		return false, err
 	}
-	return spendMicros >= capMicros
+	return spendMicros >= capMicros, nil
 }
 
 // spendRollup returns (cap, spend, hasCap) for (tenant, scope, subject),
-// serving from the TTL cache when fresh and populating it on a miss.
-func (d Deps) spendRollup(ctx context.Context, tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) (int64, int64, bool) {
+// serving from the TTL cache when fresh and populating it on a miss. Spend
+// is read only when a cap is set. Errors are returned and never cached.
+func (d Deps) spendRollup(ctx context.Context, tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) (int64, int64, bool, error) {
 	key := spendCacheKey(tenant, scope, subject)
 	if d.SpendCache != nil {
 		if e, ok := d.SpendCache.get(key); ok {
-			return e.capMicros, e.spendMicros, e.hasCap
+			return e.capMicros, e.spendMicros, e.hasCap, nil
 		}
 	}
 	capMicros, hasCap, err := d.SpendCaps.Get(ctx, tenant, scope, subject)
 	if err != nil {
-		d.Logger.Warn("spendRollup: cap lookup failed", zap.Error(err))
-		return 0, 0, false
+		return 0, 0, false, fmt.Errorf("cap lookup: %w", err)
 	}
-	spendMicros, err := d.SpendCounters.SubjectTotal(ctx, tenant, scope, subject, periodStart)
-	if err != nil {
-		d.Logger.Warn("spendRollup: spend lookup failed", zap.Error(err))
-		return 0, 0, false
+	var spendMicros int64
+	if hasCap {
+		spendMicros, err = d.SpendCounters.SubjectTotal(ctx, tenant, scope, subject, periodStart)
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("spend lookup: %w", err)
+		}
 	}
 	if d.SpendCache != nil {
 		d.SpendCache.set(key, spendCacheEntry{capMicros: capMicros, hasCap: hasCap, spendMicros: spendMicros})
 	}
-	return capMicros, spendMicros, hasCap
+	return capMicros, spendMicros, hasCap, nil
 }
 
 // ── North admin RPCs ─────────────────────────────────────────────────────────

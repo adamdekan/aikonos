@@ -2253,7 +2253,7 @@ message CheckRateLimitRequest {
 
 message CheckRateLimitResponse {
   bool   allowed    = 1;
-  string limit_type = 2; // "tpm_agent" | "tpm_provider" | "tpm_global" | "spend_org" | "spend_user" | "spend_agent"
+  string limit_type = 2; // "tpm_agent" | "tpm_provider" | "tpm_global" | "spend_org" | "spend_user" | "spend_agent" | "spend_unavailable" (a cap could not be read)
 }
 
 // ── Spend cap messages ────────────────────────────

@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -20,8 +21,9 @@ import (
 // ── fakeSpendCapStore — injectable SpendCap repo for handler/enforcement tests ─
 
 type fakeSpendCapStore struct {
-	mu   sync.Mutex
-	caps map[string]db.SpendCap // "tenant|scope|subject" → row
+	mu     sync.Mutex
+	caps   map[string]db.SpendCap // "tenant|scope|subject" → row
+	getErr error                  // when set, Get returns it
 }
 
 func newFakeSpendCapStore() *fakeSpendCapStore {
@@ -72,6 +74,9 @@ func (f *fakeSpendCapStore) Delete(_ context.Context, tenant, id string) error {
 func (f *fakeSpendCapStore) Get(_ context.Context, tenant string, scope db.SpendCapScope, subjectID string) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return 0, false, f.getErr
+	}
 	c, ok := f.caps[spendCapFakeKey(tenant, scope, subjectID)]
 	if !ok {
 		return 0, false, nil
@@ -90,6 +95,10 @@ type fakeSpendCounterStore struct {
 	// accumulateErr simulates a DB failure on the durable spend write; the call
 	// is still recorded so a test can assert it was attempted.
 	accumulateErr error
+	// totalErr simulates a DB failure on the enforcement gate's spend read.
+	totalErr error
+	// totalCalls counts SubjectTotal reads.
+	totalCalls int
 }
 
 type fakeAccumulateCall struct {
@@ -136,6 +145,10 @@ func (f *fakeSpendCounterStore) AgentTotals(_ context.Context, _ string, _ time.
 func (f *fakeSpendCounterStore) SubjectTotal(_ context.Context, _ string, scope db.SpendCapScope, subjectID string, _ time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.totalCalls++
+	if f.totalErr != nil {
+		return 0, f.totalErr
+	}
 	switch scope {
 	case db.SpendCapScopeOrg:
 		return f.orgTotal, nil
@@ -513,3 +526,53 @@ func TestGetSpendSummary_ZeroSpendCapStillAppears(t *testing.T) {
 	}
 }
 
+// ── fail closed: an unreadable cap or spend denies ────────────────────────────
+
+func TestCheckRateLimit_CapLookupErrorDenies(t *testing.T) {
+	caps := newFakeSpendCapStore()
+	caps.getErr = errors.New("db down")
+	svc, _ := newSouthSpendSvc(t, caps, newFakeSpendCounterStore())
+
+	resp, err := svc.CheckRateLimit(gatewayCtx(testGateway), &brokerv1.CheckRateLimitRequest{TenantId: testTenant})
+	if err != nil {
+		t.Fatalf("CheckRateLimit: %v", err)
+	}
+	if resp.Allowed || resp.LimitType != "spend_unavailable" {
+		t.Fatalf("want a spend_unavailable denial, got allowed=%v limit=%q", resp.Allowed, resp.LimitType)
+	}
+}
+
+func TestCheckRateLimit_SpendLookupErrorDenies(t *testing.T) {
+	caps := newFakeSpendCapStore()
+	if _, err := caps.Upsert(context.Background(), testTenant, db.SpendCap{Scope: db.SpendCapScopeOrg, CapMicros: 1_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	counters := newFakeSpendCounterStore()
+	counters.totalErr = errors.New("db down")
+	svc, _ := newSouthSpendSvc(t, caps, counters)
+
+	resp, err := svc.CheckRateLimit(gatewayCtx(testGateway), &brokerv1.CheckRateLimitRequest{TenantId: testTenant})
+	if err != nil {
+		t.Fatalf("CheckRateLimit: %v", err)
+	}
+	if resp.Allowed || resp.LimitType != "spend_unavailable" {
+		t.Fatalf("want a spend_unavailable denial, got allowed=%v limit=%q", resp.Allowed, resp.LimitType)
+	}
+}
+
+func TestCheckRateLimit_NoCapSkipsSpendRead(t *testing.T) {
+	counters := newFakeSpendCounterStore()
+	counters.totalErr = errors.New("db down")
+	svc, _ := newSouthSpendSvc(t, newFakeSpendCapStore(), counters)
+
+	resp, err := svc.CheckRateLimit(gatewayCtx(testGateway), &brokerv1.CheckRateLimitRequest{TenantId: testTenant, UserId: "alice@example.com"})
+	if err != nil {
+		t.Fatalf("CheckRateLimit: %v", err)
+	}
+	if !resp.Allowed {
+		t.Fatalf("no cap is set, so the spend read is not needed: want allowed, got limit=%q", resp.LimitType)
+	}
+	if counters.totalCalls != 0 {
+		t.Errorf("want no spend reads without a cap, got %d", counters.totalCalls)
+	}
+}
