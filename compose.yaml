@@ -345,15 +345,15 @@ services:
 
   opa:
     <<: *hardening
-    # read_only omitted: OPA static image is distroless but writes decision-log
-    # buffer to rootfs; already isolated on backend-internal network (H1).
+    # read_only omitted: not yet verified for OPA's static image; already
+    # isolated on the backend-internal network (H1).
     image: openpolicyagent/opa:0.70.0-static
     networks: [backend]
     # The policy is not mounted here: OPA downloads it from the broker as the
     # "aikonos" bundle (deploy/compose/opa.yaml), which the broker archives in
     # the audit store before serving. Each decision then names the revision
     # that made it (docs/15-decision-replay.md), and OPA's API refuses writes
-    # under the bundle's root. Decision logging is configured in opa.yaml.
+    # under the bundle's root. OPA's own decision log is off (opa.yaml).
     command:
       - run
       - --server

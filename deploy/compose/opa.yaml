@@ -21,7 +21,8 @@ bundles:
       min_delay_seconds: 5
       max_delay_seconds: 15
 
-# Decision logs to stdout, as before. The broker records its own decision
-# events in the audit trail; these are OPA's view, joined by decision_id.
-decision_logs:
-  console: true
+# No decision log. OPA's would write each decision's full input, raw tool
+# arguments and justifications included, to the container output and on to
+# any log collector. The broker records every decision in the audit trail
+# instead, with those fields as digests (docs/15-decision-replay.md). If you
+# enable one, mask those fields first.

@@ -34,7 +34,7 @@ The event's `context` carries:
 | `opa.query`, `opa.input`, `opa.result` | What was asked, the input document sent, and the decision document returned |
 | `opa.input_sha256` | Digest of the exact input sent, before any redaction |
 | `opa.fields` | The result fields the broker acts on (the rest are helper values) |
-| `opa.opa_version`, `opa.decision_id` | The OPA server version, and the id that joins OPA's own decision log |
+| `opa.opa_version`, `opa.decision_id` | The OPA server version, and OPA's id for the decision. OPA's own decision log is off in compose, because it would carry the raw input; the id joins it where one is enabled |
 | `opa.gates` | Any extra gates (`policy.tool_gates`), with their own results |
 | `layers` | Broker layers after OPA that changed the outcome: the network access list, disabled tools, the skill overlay, effect-class routing |
 | `settings` | For tool steps: the effect class as declared, as the registry knows it, and as routed |
