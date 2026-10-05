@@ -199,6 +199,19 @@ task compose:down
 task compose:up && task compose:seed
 ```
 
+### When Postgres or OpenFGA is unreachable
+
+The broker's gates fail closed when the data they enforce cannot be read. A database outage, or a single failing query, refuses work. It does not run on the permissive defaults.
+
+| Check | What is refused | How it shows |
+|---|---|---|
+| Tenant settings: `disabled_tools`, `effect_class_routing`, and the approval threshold and expiry | Plans fail validation, and tool calls are denied | `SubmitPlan` fails with "policy evaluation failed" or "approval settings could not be read". `InvokeTool` returns `Unavailable` "tenant settings could not be read", audited as `aikonos.broker.tool.denied` with reason `settings_check_failed`. The Settings page shows an error |
+| Network access-list rules | Web fetches and search results are denied | The fetch fails with "not permitted by the network access-list", and the broker logs "network access-list: rules could not be loaded" |
+| Group membership, for GROUP-scoped access-list rules | The user gets the strictest outcome any membership could give them | The broker logs "group membership could not be resolved" |
+| Spend caps | LLM calls are refused | `CheckRateLimit` returns limit type `spend_unavailable`, and the gateway reports "spend cap could not be checked" |
+
+Errors are never cached, so the next request after the database answers goes through. Look for these warnings in `docker compose logs broker`, then check the database or OpenFGA itself.
+
 ---
 
 ## Database roles (RLS enforcement)
