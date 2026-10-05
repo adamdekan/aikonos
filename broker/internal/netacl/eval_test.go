@@ -95,3 +95,58 @@ func TestDecide_Ask(t *testing.T) {
 		t.Errorf("catch-all ask, got %s", got)
 	}
 }
+
+func TestDecideAnyGroups_StrictestMembershipWins(t *testing.T) {
+	rules := []Rule{
+		r(ScopeTenant, "", Deny, "*"),
+		r(ScopeTenant, "", Allow, "*.corp"),
+		r(ScopeGroup, "security-team", Allow, "siem.corp"),
+		r(ScopeGroup, "interns", Deny, "*.corp"),
+	}
+	cases := []struct {
+		host string
+		want Action
+	}{
+		// Allowed for the tenant and for security-team, but a user only in
+		// interns would be denied: unknown membership denies.
+		{"siem.corp", Deny},
+		{"wiki.corp", Deny},
+		// No group rule matches: the tenant rules decide.
+		{"elsewhere.example", Deny},
+	}
+	for _, c := range cases {
+		if got := DecideAnyGroups(rules, "carol@example.com", c.host); got != c.want {
+			t.Errorf("%s: want %s, got %s", c.host, c.want, got)
+		}
+	}
+	// With the interns rule gone, the tenant ALLOW for *.corp stands.
+	if got := DecideAnyGroups(rules[:3], "carol@example.com", "wiki.corp"); got != Allow {
+		t.Errorf("wiki.corp without the interns rule: want ALLOW, got %s", got)
+	}
+}
+
+func TestDecideAnyGroups_GroupAskNotLost(t *testing.T) {
+	rules := []Rule{r(ScopeGroup, "finance", Ask, "ledger.example")}
+	if got := Decide(rules, Principal{User: "carol@example.com"}, "ledger.example"); got != Allow {
+		t.Fatalf("precondition: without groups the ASK does not apply, got %s", got)
+	}
+	if got := DecideAnyGroups(rules, "carol@example.com", "ledger.example"); got != Ask {
+		t.Errorf("unknown membership must keep the group's ASK, got %s", got)
+	}
+	if got := DecideAnyGroups(rules, "carol@example.com", "other.example"); got != Allow {
+		t.Errorf("a host no rule matches stays ALLOW, got %s", got)
+	}
+}
+
+func TestDecideAnyGroups_UserRuleStillWins(t *testing.T) {
+	rules := []Rule{
+		r(ScopeGroup, "interns", Deny, "*"),
+		r(ScopeUser, "carol@example.com", Allow, "docs.example"),
+	}
+	if got := DecideAnyGroups(rules, "carol@example.com", "docs.example"); got != Allow {
+		t.Errorf("a USER rule outranks every group rule, got %s", got)
+	}
+	if got := DecideAnyGroups(rules, "carol@example.com", "elsewhere.example"); got != Deny {
+		t.Errorf("without a USER rule the group DENY applies, got %s", got)
+	}
+}
