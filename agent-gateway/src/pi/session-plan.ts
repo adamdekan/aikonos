@@ -698,6 +698,10 @@ export async function createSessionFromPlan(
     // — so the chain continues instead of failing on one blip.
     // ponytail: constant, not an env knob; make it AIKONOS_GATEWAY_LLM_MAX_RETRIES if operators need to tune it.
     settingsManager: SettingsManager.inMemory({
+      // Pi's install telemetry is on by default and adds pi attribution
+      // headers to OpenRouter and other provider requests; the gateway names
+      // no client to providers.
+      enableInstallTelemetry: false,
       compaction: { enabled: false },
       retry: { provider: { maxRetries: LLM_PROVIDER_MAX_RETRIES } },
     }),

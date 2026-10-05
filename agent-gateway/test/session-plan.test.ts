@@ -116,6 +116,7 @@ interface CapturedCreateCall {
   providerApiKey: string;
   providerId: string;
   providerMaxRetries: number | undefined;
+  installTelemetry: boolean | undefined;
 }
 
 function makeCreateSeam(): {
@@ -137,6 +138,7 @@ function makeCreateSeam(): {
       providerApiKey: "",
       providerId: "",
       providerMaxRetries: opts?.settingsManager?.getProviderRetrySettings().maxRetries,
+      installTelemetry: opts?.settingsManager?.getEnableInstallTelemetry(),
     });
 
     const fakeSession: FakeSession = {
@@ -533,6 +535,9 @@ test("createSessionFromPlan: provider retries are enabled so a transient 5xx doe
     typeof maxRetries === "number" && maxRetries > 0,
     `provider maxRetries must be > 0 (got ${String(maxRetries)}) so transient 5xx retries instead of failing the run`,
   );
+  // Pi defaults install telemetry on, which adds pi attribution headers to
+  // provider requests.
+  assert.equal(seam.captured[0]?.installTelemetry, false, "pi install telemetry must be off");
 });
 
 test("CP4 createSessionFromPlan: registers exactly the allowed tools from the plan", async () => {

@@ -7,8 +7,8 @@
 // a catalog. Callers register their providers explicitly with registerProvider().
 import { ModelRuntime, type CreateModelRuntimeOptions } from "@earendil-works/pi-coding-agent";
 
-// pi-ai (which defines these) sits inside Pi's shrinkwrap rather than in our
-// node_modules, so the types are derived from the options Pi accepts.
+// pi-ai (which defines these) is Pi's dependency, not ours, so the types are
+// derived from the options Pi accepts.
 type CredentialStore = NonNullable<CreateModelRuntimeOptions["credentials"]>;
 type ModelsStore = NonNullable<CreateModelRuntimeOptions["modelsStore"]>;
 type Credential = NonNullable<Awaited<ReturnType<CredentialStore["read"]>>>;
