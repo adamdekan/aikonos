@@ -568,7 +568,7 @@ services:
       OFFICE_JOB_TIMEOUT_MS:  ${AIKONOS_OFFICE_JOB_TIMEOUT_MS:-120000}
       OFFICE_MAX_CONCURRENCY: ${AIKONOS_OFFICE_MAX_CONCURRENCY:-4}
     healthcheck:
-      # node:22-slim ships no curl/wget; probe /healthz with node's http client.
+      # node:22-trixie-slim ships no curl/wget; probe /healthz with node's http client.
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8081/healthz',res=>process.exit(res.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 10s
       timeout: 5s

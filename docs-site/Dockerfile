@@ -1,6 +1,6 @@
 # Aikonos docs site: builds the static Astro Starlight site, then serves the
 # build under /docs/ via an unprivileged, non-root nginx (no app runtime).
-FROM node:22-slim AS build
+FROM node:22-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci

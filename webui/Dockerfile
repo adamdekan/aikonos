@@ -1,6 +1,6 @@
 # Aikonos unified webui image: builds the Vue app, then runs the Node backend
 # which proxies gateway + observability APIs and serves the built SPA.
-FROM node:22-slim AS web
+FROM node:22-trixie-slim AS web
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -23,7 +23,7 @@ ARG VITE_OIDC_SCOPE
 ARG VITE_OIDC_TOKEN
 RUN npm run build
 
-FROM node:22-slim AS run
+FROM node:22-trixie-slim AS run
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

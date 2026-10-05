@@ -7,7 +7,7 @@
 #
 # Non-root; under compose the SVID is the dev-CA PEMs bind-mounted at /tls — the
 # gateway only reads those files, so it needs no socket access or root.
-FROM node:22-slim
+FROM node:22-trixie-slim
 WORKDIR /app
 
 # protoc + the well-known .proto types (libprotobuf-dev) for in-image gen, and
