@@ -31,6 +31,8 @@ type fakeConfigStore struct {
 	mu       sync.Mutex
 	values   map[string]string // "tenant:key" → value
 	setCalls []configSetCall
+	readErr  map[string]error // key → error every read of it returns
+	listErr  error            // when set, List returns it
 }
 
 type configSetCall struct {
@@ -41,39 +43,38 @@ func newFakeConfigStore() *fakeConfigStore {
 	return &fakeConfigStore{values: map[string]string{}}
 }
 
-func (f *fakeConfigStore) GetInt(_ context.Context, tenant, key string) int {
-	f.mu.Lock()
-	v, found := f.values[tenant+":"+key]
-	f.mu.Unlock()
-	if !found {
-		k, ok := config.Schema[key]
-		if !ok {
-			return 0
-		}
-		n, _ := strconv.Atoi(k.Default)
-		return n
+func (f *fakeConfigStore) GetInt(ctx context.Context, tenant, key string) (int, error) {
+	v, err := f.GetString(ctx, tenant, key)
+	if err != nil {
+		return 0, err
 	}
-	n, _ := strconv.Atoi(v)
-	return n
+	return strconv.Atoi(v)
 }
 
-func (f *fakeConfigStore) GetString(_ context.Context, tenant, key string) string {
+func (f *fakeConfigStore) GetString(_ context.Context, tenant, key string) (string, error) {
 	f.mu.Lock()
 	v, found := f.values[tenant+":"+key]
+	err := f.readErr[key]
 	f.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
 	if !found {
 		k, ok := config.Schema[key]
 		if !ok {
-			return ""
+			return "", config.ErrUnknownKey
 		}
-		return k.Default
+		return k.Default, nil
 	}
-	return v
+	return v, nil
 }
 
 func (f *fakeConfigStore) List(_ context.Context, tenant string) ([]config.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	out := make([]config.Entry, 0, len(config.Schema))
 	for name, k := range config.Schema {
 		val, ok := f.values[tenant+":"+name]
@@ -380,5 +381,22 @@ func TestSetPlatformConfig_RepoError_ReturnsInternal(t *testing.T) {
 	msg := status.Convert(err).Message()
 	if msg == "db connection reset" {
 		t.Errorf("repo error detail leaked into gRPC status message: %q", msg)
+	}
+}
+
+// TestGetPlatformConfig_UnreadableSettingsUnavailable: the Settings page gets
+// an error, never the defaults, which would show restrictions as lifted.
+func TestGetPlatformConfig_UnreadableSettingsUnavailable(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+
+	cfg := newFakeConfigStore()
+	cfg.listErr = errors.New("db down")
+	svc := NewBrokerService(testAdminDepsWithConfig(t, srv.URL, cfg))
+
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+	if _, err := svc.GetPlatformConfig(ctx, &brokerv1.GetPlatformConfigRequest{}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
 	}
 }

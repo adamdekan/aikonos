@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,71 @@ func TestSubmitPlan_DisabledTool_DeniesStep(t *testing.T) {
 	}
 	if reason := ev.Context.Fields["reason"].GetStringValue(); reason != "tool_disabled" {
 		t.Errorf("audit context.reason = %q, want tool_disabled", reason)
+	}
+}
+
+// TestInvokeTool_UnreadableDisabledTools_FailsClosed: when disabled_tools
+// cannot be read the tool is not run, and the denial is audited.
+func TestInvokeTool_UnreadableDisabledTools_FailsClosed(t *testing.T) {
+	em, sub := buildAuditBus(t, testTenantUUID)
+
+	cfg := newFakeConfigStore()
+	cfg.readErr = map[string]error{"disabled_tools": errors.New("db down")}
+
+	svc := NewSandboxService(Deps{
+		Logger:   zap.NewNop(),
+		Audit:    em,
+		TenantID: "aikonos-dev",
+		Config:   cfg,
+	})
+
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId:   "task-unreadable-1",
+		ToolId:   "web.fetch",
+		TenantId: testTenantUUID,
+		UserId:   "alice@example.com",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
+	}
+
+	ev := receiveAuditEvent(t, sub, "aikonos.broker.tool.denied", 2*time.Second)
+	if ev.Decision != auditv1.PolicyDecision_DENY {
+		t.Errorf("Decision = %v, want DENY", ev.Decision)
+	}
+	if reason := ev.Context.Fields["reason"].GetStringValue(); reason != "settings_check_failed" {
+		t.Errorf("context.reason = %q, want settings_check_failed", reason)
+	}
+}
+
+// TestSubmitPlan_UnreadableSettings_FailsClosed: a plan is not validated on
+// default settings when the tenant's cannot be read.
+func TestSubmitPlan_UnreadableSettings_FailsClosed(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &fakePolicyEngine{
+		planAllow: true,
+		toolDec:   &policy.Decision{Allow: true, PolicyRuleID: "opa:tool_invocation"},
+	}
+
+	cfg := newFakeConfigStore()
+	cfg.readErr = map[string]error{"disabled_tools": errors.New("db down")}
+
+	em, err := audit.NewEmitter(context.Background(), audit.Config{})
+	if err != nil {
+		t.Fatalf("NewEmitter: %v", err)
+	}
+	svc := &SandboxService{deps: Deps{
+		Logger: zap.NewNop(),
+		Audit:  em,
+		Tasks:  taskStore,
+		Config: cfg,
+	}, policy: pol}
+
+	_, err = svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("want Internal (policy evaluation failed), got %v", err)
 	}
 }

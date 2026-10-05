@@ -56,9 +56,9 @@ func TestGetInt_StoredValue(t *testing.T) {
 	repo.data["approval_expiry_hours"] = "48"
 	s := config.New(repo)
 
-	got := s.GetInt(context.Background(), "t1", "approval_expiry_hours")
-	if got != 48 {
-		t.Fatalf("want 48, got %d", got)
+	got, err := s.GetInt(context.Background(), "t1", "approval_expiry_hours")
+	if err != nil || got != 48 {
+		t.Fatalf("want 48, got %d (err %v)", got, err)
 	}
 }
 
@@ -66,21 +66,46 @@ func TestGetInt_SchemaDefaultWhenUnset(t *testing.T) {
 	repo := newFakeRepo()
 	s := config.New(repo)
 
-	got := s.GetInt(context.Background(), "t1", "approval_expiry_hours")
-	if got != 24 {
-		t.Fatalf("want default 24, got %d", got)
+	got, err := s.GetInt(context.Background(), "t1", "approval_expiry_hours")
+	if err != nil || got != 24 {
+		t.Fatalf("want default 24, got %d (err %v)", got, err)
 	}
 }
 
-func TestGetInt_DefaultOnRepoError(t *testing.T) {
+func TestGetInt_RepoErrorIsReturned(t *testing.T) {
 	repo := newFakeRepo()
-	repo.err = errors.New("db down")
+	repo.data["approval_required_n"] = "3"
+	dbDown := errors.New("db down")
+	repo.err = dbDown
 	s := config.New(repo)
 
-	// fail-safe: must return schema default, not propagate the error
-	got := s.GetInt(context.Background(), "t1", "approval_expiry_hours")
-	if got != 24 {
-		t.Fatalf("want default 24 on error, got %d", got)
+	// The default (1) would lower the tenant's approval bar: the error must
+	// reach the caller instead.
+	if got, err := s.GetInt(context.Background(), "t1", "approval_required_n"); !errors.Is(err, dbDown) {
+		t.Fatalf("want the repo error, got %d (err %v)", got, err)
+	}
+	// The error is not cached: once the repo recovers, the stored value is read.
+	repo.err = nil
+	if got, err := s.GetInt(context.Background(), "t1", "approval_required_n"); err != nil || got != 3 {
+		t.Fatalf("after recovery: want 3, got %d (err %v)", got, err)
+	}
+}
+
+func TestGetInt_NonIntegerStoredValueIsError(t *testing.T) {
+	repo := newFakeRepo()
+	repo.data["approval_required_n"] = "three"
+	s := config.New(repo)
+
+	if got, err := s.GetInt(context.Background(), "t1", "approval_required_n"); err == nil {
+		t.Fatalf("want an error for a non-integer stored value, got %d", got)
+	}
+}
+
+func TestGetInt_UnknownKeyIsError(t *testing.T) {
+	s := config.New(newFakeRepo())
+
+	if _, err := s.GetInt(context.Background(), "t1", "no_such_key"); !errors.Is(err, config.ErrUnknownKey) {
+		t.Fatalf("want ErrUnknownKey, got %v", err)
 	}
 }
 
@@ -151,8 +176,8 @@ func TestSet_InvalidatesCache(t *testing.T) {
 	s := config.New(repo)
 
 	// prime the cache
-	if got := s.GetInt(context.Background(), "t1", "approval_expiry_hours"); got != 12 {
-		t.Fatalf("pre-set: want 12, got %d", got)
+	if got, err := s.GetInt(context.Background(), "t1", "approval_expiry_hours"); err != nil || got != 12 {
+		t.Fatalf("pre-set: want 12, got %d (err %v)", got, err)
 	}
 
 	// mutate via Set
@@ -161,8 +186,8 @@ func TestSet_InvalidatesCache(t *testing.T) {
 	}
 
 	// must reflect new value, not stale cached one
-	if got := s.GetInt(context.Background(), "t1", "approval_expiry_hours"); got != 72 {
-		t.Fatalf("post-set: want 72, got %d", got)
+	if got, err := s.GetInt(context.Background(), "t1", "approval_expiry_hours"); err != nil || got != 72 {
+		t.Fatalf("post-set: want 72, got %d (err %v)", got, err)
 	}
 }
 
@@ -204,9 +229,9 @@ func TestGetString_DefaultWhenUnset(t *testing.T) {
 	repo := newFakeRepo()
 	s := config.New(repo)
 
-	got := s.GetString(context.Background(), "t1", "disabled_tools")
-	if got != "" {
-		t.Fatalf("want empty string default, got %q", got)
+	got, err := s.GetString(context.Background(), "t1", "disabled_tools")
+	if err != nil || got != "" {
+		t.Fatalf("want empty string default, got %q (err %v)", got, err)
 	}
 }
 
@@ -215,9 +240,33 @@ func TestGetString_StoredValue(t *testing.T) {
 	repo.data["disabled_tools"] = "web.fetch,doc.write"
 	s := config.New(repo)
 
-	got := s.GetString(context.Background(), "t1", "disabled_tools")
-	if got != "web.fetch,doc.write" {
-		t.Fatalf("want %q, got %q", "web.fetch,doc.write", got)
+	got, err := s.GetString(context.Background(), "t1", "disabled_tools")
+	if err != nil || got != "web.fetch,doc.write" {
+		t.Fatalf("want %q, got %q (err %v)", "web.fetch,doc.write", got, err)
+	}
+}
+
+func TestGetString_RepoErrorIsReturned(t *testing.T) {
+	repo := newFakeRepo()
+	repo.data["disabled_tools"] = "web.fetch"
+	dbDown := errors.New("db down")
+	repo.err = dbDown
+	s := config.New(repo)
+
+	// The default ("") would re-enable every disabled tool.
+	if got, err := s.GetString(context.Background(), "t1", "disabled_tools"); !errors.Is(err, dbDown) {
+		t.Fatalf("want the repo error, got %q (err %v)", got, err)
+	}
+}
+
+func TestList_RepoErrorIsReturned(t *testing.T) {
+	repo := newFakeRepo()
+	dbDown := errors.New("db down")
+	repo.err = dbDown
+	s := config.New(repo)
+
+	if entries, err := s.List(context.Background(), "t1"); !errors.Is(err, dbDown) || entries != nil {
+		t.Fatalf("want the repo error and no entries, got %d entries (err %v)", len(entries), err)
 	}
 }
 

@@ -9,10 +9,13 @@ package approvalsvc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
@@ -73,16 +76,20 @@ func (f *fakeAccessPolicy) CheckFGA(_ context.Context, _, _, _ string) (bool, er
 type fakeConfig struct {
 	requiredN   int
 	expiryHours int
+	err         error // when set, every read returns it
 }
 
-func (f *fakeConfig) GetInt(_ context.Context, _, key string) int {
+func (f *fakeConfig) GetInt(_ context.Context, _, key string) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
 	switch key {
 	case "approval_required_n":
-		return f.requiredN
+		return f.requiredN, nil
 	case "approval_expiry_hours":
-		return f.expiryHours
+		return f.expiryHours, nil
 	}
-	return 0
+	return 0, errors.New("unknown key " + key)
 }
 
 type recordingEmitter struct {
@@ -262,5 +269,32 @@ func TestBuild_FGADisabledDoesNotDereferenceNilPolicy(t *testing.T) {
 	}
 	if store.created == nil || store.created.RequiresN != 1 {
 		t.Fatalf("expected a RequiresN=1 approval request, got %+v", store.created)
+	}
+}
+
+// TestBuild_UnreadableSettingsFailClosed: with the approval settings
+// unreadable no gate is built, rather than one on the defaults (a single
+// approver, 24 hours), which can only be looser than what the tenant set.
+func TestBuild_UnreadableSettingsFailClosed(t *testing.T) {
+	store := &fakeApprovalStore{}
+	_, err := Build(context.Background(), BuildInput{
+		Store:       store,
+		Config:      &fakeConfig{err: errors.New("db down")},
+		Audit:       &recordingEmitter{},
+		Logger:      zap.NewNop(),
+		TenantID:    "tenant-1",
+		TaskID:      "t1",
+		TenantUUID:  uuid.New(),
+		TaskUUID:    uuid.New(),
+		OwnerUserID: "alice@example.com",
+		Outcome:     planv1.ValidationOutcome_NEEDS_HUMAN,
+		PlanID:      "plan-1",
+		NSteps:      1,
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
+	}
+	if store.created != nil {
+		t.Fatalf("no approval request may be created, got %+v", store.created)
 	}
 }

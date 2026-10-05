@@ -24,34 +24,34 @@ import (
 )
 
 // Config is the tenant-scoped runtime config interface injected into Deps.
-// Satisfied by *config.Store; fakeable in tests.
+// Satisfied by *config.Store; fakeable in tests. A value that cannot be read
+// is an error (never the schema default), and every gate that enforces one
+// fails closed on it.
 type Config interface {
-	GetInt(ctx context.Context, tenant, key string) int
-	GetString(ctx context.Context, tenant, key string) string
+	GetInt(ctx context.Context, tenant, key string) (int, error)
+	GetString(ctx context.Context, tenant, key string) (string, error)
 	List(ctx context.Context, tenant string) ([]config.Entry, error)
 	Set(ctx context.Context, tenant, key, value, actor string) error
 }
 
-// nopConfig is returned by configFor when Deps.Config is nil. It always
-// returns schema defaults so the consumer (approval expiry) is safe even
-// when the DB is absent.
+// nopConfig is returned by configFor when Deps.Config is nil: with no store
+// no tenant can have set anything, so every key has its schema default.
 type nopConfig struct{}
 
-func (nopConfig) GetInt(_ context.Context, _, key string) int {
+func (nopConfig) GetInt(_ context.Context, _, key string) (int, error) {
 	k, ok := config.Schema[key]
 	if !ok {
-		return 0
+		return 0, config.ErrUnknownKey
 	}
-	n, _ := strconv.Atoi(k.Default)
-	return n
+	return strconv.Atoi(k.Default)
 }
 
-func (nopConfig) GetString(_ context.Context, _, key string) string {
+func (nopConfig) GetString(_ context.Context, _, key string) (string, error) {
 	k, ok := config.Schema[key]
 	if !ok {
-		return ""
+		return "", config.ErrUnknownKey
 	}
-	return k.Default
+	return k.Default, nil
 }
 
 func (nopConfig) List(_ context.Context, _ string) ([]config.Entry, error) {
@@ -117,9 +117,8 @@ func (s *BrokerService) GetPlatformConfig(ctx context.Context, _ *brokerv1.GetPl
 	entries, err := s.configFor().List(ctx, tenant)
 	if err != nil {
 		s.deps.Logger.Warn("GetPlatformConfig: List failed", zap.String("tenant", tenant), zap.Error(err))
-		// fail-safe: List already returns defaults on error, but if a real error
-		// propagated here, surface it rather than silently returning stale data.
-		return nil, status.Errorf(codes.Internal, "failed to read config: %v", err)
+		// Never the defaults: they would show the tenant's restrictions as lifted.
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
 	}
 
 	out := make([]*brokerv1.ConfigEntry, 0, len(entries))

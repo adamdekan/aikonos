@@ -62,7 +62,13 @@ type Gate struct {
 //  CP4 (C6). Pure extraction: same threshold,
 // same SoD exclusion, same audit event, same CreateApprovalRequest shape.
 func Build(ctx context.Context, in BuildInput) (Gate, error) {
-	expiryHours := in.Config.GetInt(ctx, in.TenantID, "approval_expiry_hours")
+	// Both settings can only tighten the gate, so their defaults would loosen
+	// it: when either cannot be read, no gate is built and the plan fails.
+	expiryHours, err := in.Config.GetInt(ctx, in.TenantID, "approval_expiry_hours")
+	if err != nil {
+		in.Logger.Error("approvalsvc.Build: read approval_expiry_hours failed", zap.Error(err))
+		return Gate{}, status.Error(codes.Unavailable, "approval settings could not be read")
+	}
 
 	// FU5: n-of-m approval threshold with separation-of-duty.
 	// Policy floor: step-up gates require at least 2 (four-eyes); plain
@@ -71,7 +77,11 @@ func Build(ctx context.Context, in BuildInput) (Gate, error) {
 	if in.Outcome == planv1.ValidationOutcome_NEEDS_STEP_UP {
 		floor = 2
 	}
-	cfgN := in.Config.GetInt(ctx, in.TenantID, "approval_required_n")
+	cfgN, err := in.Config.GetInt(ctx, in.TenantID, "approval_required_n")
+	if err != nil {
+		in.Logger.Error("approvalsvc.Build: read approval_required_n failed", zap.Error(err))
+		return Gate{}, status.Error(codes.Unavailable, "approval settings could not be read")
+	}
 	requiresN := cfgN
 	if floor > requiresN {
 		requiresN = floor
