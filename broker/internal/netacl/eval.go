@@ -136,3 +136,37 @@ func Decide(rules []Rule, p Principal, host string) Action {
 	}
 	return winner
 }
+
+// DecideAnyGroups is Decide for a user whose group membership is unknown. It
+// returns the most restrictive action the user could get under any
+// membership, so a membership that cannot be resolved never lifts a group's
+// DENY or ASK. Trying no groups and each group on its own is enough:
+// membership only matters through the highest-ranked matching group rules,
+// and a single group owning the most restrictive of those yields at least
+// that action.
+func DecideAnyGroups(rules []Rule, user, host string) Action {
+	worst := Decide(rules, Principal{User: user}, host)
+	tried := map[string]bool{}
+	for _, r := range rules {
+		group := strings.ToLower(r.ScopeValue)
+		if r.ScopeKind != ScopeGroup || tried[group] {
+			continue
+		}
+		tried[group] = true
+		if a := Decide(rules, Principal{User: user, Groups: []string{r.ScopeValue}}, host); actionRank(a) > actionRank(worst) {
+			worst = a
+		}
+	}
+	return worst
+}
+
+// hasGroupRules reports whether any rule is GROUP-scoped, i.e. whether the
+// user's groups can change a decision under rules at all.
+func hasGroupRules(rules []Rule) bool {
+	for _, r := range rules {
+		if r.ScopeKind == ScopeGroup {
+			return true
+		}
+	}
+	return false
+}

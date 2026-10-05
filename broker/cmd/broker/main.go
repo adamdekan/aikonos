@@ -706,7 +706,8 @@ func main() {
 
 	// Network access-list (web egress). The Checker reads tenant rules from
 	// Postgres (cached) + resolves the user's groups via OpenFGA; the web.fetch
-	// handler and SubmitPlan consult it.
+	// handler and SubmitPlan consult it. It fails closed when either lookup
+	// fails.
 	networkRepo := db.NewNetworkRuleRepo(pool, log)
 	netChecker := netacl.NewChecker(
 		netRuleSource{repo: networkRepo},
@@ -714,6 +715,7 @@ func main() {
 			return policyEngine.ListUserGroups(ctx, user)
 		},
 		30*time.Second,
+		log,
 	)
 
 	mcpRepo := db.NewMcpConnectionRepo(pool, log)
