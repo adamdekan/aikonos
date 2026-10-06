@@ -19,7 +19,7 @@ test("buildSystemPrompt: reason-step guidance present when workflow_save is acti
   const prompt = buildSystemPrompt(["workflow_save", "web_fetch"]);
   assert.ok(prompt.includes(REASON_MARKER));
   // Existing exact-skill-id vocabulary sentence must remain.
-  assert.ok(prompt.includes("MUST be exactly one of your available aikonos tool ids"));
+  assert.ok(prompt.includes("MUST be exactly one of your available aikonOS tool ids"));
 });
 
 test("buildSystemPrompt: reason-step guidance absent when workflow_save is not active", () => {

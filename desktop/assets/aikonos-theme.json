@@ -1,11 +1,11 @@
 {
   "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
-  "name": "Aikonos",
-  "author": "Aikonos",
+  "name": "aikonOS",
+  "author": "aikonOS",
   "_source": "webui/web/src/styles/tokens.css — keep in step; the app's theme test compares them",
   "themes": [
     {
-      "name": "Aikonos Light",
+      "name": "aikonOS Light",
       "mode": "light",
       "font.family": "Inter",
       "font.size": 16,
@@ -99,7 +99,7 @@
       }
     },
     {
-      "name": "Aikonos Dark",
+      "name": "aikonOS Dark",
       "mode": "dark",
       "font.family": "Inter",
       "font.size": 16,

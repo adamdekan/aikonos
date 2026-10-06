@@ -1,4 +1,4 @@
-// Aikonos unified webui backend.
+// aikonOS unified webui backend.
 // Serves the built Vue SPA from web/dist/ (SPA fallback to index.html).
 // Proxies API + AG-UI + audit-stream paths to the agent-gateway / observability
 // service, forwarding the Authorization header from the browser.

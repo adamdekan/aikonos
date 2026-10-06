@@ -73,7 +73,7 @@ All items must be checked before an agent or MCP server is promoted to productio
 
 - [ ] MCP server runs in its own container, not co-located with broker, gateway, or other MCP servers.
 - [ ] Container applies the standard hardening anchor: `no-new-privileges: true`, `cap_drop: ALL`, `pids_limit: 512`, `mem_limit` set, `read_only: true`, non-root user. Verified in `compose.yaml` via `<<: *hardening`.
-- [ ] Container is on the `mesh` network only; it does not have `backend` network access unless it directly dials a Aikonos datastore (documented with justification).
+- [ ] Container is on the `mesh` network only; it does not have `backend` network access unless it directly dials an aikonOS datastore (documented with justification).
 
 ### SSRF / Private Host Access
 

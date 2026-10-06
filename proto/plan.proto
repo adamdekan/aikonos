@@ -14,11 +14,11 @@ enum EffectClass {
   READ_ONLY        = 1;   // No state change — list, get, query, search
   WRITE_LOCAL      = 2;   // Writes inside user workspace only
   WRITE_INTERNAL   = 3;   // Writes to tenant-shared resources
-  WRITE_EXTERNAL   = 4;   // Writes outside Aikonos (external API, email, Slack)
+  WRITE_EXTERNAL   = 4;   // Writes outside aikonOS (external API, email, Slack)
   NETWORK_EGRESS   = 5;   // Arbitrary external network access
   CREDENTIAL_ACCESS = 6;  // Reads secrets, tokens, keys
   DESTRUCTIVE      = 7;   // Deletes, truncates, disables
-  INFRASTRUCTURE   = 8;   // Modifies Aikonos itself — control-plane only
+  INFRASTRUCTURE   = 8;   // Modifies aikonOS itself — control-plane only
 }
 
 // Plan is a structured execution plan proposed by the agent (LLM).

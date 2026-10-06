@@ -1,4 +1,4 @@
-//! An authenticated connection to one Aikonos server: the bearer, its
+//! An authenticated connection to one aikonOS server: the bearer, its
 //! renewal, and the request helpers every endpoint module uses.
 //!
 //! Paths are the web console's: `/agui` and `/audit/stream` go to the

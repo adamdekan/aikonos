@@ -1,6 +1,6 @@
 # Compose deployment — operator guide
 
-Brings up the full Aikonos platform under Docker Compose. Profiles:
+Brings up the full aikonOS platform under Docker Compose. Profiles:
 `core` (infra + broker + gateway + webui), `full` (same service set as core),
 `obs` (OTel Collector + Grafana LGTM stack),
 `dev` (development-only extras), `docs-mcp` (streamable-HTTP docs MCP server).
@@ -134,14 +134,14 @@ in the broker container and is written to Vault; a blank key seeds the provider 
 gateway reads `usage` on each turn and reports it to the broker (`EmitLlmUsage`), which records a signed
 `llm.usage` audit event **and** OTLP counters (`llm_tokens_total`, `llm_cost_total`,
 `llm_requests_total`, labelled by provider/model/tenant/agent/direction — never user). With the `obs`
-profile up these land in Prometheus → the Grafana **"LLM Analytics"** dashboard (folder *Aikonos*,
+profile up these land in Prometheus → the Grafana **"LLM Analytics"** dashboard (folder *aikonOS*,
 http://localhost:3030): tokens + cost over time, cost by agent, top spenders.
 
 ### LLM Spend dashboard
 
 Prometheus retention is short and user/session/run ids are cardinality-unsafe as labels, so durable
 spend analytics come from Postgres instead. Every billable call also lands one row in
-`llm_usage_events`, and the Grafana **"LLM Spend"** dashboard (same *Aikonos* folder,
+`llm_usage_events`, and the Grafana **"LLM Spend"** dashboard (same *aikonOS* folder,
 http://localhost:3030) reads it directly: day/week/month totals and a month-burn forecast, spend by
 user / group / agent / model / provider / source, cache hit rate, top sessions and runs, and cap
 utilization against `spend_caps`.

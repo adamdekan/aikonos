@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-MCP servers (`/admin/mcp`) is where you register the external MCP servers Aikonos can reach.
+MCP servers (`/admin/mcp`) is where you register the external MCP servers aikonOS can reach.
 Registering a server doesn't grant anything by itself - it makes that server's tools *eligible*
 to be added to the tool vocabulary on the [Tools](/admin/tools/) page and, from there, granted
 to agents through [Access Control](/admin/access-control/). Three admin surfaces work together
@@ -30,7 +30,7 @@ The table lists every registered server with per-row Edit and Delete.
 
 ## Transport and auth
 
-Transport tells Aikonos how to talk to the server: `streamable_http` for a plain HTTP-based MCP
+Transport tells aikonOS how to talk to the server: `streamable_http` for a plain HTTP-based MCP
 server, or `sse` for one that streams over server-sent events. Auth type controls what
 credential, if any, gets sent with every call to that server: `none` sends nothing, and `bearer`
 sends the token you configured with every request.

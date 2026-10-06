@@ -1,4 +1,4 @@
-# Aikonos Policy Model
+# aikonOS Policy Model
 
 **Component**: Authorization & policy engine
 **Version**: v0.1
@@ -256,11 +256,11 @@ Every skill/tool declares its effect class. This is the primary risk taxonomy.
 | `read_only` | No state change (list, get, query, search) | Allow if FGA allows |
 | `write_local` | Writes inside user workspace only | Allow if FGA allows |
 | `write_internal` | Writes to tenant-shared resources | Allow if FGA allows, audit |
-| `write_external` | Writes outside Aikonos (external API, email, Slack) | Require approval |
+| `write_external` | Writes outside aikonOS (external API, email, Slack) | Require approval |
 | `network_egress` | Arbitrary external network access | Require approval, DLP scan |
 | `credential_access` | Reads secrets, tokens, keys | Require approval + step-up auth |
 | `destructive` | Deletes, truncates, disables | Require approval + step-up auth + cooldown |
-| `infrastructure` | Modifies Aikonos itself (fw, policies, users) | Control-plane identity only |
+| `infrastructure` | Modifies aikonOS itself (fw, policies, users) | Control-plane identity only |
 
 Effect classes are **declared in the skill manifest and verified at publish time** — you can't lie about your effect class and slip through.
 

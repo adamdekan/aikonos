@@ -1,5 +1,13 @@
 apiVersion: 1
 
+# Up to v0.7.3 the Postgres data source was named "Aikonos Postgres". Grafana
+# matches provisioned data sources by name, so a Grafana that still has the old
+# one would refuse the renamed one ("same uid already exists") and stop. Deleting
+# the old name first lets the uid, which the dashboards point at, move across.
+deleteDatasources:
+  - name: Aikonos Postgres
+    orgId: 1
+
 datasources:
   - name: Tempo
     type: tempo
@@ -44,7 +52,7 @@ datasources:
 
   # Durable per-call LLM spend analytics.
   # aikonos_grafana is SELECT-only on five tables; migrate.sh provisions it.
-  - name: Aikonos Postgres
+  - name: aikonOS Postgres
     type: postgres
     uid: aikonos-postgres
     url: postgres:5432

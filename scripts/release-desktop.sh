@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/release-desktop.sh
 #
-# Writes the SBOMs of the Windows app (Aikonos for Windows, desktop/) and puts
+# Writes the SBOMs of the Windows app (aikonOS for Windows, desktop/) and puts
 # it through the release's vulnerability gate, the rule scripts/release-image.sh
 # applies to every image. The release workflow builds aikonos.exe on Windows
 # with `cargo auditable`, which embeds the app's dependency list in the

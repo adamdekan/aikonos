@@ -464,12 +464,12 @@ fn html_escape(text: &str) -> String {
 /// console's dark tokens (webui/web/src/styles/tokens.css).
 fn callback_page(ok: bool, message: &str) -> String {
     let detail = if ok {
-        "You can close this tab and return to Aikonos."
+        "You can close this tab and return to aikonOS."
     } else {
-        "Return to Aikonos and try again."
+        "Return to aikonOS and try again."
     };
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Aikonos</title>\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>aikonOS</title>\
 <style>body{{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;\
 background:#2b2b2b;color:#f0eee9;font-family:Inter,'Segoe UI',sans-serif}}\
 main{{background:#323232;border:1px solid #3a3a3a;border-radius:12px;padding:32px 40px;text-align:center}}\

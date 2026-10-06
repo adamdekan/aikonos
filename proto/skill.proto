@@ -6,7 +6,7 @@ option go_package = "github.com/adamdekan/aikonos/gen/go/skill/v1;skillv1";
 import "google/protobuf/struct.proto";
 import "proto/plan.proto";
 
-// SkillManifest is the canonical descriptor for a Aikonos skill.
+// SkillManifest is the canonical descriptor for an aikonOS skill.
 // Declared in skill.yaml, validated at publish, re-validated at every invocation.
 // The effect_class field gates approval, sandbox runtime, and DLP hooks.
 message SkillManifest {

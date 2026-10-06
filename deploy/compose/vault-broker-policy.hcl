@@ -1,4 +1,4 @@
-# Least-privilege Vault policy for the Aikonos broker (AppRole "aikonos-broker").
+# Least-privilege Vault policy for the aikonOS broker (AppRole "aikonos-broker").
 #
 # The broker authenticates with an AppRole bound to THIS policy — never the root
 # token. It grants access to exactly the KV-v2 path families the broker uses

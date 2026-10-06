@@ -2,7 +2,7 @@
  * server.test.js — CP2 integration tests for the MCP HTTP server.
  *
  * Mounts createApp on :0 (ephemeral port) and drives it with fetch,
- * mirroring Aikonos's broker client wire format:
+ * mirroring aikonOS's broker client wire format:
  *   POST /mcp, Accept: application/json, text/event-stream, body = JSON-RPC 2.0.
  *
  * The SDK in stateless mode may return either a direct JSON body or an SSE
@@ -127,9 +127,9 @@ test('tools/list returns exactly 3 tools with descriptions and readOnlyHint', as
 });
 
 test('tools/call search_docs finds fixture content', async () => {
-  // "Aikonos" appears many times in intro.md — should appear in results.
+  // "aikonOS" appears many times in intro.md — should appear in results.
   const resp = await mcpPost(
-    rpc('tools/call', { name: 'search_docs', arguments: { query: 'Aikonos' } }),
+    rpc('tools/call', { name: 'search_docs', arguments: { query: 'aikonOS' } }),
   );
   assert.ok(resp.result, `expected result, got: ${JSON.stringify(resp)}`);
   assert.ok(!resp.result.isError, 'unexpected isError');
@@ -160,7 +160,7 @@ test('tools/call read_doc returns content for a valid fixture path', async () =>
   assert.ok(resp.result, `expected result, got: ${JSON.stringify(resp)}`);
   assert.ok(!resp.result.isError, 'unexpected isError');
   const text = resp.result.content[0].text;
-  assert.ok(text.includes('Aikonos'), 'expected corpus content in response');
+  assert.ok(text.includes('aikonOS'), 'expected corpus content in response');
 });
 
 test('tools/call read_doc returns content for a nested fixture path', async () => {

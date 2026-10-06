@@ -1,11 +1,11 @@
 ---
 title: Workspace & files
-description: Your private file storage in Aikonos, where chat sessions and attachments live, and how the working folder can route to OneDrive.
+description: Your private file storage in aikonOS, where chat sessions and attachments live, and how the working folder can route to OneDrive.
 sidebar:
   order: 4
 ---
 
-Every Aikonos user has a private workspace: a personal area for folders, files you upload, and
+Every aikonOS user has a private workspace: a personal area for folders, files you upload, and
 files your agent creates on your behalf. Nobody else's workspace is visible from yours, and
 an agent working on your behalf only reaches into your workspace, not anyone else's.
 
@@ -23,7 +23,7 @@ rejected with a message naming the file, rather than failing silently.
 
 ## Local workspace or OneDrive
 
-By default, your working folder is the local Aikonos workspace described above. If your
+By default, your working folder is the local aikonOS workspace described above. If your
 organization has enabled it, you can instead point your working folder at a folder in your
 own OneDrive. Once set, your working folder governs where the files explorer looks, where
 composer uploads and downloads go, and where your agent's document tools read and write,

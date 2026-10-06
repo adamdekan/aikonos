@@ -1,7 +1,7 @@
 # aikonos-docs-mcp
 
-Streamable-HTTP MCP server that serves the Aikonos repository's Markdown documentation so an
-internal agent can answer questions about Aikonos's functionality, configuration, and deployment.
+Streamable-HTTP MCP server that serves the aikonOS repository's Markdown documentation so an
+internal agent can answer questions about aikonOS's functionality, configuration, and deployment.
 Read-only. Mesh-internal only — not exposed to the public internet.
 
 ---
@@ -49,7 +49,7 @@ Transport: `streamable_http`. Auth: none.
 
 ## Attach to an agent
 
-Register the server in the Aikonos webui (Admin → MCP connections):
+Register the server in the aikonOS webui (Admin → MCP connections):
 
 | Field | Value |
 |-------|-------|

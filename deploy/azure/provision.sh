@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision the Azure infrastructure for the Aikonos dev deployment:
+# Provision the Azure infrastructure for the aikonOS dev deployment:
 # VNet + subnet, NSG (443/80 public, 22 admin-only), static Public IP with a DNS
 # label, and an Ubuntu VM (Docker via cloud-init) with a Premium data disk for
 # durable Docker volumes. All resources land in the existing resource group.

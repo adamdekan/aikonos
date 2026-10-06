@@ -1,4 +1,4 @@
-# Aikonos — Developer Onboarding Guide
+# aikonOS — Developer Onboarding Guide
 
 > Generated from the project knowledge graph. Keep in sync with `README.md`.
 
@@ -6,7 +6,7 @@
 
 ## Project Overview
 
-**Aikonos** is a security-first agentic orchestration platform. It provides the infrastructure for LLM-powered agents to run tasks in isolated sandboxes, subject to a layered policy engine that enforces authorization, resource limits, and human-approval gates before any consequential action is taken.
+**aikonOS** is a security-first agentic orchestration platform. It provides the infrastructure for LLM-powered agents to run tasks in isolated sandboxes, subject to a layered policy engine that enforces authorization, resource limits, and human-approval gates before any consequential action is taken.
 
 | Attribute | Value |
 |---|---|

@@ -19,7 +19,7 @@ import {
 
 // ── Shared constants ───────────────────────────────────────────────────────────
 
-const PREAMBLE_SNIPPET = "You are a Aikonos agent";
+const PREAMBLE_SNIPPET = "You are an aikonOS agent";
 const SOUL_DELIMITER_START = "--- Agent personality (author-provided) ---";
 const SOUL_DELIMITER_END = "--- End agent personality ---";
 

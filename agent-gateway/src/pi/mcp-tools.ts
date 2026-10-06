@@ -90,7 +90,7 @@ export async function buildMcpTools(
                 { readOnlyHint },
               );
               if (!decision.allow) {
-                return textResult(`aikonos: ${decision.reason ?? "denied"}`);
+                return textResult(`aikonOS: ${decision.reason ?? "denied"}`);
               }
               const r = await bridge.execute(toolCallId);
               const body = r.ok

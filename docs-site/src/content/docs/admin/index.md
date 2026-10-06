@@ -21,7 +21,7 @@ expanded or collapsed. If your account is not a tenant admin, you will not see i
 - **[MCP servers](/admin/mcp/)** - register MCP servers so their tools can be granted to agents.
 - **[Agents](/admin/agents/)** - create and configure agents: identity, model and provider,
   skills, approval mode, personality, direct access, and API keys.
-- **[LLM providers](/admin/providers/)** - configure the LLM providers Aikonos can use, their
+- **[LLM providers](/admin/providers/)** - configure the LLM providers aikonOS can use, their
   dialects, pricing, and defaults.
 - **[Scheduled runs](/admin/runs/)** - an org-wide, read-only view of every user's scheduled
   runs.
@@ -46,6 +46,6 @@ navigation, described in the [User Guide](/guides/).
 
 Some admin pages, most visibly Access Control, can show a banner explaining that the
 authorization service is disabled and the deployment is running in an allow-all mode. This is
-not something you fix from inside the admin UI: it is a property of how your Aikonos deployment
-was set up, not an admin setting. If you see it, contact whoever operates your Aikonos
+not something you fix from inside the admin UI: it is a property of how your aikonOS deployment
+was set up, not an admin setting. If you see it, contact whoever operates your aikonOS
 deployment.

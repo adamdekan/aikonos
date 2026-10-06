@@ -1,6 +1,6 @@
 # 14 — Signed Releases and SBOMs
 
-> **Purpose.** Every tagged release of Aikonos ships its first-party services as
+> **Purpose.** Every tagged release of aikonOS ships its first-party services as
 > container images that are signed, carry a software bill of materials (SBOM),
 > and come with build provenance. This page covers what a release contains, what
 > its signatures prove, how to verify one before you deploy it, how to deploy
@@ -36,7 +36,7 @@ Attached to the GitHub release:
 | `images.txt` | The same image references, one per line |
 | `aikonos-<name>-<version>.cdx.json` | CycloneDX 1.6 SBOM per image |
 | `aikonos-<name>-<version>.spdx.json` | SPDX 2.3 SBOM per image, the same inventory |
-| `aikonos-<version>-windows-x64.exe` | Aikonos for Windows ([16-desktop-client.md](16-desktop-client.md)) |
+| `aikonos-<version>-windows-x64.exe` | aikonOS for Windows ([16-desktop-client.md](16-desktop-client.md)) |
 | `aikonos-desktop-<version>.cdx.json` | CycloneDX 1.6 SBOM of the Windows app |
 | `aikonos-desktop-<version>.spdx.json` | SPDX 2.3 SBOM of the Windows app, the same inventory |
 | `aikonos-<version>-source.tar.gz` | The source tree the images were built from (`git archive` of the tag) |

@@ -1,4 +1,4 @@
-# Aikonos: Security-First Agentic Orchestration Platform
+# aikonOS: Security-First Agentic Orchestration Platform
 
 **Architecture Proposal — v0.1**
 
@@ -45,7 +45,7 @@ Kubernetes is the obvious substrate, hardened:
 - External Secrets Operator → HashiCorp Vault for all secrets
 
 ### Layer 3 — Agent Runtime
-A custom orchestrator (the "Aikonos Broker") that:
+A custom orchestrator (the "aikonOS Broker") that:
 - Receives tasks from the web frontend
 - Resolves the user's RBAC → allowed skills/tools/MCPs
 - Builds an execution plan with explicit capability grants
@@ -199,7 +199,7 @@ Every envelope — issuance, policy decision, delivery, acceptance, execution st
       │
       │ 1. Publish TaskEnvelope to nats://tasks.outbound.alice
       ▼
-[Aikonos Broker]
+[aikonOS Broker]
       │ 2. Validate signature, check sender policy
       │ 3. Resolve recipient (user/group/role)
       │ 4. Attenuate capability token

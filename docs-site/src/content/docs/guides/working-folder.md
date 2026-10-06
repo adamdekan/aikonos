@@ -17,7 +17,7 @@ the control entirely and your working folder is always the local workspace.
 
 ## Choosing Local workspace or OneDrive
 
-Opening the control offers two choices: "Local workspace," Aikonos's own storage for you, or
+Opening the control offers two choices: "Local workspace," aikonOS's own storage for you, or
 "OneDrive folder...", which opens a folder picker over your OneDrive.
 
 ## The folder picker
@@ -35,7 +35,7 @@ explorer reflects the same choice: its header shows a backend indicator chip nam
 folder is active. See the [Files guide](/guides/files/) for that chip and the rest of the
 explorer.
 
-Switching is explicit. Aikonos never splits your files silently between local storage and
+Switching is explicit. aikonOS never splits your files silently between local storage and
 OneDrive at the same time, and if the OneDrive connection behind your working folder is
 unavailable, the switch fails with an error rather than quietly falling back to local storage.
 

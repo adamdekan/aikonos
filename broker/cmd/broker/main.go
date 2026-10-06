@@ -1,5 +1,5 @@
 // broker/cmd/broker/main.go
-// Aikonos Broker — main entry point.
+// aikonOS Broker — main entry point.
 // Wires: SPIFFE workload API, OTel tracing, gRPC servers (north + south bound),
 // policy engine clients, audit emitter, sandbox manager.
 package main
@@ -315,7 +315,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer log.Sync()
-	log.Info("Aikonos Broker starting")
+	log.Info("aikonOS Broker starting")
 
 	// Load skill manifests. Conflict with a baseline scope → fatal (fail-closed).
 	// Absent or empty dir → OK, baseline only.

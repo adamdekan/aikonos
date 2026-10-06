@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-Tools (`/admin/skills`) manages the vocabulary of tool ids Aikonos knows about - their effect
+Tools (`/admin/skills`) manages the vocabulary of tool ids aikonOS knows about - their effect
 class, description, and whether they're enabled at all. This is a different thing from deciding
 *who* can use a tool: that authorization lives in [Access Control](/admin/access-control/), not
 here.

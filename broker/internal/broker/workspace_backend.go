@@ -5,7 +5,7 @@ package broker
 // Three pieces:
 //   - WorkspacePrefResolver: workspacefs.PrefResolver over db.WorkspacePrefsRepo,
 //     applying the default rule (explicit row wins; no row + M365 configured ->
-//     onedrive/Apps/Aikonos; else local), TTL-cached.
+//     onedrive/Apps/aikonOS; else local), TTL-cached.
 //   - oneDriveBackend: workspacefs.Backend over onedrivefs.Store, resolving
 //     each (tenant,user)'s effective folder and auto-creating it on first use.
 //   - oboTokenSource: adapts *connector.OBOBroker into onedrivefs.TokenSource,
@@ -30,7 +30,7 @@ import (
 // defaultOneDriveFolderPath is the per-user default working folder applied by
 // the resolver's default rule and by SetWorkspaceBackend when the caller
 // omits a path.
-const defaultOneDriveFolderPath = "Apps/Aikonos"
+const defaultOneDriveFolderPath = "Apps/aikonOS"
 
 // effectivePrefCacheTTL bounds how stale a resolved pref can be before the
 // next lookup re-reads Postgres. Sound only because the broker is a

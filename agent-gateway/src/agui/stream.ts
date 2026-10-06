@@ -96,7 +96,7 @@ export class AGUIStream {
 
   toolCall(toolCallId: string, toolName: string, args: unknown, description?: string): void {
     this.endTextIfOpen();
-    // toolDescription is a aikonos extra field on the START frame; standard AG-UI
+    // toolDescription is an aikonOS extra field on the START frame; standard AG-UI
     // consumers ignore unknown fields, the webui is the only reader.
     this.send({
       type: EventType.TOOL_CALL_START,

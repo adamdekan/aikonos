@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-A connection links your Aikonos account to an outside service, currently Google Drive and
+A connection links your aikonOS account to an outside service, currently Google Drive and
 OneDrive, using your own credentials through that service's normal sign-in and consent flow.
 Once connected, an agent acting on your behalf can read from and write to that drive, subject
 to the same tool-level permission checks as any other action.
@@ -22,7 +22,7 @@ while the connection is stale, only the ability to reach that particular drive.
 
 Only services your organization has set up show up as connectable, on a page listing one
 "Connect" button per available provider. Once a personal connection exists, you can revoke it
-yourself at any time from that same page, which removes Aikonos's access to that drive
+yourself at any time from that same page, which removes aikonOS's access to that drive
 immediately; nothing else about your account or workspace is affected. If no provider has
 been configured for your organization, the connect option does not appear at all.
 

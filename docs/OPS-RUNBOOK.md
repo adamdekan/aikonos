@@ -1,9 +1,9 @@
-# Aikonos Operations Runbook
+# aikonOS Operations Runbook
 
 **Audience**: Solo developer / operator during MVP phase.
 **Update**: After every Phase completion and after every incident.
 
-> Aikonos deploys via **Docker Compose only**. See `deploy/compose/README.md` for the
+> aikonOS deploys via **Docker Compose only**. See `deploy/compose/README.md` for the
 > operator guide and `compose.yaml` for the stack. Profiles: `core` / `full` / `obs` / `dev` / `docs-mcp`.
 
 ---
@@ -439,7 +439,12 @@ docker compose ps | grep -E 'grafana|prometheus|loki|otel'   # all should be hea
 ```
 
 Then open Grafana (default host port `3030`; if that port is taken, publish on
-another, e.g. `-p 3031:3000`) and find the dashboards under the **Aikonos** folder.
+another, e.g. `-p 3031:3000`) and find the dashboards under the **aikonOS** folder.
+
+A Grafana that ran v0.7.3 or earlier moves the dashboards and alert rules into the
+**aikonOS** and **aikonOS Security** folders on its first start with v0.7.4, and keeps
+the old, now empty **Aikonos** and **Aikonos Security** folders. Delete those two in
+Grafana if you don't want them; nothing refers to them.
 
 ### Why panels can still read "No data"
 

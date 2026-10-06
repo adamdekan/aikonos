@@ -1,5 +1,5 @@
 <script setup>
-// A pill toggle switch matching the Aikonos admin visual language. Controlled:
+// A pill toggle switch matching the aikonOS admin visual language. Controlled:
 // bind :modelValue and listen for update:modelValue (v-model).
 const props = defineProps({
   modelValue: { type: Boolean, required: true },

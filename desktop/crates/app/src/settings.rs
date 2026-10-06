@@ -125,7 +125,7 @@ impl SettingsPanel {
                 ),
             )
             .child(
-                Self::field("Aikonos for Windows", cx)
+                Self::field("aikonOS for Windows", cx)
                     .child(h_flex().gap_2().text_sm().child(version::CURRENT).map(|this| {
                         match &release {
                             ReleaseStatus::UpdateAvailable { version, url, .. } => this

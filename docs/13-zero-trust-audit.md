@@ -2,7 +2,7 @@
 
 > Audit date: 2026-06-19. Latest pass: 2026-08-07 (see the Executive Summary's 2026-08-07 update).
 > Framework: *Zero Trust for AI Agents* — Anthropic, May 2026 (NIST SP 800-207 / NSA ZIGs 2026 / OWASP Top 10 for Agentic Applications 2026).
-> Scope: Aikonos as a Claude-powered agentic platform. The AI harness is **Pi** — a custom TypeScript/Python agent loop running in a forked child of `agent-gateway`. Claude Code is a **developer tool only** and its `.claude/settings.json` permission model has no bearing on what the deployed platform enforces. All findings are against the Pi runtime, broker, toolproxy, and compose stack.
+> Scope: aikonOS as a Claude-powered agentic platform. The AI harness is **Pi** — a custom TypeScript/Python agent loop running in a forked child of `agent-gateway`. Claude Code is a **developer tool only** and its `.claude/settings.json` permission model has no bearing on what the deployed platform enforces. All findings are against the Pi runtime, broker, toolproxy, and compose stack.
 > Tier scoring: F = Foundation, E = Enterprise, A = Advanced.
 
 ---
@@ -348,7 +348,7 @@ gets its tool surface.
 
 Why the acceptance extends: the trust boundary is identical to the existing one. Enabling the
 profile, minting the Grafana service-account token, and flipping the private-IP opt-in are all
-admin acts, and the server holds no Aikonos credential — only an outward Grafana service-account
+admin acts, and the server holds no aikonOS credential — only an outward Grafana service-account
 token. The property that *differs* from `mcp-echo` and is worth stating: `mcp-echo` is gated to the
 `dev` profile and unauthenticated-and-harmless, whereas this server is production-intended and its
 authority ceiling is the Grafana service account's role. It deliberately runs **without**

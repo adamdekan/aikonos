@@ -754,32 +754,32 @@ func TestEnsureFolder_NestedAndIdempotent(t *testing.T) {
 		aikonosCalls++
 		if aikonosCalls == 1 {
 			w.WriteHeader(http.StatusCreated)
-			writeJSON(w, map[string]any{"id": "id-Aikonos", "name": "Aikonos", "folder": map[string]any{}})
+			writeJSON(w, map[string]any{"id": "id-aikonOS", "name": "aikonOS", "folder": map[string]any{}})
 			return
 		}
 		w.WriteHeader(http.StatusConflict)
 	})
-	mux.HandleFunc("/v1.0/drives/DRV1/items/id-Apps:/Aikonos", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1.0/drives/DRV1/items/id-Apps:/aikonOS", func(w http.ResponseWriter, r *http.Request) {
 		if !requireAuth(t, r) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]any{"id": "id-Aikonos", "name": "Aikonos", "folder": map[string]any{}})
+		writeJSON(w, map[string]any{"id": "id-aikonOS", "name": "aikonOS", "folder": map[string]any{}})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	withTestGraphBase(t, srv)
 
 	store := testStore(srv)
-	drive1, item1, err := store.EnsureFolder(context.Background(), "t", "u", "Apps/Aikonos")
+	drive1, item1, err := store.EnsureFolder(context.Background(), "t", "u", "Apps/aikonOS")
 	if err != nil {
 		t.Fatalf("EnsureFolder (first): %v", err)
 	}
-	if drive1 != "DRV1" || item1 != "id-Aikonos" {
+	if drive1 != "DRV1" || item1 != "id-aikonOS" {
 		t.Fatalf("EnsureFolder (first): got (%q,%q)", drive1, item1)
 	}
 
-	drive2, item2, err := store.EnsureFolder(context.Background(), "t", "u", "Apps/Aikonos")
+	drive2, item2, err := store.EnsureFolder(context.Background(), "t", "u", "Apps/aikonOS")
 	if err != nil {
 		t.Fatalf("EnsureFolder (rerun): %v", err)
 	}
@@ -787,7 +787,7 @@ func TestEnsureFolder_NestedAndIdempotent(t *testing.T) {
 		t.Fatalf("EnsureFolder rerun not idempotent: got (%q,%q), want (%q,%q)", drive2, item2, drive1, item1)
 	}
 	if appsCalls != 2 || aikonosCalls != 2 {
-		t.Fatalf("expected 2 create attempts per segment (create+conflict), got Apps=%d Aikonos=%d", appsCalls, aikonosCalls)
+		t.Fatalf("expected 2 create attempts per segment (create+conflict), got Apps=%d aikonOS=%d", appsCalls, aikonosCalls)
 	}
 }
 

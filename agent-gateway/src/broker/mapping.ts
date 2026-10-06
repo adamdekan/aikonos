@@ -1,7 +1,7 @@
-// Maps a Pi tool call (toolName + input) to a aikonos tool_id + effect_class.
-// The aikonos Tool Proxy only implements a fixed set of tools; the gateway
+// Maps a Pi tool call (toolName + input) to an aikonOS tool_id + effect_class.
+// The aikonOS Tool Proxy only implements a fixed set of tools; the gateway
 // exposes exactly those to the LLM as custom tools (see pi/tools.ts), so the
-// mapping is 1:1 by name. Effect classes mirror the aikonos toolregistry +
+// mapping is 1:1 by name. Effect classes mirror the aikonOS toolregistry +
 // skill contracts and drive the OPA tool_invocation policy.
 import { EffectClass } from "../../gen/ts/proto/plan";
 import { resolveMcpAlias } from "../pi/mcp-alias.js";
@@ -21,7 +21,7 @@ function isReadOnlyToolName(toolName: string): boolean {
   return false;
 }
 
-/** Resolved aikonos tool identity: the dotted broker tool_id and its OPA effect_class used to drive approval routing. */
+/** Resolved aikonOS tool identity: the dotted broker tool_id and its OPA effect_class used to drive approval routing. */
 export interface ToolMapping {
   toolId: string;
   effectClass: EffectClass;
@@ -29,7 +29,7 @@ export interface ToolMapping {
 
 // The aikonos-native tools the gateway surfaces. Keyed by the PI tool name
 // (LLM/OpenAI function names can't contain dots, so we use underscores) and
-// mapped to the aikonos tool_id (dotted) the broker registry + Tool Proxy know.
+// mapped to the aikonOS tool_id (dotted) the broker registry + Tool Proxy know.
 const TOOLS: Record<string, ToolMapping> = {
   web_fetch: { toolId: "web.fetch", effectClass: EffectClass.READ_ONLY },
   web_search: { toolId: "web.search", effectClass: EffectClass.READ_ONLY },
@@ -89,7 +89,7 @@ const TOOLS: Record<string, ToolMapping> = {
 // this — notably the workflow run driver: stored WorkflowDef steps carry
 // `skill: "web.fetch"`, because workflow_save/propose document the field as a
 // "broker skill id, e.g. web.fetch". Without this, every workflow step would be
-// denied ("tool 'web.fetch' is not permitted by aikonos policy") and runs would
+// denied ("tool 'web.fetch' is not permitted by aikonOS policy") and runs would
 // always halt at step 0. Keys (dotted) never collide with TOOLS keys (underscore).
 const TOOLS_BY_ID: Record<string, ToolMapping> = Object.fromEntries(
   Object.values(TOOLS).map((m) => [m.toolId, m]),
@@ -143,7 +143,7 @@ function mcpMapping(connectorId: string, toolName: string, readOnlyHint?: boolea
  * Maps a tool name to a ToolMapping. Accepts both forms a caller may hold:
  * the Pi underscore name the LLM sees (web_fetch, mcp__conn__tool) and the
  * canonical dotted broker skill id workflow steps store (web.fetch, mcp:conn:tool).
- * Handles built-in aikonos tools and MCP tools; returns undefined for unknown tools.
+ * Handles built-in aikonOS tools and MCP tools; returns undefined for unknown tools.
  */
 export function mapTool(toolName: string, readOnlyHint?: boolean): ToolMapping | undefined {
   return (
@@ -158,7 +158,7 @@ export function knownToolNames(): string[] {
   return Object.keys(TOOLS);
 }
 
-// knownToolIds returns the built-in aikonos tool ids in the canonical dotted form
+// knownToolIds returns the built-in aikonOS tool ids in the canonical dotted form
 // (web.fetch, doc.read, …). Used to tell the model which skills a workflow may
 // reference and to build the error message when it invents one.
 export function knownToolIds(): string[] {
@@ -181,7 +181,7 @@ export function knownToolIds(): string[] {
 // must not be able to reference it either.
 const WORKFLOW_UNRESOLVABLE_SKILLS = new Set(["vision", "subagents"]);
 
-// workflowResolvableToolIds returns the built-in aikonos tool ids a workflow
+// workflowResolvableToolIds returns the built-in aikonOS tool ids a workflow
 // step's `skill` field may legally reference — knownToolIds() minus the
 // skills that resolve via mapTool but aren't Tool-Proxy-routable.
 function workflowResolvableToolIds(): string[] {
@@ -189,7 +189,7 @@ function workflowResolvableToolIds(): string[] {
 }
 
 // unknownSkills returns the subset of skill ids that do NOT resolve to a
-// workflow-routable aikonos tool. Used to reject workflow definitions
+// workflow-routable aikonOS tool. Used to reject workflow definitions
 // referencing invented (or run-time-unroutable, e.g. "vision") tools at
 // authoring time — the same resolver that gates them at run time, so a saved
 // workflow can never contain a step that would be denied for being unknown.

@@ -1,4 +1,4 @@
-# Aikonos unified webui image: builds the Vue app, then runs the Node backend
+# aikonOS unified webui image: builds the Vue app, then runs the Node backend
 # which proxies gateway + observability APIs and serves the built SPA.
 FROM node:22-trixie-slim AS web
 WORKDIR /app/web

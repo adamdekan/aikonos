@@ -4,7 +4,7 @@ sidebar:
   order: 0
 ---
 
-Aikonos lets you talk to AI agents that can do real work: read and write files, create
+aikonOS lets you talk to AI agents that can do real work: read and write files, create
 documents, search the web, and reach into connected drives like Google Drive and OneDrive.
 An agent is not a chatbot that only answers questions. It plans a sequence of actions, asks
 for the tools it needs, and reports back what it did.
@@ -23,11 +23,11 @@ tasks to teammates, and how governance and audit work behind the scenes.
 
 ## Who this site is for
 
-If you use Aikonos to get work done, chatting with an agent, running workflows, managing your
+If you use aikonOS to get work done, chatting with an agent, running workflows, managing your
 files, read the concept pages here first, then the [User Guide](/guides/) for the
 screen-by-screen detail.
 
-If you administer Aikonos for your organization, managing who can use which tools, setting
+If you administer aikonOS for your organization, managing who can use which tools, setting
 spend limits, reviewing the audit trail, the concepts still apply, and the
 [Administrator Guide](/admin/) covers every admin screen and setting.
 

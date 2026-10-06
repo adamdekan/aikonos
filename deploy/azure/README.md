@@ -1,4 +1,4 @@
-# Aikonos on Azure (single-VM dev deployment)
+# aikonOS on Azure (single-VM dev deployment)
 
 Runs the existing Docker Compose stack on one Azure VM, fronted by **Traefik**
 (TLS via Let's Encrypt) and gated by **oauth2-proxy** against **Microsoft Entra ID**,

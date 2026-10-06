@@ -1,4 +1,4 @@
-// GovernanceBridge — reconciles Pi's interactive tool-call loop with aikonos's
+// GovernanceBridge — reconciles Pi's interactive tool-call loop with aikonOS's
 // plan-then-execute governance using the JIT single-step-plan model.
 //
 // For each Pi tool call:
@@ -201,7 +201,7 @@ export class GovernanceBridge {
 
     const mapping = mapTool(toolName, opts?.readOnlyHint);
     if (!mapping) {
-      return { allow: false, reason: `tool '${toolName}' is not permitted by aikonos policy` };
+      return { allow: false, reason: `tool '${toolName}' is not permitted by aikonOS policy` };
     }
 
     // One gateway-managed broker task per tool call (the broker won't run its
@@ -1064,7 +1064,7 @@ export class GovernanceBridge {
 }
 
 // invalidSkillError returns an error message when any workflow step references a
-// skill that is not a aikonos tool, or null when all steps are valid. This is the
+// skill that is not an aikonOS tool, or null when all steps are valid. This is the
 // authoring-time guard against the model composing a workflow from invented tools
 // (e.g. data.transform, template.render, chat.output) that would be denied at run
 // time — such a workflow must never be persisted. Uses the same mapTool authority
@@ -1080,7 +1080,7 @@ export function invalidSkillError(
   const bad = unknownSkills(toolSteps.map((s) => s.skill ?? ""));
   if (bad.length === 0) return null;
   return (
-    `workflow references unknown skill(s): ${bad.join(", ")}. Every step must use a aikonos tool id — one of: ${knownWorkflowStepSkills().join(", ")} (or an mcp:<connector>:<tool> id you have access to). Do not invent skills. ` +
+    `workflow references unknown skill(s): ${bad.join(", ")}. Every step must use an aikonOS tool id — one of: ${knownWorkflowStepSkills().join(", ")} (or an mcp:<connector>:<tool> id you have access to). Do not invent skills. ` +
     `For computation or synthesis between tool calls, use a step with kind: "reason" and an instruction instead of inventing a skill.`
   );
 }

@@ -1,6 +1,6 @@
-# 16 — Aikonos for Windows
+# 16 — aikonOS for Windows
 
-> **Purpose.** Aikonos for Windows is the member console as a native Windows
+> **Purpose.** aikonOS for Windows is the member console as a native Windows
 > app: the same screens and the same server as the web console, plus moving
 > files between the PC and the workspace. This page covers what it does, how it
 > signs in, what a server publishes for it, how it learns about new builds, what
@@ -10,7 +10,7 @@
 > API (sign-in, requests, streams, the session file format) and has no UI;
 > `crates/app` is the UI, drawn with [GPUI Kit](https://github.com/longbridge/gpui-kit).
 
-![Aikonos for Windows: the chat view, with the workspace sidebar and a reply from the agent](img/aikonos-for-windows.png)
+![aikonOS for Windows: the chat view, with the workspace sidebar and a reply from the agent](img/aikonos-for-windows.png)
 
 ---
 
@@ -105,7 +105,7 @@ It comes from the web server's environment:
 A server without `/desktop.json` still works: the app reads the identity
 provider from `/runtime-config.js` and uses its default client id, never the
 web console's. A site that publishes neither is refused with a message saying
-it doesn't answer like an Aikonos server.
+it doesn't answer like an aikonOS server.
 
 ### Registering the app with the identity provider
 
@@ -164,7 +164,7 @@ the address step and goes straight to sign-in.
 
 ## What stays on the PC
 
-`%APPDATA%\Aikonos\desktop.json` holds the server address, theme, sidebar
+`%APPDATA%\aikonOS\desktop.json` holds the server address, theme, sidebar
 state, the user's chat instructions, the debug toggle, and the last folders
 used in open and save dialogs.
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://aikonos.com/"><img src="docs/img/aikonos-wordmark.png" alt="Aikonos" height="80" /></a>
+  <a href="https://aikonos.com/"><img src="docs/img/aikonos-wordmark.png" alt="aikonOS" height="80" /></a>
 </p>
 
 <h3 align="center">
@@ -22,11 +22,11 @@
 
 ---
 
-Aikonos is a self-hosted control plane for AI agents. An agent proposes what it
-wants to do, and Aikonos decides whether it may, one action at a time, against
+aikonOS is a self-hosted control plane for AI agents. An agent proposes what it
+wants to do, and aikonOS decides whether it may, one action at a time, against
 policy you write. Every decision lands in a tamper-evident audit trail.
 
-You bring the model. Aikonos governs what it can touch.
+You bring the model. aikonOS governs what it can touch.
 
 | Who | What they get |
 |-----|---------------|
@@ -35,20 +35,20 @@ You bring the model. Aikonos governs what it can touch.
 | Compliance | A signed, hash-chained record of every decision with its policy rule, approver and context |
 | Finance | Per-user and per-task spend caps, so a looping agent cannot become a surprise invoice |
 
-**On prompt injection.** Aikonos does not claim to prevent it. Nobody has
-solved that. Aikonos contains it: a compromised agent can only do what policy
+**On prompt injection.** aikonOS does not claim to prevent it. Nobody has
+solved that. aikonOS contains it: a compromised agent can only do what policy
 already allows, every action is scoped to a single-use capability token, and the
 whole path is recorded. The blast radius is bounded by design rather than by the
 model behaving.
 
 ---
 
-## Aikonos for Windows
+## aikonOS for Windows
 
-![Aikonos for Windows: the chat view, with the workspace sidebar and a reply from the agent](docs/img/aikonos-for-windows.png)
+![aikonOS for Windows: the chat view, with the workspace sidebar and a reply from the agent](docs/img/aikonos-for-windows.png)
 
 Members can work from a native Windows app instead of the browser. It signs in
-to your Aikonos server and offers the same workspace as the web console (chat
+to your aikonOS server and offers the same workspace as the web console (chat
 with approvals, files, schedules, workflows, skills and the inbox) and moves
 files between the PC and the workspace. Every agent action still passes the
 same gates. Download `aikonos-<version>-windows-x64.exe` from
@@ -187,7 +187,7 @@ The [documentation site](docs-site/) ships with the stack and answers at
 | `broker/` | Go orchestration core: task state machine, the four gates, Tool Proxy, audit |
 | `agent-gateway/` | Node agent harness, AG-UI streaming, scheduler, external agent API |
 | `webui/` | Vue 3 console: chat, files, connectors, schedules, inbox, admin, audit |
-| `desktop/` | Aikonos for Windows: the member console as a native app, with local files |
+| `desktop/` | aikonOS for Windows: the member console as a native app, with local files |
 | `policies/` | OPA Rego routing rules, OpenFGA model and tuples |
 | `office-worker/` | Document service with no egress and no credentials |
 | `proto/` | Protobuf contracts, the gRPC API surface |
@@ -209,7 +209,7 @@ The [documentation site](docs-site/) ships with the stack and answers at
 
 ## Maturity
 
-Aikonos is pre-1.0 and deploys with Docker Compose only. The governed substrate
+aikonOS is pre-1.0 and deploys with Docker Compose only. The governed substrate
 runs with enforcement on, and the paths below are verified end to end against a
 running stack rather than only unit-tested.
 
@@ -221,7 +221,7 @@ running stack rather than only unit-tested.
 | Agent isolation and credential separation | n-of-m approvals with production approver data |
 | Skill bundle grants, and denial for a non-admin | Independent security audit |
 | External agent API keys, mint through revoke | |
-| Aikonos for Windows: sign-in and chat | |
+| aikonOS for Windows: sign-in and chat | |
 
 Release images are signed and carry SBOMs and build provenance.
 [v0.6.0](https://github.com/adamdekan/aikonos/releases/tag/v0.6.0) is the first,
@@ -245,7 +245,7 @@ decision rather than oversight, each documented with its reasoning in
 | [`docs/10-enable-enforcement.md`](docs/10-enable-enforcement.md) | Turning enforcement on and validating it |
 | [`docs/14-signed-releases.md`](docs/14-signed-releases.md) | Signed release images, SBOMs and provenance: verifying a release and deploying from it |
 | [`docs/15-decision-replay.md`](docs/15-decision-replay.md) | Re-running a recorded decision against the policy that made it, and what that proves |
-| [`docs/16-desktop-client.md`](docs/16-desktop-client.md) | Aikonos for Windows: signing in, what the server publishes for it, updates, local files, building |
+| [`docs/16-desktop-client.md`](docs/16-desktop-client.md) | aikonOS for Windows: signing in, what the server publishes for it, updates, local files, building |
 | [`docs/OPS-RUNBOOK.md`](docs/OPS-RUNBOOK.md) | Startup, operations, incident response |
 | [`deploy/compose/README.md`](deploy/compose/README.md) | Operator guide: profiles, volumes, backup, recovery |
 | [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability, scope, known limitations |

@@ -1,6 +1,6 @@
 # Microsoft Entra ID login (F2 Phase 2)
 
-> How to point Aikonos's OIDC at Microsoft Entra ID for real end-user login, in a
+> How to point aikonOS's OIDC at Microsoft Entra ID for real end-user login, in a
 > way that **migrates cleanly from a dev/personal tenant to an enterprise tenant**
 > later. The auth code is generic OIDC/JWKS — the swap is **env + a re-seed of
 > identity tuples**, no code change.

@@ -1,4 +1,4 @@
-// Development-only stand-in for an Aikonos server, so the desktop client can
+// Development-only stand-in for an aikonOS server, so the desktop client can
 // be run and clicked through without a compose stack. Never deploy it: it
 // signs anyone in, signs nothing, and enforces nothing.
 //
@@ -195,7 +195,7 @@ async function runTool(res, name, toolId, args, { approval = false, stepUp = fal
   await sleep(400);
   const content = approved
     ? JSON.stringify({ content: [{ type: "text", text: `${name} ok` }], details: {} })
-    : JSON.stringify({ content: [{ type: "text", text: "aikonos: approval declined" }], details: {} });
+    : JSON.stringify({ content: [{ type: "text", text: "aikonOS: approval declined" }], details: {} });
   send(res, { type: "TOOL_CALL_RESULT", messageId: randomUUID(), toolCallId, content, role: "tool" });
   if (!approved) send(res, { type: "CUSTOM", name: "aikonos.tool.error", value: { toolCallId, content } });
   return approved;
@@ -506,7 +506,7 @@ const server = createServer((req, res) => {
         return await agui(req, res, body);
       }
       if (url.pathname.startsWith("/api/")) return await api(req, res, url, raw);
-      return html(res, 200, "<p>Aikonos mock server. Point the desktop app at this address.</p>");
+      return html(res, 200, "<p>aikonOS mock server. Point the desktop app at this address.</p>");
     } catch (err) {
       console.error(err);
       if (!res.headersSent) json(res, 500, { error: "internal error" });
@@ -515,4 +515,4 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Aikonos mock server on ${ORIGIN} (dev only)`));
+server.listen(PORT, () => console.log(`aikonOS mock server on ${ORIGIN} (dev only)`));

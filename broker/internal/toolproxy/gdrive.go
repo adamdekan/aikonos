@@ -2,7 +2,7 @@
 //
 // gdrive.read (read_only) and gdrive.write (write_external) — governed access to
 // the calling user's Google Drive via Drive v3. The OAuth token is fetched
-// just-in-time from Vault (see connector_token.go); Aikonos's own capability
+// just-in-time from Vault (see connector_token.go); aikonOS's own capability
 // token already gated the call before it reached here.
 package toolproxy
 

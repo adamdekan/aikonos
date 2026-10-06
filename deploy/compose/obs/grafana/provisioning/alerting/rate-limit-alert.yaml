@@ -3,7 +3,7 @@ apiVersion: 1
 groups:
   - orgId: 1
     name: aikonos-security
-    folder: Aikonos Security
+    folder: aikonOS Security
     interval: 1m
     rules:
       - uid: rate-limit-exceeded
@@ -39,7 +39,7 @@ groups:
         execErrState: Error
         for: 1m
         annotations:
-          summary: Rate limit exceeded for a Aikonos tenant
+          summary: Rate limit exceeded for an aikonOS tenant
           description: "{{ $labels.tenant }} exceeded rate limit ({{ $labels.limit_type }}). Check broker logs and admin rate-limits panel."
         labels:
           severity: warning

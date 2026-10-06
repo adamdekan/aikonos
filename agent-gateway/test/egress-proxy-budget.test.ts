@@ -1,6 +1,6 @@
 // Per-run LLM-call budget (EgressProxy property 9).
 //
-// WHY these tests exist: nothing else in aikonos caps how many LLM calls one run
+// WHY these tests exist: nothing else in aikonOS caps how many LLM calls one run
 // may make. The child's Pi loop is LLM→tool→LLM with no iteration ceiling, so a
 // model stuck re-trying a flaky tool result bills for as long as the client stays
 // connected. The counter has to live in the parent (the child is untrusted), be

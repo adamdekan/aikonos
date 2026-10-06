@@ -1,11 +1,11 @@
 ---
 title: Agents & tasks
-description: What a Aikonos agent is, how it handles a task, and how approvals work.
+description: What an aikonOS agent is, how it handles a task, and how approvals work.
 sidebar:
   order: 1
 ---
 
-An agent is the assistant you talk to in Aikonos. Your organization sets up each agent with a
+An agent is the assistant you talk to in aikonOS. Your organization sets up each agent with a
 name, a model that powers its responses, and the skills and tools it is allowed to use. An
 agent can also have a personality: instructions that shape its tone and focus, which you can
 edit yourself if your administrator has made the agent's personality editable. Some agents

@@ -234,7 +234,7 @@ impl SignIn {
         v_flex()
             .gap_3()
             .child(div().text_sm().child(format!(
-                "This server needs Aikonos for Windows {minimum} or later. You have {}.",
+                "This server needs aikonOS for Windows {minimum} or later. You have {}.",
                 version::CURRENT
             )))
             .when_some(notes, |this, notes| {
@@ -300,13 +300,13 @@ impl Render for SignIn {
                                     .font_family("Space Grotesk")
                                     .font_weight(FontWeight::BOLD)
                                     .text_2xl()
-                                    .child("aikonos"),
+                                    .child("aikonOS"),
                             )
                             .child(
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("Sign in to your organisation's Aikonos server."),
+                                    .child("Sign in to your organisation's aikonOS server."),
                             ),
                     )
                     .when_some(self.notice.clone(), |this, notice| {
@@ -329,7 +329,7 @@ impl Render for SignIn {
                     .mt_4()
                     .text_xs()
                     .text_color(console(cx).text_faint)
-                    .child(format!("Aikonos for Windows {}", version::CURRENT)),
+                    .child(format!("aikonOS for Windows {}", version::CURRENT)),
             )
     }
 }

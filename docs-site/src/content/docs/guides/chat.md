@@ -28,7 +28,7 @@ how you get access to one.
 
 Typing `@` opens a palette of teammates and groups you can delegate to. Selecting one inserts
 `@DisplayName` into your message. If that mention is still in the text when you send it,
-Aikonos routes the message as a delegation rather than an ordinary chat turn and shows a
+aikonOS routes the message as a delegation rather than an ordinary chat turn and shows a
 confirmation modal before it actually sends, with Cancel and Confirm buttons. See
 [Delegation & inbox](/concepts/delegation-and-inbox/) for what happens once the delegation
 lands.
