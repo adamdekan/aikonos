@@ -43,6 +43,20 @@ model behaving.
 
 ---
 
+## Aikonos for Windows
+
+![Aikonos for Windows: the chat view, with the workspace sidebar and a reply from the agent](docs/img/aikonos-for-windows.png)
+
+Members can work from a native Windows app instead of the browser. It signs in
+to your Aikonos server and offers the same workspace as the web console (chat
+with approvals, files, schedules, workflows, skills and the inbox) and moves
+files between the PC and the workspace. Every agent action still passes the
+same gates. Download `aikonos-<version>-windows-x64.exe` from
+[Releases](https://github.com/adamdekan/aikonos/releases); setup and sign-in are
+in [docs/16-desktop-client.md](docs/16-desktop-client.md).
+
+---
+
 ## Quick start
 
 Four commands to a running, policy-enforcing stack with a web console.
@@ -206,12 +220,14 @@ running stack rather than only unit-tested.
 | Tool execution through the gates to the document service | Alert delivery to webhook or SMTP |
 | Agent isolation and credential separation | n-of-m approvals with production approver data |
 | Skill bundle grants, and denial for a non-admin | Independent security audit |
-| External agent API keys, mint through revoke | Aikonos for Windows against a running stack (so far tested against a stand-in server) |
+| External agent API keys, mint through revoke | |
+| Aikonos for Windows: sign-in and chat | |
 
 Release images are signed and carry SBOMs and build provenance.
 [v0.6.0](https://github.com/adamdekan/aikonos/releases/tag/v0.6.0) is the first,
 verified end to end from outside CI; see
-[`docs/14-signed-releases.md`](docs/14-signed-releases.md).
+[`docs/14-signed-releases.md`](docs/14-signed-releases.md). From v0.7.3 a release
+also carries the Windows app, with its SBOM, under the same signed checksums.
 
 Admin RPCs assume one tenant per broker. Three zero-trust findings are open by
 decision rather than oversight, each documented with its reasoning in
