@@ -7,6 +7,8 @@ bin/
 gen/
 talos/clusterconfig/
 planner/.venv/
+# The Windows app; no image builds from it, and its target/ runs to gigabytes.
+desktop/
 **/__pycache__/
 *.log
 .env.local
