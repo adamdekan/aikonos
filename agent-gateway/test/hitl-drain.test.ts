@@ -39,7 +39,7 @@ test("drainForRun resolves and removes only the matching run's pending approvals
   assert.equal(bSettled, false);
 
   // Resolve B directly to avoid leaving a dangling promise.
-  registry.resolve("call-b", true);
+  registry.resolve("call-b", "user-b", true);
   assert.equal(await promiseB, true);
 });
 
@@ -76,7 +76,7 @@ test("a never-answered approval times out and is DENIED, not left pending", asyn
     "the timed-out entry must be removed from the registry, exactly as a manual deny removes it",
   );
   assert.equal(
-    registry.resolve("call-timeout", true),
+    registry.resolve("call-timeout", "user-t", true),
     false,
     "a later POST for a timed-out approval must find nothing to resolve",
   );
@@ -86,7 +86,7 @@ test("an answer before the timeout wins, and the timer cannot re-resolve afterwa
   const registry = new ApprovalRegistry(40);
   const promise = registry.await_(makeInfo("call-fast"), "user-f", "run-f");
 
-  assert.equal(registry.resolve("call-fast", true), true);
+  assert.equal(registry.resolve("call-fast", "user-f", true), true);
   assert.equal(await promise, true, "the human's approval must be the decision");
 
   // Past the timeout window: a timer that survived the manual resolve would fire
@@ -115,4 +115,46 @@ test("a pending approval's timeout timer does not hold the process open", async 
   const registry = new ApprovalRegistry(600_000);
   void registry.await_(makeInfo("call-forever"), "user-x", "run-x");
   assert.equal(registry.listForUser("user-x").length, 1, "the approval must be pending, timer armed");
+});
+
+// ── Whose approval it is ───────────────────────────────────────────────────────
+//
+// WHY: the id is the model's tool-call id. It shows in the run's stream and the
+// saved session, and two users' runs can produce the same one, so it can't be
+// what decides who may answer.
+
+test("only the user whose run asked can answer an approval", async () => {
+  const registry = new ApprovalRegistry();
+  const promise = registry.await_(makeInfo("call-own"), "user-a", "run-a");
+
+  assert.equal(registry.resolve("call-own", "user-b", true), false, "another user's answer must find nothing");
+  assert.equal(registry.listForUser("user-a").length, 1, "the approval must still wait for its own user");
+
+  assert.equal(registry.resolve("call-own", "user-a", false), true);
+  assert.equal(await promise, false);
+});
+
+test("two users' runs with the same tool-call id each get their own answer", async () => {
+  const registry = new ApprovalRegistry();
+  const promiseA = registry.await_(makeInfo("call_0"), "user-a", "run-a");
+  const promiseB = registry.await_(makeInfo("call_0"), "user-b", "run-b");
+
+  assert.equal(registry.resolve("call_0", "user-b", true), true);
+  assert.equal(await promiseB, true);
+  assert.equal(registry.listForUser("user-a").length, 1, "B's answer must not reach A's approval");
+
+  assert.equal(registry.resolve("call_0", "user-a", false), true);
+  assert.equal(await promiseA, false);
+});
+
+test("a second approval under the same user and id denies the first instead of stranding it", async () => {
+  const registry = new ApprovalRegistry();
+  const first = registry.await_(makeInfo("call_0"), "user-a", "run-1");
+  const second = registry.await_(makeInfo("call_0"), "user-a", "run-2");
+
+  assert.equal(await first, false, "the earlier run can no longer be answered, so it must be denied");
+  assert.equal(registry.listForUser("user-a").length, 1);
+
+  assert.equal(registry.resolve("call_0", "user-a", true), true);
+  assert.equal(await second, true);
 });

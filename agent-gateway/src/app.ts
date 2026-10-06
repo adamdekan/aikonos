@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Logger } from "pino";
-import { requireUser } from "./auth/require-user.js";
 import type { JwksResolver, VerifyOptions } from "./auth/verify.js";
 import type { BrokerClients } from "./broker/clients.js";
 import type { RateLimitChecker } from "./llm/egress-proxy.js";
@@ -19,6 +18,7 @@ import { registerAuditRoutes, type AuditConsumerHandle } from "./audit/stream.js
 import { evaluateReadyz } from "./readyz.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAgUiRoutes } from "./routes/agui.js";
+import { registerApprovalRoutes } from "./routes/approvals.js";
 import { registerFilesListRoute } from "./routes/files-list.js";
 import { registerDelegationRoutes } from "./routes/delegation.js";
 import { registerConnectorRoutes } from "./routes/connectors.js";
@@ -78,18 +78,8 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
     reply.type("text/html").send(readFileSync(UI_PATH, "utf8"));
   });
 
-  // Resolve a pending approval (frontend approve/deny buttons POST here). The
-  // approval id is an unguessable random UUID minted by the gateway when the HITL
-  // card is raised and held only in this process's in-memory registry — it acts as
-  // a bearer capability for that one approval, so no separate identity check is
-  // needed here (the id IS the authorization).
-  app.post<{ Params: { id: string }; Body: { approved?: boolean } }>(
-    "/approve/:id",
-    async (req, reply) => {
-      const ok = ctx.approvals.resolve(req.params.id, req.body?.approved === true);
-      reply.send({ resolved: ok });
-    },
-  );
+  // POST /approve/:id + GET /approvals: the caller's own pending approvals.
+  registerApprovalRoutes(app, { approvals: ctx.approvals, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
 
   registerDelegationRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
   registerConnectorRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
@@ -110,14 +100,6 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
   registerFilesRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
   registerAgentsRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts, supervisor: ctx.supervisor });
   registerSkillsRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
-
-  // Pending approvals for a user (the CopilotKit frontend polls this to render
-  // approval modals, since it can't easily surface AG-UI CUSTOM events).
-  app.get("/approvals", async (req, reply) => {
-    const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
-    if (!principal) return;
-    reply.send({ approvals: ctx.approvals.listForUser(principal.sub) });
-  });
 
   // ── Admin routes ─────────────────────────────────────────────────────────────
   // All /admin/* endpoints + /agents/:id/mcp-servers.
