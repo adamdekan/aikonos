@@ -5,7 +5,8 @@
 # registry, a Docker daemon or a signing identity:
 #
 #   - scripts/release-assemble.sh, fed one fake image record per entry in
-#     .github/release-images.json. The happy path doubles as a drift check: if
+#     .github/release-images.json and a fake Windows app (exe and SBOMs, as
+#     scripts/release-desktop.sh leaves them). The happy path doubles as a drift check: if
 #     compose.yaml gains a service that is built from source but has no release
 #     image, the overlay check fails here instead of at release time.
 #   - scripts/verify-release.sh, against the assembled files, with a cosign test
@@ -79,10 +80,18 @@ jq -r '.[] | "\(.name) \(.service)"' "${ROOT}/.github/release-images.json" | tr 
       echo '{"spdxVersion":"SPDX-2.3"}' > "${IMAGES}/${name}.spdx.json"
     done
 
-# assemble <images dir> <out dir>
+# One fake scripts/release-desktop.sh output: the Windows app and its SBOMs.
+DESKTOP="${WORKDIR}/desktop"
+mkdir -p "${DESKTOP}"
+printf 'MZ fake aikonos.exe\n' > "${DESKTOP}/aikonos.exe"
+echo '{"bomFormat":"CycloneDX","specVersion":"1.6"}' > "${DESKTOP}/desktop.cdx.json"
+echo '{"spdxVersion":"SPDX-2.3"}' > "${DESKTOP}/desktop.spdx.json"
+
+# assemble <images dir> <out dir> [desktop dir]
 assemble() {
   VERSION="${VERSION}" IMAGE_PREFIX="${PREFIX}" REPOSITORY="${REPO}" \
-    IMAGES_DIR="$1" OUT_DIR="$2" NOTES_FILE="$2.notes.md" bash "${ASSEMBLE}"
+    IMAGES_DIR="$1" OUT_DIR="$2" DESKTOP_DIR="${3:-${DESKTOP}}" NOTES_FILE="$2.notes.md" \
+    bash "${ASSEMBLE}"
 }
 
 # variant <name>: a copy of the fixture images, for a negative case to mutate.
@@ -99,7 +108,9 @@ assert_contains "assemble: local overlay check ran" "overlay OK for the local va
 assert_contains "assemble: azure overlay check ran" "overlay OK for the azure variant"
 assert_contains "assemble: onprem overlay check ran" "overlay OK for the onprem variant"
 for f in compose.release.yaml images.txt SHA256SUMS "aikonos-${VERSION}-source.tar.gz" \
-         "aikonos-broker-${VERSION}.cdx.json" "aikonos-broker-${VERSION}.spdx.json"; do
+         "aikonos-broker-${VERSION}.cdx.json" "aikonos-broker-${VERSION}.spdx.json" \
+         "aikonos-${VERSION}-windows-x64.exe" "aikonos-desktop-${VERSION}.cdx.json" \
+         "aikonos-desktop-${VERSION}.spdx.json"; do
   if [[ -s "${RELEASE}/${f}" ]]; then
     echo "PASS: assemble: wrote ${f}"; pass=$((pass + 1))
   else
@@ -109,6 +120,8 @@ done
 assert_contains "assemble: overlay drops the build" "build: !reset null" "${RELEASE}/compose.release.yaml"
 assert_contains "assemble: overlay allows a mirror prefix" "image: \${AIKONOS_IMAGE_PREFIX:-${PREFIX}}/broker:${VERSION}@sha256:" "${RELEASE}/compose.release.yaml"
 assert_contains "assemble: notes pin the signer identity" "ID=${IDENTITY}" "${RELEASE}.notes.md"
+assert_contains "assemble: notes name the Windows app" "aikonos-${VERSION}-windows-x64.exe" "${RELEASE}.notes.md"
+assert_contains "assemble: SHA256SUMS covers the Windows app" "aikonos-${VERSION}-windows-x64.exe" "${RELEASE}/SHA256SUMS"
 if grep -q 'SHA256SUMS$' "${RELEASE}/SHA256SUMS"; then
   echo "FAIL: assemble: SHA256SUMS lists itself"; fail=$((fail + 1))
 else
@@ -142,6 +155,11 @@ sed -i.bak "s#/broker:#/broker-copy:#" "${dir}/broker-copy.ref" && rm -f "${dir}
 cp "${dir}/broker.cdx.json" "${dir}/broker-copy.cdx.json"; cp "${dir}/broker.spdx.json" "${dir}/broker-copy.spdx.json"
 run_case "assemble: refuses two images for one service" nonzero assemble "${dir}" "${dir}.out"
 assert_contains "assemble: names the doubled service" "more than one image for service(s): broker"
+
+dir="${WORKDIR}/desktop-no-sbom"
+cp -R "${DESKTOP}" "${dir}" && rm "${dir}/desktop.spdx.json"
+run_case "assemble: refuses a Windows app without its SBOMs" nonzero assemble "${IMAGES}" "${dir}.out" "${dir}"
+assert_contains "assemble: names the missing app file" "missing Windows app file"
 
 mkdir -p "${WORKDIR}/occupied" && touch "${WORKDIR}/occupied/leftover"
 run_case "assemble: refuses a non-empty output directory" nonzero assemble "${IMAGES}" "${WORKDIR}/occupied"
@@ -314,6 +332,11 @@ dir="$(copy_release tampered-file)"
 echo '{"tampered":true}' > "${dir}/aikonos-webui-${VERSION}.cdx.json"
 run_case "verify: rejects a file that does not match SHA256SUMS" nonzero verify "${dir}"
 assert_contains "verify: names the checksum failure" "does not match SHA256SUMS"
+
+dir="$(copy_release tampered-exe)"
+printf 'MZ not the exe that was built\n' > "${dir}/aikonos-${VERSION}-windows-x64.exe"
+run_case "verify: rejects a Windows app that does not match SHA256SUMS" nonzero verify "${dir}"
+assert_contains "verify: names the checksum failure for the app" "does not match SHA256SUMS"
 
 dir="$(copy_release swapped-image)"
 sed -i.bak "s#/broker:${VERSION}@sha256:[0-9a-f]*#/broker:${VERSION}@sha256:$(printf '%064d' 1)#" "${dir}/images.txt" && rm -f "${dir}/images.txt.bak"

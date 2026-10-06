@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # scripts/release-assemble.sh
 #
-# Turns the per-image outputs of scripts/release-image.sh into the files a
-# GitHub release carries, then checks the compose overlay against the stack.
-# Writes, into OUT_DIR (default dist/release):
+# Turns the per-image outputs of scripts/release-image.sh and the Windows app
+# from scripts/release-desktop.sh into the files a GitHub release carries, then
+# checks the compose overlay against the stack. Writes, into OUT_DIR (default
+# dist/release):
 #
 #   compose.release.yaml                overlay: every first-party service runs
 #                                       its release image, pinned by digest
 #   images.txt                          the same images, one reference per line
 #   aikonos-<name>-<version>.cdx.json   CycloneDX SBOM, one per image
 #   aikonos-<name>-<version>.spdx.json  SPDX SBOM, one per image
+#   aikonos-<version>-windows-x64.exe   Aikonos for Windows
+#   aikonos-desktop-<version>.cdx.json  its CycloneDX SBOM
+#   aikonos-desktop-<version>.spdx.json its SPDX SBOM
 #   aikonos-<version>-source.tar.gz     the source tree the images were built from
 #   SHA256SUMS                          checksums of every file above
 #
@@ -27,9 +31,10 @@
 #   - or a service does not resolve to exactly the image the release pushed.
 #
 # Usage: VERSION=v1.2.3 IMAGE_PREFIX=ghcr.io/<owner>/aikonos scripts/release-assemble.sh
-# Env:   IMAGES_DIR (dist/images), OUT_DIR (dist/release, must be absent or
-#        empty), NOTES_FILE (dist/release-notes.md), SOURCE_REF (HEAD),
-#        REPOSITORY (<owner>/<repo>, default $GITHUB_REPOSITORY).
+# Env:   IMAGES_DIR (dist/images), DESKTOP_DIR (dist/desktop: aikonos.exe,
+#        desktop.cdx.json, desktop.spdx.json), OUT_DIR (dist/release, must be
+#        absent or empty), NOTES_FILE (dist/release-notes.md), SOURCE_REF
+#        (HEAD), REPOSITORY (<owner>/<repo>, default $GITHUB_REPOSITORY).
 # Needs git, jq and the docker compose CLI (no daemon).
 
 set -euo pipefail
@@ -44,6 +49,7 @@ die() { printf '[release-assemble] ERROR: %s\n' "$*" >&2; exit 1; }
 : "${VERSION:?VERSION is required, e.g. v1.2.3}"
 : "${IMAGE_PREFIX:?IMAGE_PREFIX is required, e.g. ghcr.io/<owner>/aikonos}"
 IMAGES_DIR="${IMAGES_DIR:-dist/images}"
+DESKTOP_DIR="${DESKTOP_DIR:-dist/desktop}"
 OUT_DIR="${OUT_DIR:-dist/release}"
 NOTES_FILE="${NOTES_FILE:-dist/release-notes.md}"
 SOURCE_REF="${SOURCE_REF:-HEAD}"
@@ -62,6 +68,9 @@ else
 fi
 
 [[ -d "${IMAGES_DIR}" ]] || die "image outputs not found: ${IMAGES_DIR}"
+for f in aikonos.exe desktop.cdx.json desktop.spdx.json; do
+  [[ -s "${DESKTOP_DIR}/${f}" ]] || die "missing Windows app file: ${DESKTOP_DIR}/${f}"
+done
 if [[ -e "${OUT_DIR}" ]] && [[ -n "$(ls -A "${OUT_DIR}")" ]]; then
   die "${OUT_DIR} is not empty; remove it first"
 fi
@@ -122,6 +131,10 @@ while read -r _ name _; do
   cp "${IMAGES_DIR}/${name}.cdx.json" "${OUT_DIR}/aikonos-${name}-${VERSION}.cdx.json"
   cp "${IMAGES_DIR}/${name}.spdx.json" "${OUT_DIR}/aikonos-${name}-${VERSION}.spdx.json"
 done <<< "${ENTRIES}"
+
+cp "${DESKTOP_DIR}/aikonos.exe" "${OUT_DIR}/aikonos-${VERSION}-windows-x64.exe"
+cp "${DESKTOP_DIR}/desktop.cdx.json" "${OUT_DIR}/aikonos-desktop-${VERSION}.cdx.json"
+cp "${DESKTOP_DIR}/desktop.spdx.json" "${OUT_DIR}/aikonos-desktop-${VERSION}.spdx.json"
 
 git archive --format=tar.gz --prefix="aikonos-${VERSION}/" \
   --output="${OUT_DIR}/aikonos-${VERSION}-source.tar.gz" "${SOURCE_REF}"
@@ -249,6 +262,15 @@ EOF
   while read -r service _ ref; do
     echo "| \`${service}\` | \`${ref}\` |"
   done <<< "${ENTRIES}"
+  cat <<EOF
+
+## Windows app
+
+\`aikonos-${VERSION}-windows-x64.exe\` is Aikonos for Windows, the member console as a
+native app ([docs/16-desktop-client.md](https://github.com/${REPOSITORY}/blob/${VERSION}/docs/16-desktop-client.md)).
+\`SHA256SUMS\` covers it and its SBOMs, so the commands above verify it too. It has
+no Authenticode signature yet, so Windows SmartScreen warns the first time it starts.
+EOF
 } > "${NOTES_FILE}"
 
 log "Wrote $(find "${OUT_DIR}" -type f | wc -l | tr -d ' ') files to ${OUT_DIR} and notes to ${NOTES_FILE}"
