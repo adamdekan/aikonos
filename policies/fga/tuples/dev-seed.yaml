@@ -99,8 +99,15 @@ tuples:
     relation: permitted_group
     object: skill:doc.write
 
-  # email.draft is write_external — only managers (Alice) can invoke
+  # email.draft is write_external, so every call waits for the user's approval
+  # (the approval dialog). Only managers may invoke it: alice in, bob out, so
+  # both the approval and the deny path are testable. Through a group, because
+  # the model's permitted_group accepts only group#member, never a user.
   - user: user:alice@example.com
+    relation: member
+    object: group:managers
+
+  - user: group:managers#member
     relation: permitted_group
     object: skill:email.draft
 
@@ -213,7 +220,9 @@ tuples:
     object: skill:subagents
 
   # ── Delegation ───────────────────────────────────────────────────────────────
-  # Alice (manager) can delegate to Bob (direct report)
+  # Each user owns their agent. agent#can_delegate_to_user follows from
+  # owner_user (a computed relation, so it is never written here); user→user
+  # delegation is the peer tuples further down.
   - user: user:alice@example.com
     relation: owner_user
     object: agent:alice-agent
@@ -221,10 +230,6 @@ tuples:
   - user: user:bob@example.com
     relation: owner_user
     object: agent:bob-agent
-
-  - user: user:alice@example.com
-    relation: can_delegate_to_user
-    object: agent:alice-agent
 
   # ── MCP connector access ────────────────────────────────────────────────
   # alice-agent has direct access to the sample MCP connector.
