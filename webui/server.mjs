@@ -5,6 +5,7 @@
 //
 //   GET  /healthz
 //   GET  /runtime-config.js → deployment settings for the SPA (from env)
+//   GET  /desktop.json      → sign-in and release settings for the Windows app
 //   ALL  /api/*             → gateway (strip /api prefix)  — JSON, buffered OK
 //   POST /agui              → gateway /agui                — SSE, must NOT buffer
 //   GET  /audit/stream      → observability /api/audit/stream — SSE, must NOT buffer
@@ -44,6 +45,46 @@ export function runtimeConfig(env = process.env) {
     if (value) oidc[key] = value;
   }
   return { oidc };
+}
+
+// Settings the Windows app (desktop/) reads when someone enters this server's
+// address. It signs in as a native OIDC client with a loopback redirect
+// (RFC 8252), so it has a client id of its own and never borrows the web
+// console's; the identity provider, scope and token kind are the web
+// console's, because both get the same tokens for the same gateway. The
+// release fields name the desktop build this server expects: a newer one is
+// offered to the user, and below the minimum the app refuses to continue.
+// Like /runtime-config.js, only these public settings are ever exposed.
+export const DESKTOP_ENV = {
+  clientId: "AIKONOS_DESKTOP_OIDC_CLIENT",
+  version: "AIKONOS_DESKTOP_VERSION",
+  minimumVersion: "AIKONOS_DESKTOP_MINIMUM_VERSION",
+  url: "AIKONOS_DESKTOP_URL",
+  notes: "AIKONOS_DESKTOP_NOTES",
+};
+
+export const DEFAULT_DESKTOP_CLIENT = "aikonos-desktop";
+
+export function desktopConfig(env = process.env) {
+  const read = (name) => (env[name] ?? "").trim();
+  const oidc = {};
+  for (const key of ["authority", "scope", "token"]) {
+    const value = read(RUNTIME_OIDC_ENV[key]);
+    if (value) oidc[key] = value;
+  }
+  oidc.clientId = read(DESKTOP_ENV.clientId) || DEFAULT_DESKTOP_CLIENT;
+
+  // A minimum alone is enough to turn old builds away.
+  const minimumVersion = read(DESKTOP_ENV.minimumVersion);
+  const version = read(DESKTOP_ENV.version) || minimumVersion;
+  if (!version) return { oidc };
+  const release = { version };
+  if (minimumVersion) release.minimumVersion = minimumVersion;
+  for (const key of ["url", "notes"]) {
+    const value = read(DESKTOP_ENV[key]);
+    if (value) release[key] = value;
+  }
+  return { oidc, release };
 }
 
 // buildApp creates and configures the Fastify instance without starting it.
@@ -89,6 +130,14 @@ export async function buildApp({
       .header("content-type", "application/javascript; charset=utf-8")
       .header("cache-control", "no-store")
       .send(runtimeConfigJs);
+  });
+
+  const desktopJson = JSON.stringify(desktopConfig(env));
+  app.get("/desktop.json", async (_req, reply) => {
+    reply
+      .header("content-type", "application/json; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(desktopJson);
   });
 
   // SSE passthrough helper — must write directly to the raw socket so Fastify

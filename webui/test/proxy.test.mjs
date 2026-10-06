@@ -3,6 +3,9 @@
 // fetch is stubbed globally per-test — no outbound network calls.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildApp } from "../server.mjs";
 
 // Build a test app: no static serving (distDir nonexistent), injected gateway URL.
@@ -289,4 +292,86 @@ test("a runtime-config value cannot break out of the assignment", async (t) => {
   const res = await getRuntimeConfig(t, { AIKONOS_WEBUI_OIDC_SCOPE: hostile });
   assert.equal(evalRuntimeConfig(res.payload).oidc.scope, hostile);
   assert.equal(globalThis.pwned, undefined);
+});
+
+// Desktop settings: build an app with an explicit env and fetch /desktop.json.
+async function getDesktopConfig(t, env) {
+  const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: "/nonexistent", env });
+  await app.ready();
+  t.after(() => app.close());
+  return app.inject({ method: "GET", url: "/desktop.json" });
+}
+
+test("GET /desktop.json shares the web console's identity provider but never its client id", async (t) => {
+  const res = await getDesktopConfig(t, {
+    AIKONOS_WEBUI_OIDC_AUTHORITY: "https://login.example.com/tenant/v2.0",
+    AIKONOS_WEBUI_OIDC_CLIENT: "web-client",
+    AIKONOS_WEBUI_OIDC_REDIRECT_URI: "https://aikonos.example.com/auth/callback",
+    AIKONOS_WEBUI_OIDC_SCOPE: "openid profile email",
+    AIKONOS_WEBUI_OIDC_TOKEN: "id",
+  });
+  assert.equal(res.statusCode, 200);
+  assert.ok(res.headers["content-type"].startsWith("application/json"), res.headers["content-type"]);
+  assert.equal(res.headers["cache-control"], "no-store");
+  assert.deepEqual(JSON.parse(res.payload), {
+    oidc: {
+      authority: "https://login.example.com/tenant/v2.0",
+      scope: "openid profile email",
+      token: "id",
+      clientId: "aikonos-desktop",
+    },
+  });
+});
+
+test("GET /desktop.json serves the AIKONOS_DESKTOP_* client and release settings", async (t) => {
+  const res = await getDesktopConfig(t, {
+    AIKONOS_DESKTOP_OIDC_CLIENT: " desktop-client ",
+    AIKONOS_DESKTOP_VERSION: "0.3.0",
+    AIKONOS_DESKTOP_MINIMUM_VERSION: "0.2.0",
+    AIKONOS_DESKTOP_URL: "https://downloads.example.com/aikonos-0.3.0.msi",
+    AIKONOS_DESKTOP_NOTES: "Faster uploads.",
+  });
+  assert.deepEqual(JSON.parse(res.payload), {
+    oidc: { clientId: "desktop-client" },
+    release: {
+      version: "0.3.0",
+      minimumVersion: "0.2.0",
+      url: "https://downloads.example.com/aikonos-0.3.0.msi",
+      notes: "Faster uploads.",
+    },
+  });
+});
+
+test("GET /desktop.json: a minimum version alone still turns old builds away", async (t) => {
+  const res = await getDesktopConfig(t, { AIKONOS_DESKTOP_MINIMUM_VERSION: "0.2.0", AIKONOS_DESKTOP_URL: "  " });
+  assert.deepEqual(JSON.parse(res.payload).release, { version: "0.2.0", minimumVersion: "0.2.0" });
+
+  // A download link with no version to offer is left out.
+  const none = await getDesktopConfig(t, { AIKONOS_DESKTOP_URL: "https://downloads.example.com/x.msi" });
+  assert.deepEqual(JSON.parse(none.payload), { oidc: { clientId: "aikonos-desktop" } });
+});
+
+test("GET /desktop.json exposes only its public settings, never other env", async (t) => {
+  const res = await getDesktopConfig(t, {
+    AIKONOS_DESKTOP_VERSION: "0.3.0",
+    AIKONOS_API_KEY_PEPPER: "pepper-must-not-leak",
+    OPENROUTER_API_KEY: "key-must-not-leak",
+  });
+  assert.ok(!res.payload.includes("must-not-leak"), res.payload);
+});
+
+test("GET /desktop.json answers JSON even where the SPA fallback answers unknown paths", async (t) => {
+  const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>Aikonos</title>");
+  const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: dist, env: {} });
+  await app.ready();
+  t.after(() => app.close());
+
+  const page = await app.inject({ method: "GET", url: "/no-such-file.json" });
+  assert.ok(page.headers["content-type"].startsWith("text/html"), page.headers["content-type"]);
+
+  const res = await app.inject({ method: "GET", url: "/desktop.json" });
+  assert.ok(res.headers["content-type"].startsWith("application/json"), res.headers["content-type"]);
+  assert.equal(JSON.parse(res.payload).oidc.clientId, "aikonos-desktop");
 });

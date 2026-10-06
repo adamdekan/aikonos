@@ -705,6 +705,16 @@ services:
       AIKONOS_WEBUI_OIDC_REDIRECT_URI: ${AIKONOS_WEBUI_OIDC_REDIRECT_URI:-http://localhost:4200/auth/callback}
       AIKONOS_WEBUI_OIDC_SCOPE:        ${AIKONOS_WEBUI_OIDC_SCOPE:-openid profile}
       AIKONOS_WEBUI_OIDC_TOKEN:        ${AIKONOS_WEBUI_OIDC_TOKEN:-access}
+      # Served to Aikonos for Windows (desktop/) at /desktop.json: its own
+      # OIDC client (the realm's aikonos-desktop, a native app with a loopback
+      # redirect) and, optionally, the desktop release this server expects.
+      # The app offers a newer VERSION from URL; below MINIMUM_VERSION it
+      # refuses to continue. Unset release values advertise nothing.
+      AIKONOS_DESKTOP_OIDC_CLIENT:     ${AIKONOS_DESKTOP_OIDC_CLIENT:-aikonos-desktop}
+      AIKONOS_DESKTOP_VERSION:         ${AIKONOS_DESKTOP_VERSION:-}
+      AIKONOS_DESKTOP_MINIMUM_VERSION: ${AIKONOS_DESKTOP_MINIMUM_VERSION:-}
+      AIKONOS_DESKTOP_URL:             ${AIKONOS_DESKTOP_URL:-}
+      AIKONOS_DESKTOP_NOTES:           ${AIKONOS_DESKTOP_NOTES:-}
     ports:
       - "4200:4200"
     depends_on:
