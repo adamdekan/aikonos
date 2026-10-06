@@ -10,6 +10,8 @@
 > API (sign-in, requests, streams, the session file format) and has no UI;
 > `crates/app` is the UI, drawn with [GPUI Kit](https://github.com/longbridge/gpui-kit).
 
+![Aikonos for Windows: the chat view, with the workspace sidebar and a reply from the agent](img/aikonos-for-windows.png)
+
 ---
 
 ## What it is
@@ -22,7 +24,9 @@ It is a client of the same server, not a second one. It calls the web server's
 `/api` and `/agui` exactly as the browser does, with the user's own bearer
 token, so every agent action still passes the broker's gates and every
 approval is the same approval: the app shows the approval dialog, and closing
-it or pressing Escape denies, as in the web console. Conversations are the same
+it or pressing Escape denies, as in the web console. Only the user whose chat
+asked can answer an approval; the gateway checks the caller, whichever client
+sends the answer. Conversations are the same
 workspace files (`.agent/Sessions/`), so a chat started in one client carries
 on in the other.
 
@@ -151,7 +155,10 @@ download link; below the minimum, sign-in stops with the download link and the
 notes.
 
 The app never replaces itself. Installing a new build is the organisation's
-own software distribution's job; the server only says what to install. A
+own software distribution's job; the server only says what to install. Each
+release attaches the build as `aikonos-<version>-windows-x64.exe`, covered by
+the release's signed `SHA256SUMS` ([14-signed-releases.md](14-signed-releases.md)),
+so `AIKONOS_DESKTOP_URL` can point at an internal copy of it. A
 shortcut that starts `aikonos.exe --server https://aikonos.example.org` skips
 the address step and goes straight to sign-in.
 
@@ -200,5 +207,7 @@ the variable.
 
 - **Stop** ends the stream in the app, as in the web console. The web server
   doesn't pass the disconnect on to the gateway, so the run finishes there.
-- There is no installer, and the executable isn't code-signed yet.
+- There is no installer, and the executable has no Authenticode signature yet,
+  so Windows SmartScreen warns the first time it starts. Check it against the
+  release's signed `SHA256SUMS` instead.
 - Admin screens are web-only.
