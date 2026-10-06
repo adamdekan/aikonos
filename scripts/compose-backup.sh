@@ -43,6 +43,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# The MinIO client, for mirroring the audit bucket. MinIO stopped publishing
+# images (minio/mc no longer exists); pgsty/mc is Pigsty's build of the same
+# client, with a shell, as the server image is (compose.yaml, minio service).
+MC_IMAGE="pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -147,7 +152,7 @@ cmd_backup() {
     -e MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" \
     -e MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" \
     --entrypoint /bin/sh \
-    minio/mc:latest \
+    "${MC_IMAGE}" \
     -c "mc alias set local http://minio:9000 \"${MINIO_USER}\" \"${MINIO_PASSWORD}\" --quiet && \
            mc mirror --preserve local/${AUDIT_BUCKET} /out/ --quiet" \
     || die "MinIO mirror step failed — audit bucket backup is incomplete or empty; aborting to avoid a silent data-durability gap"
@@ -257,7 +262,7 @@ cmd_restore() {
       -e MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" \
       -e MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" \
       --entrypoint /bin/sh \
-      minio/mc:latest \
+      "${MC_IMAGE}" \
       -c "mc alias set local http://minio:9000 \"${MINIO_USER}\" \"${MINIO_PASSWORD}\" --quiet && \
              mc mb --ignore-existing local/${AUDIT_BUCKET} --quiet && \
              mc mirror --preserve /src/ local/${AUDIT_BUCKET} --quiet" \
