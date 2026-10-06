@@ -172,6 +172,7 @@ The [documentation site](docs-site/) ships with the stack and answers at
 | `broker/` | Go orchestration core: task state machine, the four gates, Tool Proxy, audit |
 | `agent-gateway/` | Node agent harness, AG-UI streaming, scheduler, external agent API |
 | `webui/` | Vue 3 console: chat, files, connectors, schedules, inbox, admin, audit |
+| `desktop/` | Aikonos for Windows: the member console as a native app, with local files |
 | `policies/` | OPA Rego routing rules, OpenFGA model and tuples |
 | `office-worker/` | Document service with no egress and no credentials |
 | `proto/` | Protobuf contracts, the gRPC API surface |
@@ -185,6 +186,7 @@ The [documentation site](docs-site/) ships with the stack and answers at
 | broker | Go 1.27, Postgres with row-level security, NATS, Vault, MinIO |
 | agent-gateway | Node 22, TypeScript |
 | webui | Vue 3, Vite, Fastify |
+| desktop | Rust 1.99, GPUI Kit |
 | Decisions | OpenFGA for access, OPA for routing, Biscuit for capabilities |
 | Identity | Keycloak by default; any OIDC provider works |
 
@@ -203,7 +205,7 @@ running stack rather than only unit-tested.
 | Tool execution through the gates to the document service | Alert delivery to webhook or SMTP |
 | Agent isolation and credential separation | n-of-m approvals with production approver data |
 | Skill bundle grants, and denial for a non-admin | Independent security audit |
-| External agent API keys, mint through revoke | |
+| External agent API keys, mint through revoke | Aikonos for Windows against a running stack (so far tested against a stand-in server) |
 
 Release images are signed and carry SBOMs and build provenance.
 [v0.6.0](https://github.com/adamdekan/aikonos/releases/tag/v0.6.0) is the first,
@@ -226,6 +228,7 @@ decision rather than oversight, each documented with its reasoning in
 | [`docs/10-enable-enforcement.md`](docs/10-enable-enforcement.md) | Turning enforcement on and validating it |
 | [`docs/14-signed-releases.md`](docs/14-signed-releases.md) | Signed release images, SBOMs and provenance: verifying a release and deploying from it |
 | [`docs/15-decision-replay.md`](docs/15-decision-replay.md) | Re-running a recorded decision against the policy that made it, and what that proves |
+| [`docs/16-desktop-client.md`](docs/16-desktop-client.md) | Aikonos for Windows: signing in, what the server publishes for it, updates, local files, building |
 | [`docs/OPS-RUNBOOK.md`](docs/OPS-RUNBOOK.md) | Startup, operations, incident response |
 | [`deploy/compose/README.md`](deploy/compose/README.md) | Operator guide: profiles, volumes, backup, recovery |
 | [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability, scope, known limitations |
