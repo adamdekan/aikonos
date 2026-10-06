@@ -26,7 +26,10 @@ Published local URLs:
 | agent-gateway | http://localhost:8080 |
 | Keycloak | http://localhost:18080 |
 | Grafana (obs profile) | http://localhost:3030 |
-| MinIO console | http://localhost:9001 |
+
+OpenFGA, MinIO, Vault and OPA have no host port: they sit only on the internal
+`backend` network, for which current Docker releases publish none. Reach them with
+`docker compose exec` (below) or `docker compose run --rm fga-cli` for OpenFGA.
 
 ---
 
@@ -341,11 +344,10 @@ python3 scripts/aikonosctl audit verify
 
 ### Query recent audit events (MinIO)
 ```bash
-# MinIO console:
-open http://localhost:9001         # bucket: aikonos-audit · path: <tenant>/YYYY/MM/DD/
-
-# Or via the mc client inside the container:
-docker compose exec minio mc ls local/aikonos-audit/ --recursive | tail -20
+# The mc client inside the container (bucket: aikonos-audit · path: <tenant>/YYYY/MM/DD/).
+# The alias takes the container's own root credentials:
+docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null &&
+  mc ls local/aikonos-audit/ --recursive' | tail -20
 ```
 
 The audit trail is hash-chained per tenant and written to the `minio-data` volume

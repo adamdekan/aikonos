@@ -54,17 +54,17 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m
-    # Base compose.yaml keeps vault's `ports:` for local-dev convenience (Vault
-    # CLI). Azure is network-reachable, so close it here — a durable prod Vault
-    # has no reason to be host-reachable; its listener is still TLS-disabled.
+    # Base compose.yaml publishes no Vault port; keep it closed here even if a
+    # local-dev publish is ever added back — a durable prod Vault has no reason
+    # to be host-reachable; its listener is still TLS-disabled.
     # Every consumer (broker via AIKONOS_VAULT_ADDR=http://vault:8200, the seed
     # script, operator init/unseal) reaches it in-network or via
     # `docker compose exec`.
     ports: !reset []
 
-  # Base compose.yaml keeps openfga's/minio's `ports:` for local-dev convenience
-  # (host-run OpenFGA seed, MinIO console). Azure is network-reachable, so close
-  # both here — reach them via `docker compose exec <svc> ...` or in-network.
+  # Base compose.yaml publishes no OpenFGA or MinIO port. Azure is
+  # network-reachable, so keep both closed even if a local-dev publish is ever
+  # added back; the seed reaches OpenFGA in-network (the `fga-cli` one-off).
   openfga:
     ports: !reset []
 

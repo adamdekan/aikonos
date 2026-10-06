@@ -48,8 +48,9 @@ model behaving.
 Four commands to a running, policy-enforcing stack with a web console.
 
 **You need:** Docker Engine 24+ with Compose v2, [Task](https://taskfile.dev),
-about 8 GB of free RAM, and an API key for any OpenAI-compatible LLM provider
-(OpenRouter by default).
+[jq](https://jqlang.org), about 8 GB of free RAM, and an API key for any
+OpenAI-compatible LLM provider (OpenRouter by default). On Windows, run the
+commands from Git Bash: in PowerShell, `bash` starts WSL instead.
 
 ```bash
 git clone https://github.com/adamdekan/aikonos.git

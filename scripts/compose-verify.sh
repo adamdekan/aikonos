@@ -146,8 +146,9 @@ fi
 
 # 4a. Decision replay (docs/15-decision-replay.md): the broker serves OPA its
 # policy as a bundle archived in the audit store, OPA's decisions name that
-# revision, and OPA refuses API writes under the bundle's root. The OPA probes
-# need its published port; without it (on-prem hides it) they are skipped.
+# revision, and OPA refuses API writes under the bundle's root. OPA is only on
+# the internal backend network, which gets no host port, so the probes run curl
+# in a backend neighbour that has it: the minio container.
 SERVED_LINE="$(grep 'policy bundle: serving revision' <<<"$BROKER_LOG" | tail -1)"
 POLICY_REV="$(grep -m1 -oE 'sha256:[0-9a-f]{64}' <<<"$SERVED_LINE")"
 if [ -n "$POLICY_REV" ] && grep -qE '"archived": ?true' <<<"$SERVED_LINE"; then
@@ -155,21 +156,22 @@ if [ -n "$POLICY_REV" ] && grep -qE '"archived": ?true' <<<"$SERVED_LINE"; then
 else
   bad "broker is not serving an archived policy bundle (check policy.bundle_dir and the audit store)"
 fi
-OPA_URL="${OPA_URL:-http://localhost:8181}"
-OPA_PROVENANCE="$(curl -s --max-time 8 -X POST -H 'content-type: application/json' -d '{"input":{}}' \
-  "$OPA_URL/v1/data/aikonos/tool_invocation?provenance=true" 2>/dev/null)"
+OPA_URL="${OPA_URL:-http://opa:8181}"
+opa_curl() { MSYS_NO_PATHCONV=1 docker compose exec -T minio curl -s --max-time 8 "$@" 2>/dev/null; }
+OPA_PROVENANCE="$(opa_curl -X POST -H 'content-type: application/json' -d '{"input":{}}' \
+  "$OPA_URL/v1/data/aikonos/tool_invocation?provenance=true")"
 if [ -z "$OPA_PROVENANCE" ]; then
-  skip "OPA not reachable at $OPA_URL — decision provenance not probed"
+  skip "OPA not reachable at $OPA_URL from the backend network — decision provenance not probed"
 else
   if grep -qF "\"revision\":\"$POLICY_REV\"" <<<"${OPA_PROVENANCE// /}"; then
     ok "OPA decisions carry the archived policy revision"
   else
     bad "OPA decisions do not name the broker's policy revision (bundle not active yet?)"
   fi
-  WRITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -X PUT \
-    --data-binary $'package aikonos.compose_verify\nallow := true\n' "$OPA_URL/v1/policies/compose-verify" 2>/dev/null)"
+  WRITE_CODE="$(opa_curl -o /dev/null -w '%{http_code}' -X PUT \
+    --data-binary $'package aikonos.compose_verify\nallow := true\n' "$OPA_URL/v1/policies/compose-verify")"
   if [ "$WRITE_CODE" = "200" ]; then
-    curl -s -o /dev/null --max-time 8 -X DELETE "$OPA_URL/v1/policies/compose-verify" 2>/dev/null
+    opa_curl -o /dev/null -X DELETE "$OPA_URL/v1/policies/compose-verify"
     bad "OPA accepted a policy write under the aikonos root"
   else
     ok "OPA refuses policy writes under the aikonos root ($WRITE_CODE)"

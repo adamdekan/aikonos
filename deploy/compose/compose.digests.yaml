@@ -10,6 +10,8 @@
 services:
   dev-ca-mint:
     image: alpine/openssl:latest@sha256:a31e47e338dac84c48788c23bb003be27ed325b7a2185d359f22e3ba4e78bcab
+  fga-cli:
+    image: openfga/cli:v0.8.1@sha256:1b8035ea4aeb8ad739cbea972488cdda37886644ed004737880b63403bae0fe8
   grafana:
     image: grafana/grafana:11.4.0@sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb
   keycloak:

@@ -34,8 +34,9 @@ Capability enforcement is **always active**: `InvokeTool` requires a valid Biscu
 
 - Proto stubs generated on the host (`(cd agent-gateway && npm ci)` then `task proto:gen`).
 - The `core` stack up (`task compose:up`).
-- For the seed script: the [`fga` CLI](https://github.com/openfga/cli)
-  (`go install github.com/openfga/cli/cmd/fga@latest`) + `jq`.
+- For the seed script: `jq`. The script runs the [`fga` CLI](https://github.com/openfga/cli)
+  in compose's `fga-cli` one-off, inside the network, so OpenFGA needs no host port
+  and the host no `fga`.
 
 Keycloak and OpenFGA are part of the `core` profile — no separate deploy step. The
 realm import (`deploy/compose/keycloak-realm.json`) gives the access token issuer

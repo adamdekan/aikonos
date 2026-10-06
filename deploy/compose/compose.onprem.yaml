@@ -28,10 +28,12 @@ volumes:
 
 services:
 
-  # ── OpenFGA: loopback-only host publish for the seed script + admin curls ──
-  # deploy/onprem/README.md documents running `bash scripts/compose-seed-openfga.sh`
-  # and ad-hoc `curl localhost:8082` calls from the deploy host (SSH'd in), so the
-  # port stays published — but bound to 127.0.0.1, not every interface.
+  # ── OpenFGA: loopback-only host publish for admin curls ──────────────────────
+  # deploy/onprem/README.md documents ad-hoc `curl localhost:8082` calls from the
+  # deploy host (SSH'd in), so the port stays published — but bound to 127.0.0.1,
+  # not every interface. (The seed script no longer needs it: it runs the fga CLI
+  # inside the compose network.) Publishing needs the `mesh` membership below:
+  # current Docker releases publish no port for a service only on an internal network.
   #
   # OpenFGA runs with no authentication (no OPENFGA_AUTHN_METHOD is set anywhere),
   # and its write API is what grants group membership and skill access. A
@@ -67,8 +69,8 @@ services:
   nats:
     ports: !reset []
 
-  # Base compose.yaml keeps minio's `ports:` for local-dev convenience (console
-  # browser access). On-prem is network-reachable, so close it here.
+  # Base compose.yaml publishes no MinIO port. On-prem is network-reachable, so
+  # keep it closed here even if a local-dev publish is ever added back.
   minio:
     ports: !reset []
 
@@ -106,9 +108,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m
-    # Base compose.yaml keeps vault's `ports:` for local-dev convenience (Vault
-    # CLI). On-prem is network-reachable, so close it here — a durable prod Vault
-    # has no reason to be host-reachable; its listener is still TLS-disabled.
+    # Base compose.yaml publishes no Vault port; keep it closed here even if a
+    # local-dev publish is ever added back — a durable prod Vault has no reason
+    # to be host-reachable; its listener is still TLS-disabled.
     # Every consumer (broker via AIKONOS_VAULT_ADDR=http://vault:8200, the seed
     # script, operator init/unseal) reaches it in-network or via
     # `docker compose exec`.
