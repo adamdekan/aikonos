@@ -65,14 +65,14 @@ x-postgres-caps: &postgres-caps
 #             prometheus). otel-collector also joins mesh to receive OTLP from
 #             broker/gateway. Not internal — Grafana/Prometheus need host-port browser
 #             access and the collector needs egress for the (future) Azure archive sink.
-# `backend` is internal (no outbound internet for its members), but `internal: true`
-# does NOT stop Docker from publishing a service's `ports:` to the host — the two are
-# independent. openfga/minio/vault deliberately keep host `ports:` here for local-dev
-# convenience (Vault CLI at :8200, the MinIO console at :9001, the host-run OpenFGA
-# seed script hitting 127.0.0.1:8082) on a trusted single-user loopback. The deployed
-# overlays (azure/onprem) reset these to closed via `ports: !reset []` (onprem keeps
-# openfga's port for its documented host seed/admin workflow) — see
-#  CP5 item 1.
+# `backend` is internal: its members have no outbound internet, and current
+# Docker Engine releases publish no host port for a service that is only on an
+# internal network (checked on 29.4; older ones published it on every
+# interface). So nothing that is only on `backend` takes `ports:` here. Tools reach those services from inside instead:
+# the OpenFGA seed runs the fga CLI in the `fga-cli` one-off below, and the
+# Vault seed, the backup and compose-verify use `docker compose exec` / `run`.
+# On-prem keeps OpenFGA on host loopback for its admin workflow by also joining
+# it to `mesh` (deploy/compose/compose.onprem.yaml).
 networks:
   mesh:
     # Stable explicit name so external compose projects (e.g. a self-hosted MCP
@@ -175,8 +175,6 @@ services:
       OPENFGA_HTTP_ADDR:          "0.0.0.0:8080"
       OPENFGA_GRPC_ADDR:          "0.0.0.0:8081"
       OPENFGA_LOG_LEVEL:          info
-    ports:
-      - "8082:8080"   # OpenFGA HTTP (host:8082 avoids clash with Keycloak on 8080)
     depends_on:
       openfga-migrate:
         condition: service_completed_successfully
@@ -205,9 +203,6 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio-data:/data
-    ports:
-      - "9000:9000"   # MinIO API
-      - "9001:9001"   # MinIO console
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -240,8 +235,6 @@ services:
     volumes:
       - vault-data:/vault/file
       - ./deploy/compose/vault/vault.hcl:/vault/config/vault.hcl:ro
-    ports:
-      - "8200:8200"
     # IPC_LOCK dropped: disable_mlock=true in vault.hcl. SETGID/SETUID kept: the
     # entrypoint still steps down from root via su-exec.
     cap_add:
@@ -367,8 +360,6 @@ services:
       - --config-file=/config/opa.yaml
     volumes:
       - ./deploy/compose/opa.yaml:/config/opa.yaml:ro
-    ports:
-      - "8181:8181"
     # opa:*-static is distroless (no shell/wget/curl) and has no self-probe
     # subcommand, so an in-container healthcheck is impossible. Dependents wait
     # on service_started. OPA has no policy until it has fetched the broker's
@@ -433,6 +424,22 @@ services:
     entrypoint: ["chown", "65532:65532", "/workspace"]
     volumes:
       - workspace-data:/workspace
+    restart: "no"
+
+  # The OpenFGA CLI, for scripts/compose-seed-openfga.sh: `docker compose run
+  # --rm fga-cli <args>`. It runs on `backend`, so the seed needs no host port
+  # (see Networks above). Never started by `up`: `tools` is a profile no command
+  # here enables, and `run` activates it for this one service.
+  fga-cli:
+    <<: *hardening
+    read_only: true
+    image: openfga/cli:v0.8.1
+    profiles: [tools]
+    networks: [backend]
+    environment:
+      FGA_API_URL: http://openfga:8080
+    volumes:
+      - ./policies/fga:/policies/fga:ro
     restart: "no"
 
   # ── Application services ──────────────────────────────────────────────────────

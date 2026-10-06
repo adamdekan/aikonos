@@ -60,7 +60,8 @@ docker compose --profile core up --build
 #      in-memory.) The root token is used ONLY by this script, never the broker.
 #    - openfga-seed: find-or-creates the store, writes model + dev tuples, sets
 #      AIKONOS_POLICY_OPENFGA_STORE_ID in .env. Without it the broker runs the dev
-#      allow-all stub (webui Roles: "OpenFGA is disabled"). Requires `fga` CLI + jq.
+#      allow-all stub (webui Roles: "OpenFGA is disabled"). Requires jq; the fga
+#      CLI runs inside the network (the `fga-cli` one-off), so no host port.
 #    `task compose:seed` runs all three steps for you.
 bash scripts/compose-vault-seed.sh
 bash scripts/compose-seed-openfga.sh
@@ -194,7 +195,7 @@ the mesh and raw datastores. All other app services (agent-gateway, webui) join 
 **Host ports on `internal` networks:** Docker does **not** publish a service's host `ports:` when the
 service is attached only to internal networks. The `backend` datastores (`postgres`, `vault`, `minio`,
 `openfga`, `opa`) are therefore intentionally **not** on localhost — inspect them with
-`docker compose exec <svc> ...` (e.g. `docker compose exec minio mc ls local/aikonos-audit/`,
+`docker compose exec <svc> ...` (e.g. `docker compose exec minio sh -c 'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc ls local/aikonos-audit/'`,
 `docker compose exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root-token-local-dev vault vault kv get -mount=secret broker/capability`
 — dev Vault is HTTP, so `VAULT_ADDR` must be set or the CLI defaults to HTTPS and errors). Services with a `mesh` leg
 (`broker` 9090/9091, `agent-gateway` 8080, `webui` 4200, `keycloak` 18080, `nats` 4222,
@@ -336,7 +337,7 @@ Without `--yes` the script prompts for confirmation before overwriting data.
 ### Restore drill (periodic)
 
 `compose.yaml` binds fixed host ports (webui `4200`, agent-gateway `8080`, keycloak `18080`,
-minio console `9001`, grafana `3030` — see `docker compose port` or grep `compose.yaml` for
+grafana `3030` — see `docker compose port` or grep `compose.yaml` for
 `ports:`), with no project-name parameterization. A scratch-project drill stack therefore
 **cannot run alongside the main stack** — both would try to bind the same host ports, and
 `docker compose up` for the second one fails or silently reuses the first's containers. The

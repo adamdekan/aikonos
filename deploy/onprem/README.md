@@ -380,12 +380,12 @@ OpenFGA's host port is published on `127.0.0.1:8082`, not on every interface. It
 **unauthenticated** (no `OPENFGA_AUTHN_METHOD` is set), and its write endpoint is what grants group
 membership and skill access — so anyone who can reach that port can rewrite the tuples `SubmitPlan`
 and `InvokeTool` gate on, bypassing the ReBAC check without touching the broker, OIDC, or Biscuit.
-Loopback keeps the seed script and admin `curl`s working from the deploy host while removing the
-remote path.
+Loopback keeps the admin `curl`s working from the deploy host while removing the remote path.
+`scripts/compose-seed-openfga.sh` doesn't use the port at all: it runs the `fga` CLI inside the
+compose network (the `fga-cli` one-off).
 
-Every documented workflow already targets loopback (`scripts/compose-seed-openfga.sh` defaults to
-`FGA_API_URL=http://127.0.0.1:8082`), so this changes nothing you run over SSH on the host. From a
-workstation, tunnel it the same way as Grafana:
+Every documented workflow already targets loopback, so this changes nothing you run over SSH on the
+host. From a workstation, tunnel it the same way as Grafana:
 
 ```bash
 ssh -L 8082:localhost:8082 -N <user>@example.com
