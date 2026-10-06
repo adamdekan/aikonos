@@ -253,7 +253,7 @@ async function revokeSkillFromGroup(groupName) {
   border: 1px solid var(--border); border-radius: 12px;
   padding: 2px 10px; font-size: 12px;
 }
-.chip-skill  { border-color: #a6ffa1; color: #a6ffa1; background: var(--fill-muted); }
+.chip-skill  { border-color: var(--ok); color: var(--ok); background: var(--fill-muted); }
 .chip-x {
   background: none; border: none; color: inherit; cursor: pointer;
   padding: 0 2px; font-size: 14px; line-height: 1; opacity: 0.7;
@@ -282,7 +282,7 @@ async function revokeSkillFromGroup(groupName) {
   display: inline-block; border-radius: var(--radius-sm); padding: 1px 7px;
   font-size: 11px; margin-right: 4px; border: 1px solid transparent;
 }
-.prov-direct { background: var(--fill-accent); color: var(--accent); border-color: var(--accent); }
+.prov-direct { background: var(--fill-accent); color: var(--accent-text); border-color: var(--accent-text); }
 .prov-group  { background: var(--fill-muted);  color: var(--text-muted); border-color: var(--border); }
 
 /* ── scope badge ────────────────────────────────────────────────────── */
@@ -293,7 +293,7 @@ async function revokeSkillFromGroup(groupName) {
 }
 
 /* ── warn text ───────────────────────────────────────────────────────── */
-.warn-text { color: var(--accent); font-size: 11px; }
+.warn-text { color: var(--accent-text); font-size: 11px; }
 
 .mono { font-family: var(--font-mono); }
 </style>

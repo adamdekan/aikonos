@@ -664,7 +664,7 @@ function close() {
 
 .input-field:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .run-error {
@@ -838,8 +838,8 @@ function close() {
 }
 
 .btn-rate--selected {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
   background: var(--fill-accent);
 }
 

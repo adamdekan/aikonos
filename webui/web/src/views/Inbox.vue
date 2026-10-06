@@ -357,7 +357,7 @@ onMounted(async () => {
 }
 
 .field:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .field-label {

@@ -322,7 +322,7 @@ async function removeAgentMcp(connId) {
   border: 1px solid var(--border); border-radius: 12px;
   padding: 2px 10px; font-size: 12px;
 }
-.chip-tenant { border-color: var(--accent); color: var(--accent); background: var(--fill-accent); }
+.chip-tenant { border-color: var(--accent-text); color: var(--accent-text); background: var(--fill-accent); }
 .chip-x {
   background: none; border: none; color: inherit; cursor: pointer;
   padding: 0 2px; font-size: 14px; line-height: 1; opacity: 0.7;

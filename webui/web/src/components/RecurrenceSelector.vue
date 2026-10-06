@@ -229,7 +229,7 @@ const description = computed(() => describeCron(currentCron.value));
 }
 
 .field:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .field-narrow {
@@ -255,8 +255,8 @@ const description = computed(() => describeCron(currentCron.value));
 
 .weekday-toggle--active {
   background: var(--fill-accent);
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 .weekday-preset {
@@ -289,7 +289,7 @@ const description = computed(() => describeCron(currentCron.value));
 .advanced-toggle {
   background: transparent;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--font-sans);
   font-size: 0.75rem;
   cursor: pointer;

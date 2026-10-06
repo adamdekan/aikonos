@@ -149,11 +149,11 @@ const TABLE_COLS = [
 
 .badge { border-radius: var(--radius-sm); padding: 1px 7px; font-size: 12px; border: 1px solid transparent; }
 .s-active  { background: var(--fill-muted); color: var(--ok);     border-color: var(--ok); }
-.s-paused  { background: var(--fill-accent); color: var(--accent); border-color: var(--accent); }
+.s-paused  { background: var(--fill-accent); color: var(--accent-text); border-color: var(--accent-text); }
 .s-done    { background: var(--fill-muted); color: var(--text-muted); border-color: var(--border); }
 .s-fail    { background: var(--fill-danger); color: var(--danger); border-color: var(--danger); }
 .s-unknown { background: var(--bg-elevated); color: var(--text-muted); }
-.badge-workflow { background: var(--fill-accent); color: var(--accent); border-color: var(--accent); }
+.badge-workflow { background: var(--fill-accent); color: var(--accent-text); border-color: var(--accent-text); }
 
 .schedule-workflow { display: flex; align-items: center; gap: 6px; }
 </style>

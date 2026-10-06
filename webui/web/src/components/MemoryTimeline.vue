@@ -56,7 +56,7 @@ function scopeLabel(c) {
 .memory-timeline-icon {
   flex-shrink: 0;
   margin-top: 1px;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .memory-timeline-item--stale .memory-timeline-icon {

@@ -100,6 +100,6 @@ const TABLE_COLS = [
   font-size: 12px; border: 1px solid transparent;
 }
 .s-crit { background: var(--fill-danger); color: var(--danger); border-color: var(--danger); }
-.s-warn { background: var(--fill-accent); color: var(--accent); border-color: var(--accent); }
+.s-warn { background: var(--fill-accent); color: var(--accent-text); border-color: var(--accent-text); }
 .s-info { background: var(--fill-muted); color: var(--text-muted); border-color: var(--border); }
 </style>

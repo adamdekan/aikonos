@@ -1128,7 +1128,7 @@ select, input:not([type="checkbox"]):not([type="radio"]) {
   padding: 10px 12px;
 }
 .family-card:hover { background: var(--bg-hover); }
-.family-card.picked { border-color: var(--accent); }
+.family-card.picked { border-color: var(--accent-text); }
 .family-name { font-size: 13px; font-weight: 600; }
 
 .locked-family { display: flex; flex-direction: column; gap: 3px; margin: 0; font-size: 13px; }

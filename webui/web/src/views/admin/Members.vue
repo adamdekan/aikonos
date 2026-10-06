@@ -174,7 +174,7 @@ const TABLE_COLS = [
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 7px 11px; font-size: 13px; margin-bottom: 16px;
 }
-.filter:focus { outline: none; border-color: var(--accent); }
+.filter:focus { outline: none; border-color: var(--accent-text); }
 
 .name { font-size: 14px; }
 .sub { font-size: 12px; color: var(--text-faint); }
@@ -184,7 +184,7 @@ const TABLE_COLS = [
 .badge-admin, .badge-user, .origin-jit, .origin-manual {
   font-size: 11px; font-weight: 500; border-radius: 4px; padding: 2px 8px;
 }
-.badge-admin { color: var(--accent); background: var(--fill-accent); }
+.badge-admin { color: var(--accent-text); background: var(--fill-accent); }
 .badge-user  { color: var(--text-faint); background: var(--fill-muted); }
 .origin-jit    { color: var(--ok); background: var(--fill-ok); }
 .origin-manual { color: var(--text-faint); background: var(--fill-muted); }

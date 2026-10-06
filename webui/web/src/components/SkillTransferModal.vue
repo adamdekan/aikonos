@@ -421,6 +421,7 @@ function close() {
 
 .btn-confirm.btn-danger-solid {
   background: var(--danger);
+  color: var(--text-on-status);
 }
 
 .btn-cancel:disabled,

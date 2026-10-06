@@ -267,7 +267,7 @@ onMounted(load);
 
 .btn-danger:hover {
   background: var(--danger);
-  color: var(--text-on-accent);
+  color: var(--text-on-status);
 }
 
 .btn-sm {

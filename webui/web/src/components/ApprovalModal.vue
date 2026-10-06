@@ -313,8 +313,8 @@ function respondCancel() {
 
 .pill-stepup {
   background: var(--fill-accent);
-  color: var(--accent);
-  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-text);
 }
 
 .approval-queue-count {
@@ -440,7 +440,7 @@ function respondCancel() {
 /* Approve: solid fill — the deliberate, irreversible act */
 .btn-approve {
   background: var(--ok);
-  color: var(--text-on-accent);
+  color: var(--text-on-status);
   border: 1px solid transparent;
 }
 

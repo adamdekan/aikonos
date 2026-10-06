@@ -33,6 +33,7 @@ use crate::prefs::Prefs;
 use crate::runtime;
 use crate::sessions::{self, SessionsStore};
 use crate::settings;
+use crate::theme::console;
 use crate::ui;
 
 /// How often the inbox badge refreshes (Sidebar.vue polls every 15 s).
@@ -405,10 +406,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Button {
         let theme = cx.theme();
-        let icon =
-            Icon::new(icon)
-                .size(rems(1.125))
-                .text_color(if active { theme.primary } else { theme.muted_foreground });
+        let icon = Icon::new(icon).size(rems(1.125)).text_color(if active {
+            console(cx).accent_text
+        } else {
+            theme.muted_foreground
+        });
         Button::new(id)
             .ghost()
             .w_full()
@@ -574,7 +576,11 @@ impl Shell {
                 )
             })
             .when(entry.has_agent(), |this| {
-                this.child(Icon::new(AppIcon::Chat).size(rems(0.625)).text_color(theme.primary))
+                this.child(
+                    Icon::new(AppIcon::Chat)
+                        .size(rems(0.625))
+                        .text_color(console(cx).accent_text),
+                )
             })
             .child(
                 div()
@@ -755,7 +761,7 @@ impl Shell {
                             .ghost()
                             .xsmall()
                             .w_full()
-                            .text_color(theme.primary)
+                            .text_color(console(cx).accent_text)
                             .label(if collapsed { "".into() } else { label })
                             .icon(Icon::new(AppIcon::Download))
                             .tooltip("Download the newer aikonOS for Windows from your server")

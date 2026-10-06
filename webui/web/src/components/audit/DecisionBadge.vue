@@ -34,7 +34,7 @@ const info = props.decision != null ? DECISION[props.decision] ?? { label: Strin
   background: var(--fill-ok);
 }
 .decision-badge.warn {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--fill-accent);
 }
 .decision-badge.deny {

@@ -160,7 +160,7 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
   background: var(--ok);
   border: 1px solid var(--ok);
   border-radius: var(--radius-sm);
-  color: var(--text-on-accent);
+  color: var(--text-on-status);
   font-family: var(--font-sans);
   cursor: pointer;
   transition: background 0.15s;
@@ -172,7 +172,7 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
 }
 
 .btn-primary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 
@@ -195,7 +195,7 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
 }
 
 .btn-secondary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 
@@ -219,7 +219,7 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
 }
 
 .btn-ghost:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
 

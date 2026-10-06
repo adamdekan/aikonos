@@ -171,7 +171,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick, true));
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  color: var(--accent);
+  color: var(--accent-text);
   opacity: 0.75;
 }
 
@@ -195,7 +195,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick, true));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 12px;
 }
 
@@ -257,7 +257,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick, true));
   flex: 1;
   min-width: 0;
   background: var(--bg-hover);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-text);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 13px;

@@ -287,7 +287,7 @@ watch(
 .edit-input {
   width: 100%;
   background: var(--bg-elevated);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--accent-text);
   border-radius: var(--radius);
   color: var(--text);
   font-family: var(--font-sans);

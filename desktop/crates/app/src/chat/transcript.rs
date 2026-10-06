@@ -74,7 +74,7 @@ impl ChatView {
                                 .rounded(theme.radius_lg)
                                 .bg(theme.popover)
                                 .border_1()
-                                .border_color(theme.primary)
+                                .border_color(console(cx).accent_text)
                                 .child(Textarea::new(&input).appearance(false)),
                         )
                         .child(
@@ -506,7 +506,7 @@ fn render_memory(concepts: &[RecalledConcept], cx: &App) -> AnyElement {
                 if concept.stale {
                     theme.muted_foreground
                 } else {
-                    theme.primary
+                    console(cx).accent_text
                 },
                 h_flex()
                     .gap_1()
@@ -534,6 +534,7 @@ fn failure_label(failure: Option<&str>) -> &'static str {
 /// (SubagentTimeline.vue).
 fn render_subagents(key: u64, branches: &[SubagentBranch], cx: &App) -> AnyElement {
     let theme = cx.theme();
+    let accent_text = console(cx).accent_text;
     let resolved = !branches.is_empty() && branches.iter().all(|b| b.status != BranchStatus::Running);
     let total: f64 = branches.iter().map(|b| b.cost).sum();
     timeline(cx)
@@ -542,8 +543,8 @@ fn render_subagents(key: u64, branches: &[SubagentBranch], cx: &App) -> AnyEleme
                 BranchStatus::Running => (AppIcon::Spinner, theme.muted_foreground, "running"),
                 BranchStatus::Ok => (AppIcon::Check, theme.success, "done"),
                 BranchStatus::Failure => match branch.failure.as_deref() {
-                    Some("timeout") => (AppIcon::Schedules, theme.primary, failure_label(Some("timeout"))),
-                    Some("denied") => (AppIcon::Pause, theme.primary, failure_label(Some("denied"))),
+                    Some("timeout") => (AppIcon::Schedules, accent_text, failure_label(Some("timeout"))),
+                    Some("denied") => (AppIcon::Pause, accent_text, failure_label(Some("denied"))),
                     other => (AppIcon::Close, theme.danger, failure_label(other)),
                 },
             };

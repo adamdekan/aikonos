@@ -572,7 +572,7 @@ defineExpose({ handleFileUpload });
 }
 
 .dropzone.drag-active {
-  outline-color: var(--accent);
+  outline-color: var(--accent-text);
   background: var(--fill-muted);
 }
 
@@ -787,7 +787,7 @@ defineExpose({ handleFileUpload });
   font-weight: 500;
   cursor: pointer;
   background: var(--danger);
-  color: var(--text-on-accent);
+  color: var(--text-on-status);
   border: 1px solid transparent;
 }
 

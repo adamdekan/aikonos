@@ -43,7 +43,7 @@ function toggle() {
 }
 .toggle.on { background: var(--accent); }
 .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
-.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
 
 .knob {
   position: absolute;

@@ -66,7 +66,7 @@ pub fn pill(text: impl Into<SharedString>, tone: PillTone, cx: &App) -> Div {
     let tokens = console(cx);
     let (bg, fg, border) = match tone {
         PillTone::Neutral => (tokens.fill_muted, theme.muted_foreground, theme.border),
-        PillTone::Accent => (tokens.fill_accent, theme.primary, theme.primary),
+        PillTone::Accent => (tokens.fill_accent, tokens.accent_text, tokens.accent_text),
         PillTone::Ok => (tokens.fill_ok, theme.success, theme.success),
         PillTone::Danger => (tokens.fill_danger, theme.danger, theme.danger),
     };

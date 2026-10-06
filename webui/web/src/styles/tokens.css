@@ -4,36 +4,50 @@
      with UA colors unless the document declares its scheme. */
   color-scheme: dark;
 
+  /* The palette is aikonos.com's: its tokens are taken as they are (--bg,
+     --bg-sidebar, --bg-elevated, --bg-hover, --text*, --border, --accent*,
+     --fill-accent; the site's --on-accent is --text-on-accent here), and its
+     allow/deny badge colours are --ok and --danger. Roles the site has no
+     token for are derived to keep WCAG AA contrast: --bg-active, --accent-text
+     and the light theme's --danger and --ok. */
+
   /* ── backgrounds ── */
-  --bg:          #2b2b2b;
-  --bg-sidebar:  #232323;
-  --bg-elevated: #323232;
-  --bg-hover:    #3a3a42;
-  --bg-active:   #34323d;
+  --bg:          #0a0a0a;
+  --bg-sidebar:  #0f0f0f;
+  --bg-elevated: #141414;
+  --bg-hover:    #1e1e1e;
+  --bg-active:   #262626;
 
   /* ── text ── */
-  --text:           #f0eee9;
-  --text-muted:     #b9b6bf;
-  --text-faint:     #87848f;
-  --text-on-accent: #ffffff;
+  --text:           #ffffff;
+  --text-muted:     #a0a0a0;
+  --text-faint:     #666666;
+  /* On an --accent fill. Black: white on the yellow is unreadable. */
+  --text-on-accent: #000000;
+  /* On a --danger or --ok fill (destructive and approve buttons). */
+  --text-on-status: #000000;
 
   /* ── borders & accents ── */
-  --border:       #3a3a3a;
-  --accent:       #8d90d8;
-  --accent-hover: #9fa2e0;
-  --danger:       #D01A32;
-  --ok:           #00805B;
+  --border:       #252525;
+  /* --accent is a fill (buttons, toggles, badges) with --text-on-accent on it. */
+  --accent:       #ffcc00;
+  --accent-hover: #ffd633;
+  /* The accent as text, icons, focus rings and selection lines. The yellow
+     reads on the dark surfaces; the light theme darkens it. */
+  --accent-text:  #ffcc00;
+  --danger:       #e5675f;
+  --ok:           #6cba6c;
 
   /* ── translucent fills (rgba — keep in sync with the solid tokens above) ── */
   --overlay:     rgba(0, 0, 0, 0.6);
-  --fill-muted:  rgba(171, 168, 186, 0.15);
-  --fill-accent: rgba(141, 144, 216, 0.15);
-  --fill-danger: rgba(208, 26, 50, 0.1);
-  --fill-ok:     rgba(0, 128, 91, 0.15);
+  --fill-muted:  rgba(128, 128, 128, 0.15);
+  --fill-accent: rgba(255, 204, 0, 0.10);
+  --fill-danger: rgba(229, 103, 95, 0.12);
+  --fill-ok:     rgba(108, 186, 108, 0.12);
 
   /* ── scrollbar (minimal, auto-hiding — see .scroll-min below) ── */
-  --scrollbar-thumb:       rgba(171, 168, 186, 0.32);
-  --scrollbar-thumb-hover: rgba(171, 168, 186, 0.55);
+  --scrollbar-thumb:       rgba(160, 160, 160, 0.32);
+  --scrollbar-thumb-hover: rgba(160, 160, 160, 0.55);
 
   /* ── shape ── */
   --radius:    12px;
@@ -60,20 +74,25 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg:          #f0eee9;
-  --bg-sidebar:  #e7e4dc;
+  --bg:          #ffffff;
+  --bg-sidebar:  #f7f7f2;
   --bg-elevated: #ffffff;
-  --bg-hover:    #e3e1ea;
-  --bg-active:   #dedbe8;
-  --text:        #2b2b2b;
-  --text-muted:  #5c5a63;
-  --text-faint:  #8a8893;
-  --border:      #d9d6ce;
-  --accent:      #8d90d8;
-  --accent-hover: #7d80c8;
-  --fill-accent: rgba(141, 144, 216, 0.15);
-  --scrollbar-thumb:       rgba(92, 90, 99, 0.30);
-  --scrollbar-thumb-hover: rgba(92, 90, 99, 0.50);
+  --bg-hover:    #eeeeee;
+  --bg-active:   #e6e6e6;
+  --text:        #000000;
+  --text-muted:  #444444;
+  --text-faint:  #888888;
+  --text-on-status: #ffffff;
+  --border:      #e0e0e0;
+  --accent:      #ffcc00;
+  --accent-hover: #e6b800;
+  /* The yellow's hue, dark enough for 4.5:1 on every light surface. */
+  --accent-text: #7d6400;
+  /* The site's badge red and green, darkened the same way. */
+  --danger:      #c52a20;
+  --ok:          #367436;
+  --scrollbar-thumb:       rgba(68, 68, 68, 0.30);
+  --scrollbar-thumb-hover: rgba(68, 68, 68, 0.50);
 }
 
 /* ── global reset ── */
@@ -91,12 +110,13 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 
 a:hover {
-  color: var(--accent-hover);
+  color: var(--accent-text);
+  text-decoration: underline;
 }
 
 /* ── form-field baseline ──

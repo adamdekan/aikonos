@@ -333,9 +333,9 @@ function sectionTableCols(sec) {
 .view-icon { color: var(--text-muted); width: 22px; height: 22px; }
 
 .banner-warn {
-  background: var(--fill-accent); border: 1px solid var(--accent);
+  background: var(--fill-accent); border: 1px solid var(--accent-text);
   border-radius: var(--radius-sm); padding: 10px 14px;
-  color: var(--accent); font-size: 13px; margin-bottom: 16px;
+  color: var(--accent-text); font-size: 13px; margin-bottom: 16px;
 }
 .banner-warn.small { font-size: 12px; padding: 6px 10px; }
 .banner-err {
@@ -353,7 +353,7 @@ function sectionTableCols(sec) {
 
 .mono { font-family: var(--font-mono); word-break: break-all; }
 .rel-badge {
-  background: var(--fill-muted); color: #a6ffa1;
+  background: var(--fill-muted); color: var(--ok);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 1px 7px; font-size: 12px;
 }
