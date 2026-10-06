@@ -1,0 +1,4 @@
+# Shell scripts run in Linux containers (bind-mounted by compose.yaml) and in
+# bash, which both fail on CRLF. Keep them LF in every checkout, including
+# Windows ones with core.autocrlf=true.
+*.sh text eol=lf

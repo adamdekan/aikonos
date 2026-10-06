@@ -79,7 +79,8 @@ mint_leaf() {
 
   # Write SAN config — both URI (SPIFFE) and DNS (compose service name)
   local san_cfg
-  san_cfg="$(mktemp /tmp/san-XXXXXX.cnf)"
+  # No suffix after the Xs: BusyBox mktemp (the alpine/openssl image) rejects one.
+  san_cfg="$(mktemp /tmp/san-XXXXXX)"
   cat > "${san_cfg}" <<EOF
 [req]
 distinguished_name = req_dn
