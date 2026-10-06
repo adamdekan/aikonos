@@ -36,10 +36,21 @@ Attached to the GitHub release:
 | `images.txt` | The same image references, one per line |
 | `aikonos-<name>-<version>.cdx.json` | CycloneDX 1.6 SBOM per image |
 | `aikonos-<name>-<version>.spdx.json` | SPDX 2.3 SBOM per image, the same inventory |
+| `aikonos-<version>-windows-x64.exe` | Aikonos for Windows ([16-desktop-client.md](16-desktop-client.md)) |
+| `aikonos-desktop-<version>.cdx.json` | CycloneDX 1.6 SBOM of the Windows app |
+| `aikonos-desktop-<version>.spdx.json` | SPDX 2.3 SBOM of the Windows app, the same inventory |
 | `aikonos-<version>-source.tar.gz` | The source tree the images were built from (`git archive` of the tag) |
 | `SHA256SUMS` | Checksums of every file above |
 | `SHA256SUMS.sigstore.json` | Keyless cosign signature over `SHA256SUMS` |
 | `provenance.sigstore.json` | SLSA provenance covering every file in `SHA256SUMS` |
+
+The Windows app is built on a GitHub Windows runner with
+[`cargo auditable`](https://github.com/rust-secure-code/cargo-auditable), which
+embeds its dependency list in the executable. Its SBOM is read back from the
+executable, so it lists the crates the app was built from, and it passes the
+same vulnerability gate as the images. It is not an image, so it has no
+signature of its own: `SHA256SUMS`, its signature and the provenance cover it,
+as they cover every other release file.
 
 Third-party images (Postgres, Vault, NATS, Keycloak, OPA, OpenFGA and the rest)
 are not rebuilt or re-signed. They stay pinned by digest in
@@ -271,7 +282,12 @@ still listed as a finding.
    every image, writes every SBOM, assembles and checks the release files, and
    pushes, signs and publishes nothing. The assembled files are kept as the
    run's `release-dry-run` artifact.
-2. Tag and push. A signed tag is recommended; the on-prem deploy hook can
+2. Set the Windows app's version to the release's, without the `v`, in
+   `[workspace.package]` of [`desktop/Cargo.toml`](../desktop/Cargo.toml), and
+   run `cargo update --workspace` in `desktop/` so `Cargo.lock` follows. The
+   workflow refuses a tag the app's version doesn't match: it is what the app
+   shows and what its update check compares.
+3. Tag and push. A signed tag is recommended; the on-prem deploy hook can
    enforce signed tags too.
 
    ```bash
@@ -279,8 +295,9 @@ still listed as a finding.
    git push origin v1.2.3
    ```
 
-3. The workflow builds and pushes the images, passes each through the
-   vulnerability gate, signs and attests them, assembles and
+4. The workflow builds and pushes the images, passes each through the
+   vulnerability gate, signs and attests them, builds the Windows app and
+   gates its SBOM the same way, assembles and
    signs the release files, verifies all of it with
    `scripts/verify-release.sh --provenance`, checks the images are public, and
    publishes the GitHub release. A tag with a pre-release suffix (`v1.2.3-rc.1`)
@@ -335,3 +352,5 @@ their documentation. Do not loosen the check to make it pass.
 - Third-party images are pinned, not re-signed, and the vulnerability gate
   does not scan them.
 - The gate blocks only Critical findings that have a fix. No VEX ships yet.
+- The Windows app has no Authenticode signature, so Windows SmartScreen warns
+  the first time it starts. Check it against the signed `SHA256SUMS` instead.
