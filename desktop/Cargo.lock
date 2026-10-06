@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "aikonos-client"
-version = "0.1.0"
+version = "0.7.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "aikonos-desktop"
-version = "0.1.0"
+version = "0.7.3"
 dependencies = [
  "aikonos-client",
  "anyhow",
