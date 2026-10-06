@@ -1,0 +1,68 @@
+name: Desktop
+
+# Aikonos for Windows (desktop/). A workflow of its own so the Windows build
+# runs only when the app (or the web styles it copies) changes; the server side
+# of it (the web server's /desktop.json) is covered by CI's webui job.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "desktop/**"
+      # The app's tests compare its theme and icons with these.
+      - "webui/web/src/styles/tokens.css"
+      - "webui/web/src/components/Icon.vue"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "desktop/**"
+      # The app's tests compare its theme and icons with these.
+      - "webui/web/src/styles/tokens.css"
+      - "webui/web/src/components/Icon.vue"
+      - ".github/workflows/desktop.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-test:
+    name: Desktop client (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      # desktop/rust-toolchain.toml pins the toolchain and its components.
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            desktop/target
+          key: desktop-${{ runner.os }}-${{ hashFiles('desktop/Cargo.lock', 'desktop/rust-toolchain.toml') }}
+          restore-keys: desktop-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build the app
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aikonos-windows
+          path: desktop/target/release/aikonos.exe
+          if-no-files-found: error

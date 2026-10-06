@@ -4,6 +4,8 @@ broker/broker
 # Proto stubs only — repo-root gen/ (anchored so nested gen/ pkgs like
 # broker/internal/effectclass/gen are tracked).
 /gen/
+# Rust build output of the Windows app
+/desktop/target/
 
 # ── Talos generated configs (contain secrets — never commit) ─────────────────
 talos/clusterconfig/

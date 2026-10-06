@@ -1,0 +1,6 @@
+# The toolchain every build of this app uses, in CI and locally, so a new
+# Rust release (and its new lints) arrives as a deliberate change here.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
