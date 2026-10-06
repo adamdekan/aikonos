@@ -34,7 +34,7 @@ function pickChip(label) {
 
 <template>
   <div class="home">
-    <!-- 8-point coral asterisk accent mark -->
+    <!-- 8-point asterisk accent mark, in the brand yellow -->
     <div class="home-mark" aria-hidden="true">✳</div>
 
     <h1 class="home-greeting">Hey there, {{ userStore.displayName }}</h1>

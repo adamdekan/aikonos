@@ -301,7 +301,7 @@ onMounted(async () => {
 
 .scope-tab.active {
   color: var(--text);
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--accent-text);
 }
 
 .instance-row {
@@ -381,13 +381,13 @@ onMounted(async () => {
 }
 
 .badge-stale {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 .badge-manager {
-  border-color: var(--ok, var(--accent));
-  color: var(--ok, var(--accent));
+  border-color: var(--ok, var(--accent-text));
+  color: var(--ok, var(--accent-text));
 }
 
 .concept-detail {

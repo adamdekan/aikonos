@@ -168,7 +168,7 @@ function fmtDate(iso) {
   padding: 12px 14px; font-size: 13px; line-height: 1.6;
   font-family: var(--font-sans); resize: vertical; min-height: 220px;
 }
-.preamble:focus { outline: none; border-color: var(--accent); }
+.preamble:focus { outline: none; border-color: var(--accent-text); }
 .preamble.over { border-color: var(--danger); }
 
 .editor-foot {
@@ -197,5 +197,5 @@ function fmtDate(iso) {
 .btn-secondary:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.unsaved { font-size: 12px; color: var(--accent); }
+.unsaved { font-size: 12px; color: var(--accent-text); }
 </style>

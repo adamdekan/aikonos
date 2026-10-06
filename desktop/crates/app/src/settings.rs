@@ -541,7 +541,7 @@ impl Render for MemoryPane {
                     .py_2()
                     .rounded(theme.radius)
                     .border_1()
-                    .border_color(if open { theme.primary } else { theme.border })
+                    .border_color(if open { console(cx).accent_text } else { theme.border })
                     .cursor_pointer()
                     .hover(|this| this.bg(theme.accent))
                     .on_click(cx.listener(move |this, _, _, cx| this.open_concept(id.clone(), cx)))

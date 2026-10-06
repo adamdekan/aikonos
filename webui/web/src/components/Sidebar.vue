@@ -334,7 +334,7 @@ function isActive(path) {
 }
 
 .nav-item.active :deep(svg) {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sidebar.rail .nav-item {

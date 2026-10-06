@@ -30,6 +30,9 @@ pub enum Appearance {
 /// Console roles with no GPUI Kit equivalent.
 #[derive(Clone, Copy, Debug)]
 pub struct ConsoleTokens {
+    /// `--accent-text`: the accent as text, icons and lines. `primary` is the
+    /// yellow fill, which is unreadable as text on the light theme.
+    pub accent_text: Hsla,
     /// `--text-faint`: placeholders, queue counters.
     pub text_faint: Hsla,
     /// `--fill-muted`: neutral pills.
@@ -47,17 +50,19 @@ impl Global for ConsoleTokens {}
 impl ConsoleTokens {
     fn dark() -> Self {
         Self {
-            text_faint: rgb(0x87848f).into(),
-            fill_muted: rgba(0xaba8ba26).into(),
-            fill_accent: rgba(0x8d90d826).into(),
-            fill_danger: rgba(0xd01a321a).into(),
-            fill_ok: rgba(0x00805b26).into(),
+            accent_text: rgb(0xffcc00).into(),
+            text_faint: rgb(0x666666).into(),
+            fill_muted: rgba(0x80808026).into(),
+            fill_accent: rgba(0xffcc001a).into(),
+            fill_danger: rgba(0xe5675f1f).into(),
+            fill_ok: rgba(0x6cba6c1f).into(),
         }
     }
 
     fn light() -> Self {
         Self {
-            text_faint: rgb(0x8a8893).into(),
+            accent_text: rgb(0x7d6400).into(),
+            text_faint: rgb(0x888888).into(),
             ..Self::dark()
         }
     }
@@ -134,30 +139,80 @@ mod tests {
         assert_eq!(names, [LIGHT, DARK]);
     }
 
-    #[test]
-    fn theme_colors_follow_the_console_tokens() {
-        let css = std::fs::read_to_string(concat!(
+    fn console_css() -> String {
+        std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../webui/web/src/styles/tokens.css"
         ))
         .unwrap()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+    }
+
+    /// The value tokens.css gives `token` in `mode`: the light block's own,
+    /// else the root block's, which the light theme inherits.
+    fn css_token(css: &str, mode: &str, token: &str) -> String {
+        let (root, rest) = css.split_once(":root[data-theme=\"light\"]").unwrap();
+        let light = rest.split('}').next().unwrap();
+        let find = |block: &str| {
+            block.lines().map(str::trim_start).find_map(|line| {
+                let value = line.strip_prefix(token)?.strip_prefix(':')?;
+                Some(value.trim().trim_end_matches(';').trim().to_owned())
+            })
+        };
+        let value = if mode == "light" {
+            find(light).or_else(|| find(root))
+        } else {
+            find(root)
+        };
+        value.unwrap_or_else(|| panic!("tokens.css has no {token}"))
+    }
+
+    #[test]
+    fn theme_colors_follow_the_console_tokens() {
+        let css = console_css();
         let set: serde_json::Value = serde_json::from_str(THEME_SET).unwrap();
-        let dark = &set["themes"][1]["colors"];
         // A token changed in the console must be changed here too.
-        for (role, token) in [
-            ("background", "--bg:"),
-            ("foreground", "--text:"),
-            ("sidebar.background", "--bg-sidebar:"),
-            ("popover.background", "--bg-elevated:"),
-            ("accent.background", "--bg-hover:"),
-            ("border", "--border:"),
-            ("muted.foreground", "--text-muted:"),
-            ("primary.background", "--accent:"),
-        ] {
-            let color = dark[role].as_str().unwrap().to_ascii_lowercase();
-            let line = css.lines().find(|line| line.trim_start().starts_with(token)).unwrap();
-            assert!(line.contains(&color), "{role} is {color}, tokens.css says {line}");
+        for theme in set["themes"].as_array().unwrap() {
+            let mode = theme["mode"].as_str().unwrap();
+            for (role, token) in [
+                ("background", "--bg"),
+                ("foreground", "--text"),
+                ("sidebar.background", "--bg-sidebar"),
+                ("popover.background", "--bg-elevated"),
+                ("accent.background", "--bg-hover"),
+                ("list.active.background", "--bg-active"),
+                ("border", "--border"),
+                ("muted.foreground", "--text-muted"),
+                ("primary.background", "--accent"),
+                ("primary.hover.background", "--accent-hover"),
+                ("primary.foreground", "--text-on-accent"),
+                ("link", "--accent-text"),
+                ("ring", "--accent-text"),
+                ("danger.background", "--danger"),
+                ("danger.foreground", "--text-on-status"),
+                ("success.background", "--ok"),
+                ("success.foreground", "--text-on-status"),
+            ] {
+                let color = theme["colors"][role].as_str().unwrap().to_ascii_lowercase();
+                let value = css_token(&css, mode, token);
+                assert_eq!(
+                    color, value,
+                    "{mode} {role} is {color}, tokens.css says {token}: {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn console_tokens_follow_the_console_tokens() {
+        let css = console_css();
+        let color = |mode: &str, token: &str| -> Hsla {
+            let hex = css_token(&css, mode, token);
+            rgb(u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap()).into()
+        };
+        for (mode, tokens) in [("dark", ConsoleTokens::dark()), ("light", ConsoleTokens::light())] {
+            assert_eq!(tokens.accent_text, color(mode, "--accent-text"), "{mode} accent_text");
+            assert_eq!(tokens.text_faint, color(mode, "--text-faint"), "{mode} text_faint");
         }
     }
 }

@@ -96,7 +96,7 @@ function fieldEntries(ev) {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
 }
-.copy-btn:hover { color: var(--accent); }
+.copy-btn:hover { color: var(--accent-text); }
 
 .detail-fields {
   display: flex;

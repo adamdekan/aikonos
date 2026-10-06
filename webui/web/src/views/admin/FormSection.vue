@@ -89,7 +89,7 @@ function toggle() {
 }
 
 .section-toggle:hover .section-title {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .section-static {

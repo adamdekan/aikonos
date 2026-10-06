@@ -245,7 +245,7 @@ label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
   font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
 }
 .badge.ok     { color: var(--ok);     border-color: var(--ok); }
-.badge.warn   { color: var(--accent); border-color: var(--accent); }
+.badge.warn   { color: var(--accent-text); border-color: var(--accent-text); }
 .badge.deny   { color: var(--danger); border-color: var(--danger); }
 .badge.muted  { color: var(--text-muted); border-color: var(--border); }
 

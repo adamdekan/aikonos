@@ -125,9 +125,9 @@ function setTab(tab) {
 .view-icon { color: var(--text-muted); width: 22px; height: 22px; }
 
 .banner-warn {
-  background: var(--fill-accent); border: 1px solid var(--accent);
+  background: var(--fill-accent); border: 1px solid var(--accent-text);
   border-radius: var(--radius-sm); padding: 10px 14px;
-  color: var(--accent); font-size: 13px; margin-bottom: 12px;
+  color: var(--accent-text); font-size: 13px; margin-bottom: 12px;
 }
 .banner-warn.small { font-size: 12px; padding: 6px 10px; }
 .banner-err {
@@ -147,7 +147,7 @@ function setTab(tab) {
   padding: 8px 16px; margin-bottom: -1px; transition: color 0.12s, border-color 0.12s;
 }
 .tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent-text); font-weight: 600; }
 
 /* ── placeholder / advanced ─────────────────────────────────────────── */
 .advanced-pane { margin-top: -8px; }

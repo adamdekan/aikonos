@@ -546,7 +546,7 @@ const jumpLabel    = computed(() =>
   white-space: nowrap;
 }
 .count-chip.ok   { color: var(--ok);     border-color: var(--ok); }
-.count-chip.warn { color: var(--accent); border-color: var(--accent); }
+.count-chip.warn { color: var(--accent-text); border-color: var(--accent-text); }
 .count-chip.deny { color: var(--danger); border-color: var(--danger); }
 .count-chip.muted { color: var(--text-muted); }
 
@@ -598,8 +598,8 @@ const jumpLabel    = computed(() =>
   cursor: pointer;
   white-space: nowrap;
 }
-.tool-btn:hover { border-color: var(--accent); color: var(--accent); }
-.tool-btn.active { border-color: var(--accent); color: var(--accent); background: var(--fill-accent); }
+.tool-btn:hover { border-color: var(--accent-text); color: var(--accent-text); }
+.tool-btn.active { border-color: var(--accent-text); color: var(--accent-text); background: var(--fill-accent); }
 
 /* ── Table scroll ── */
 .table-scroll {
@@ -670,7 +670,7 @@ const jumpLabel    = computed(() =>
   cursor: pointer;
 }
 .audit-row:hover td { background: var(--bg-hover); }
-.audit-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.audit-row:focus { outline: 2px solid var(--accent-text); outline-offset: -2px; }
 
 .detail-row td {
   background: var(--bg-elevated);
@@ -680,7 +680,7 @@ const jumpLabel    = computed(() =>
 
 .cell-mono   { font-family: var(--font-mono); }
 .cell-muted  { color: var(--text-muted); }
-.cell-accent { color: var(--accent); }
+.cell-accent { color: var(--accent-text); }
 .cell-overflow {
   overflow: hidden;
   text-overflow: ellipsis;

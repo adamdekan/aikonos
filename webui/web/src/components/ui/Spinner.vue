@@ -20,7 +20,7 @@ const dim = sizeMap[props.size] ?? sizeMap.md;
 .spinner {
   display: inline-block;
   border: 2px solid var(--fill-muted);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-text);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   flex-shrink: 0;

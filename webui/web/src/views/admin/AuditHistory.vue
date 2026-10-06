@@ -455,7 +455,7 @@ const TABLE_COLS = [
   cursor: pointer;
 }
 .btn-ghost:disabled { opacity: 0.5; cursor: default; }
-.btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-ghost:hover:not(:disabled) { border-color: var(--accent-text); color: var(--accent-text); }
 
 /* ── Verify card ── */
 .verify-card {
@@ -598,6 +598,6 @@ const TABLE_COLS = [
 /* ── Shared cell helpers ── */
 .mono    { font-family: var(--font-mono); }
 .muted   { color: var(--text-muted); }
-.accent  { color: var(--accent); }
+.accent  { color: var(--accent-text); }
 .overflow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

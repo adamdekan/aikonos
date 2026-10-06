@@ -189,7 +189,7 @@ function close() {
 
 .field-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .fork-error {

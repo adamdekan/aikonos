@@ -568,7 +568,7 @@ async function bulkAddSkills() {
   padding: 2px 10px; font-size: 12px;
 }
 .chip-mgr    { border-color: var(--border); color: var(--text-muted); }
-.chip-skill  { border-color: #a6ffa1; color: #a6ffa1; background: var(--fill-muted); }
+.chip-skill  { border-color: var(--ok); color: var(--ok); background: var(--fill-muted); }
 .chip-x {
   background: none; border: none; color: inherit; cursor: pointer;
   padding: 0 2px; font-size: 14px; line-height: 1; opacity: 0.7;

@@ -275,7 +275,7 @@ function close() {
 }
 
 .version-item--active {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: var(--fill-accent);
 }
 
@@ -315,7 +315,7 @@ function close() {
   padding: 0.125rem 0.375rem;
   border-radius: 999px;
   background: var(--fill-accent);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -424,7 +424,7 @@ function close() {
 
 .btn-approve:not(:disabled):hover {
   background: var(--ok);
-  color: #fff;
+  color: var(--text-on-status);
 }
 
 .btn-reject {
@@ -435,7 +435,7 @@ function close() {
 
 .btn-reject:not(:disabled):hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--text-on-status);
 }
 
 .btn-approve:disabled,

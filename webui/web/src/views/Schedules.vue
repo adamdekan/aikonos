@@ -370,7 +370,7 @@ onMounted(load);
 }
 
 .field:focus {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .field-prompt {
@@ -473,7 +473,7 @@ onMounted(load);
 
 .badge-workflow {
   background: var(--fill-accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .schedule-workflow {

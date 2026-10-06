@@ -230,5 +230,5 @@ const TABLE_COLS = [
 }
 .a-allow { background: var(--fill-muted); color: var(--ok);     border-color: var(--ok); }
 .a-deny  { background: var(--fill-danger); color: var(--danger); border-color: var(--danger); }
-.a-ask   { background: var(--fill-accent); color: var(--accent); border-color: var(--accent); }
+.a-ask   { background: var(--fill-accent); color: var(--accent-text); border-color: var(--accent-text); }
 </style>

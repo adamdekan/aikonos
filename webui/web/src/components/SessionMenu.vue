@@ -87,6 +87,6 @@ onUnmounted(() => {
 }
 
 .menu-item--danger {
-  color: var(--color-danger, #e05252);
+  color: var(--danger);
 }
 </style>

@@ -54,6 +54,6 @@ onMounted(async () => {
   color: var(--text-muted);
 }
 .auth-error {
-  color: var(--color-error, #e55);
+  color: var(--danger);
 }
 </style>

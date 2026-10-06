@@ -104,7 +104,7 @@ function total(branches) {
 
 .subagent-timeline-item--timeout .subagent-timeline-icon,
 .subagent-timeline-item--denied .subagent-timeline-icon {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .subagent-timeline-body {

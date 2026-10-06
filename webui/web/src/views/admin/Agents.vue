@@ -838,7 +838,7 @@ textarea {
   padding: 7px 9px; font-size: 13px;
 }
 .agent-modal-body input[data-testid="agent-name"]:focus {
-  outline: none; border-color: var(--accent);
+  outline: none; border-color: var(--accent-text);
 }
 
 .model-warning { margin: 6px 0 0; line-height: 1.4; }

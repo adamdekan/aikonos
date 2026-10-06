@@ -267,7 +267,7 @@ async function handleSignOut() {
 
 .instructions-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .char-counter {
@@ -300,7 +300,7 @@ async function handleSignOut() {
 
 .btn-danger:hover {
   background: var(--danger);
-  color: var(--text-on-accent);
+  color: var(--text-on-status);
 }
 
 .btn-ghost {

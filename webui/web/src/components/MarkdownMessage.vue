@@ -79,11 +79,11 @@ defineProps({
 }
 
 .markdown-message :deep(a) {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 
 .markdown-message :deep(a:hover) {
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 </style>

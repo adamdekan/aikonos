@@ -122,7 +122,7 @@ function selectNone() {
   border: none;
   padding: 0;
   cursor: pointer;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 12px;
 }
 .link-btn:hover { text-decoration: underline; }
