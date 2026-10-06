@@ -73,7 +73,7 @@ export interface BranchResult {
   /** Present only when ok is false — which marker the aggregator gets. */
   failure?: BranchFailureKind;
   /**
-   * Aikonos tool ids this branch's approver refused. Attached whenever non-empty,
+   * aikonOS tool ids this branch's approver refused. Attached whenever non-empty,
    * whatever the terminal `failure` was: a branch can be denied a tool and then
    * also time out, and the user needs to hear about both.
    */

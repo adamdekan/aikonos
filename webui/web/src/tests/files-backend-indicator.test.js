@@ -76,9 +76,9 @@ describe("Files.vue — backend indicator + reconnect banner", () => {
   });
 
   it("shows 'OneDrive · /<path>' when backend is onedrive", async () => {
-    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" });
+    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" });
     const w = await mountFiles();
-    expect(w.find("[data-testid='backend-indicator']").text()).toBe("OneDrive · /Apps/Aikonos");
+    expect(w.find("[data-testid='backend-indicator']").text()).toBe("OneDrive · /Apps/aikonOS");
   });
 
   it("does not render the indicator before the workspace store has loaded", async () => {
@@ -90,7 +90,7 @@ describe("Files.vue — backend indicator + reconnect banner", () => {
   });
 
   it("shows the reconnect banner exactly when backend=onedrive and status=reconnect_needed", async () => {
-    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos", onedriveStatus: "reconnect_needed" });
+    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS", onedriveStatus: "reconnect_needed" });
     const w = await mountFiles();
     const banner = w.find("[data-testid='reconnect-banner']");
     expect(banner.exists()).toBe(true);
@@ -104,7 +104,7 @@ describe("Files.vue — backend indicator + reconnect banner", () => {
   });
 
   it("no reconnect banner when backend=onedrive but status is connected", async () => {
-    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos", onedriveStatus: "connected" });
+    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS", onedriveStatus: "connected" });
     const w = await mountFiles();
     expect(w.find("[data-testid='reconnect-banner']").exists()).toBe(false);
   });

@@ -2361,7 +2361,7 @@ message OrgSettings {
   // interactive runs regardless of its per-agent setting. Unset = true (allowed).
   optional bool unattended_allowed = 2;
 
-  // A6 — org master over workflow sharing (Aikonos's user-authored, shareable
+  // A6 — org master over workflow sharing (aikonOS's user-authored, shareable
   // artifact). When false, PublishWorkflow is refused org-wide so members cannot
   // publish workflows to groups regardless of their skill:workflows grant.
   // Unset = true (allowed).

@@ -20,7 +20,7 @@ const CAPABILITIES = [
   {
     id: "WRITE_EXTERNAL",
     label: "External writes",
-    desc: "Tools that write outside Aikonos — email, external APIs, connector writes. Disabling makes all agents read-only toward third-party systems.",
+    desc: "Tools that write outside aikonOS — email, external APIs, connector writes. Disabling makes all agents read-only toward third-party systems.",
   },
   {
     id: "CREDENTIAL_ACCESS",

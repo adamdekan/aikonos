@@ -73,7 +73,7 @@ Usability for the people who approve, audit and get refused:
 Not committed, listed so the direction is visible.
 
 - **Delegation interop.** Cross App Access and OIDC-A are converging on how
-  one agent calls another system on a user's behalf. Aikonos mints its own
+  one agent calls another system on a user's behalf. aikonOS mints its own
   grants today; speaking a standard would remove an integration cliff.
 - **Reproducible image builds.** Release images are signed and carry SBOMs
   and provenance, which proves who built them. Only a bit-for-bit rebuild

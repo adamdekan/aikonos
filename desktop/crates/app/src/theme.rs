@@ -14,8 +14,8 @@ use gpui_kit::{App, Global, Hsla, Window, rgb, rgba};
 use serde::{Deserialize, Serialize};
 
 const THEME_SET: &str = include_str!("../../../assets/aikonos-theme.json");
-const LIGHT: &str = "Aikonos Light";
-const DARK: &str = "Aikonos Dark";
+const LIGHT: &str = "aikonOS Light";
+const DARK: &str = "aikonOS Dark";
 
 /// The user's choice in Settings. The console offers the same three.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

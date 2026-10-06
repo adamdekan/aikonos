@@ -120,7 +120,7 @@ impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let placeholder: SharedString = "Message Aikonos…".into();
+        let placeholder: SharedString = "Message aikonOS…".into();
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 8)

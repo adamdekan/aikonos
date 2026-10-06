@@ -1,7 +1,7 @@
 //! Preferences kept on this machine, the desktop equivalent of what the
 //! web console keeps in localStorage. Never tokens: those stay in memory.
 //!
-//! Stored as JSON in `%APPDATA%\Aikonos\desktop.json`. A missing or
+//! Stored as JSON in `%APPDATA%\aikonOS\desktop.json`. A missing or
 //! unreadable file means defaults; a failed write is reported once and the
 //! app carries on with the in-memory values.
 
@@ -56,7 +56,7 @@ fn path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(base.join("Aikonos").join("desktop.json"))
+    Some(base.join("aikonOS").join("desktop.json"))
 }
 
 impl Prefs {

@@ -67,7 +67,7 @@ async function buildApp() {
     onedriveStatus: "",
   };
   let setWorkspaceBackendResponse: SetWorkspaceBackendResponse = {
-    pref: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" },
+    pref: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" },
   };
   let listOneDriveFoldersResponse: ListOneDriveFoldersResponse = { folders: [] };
   let setWorkspaceBackendErr: Error | undefined;
@@ -118,7 +118,7 @@ test("GET /workspace/backend — forwards identity + bearer, returns broker resp
   const { app, calls, token, setGetWorkspaceBackendResponse } = await buildApp();
   await app.ready();
   setGetWorkspaceBackendResponse({
-    pref: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" },
+    pref: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" },
     onedriveAvailable: true,
     onedriveStatus: "connected",
   });
@@ -133,7 +133,7 @@ test("GET /workspace/backend — forwards identity + bearer, returns broker resp
   assert.deepEqual(calls.getWorkspaceBackend, { tenantId: "aikonos-dev", userId: "alice@example.com" });
   const body = JSON.parse(res.body);
   assert.deepEqual(body, {
-    pref: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" },
+    pref: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" },
     onedriveAvailable: true,
     onedriveStatus: "connected",
   });

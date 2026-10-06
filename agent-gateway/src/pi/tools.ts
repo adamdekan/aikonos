@@ -26,7 +26,7 @@ export function makeTools(bridge: BridgeClientLike): ToolDefinition[] {
       name: "web_fetch",
       label: "Fetch URL",
       description:
-        "Fetch a public web page over HTTPS and return its text. Read-only; runs through the aikonos policy + egress proxy.",
+        "Fetch a public web page over HTTPS and return its text. Read-only; runs through the aikonOS policy + egress proxy.",
       parameters: Type.Object({ url: Type.String({ description: "https URL to fetch" }) }),
       execute: async (toolCallId) => run(bridge, toolCallId),
     }),
@@ -158,8 +158,8 @@ export function makeTools(bridge: BridgeClientLike): ToolDefinition[] {
         description: Type.Optional(Type.String({ description: "human-readable description" })),
         steps: Type.Array(
           Type.Object({
-            kind: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("reason")], { description: "step kind — 'tool' (default, invokes a aikonos tool) or 'reason' (a parent-side LLM reasoning/synthesis step, no tool call)" })),
-            skill: Type.Optional(Type.String({ description: "aikonos tool id for this step — required for a tool step; MUST be one of your available tools (e.g. web.fetch, doc.read, doc.write). Do not invent skills. Omit for a reason step." })),
+            kind: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("reason")], { description: "step kind — 'tool' (default, invokes an aikonOS tool) or 'reason' (a parent-side LLM reasoning/synthesis step, no tool call)" })),
+            skill: Type.Optional(Type.String({ description: "aikonOS tool id for this step — required for a tool step; MUST be one of your available tools (e.g. web.fetch, doc.read, doc.write). Do not invent skills. Omit for a reason step." })),
             args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "static or ${inputs.<name>} templated args — tool steps only" })),
             instruction: Type.Optional(Type.String({ description: "required for a reason step: the instruction the parent-side LLM executes, written with ${inputs.*} and ${steps.N.output[.path]} references to earlier steps. Use this for computation or synthesis between tool calls instead of inventing a skill. Omit for a tool step." })),
             output_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "optional JSON Schema object for a reason step's output, used when a later step references structured fields from this reason step's result" })),
@@ -250,8 +250,8 @@ export function makeTools(bridge: BridgeClientLike): ToolDefinition[] {
         description: Type.Optional(Type.String({ description: "human-readable description" })),
         steps: Type.Array(
           Type.Object({
-            kind: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("reason")], { description: "step kind — 'tool' (default, invokes a aikonos tool) or 'reason' (a parent-side LLM reasoning/synthesis step, no tool call)" })),
-            skill: Type.Optional(Type.String({ description: "aikonos tool id for this step — required for a tool step; MUST be one of your available tools (e.g. web.fetch, doc.read, doc.write). Do not invent skills. Omit for a reason step." })),
+            kind: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("reason")], { description: "step kind — 'tool' (default, invokes an aikonOS tool) or 'reason' (a parent-side LLM reasoning/synthesis step, no tool call)" })),
+            skill: Type.Optional(Type.String({ description: "aikonOS tool id for this step — required for a tool step; MUST be one of your available tools (e.g. web.fetch, doc.read, doc.write). Do not invent skills. Omit for a reason step." })),
             args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "static or ${inputs.<name>} templated args — tool steps only" })),
             instruction: Type.Optional(Type.String({ description: "required for a reason step: the instruction the parent-side LLM executes, written with ${inputs.*} and ${steps.N.output[.path]} references to earlier steps. Use this for computation or synthesis between tool calls instead of inventing a skill. Omit for a tool step." })),
             output_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "optional JSON Schema object for a reason step's output, used when a later step references structured fields from this reason step's result" })),

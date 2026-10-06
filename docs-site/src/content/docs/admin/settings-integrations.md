@@ -58,4 +58,4 @@ is unavailable to every agent until it's configured again.
 
 A read-only status display: whether telemetry export is enabled or disabled, and the configured
 endpoint. This page never writes anything - changing telemetry configuration is done by whoever
-operates your Aikonos deployment, not from inside this admin page.
+operates your aikonOS deployment, not from inside this admin page.

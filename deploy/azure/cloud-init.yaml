@@ -1,5 +1,5 @@
 #cloud-config
-# VM bootstrap for the Aikonos dev deployment:
+# VM bootstrap for the aikonOS dev deployment:
 #  - install Docker Engine + compose plugin
 #  - format + mount the attached Premium data disk at /mnt/data
 #  - point Docker's data-root at /mnt/data/docker so images AND named volumes

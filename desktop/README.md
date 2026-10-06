@@ -1,7 +1,7 @@
-# Aikonos for Windows
+# aikonOS for Windows
 
 The member console as a native Windows app, drawn with
-[GPUI Kit](https://github.com/longbridge/gpui-kit). It signs in to an Aikonos
+[GPUI Kit](https://github.com/longbridge/gpui-kit). It signs in to an aikonOS
 server and offers what a member sees in the web console, plus moving files
 between the PC and the workspace. How it signs in, what a server publishes for
 it, and what it keeps on the PC: [docs/16-desktop-client.md](../docs/16-desktop-client.md).

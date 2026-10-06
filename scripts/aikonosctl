@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 scripts/aikonosctl
-Aikonos CLI — developer and operator tool.
+aikonOS CLI — developer and operator tool.
 
 Usage:
   aikonosctl task create --prompt "..." [--budget 1000]
@@ -357,7 +357,7 @@ def cmd_health(args: argparse.Namespace) -> None:
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="aikonosctl", description="Aikonos CLI")
+    p = argparse.ArgumentParser(prog="aikonosctl", description="aikonOS CLI")
     p.add_argument("--tenant", default=DEFAULT_TENANT_ID)
     p.add_argument("--user",   default=DEFAULT_USER_ID)
     p.add_argument("--broker", default=DEFAULT_BROKER_ADDR)

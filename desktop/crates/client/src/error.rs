@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-/// A failed call to the Aikonos server, classified the way the web console
+/// A failed call to the aikonOS server, classified the way the web console
 /// classifies it (webui/web/src/api/client.js): a 403 is an answer, not a
 /// crash, so callers can render an empty or no-access state.
 #[derive(Debug, Clone, thiserror::Error)]

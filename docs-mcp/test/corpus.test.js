@@ -28,7 +28,7 @@ describe('listDocs', () => {
     const docs = await listDocs(FIXTURE);
     const intro = docs.find(d => d.path === 'intro.md');
     assert.ok(intro, 'intro.md must appear in listing');
-    assert.equal(intro.title, 'Introduction to Aikonos');
+    assert.equal(intro.title, 'Introduction to aikonOS');
   });
 
   it('falls back to basename (no extension) when no H1', async () => {
@@ -54,7 +54,7 @@ describe('readDoc', () => {
   it('returns { path, content } for a valid relative path', async () => {
     const doc = await readDoc(FIXTURE, 'intro.md');
     assert.equal(doc.path, 'intro.md');
-    assert.ok(doc.content.includes('Introduction to Aikonos'));
+    assert.ok(doc.content.includes('Introduction to aikonOS'));
   });
 
   it('reads a nested file by relative path', async () => {
@@ -114,7 +114,7 @@ describe('readDoc', () => {
 
 describe('searchDocs', () => {
   it('ranks a file with many term hits above one with fewer', async () => {
-    // intro.md has "Aikonos" many times; subdir/nested.md has it once
+    // intro.md has "aikonOS" many times; subdir/nested.md has it once
     const results = await searchDocs(FIXTURE, 'aikonos', 10);
     assert.ok(results.length >= 2, 'expected at least 2 results');
     const intrIdx = results.findIndex(r => r.path === 'intro.md');

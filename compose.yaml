@@ -1,4 +1,4 @@
-# compose.yaml — Aikonos platform under Docker Compose
+# compose.yaml — aikonOS platform under Docker Compose
 #
 # Usage:
 #   cp deploy/compose/.env.local.example .env  # fill in OPENROUTER_API_KEY at minimum
@@ -83,7 +83,7 @@ networks:
     #       external: true
     #   services:
     #     <svc>: { networks: [default, aikonos_mesh] }
-    # then register it in Aikonos by its container DNS name (http://<container>:<port>),
+    # then register it in aikonOS by its container DNS name (http://<container>:<port>),
     # not a raw 172.x IP, and set AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true on the
     # broker (the mesh subnet is RFC1918, which the broker SSRF guard blocks by default).
     name: aikonos_mesh
@@ -94,7 +94,7 @@ networks:
   # office — internal: dedicated two-member network. Deliberately NOT
   # backend: office-worker executes model-authored scripts, and backend hosts
   # postgres/vault/minio/opa/openfga — sharing it would give those scripts
-  # lateral reach no other Aikonos component has.
+  # lateral reach no other aikonOS component has.
   office:
     driver: bridge
     internal: true
@@ -716,7 +716,7 @@ services:
       AIKONOS_WEBUI_OIDC_REDIRECT_URI: ${AIKONOS_WEBUI_OIDC_REDIRECT_URI:-http://localhost:4200/auth/callback}
       AIKONOS_WEBUI_OIDC_SCOPE:        ${AIKONOS_WEBUI_OIDC_SCOPE:-openid profile}
       AIKONOS_WEBUI_OIDC_TOKEN:        ${AIKONOS_WEBUI_OIDC_TOKEN:-access}
-      # Served to Aikonos for Windows (desktop/) at /desktop.json: its own
+      # Served to aikonOS for Windows (desktop/) at /desktop.json: its own
       # OIDC client (the realm's aikonos-desktop, a native app with a loopback
       # redirect) and, optionally, the desktop release this server expects.
       # The app offers a newer VERSION from URL; below MINIMUM_VERSION it

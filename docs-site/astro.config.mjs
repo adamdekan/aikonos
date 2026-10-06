@@ -12,7 +12,7 @@ export default defineConfig({
   ...(base ? { base } : {}),
   integrations: [
     starlight({
-      title: 'Aikonos Docs',
+      title: 'aikonOS Docs',
       // Wordmark replaces the site title in the header; `title` is kept for the
       // document <title>, and Starlight renders it as the logo's screen-reader text.
       logo: {

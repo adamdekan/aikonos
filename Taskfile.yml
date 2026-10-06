@@ -1,6 +1,6 @@
 version: '3'
 
-# Aikonos is deployed via docker compose only. See deploy/compose/README.md for
+# aikonOS is deployed via docker compose only. See deploy/compose/README.md for
 # the operator guide and compose.yaml for the stack. Profiles: core / full / obs.
 
 tasks:
@@ -11,7 +11,7 @@ tasks:
       - ./scripts/proto-gen.sh
 
   aikonos:build:
-    desc: Build the aikonos scaffolding CLI
+    desc: Build the aikonOS scaffolding CLI
     cmds:
       - go build -o bin/aikonos ./broker/cmd/aikonos
 

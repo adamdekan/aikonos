@@ -4,22 +4,22 @@ sidebar:
   order: 0
 ---
 
-This section documents every screen and control you see as a Aikonos user: signing in, the
+This section documents every screen and control you see as an aikonOS user: signing in, the
 Home screen, chatting with agents, the files explorer, connections, schedules, workflows,
 your inbox, and personal settings. Each page after this one covers a single screen and walks
 through its controls in the order they appear.
 
 ## Signing in
 
-Aikonos signs you in through your organization's own sign-in page, not a separate Aikonos
-account. Once you authenticate, what you can see and do inside Aikonos depends entirely on
+aikonOS signs you in through your organization's own sign-in page, not a separate aikonOS
+account. Once you authenticate, what you can see and do inside aikonOS depends entirely on
 what your administrator has granted your account or the groups you belong to. See
 [Governance & audit](/concepts/governance-and-audit/) for how that permission checking
 works.
 
 ## The Home screen
 
-After you sign in, Aikonos lands you on the Home screen. It greets you by name and shows a
+After you sign in, aikonOS lands you on the Home screen. It greets you by name and shows a
 quick-start composer: a text box asking "How can I help you today?" Type a request and press
 Enter, or press the Send button, to route straight into a new chat with that request already
 sent.
@@ -30,7 +30,7 @@ in chat with a conversation already under way.
 
 ## The sidebar
 
-The sidebar is where you move between every part of Aikonos:
+The sidebar is where you move between every part of aikonOS:
 
 - **New chat** clears your current conversation and starts a fresh one.
 - **Workspace nav** lists Chat, Files, Connections, Schedules, Workflows, and Inbox. Which of

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/verify-release.sh
 #
-# Verifies an Aikonos release before you deploy it. Checks, in order, and stops
+# Verifies an aikonOS release before you deploy it. Checks, in order, and stops
 # at the first failure:
 #
 #   1. SHA256SUMS was signed by this repository's release workflow running for

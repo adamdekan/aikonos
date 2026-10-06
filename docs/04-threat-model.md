@@ -1,15 +1,15 @@
-# Aikonos Threat Model
+# aikonOS Threat Model
 
-**Scope**: Full Aikonos platform
+**Scope**: Full aikonOS platform
 **Methodology**: STRIDE + LLM-specific additions, asset-centric
 **Version**: v0.1
 **Status**: Draft — requires review by security team and red team before production
 
 ## 1. Purpose & Scope
 
-This document enumerates threats to the Aikonos platform, the assets they target, and the mitigations. It is a living document — revised on every architecture change, incident, and red team engagement.
+This document enumerates threats to the aikonOS platform, the assets they target, and the mitigations. It is a living document — revised on every architecture change, incident, and red team engagement.
 
-**In scope**: Aikonos platform, agents, skills, MCP connectors, inter-agent comms, data flows between users and agents, control plane, special security accounts.
+**In scope**: aikonOS platform, agents, skills, MCP connectors, inter-agent comms, data flows between users and agents, control plane, special security accounts.
 
 **Out of scope**: physical security of the data center, internal Anthropic/LLM-provider security, enterprise IdP security (assumed trustworthy per federation agreement).
 
@@ -35,7 +35,7 @@ This document enumerates threats to the Aikonos platform, the assets they target
 ## 3. Trust Boundaries
 
 > **Topology note.** The diagram below describes the original Kubernetes deployment topology
-> (control plane, sandbox pool, tenant MCS separation). Aikonos currently deploys via Docker Compose;
+> (control plane, sandbox pool, tenant MCS separation). aikonOS currently deploys via Docker Compose;
 > the logical trust boundaries (identity verification, policy evaluation, audit at each crossing)
 > remain the same, but the sandbox pool tier is not yet wired under Compose. See README Status.
 
@@ -70,7 +70,7 @@ This document enumerates threats to the Aikonos platform, the assets they target
                  │   External Systems (MCPs, LLM providers,  │
                  │   SaaS connectors)                        │
                  └───────────────────────────────────────────┘
-                 ═══════════════════ ← boundary: Aikonos / external (egress proxy, DLP, SSL inspection)
+                 ═══════════════════ ← boundary: aikonOS / external (egress proxy, DLP, SSL inspection)
 ```
 
 Every boundary is a point where:
@@ -89,7 +89,7 @@ Every boundary is a point where:
 | S-02 | Rogue workload presents forged SPIFFE SVID | Inter-service auth | Lateral movement | Low | SVID issued only to attested workloads; trust domain isolation |
 | S-03 | Spoofed Task Envelope appears to come from manager | Inter-agent delegation | Unauthorized task execution on recipient | Medium | JWS signature by Broker (not by sender sandbox); sender attestation |
 | S-04 | Malicious skill masquerades as trusted skill | Skill registry | Execution of malicious code | Medium | Cosign signatures, SBOM, provenance attestation, signing key in HSM |
-| S-05 | Phishing attack replicates Aikonos frontend | User credentials | Credential theft | Medium | WebAuthn resists phishing; domain pinning; user training |
+| S-05 | Phishing attack replicates aikonOS frontend | User credentials | Credential theft | Medium | WebAuthn resists phishing; domain pinning; user training |
 | S-06 | MCP server spoofed / traffic hijacked | MCP connector | Data exfil or malicious tool results | Low–Medium | mTLS to MCP, certificate pinning, egress proxy enforcement |
 
 ### 4.2 Tampering
@@ -155,7 +155,7 @@ Every boundary is a point where:
 
 ### 4.7 LLM-Specific Threats
 
-These sit somewhat outside STRIDE but are central to Aikonos's risk profile.
+These sit somewhat outside STRIDE but are central to aikonOS's risk profile.
 
 | ID | Threat | Target | Impact | Likelihood | Mitigations |
 |---|---|---|---|---|---|
@@ -218,7 +218,7 @@ This threat model is:
 - **Tested** via red team engagement annually
 - **Cross-checked** against external frameworks (MITRE ATT&CK for Enterprise + Containers, OWASP LLM Top 10, CSA guidance)
 - **Published internally** with change log; diffs reviewed by security team
-- **Versioned** alongside the platform; v0.1 correlates with Aikonos architecture v0.1
+- **Versioned** alongside the platform; v0.1 correlates with aikonOS architecture v0.1
 
 ## 9. Action Items From This Draft
 

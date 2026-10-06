@@ -38,7 +38,7 @@ export async function gateToolCall(
 
   if (!decision.allow) {
     log.info({ tool: event.toolName, reason: decision.reason }, "tool_call BLOCKED");
-    return { block: true, reason: `aikonos: ${decision.reason ?? "denied"}` };
+    return { block: true, reason: `aikonOS: ${decision.reason ?? "denied"}` };
   }
 
   log.info({ tool: event.toolName }, "tool_call ALLOWED");

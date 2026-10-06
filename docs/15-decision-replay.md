@@ -1,6 +1,6 @@
 # 15 — Decision Replay
 
-> **Purpose.** Every policy decision Aikonos records names the exact policy that
+> **Purpose.** Every policy decision aikonOS records names the exact policy that
 > made it. Anyone holding the decision's export can re-run it offline with the
 > stock `opa` binary, confirm the recorded result follows from that policy and
 > that input, and see which rule decided. This page covers what is recorded,

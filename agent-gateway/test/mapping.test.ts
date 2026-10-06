@@ -7,7 +7,7 @@
 //     steps carry the dotted form (web.fetch), because workflow_save/propose
 //     document `skill` as "broker skill id, e.g. web.fetch".
 // If mapTool only recognises the underscore form, every workflow step is denied
-// ("tool 'web.fetch' is not permitted by aikonos policy") and runs always halt at
+// ("tool 'web.fetch' is not permitted by aikonOS policy") and runs always halt at
 // step 0. These tests pin that mapTool accepts BOTH forms.
 import { test } from "node:test";
 import { piMcpToolName } from "../src/pi/mcp-alias.js";
@@ -94,7 +94,7 @@ test("mapTool: unknown tool names return undefined", () => {
 
 // ── knownToolIds / unknownSkills (workflow authoring guard) ───────────────────
 
-test("knownToolIds: returns the built-in aikonos tool ids in dotted form", () => {
+test("knownToolIds: returns the built-in aikonOS tool ids in dotted form", () => {
   const ids = knownToolIds();
   assert.ok(ids.includes("web.fetch"));
   assert.ok(ids.includes("doc.read"));

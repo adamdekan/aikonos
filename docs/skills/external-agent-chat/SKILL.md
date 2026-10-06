@@ -1,9 +1,9 @@
 ---
 name: aikonos-external-agent-chat
-description: Connect to the Aikonos external agent API (:8090) and build a bi-directional, multi-turn conversational client for a named agent. Use when integrating an external application, bot, or service with a Aikonos agent over API-key auth.
+description: Connect to the aikonOS external agent API (:8090) and build a bi-directional, multi-turn conversational client for a named agent. Use when integrating an external application, bot, or service with an aikonOS agent over API-key auth.
 ---
 
-# Aikonos external agent API — conversational client
+# aikonOS external agent API — conversational client
 
 The agent gateway exposes a hardened, API-key-authenticated surface on port `8090`
 (`AIKONOS_EXTERNAL_PORT`), separate from the OIDC-protected internal API. It has one
@@ -11,7 +11,7 @@ invocation endpoint that streams the agent's response as Server-Sent Events. The
 server-side conversation store on this surface: **the client owns the conversation** and
 replays it on every call via `history`. That is the entire multi-turn protocol.
 
-## Prerequisites (one-time, done by a Aikonos admin)
+## Prerequisites (one-time, done by an aikonOS admin)
 
 1. The target agent must have **external access enabled** (`gateway_enabled: true`) — otherwise every call returns 403.
 2. The agent's **approval mode must be `auto`** — agents requiring human approval are not externally drivable (409). Tool calls are still authorized per-call by the broker (OPA + OpenFGA + capability tokens); `auto` only removes the human-in-the-loop prompt.

@@ -5,7 +5,7 @@ sidebar:
   order: 7
 ---
 
-Personal settings covers everything about how Aikonos looks and behaves for you personally, as
+Personal settings covers everything about how aikonOS looks and behaves for you personally, as
 opposed to anything your organization configures for everyone. Open it from the gear icon
 next to your name in the sidebar footer.
 
@@ -20,7 +20,7 @@ controls whether extra governance detail is visible alongside your conversations
 
 The Appearance tab is a theme choice: Dark, Light, or System. System follows your operating
 system's light/dark setting live, so it switches automatically if you change it at the OS
-level while Aikonos is open.
+level while aikonOS is open.
 
 ## Chat
 

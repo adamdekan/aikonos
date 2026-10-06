@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create the two single-tenant Entra ID app registrations Aikonos needs:
+# Create the two single-tenant Entra ID app registrations aikonOS needs:
 #   App A  aikonos-webui        — SPA (PKCE) + exposes api://<id>/access_as_user.
 #                                Its access token is what the broker/gateway validate.
 #   App B  aikonos-oauth2-proxy — confidential Web app for the edge gate (oauth2-proxy).
@@ -41,10 +41,10 @@ az rest --method PATCH \
       "value": "access_as_user",
       "type": "User",
       "isEnabled": true,
-      "adminConsentDisplayName": "Access Aikonos",
-      "adminConsentDescription": "Access Aikonos as the signed-in user",
-      "userConsentDisplayName": "Access Aikonos",
-      "userConsentDescription": "Access Aikonos as you"
+      "adminConsentDisplayName": "Access aikonOS",
+      "adminConsentDescription": "Access aikonOS as the signed-in user",
+      "userConsentDisplayName": "Access aikonOS",
+      "userConsentDescription": "Access aikonOS as you"
     }],
     "preAuthorizedApplications": [{
       "appId": "$WEBUI_APP_ID",

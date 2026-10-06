@@ -500,7 +500,7 @@ export async function createSessionFromPlan(
     apiKey,
     api: "openai-completions",
     authHeader: true,
-    headers: { "HTTP-Referer": "https://aikonos.com", "X-Title": "Aikonos Agent Gateway" },
+    headers: { "HTTP-Referer": "https://aikonos.com", "X-Title": "aikonOS Agent Gateway" },
     models: [
       {
         id: plan.modelId,
@@ -542,7 +542,7 @@ export async function createSessionFromPlan(
             (_params as Record<string, unknown>) ?? {},
           );
           if (!decision.allow) {
-            return { content: [{ type: "text" as const, text: `aikonos: ${decision.reason ?? "denied"}` }], details: {} };
+            return { content: [{ type: "text" as const, text: `aikonOS: ${decision.reason ?? "denied"}` }], details: {} };
           }
           const r = await bridge.execute(toolCallId);
           const body = r.ok

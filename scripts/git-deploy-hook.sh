@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/git-deploy-hook.sh
 #
-# Git post-receive hook: deploy Aikonos to ~/apps/aikonos on git push.
+# Git post-receive hook: deploy aikonOS to ~/apps/aikonos on git push.
 #
 # INSTALL (run once on the on-prem host):
 #   cp scripts/git-deploy-hook.sh ~/repos/aikonos.git/hooks/post-receive

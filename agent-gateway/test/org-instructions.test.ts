@@ -19,7 +19,7 @@ import {
   type ResolveSouth,
 } from "../src/pi/session-plan.js";
 
-const BASE_PREAMBLE = "You are a Aikonos agent";
+const BASE_PREAMBLE = "You are an aikonOS agent";
 const ORG_START = "--- Organization instructions (set by your administrator; authoritative) ---";
 const ORG_END = "--- End organization instructions ---";
 const SOUL_START = "--- Agent personality (author-provided) ---";

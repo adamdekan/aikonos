@@ -1,4 +1,4 @@
-//! Locating an Aikonos server and reading the settings it publishes for
+//! Locating an aikonOS server and reading the settings it publishes for
 //! clients: which identity provider to sign in with, and which desktop
 //! release it expects.
 
@@ -85,7 +85,7 @@ fn is_loopback(url: &Url) -> bool {
 pub fn normalize_server_url(input: &str) -> ApiResult<Url> {
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err(ApiError::SignIn("Enter the address of your Aikonos server.".into()));
+        return Err(ApiError::SignIn("Enter the address of your aikonOS server.".into()));
     }
     let with_scheme = if trimmed.contains("://") {
         trimmed.to_owned()
@@ -215,11 +215,11 @@ pub async fn discover(http: &reqwest::Client, origin: &Url) -> ApiResult<ServerC
             return document.into_config(origin.clone(), false);
         }
     }
-    // Some other site, or an Aikonos server behind a gate that wants a
+    // Some other site, or an aikonOS server behind a gate that wants a
     // browser sign-in before anything else.
     Err(ApiError::SignIn(format!(
-        "{} doesn't answer like an Aikonos server. Check the address; if it is right, ask your administrator \
-         whether the server lets Aikonos for Windows in.",
+        "{} doesn't answer like an aikonOS server. Check the address; if it is right, ask your administrator \
+         whether the server lets aikonOS for Windows in.",
         origin.host_str().unwrap_or_default()
     )))
 }
@@ -362,7 +362,7 @@ mod tests {
         .await;
         let refused = discover(&reqwest::Client::new(), &origin).await;
         assert!(
-            matches!(refused, Err(ApiError::SignIn(message)) if message.contains("doesn't answer like an Aikonos server"))
+            matches!(refused, Err(ApiError::SignIn(message)) if message.contains("doesn't answer like an aikonOS server"))
         );
     }
 

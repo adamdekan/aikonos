@@ -1,4 +1,4 @@
-// Package scaffold generates starter artifacts for Aikonos extension seams.
+// Package scaffold generates starter artifacts for aikonOS extension seams.
 // Generation-only: writes files; no runtime registration or side effects.
 package scaffold
 
@@ -102,7 +102,7 @@ spec:
 
 	pyContent := fmt.Sprintf(`"""
 skills/%s/main.py
-Aikonos skill: %s
+aikonOS skill: %s
 
 Generated scaffold. Implement %s_run and add it to the dispatch table below.
 

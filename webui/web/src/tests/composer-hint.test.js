@@ -19,7 +19,7 @@ vi.mock("../api/workspace.js", () => ({
 
 function mountComposer(props = {}) {
   return mount(Composer, {
-    props: { modelValue: "", placeholder: "Message Aikonos…", ...props },
+    props: { modelValue: "", placeholder: "Message aikonOS…", ...props },
     global: { plugins: [createPinia()] },
   });
 }
@@ -33,7 +33,7 @@ describe("Composer.vue — rotating hint", () => {
     const hint = () => w.find("[data-testid='composer-hint']");
 
     expect(hint().exists()).toBe(true);
-    expect(hint().text()).toBe("Message Aikonos…");
+    expect(hint().text()).toBe("Message aikonOS…");
 
     // 5s tick → fade out, 300ms → advance to the first example.
     vi.advanceTimersByTime(5000);

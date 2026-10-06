@@ -32,7 +32,7 @@ describe("workspace store", () => {
 
   it("load() populates state from the mocked api", async () => {
     workspaceApi.getWorkspaceBackend.mockResolvedValue({
-      pref: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" },
+      pref: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" },
       onedriveAvailable: true,
       onedriveStatus: "connected",
     });
@@ -40,7 +40,7 @@ describe("workspace store", () => {
     await store.load();
 
     expect(store.backend).toBe("onedrive");
-    expect(store.onedriveFolderPath).toBe("Apps/Aikonos");
+    expect(store.onedriveFolderPath).toBe("Apps/aikonOS");
     expect(store.onedriveAvailable).toBe(true);
     expect(store.onedriveStatus).toBe("connected");
     expect(store.loaded).toBe(true);

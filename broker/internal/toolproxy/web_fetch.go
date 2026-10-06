@@ -110,7 +110,7 @@ func newWebFetchHandler(cfg WebFetchConfig) Handler {
 		if err != nil {
 			return nil, 0, fmt.Errorf("web.fetch: bad request: %w", err)
 		}
-		httpReq.Header.Set("User-Agent", "Aikonos/0.1 (Agentic Platform; +https://aikonos.com)")
+		httpReq.Header.Set("User-Agent", "aikonOS/0.1 (Agentic Platform; +https://aikonos.com)")
 		httpReq.Header.Set("Accept", "text/html,text/plain,application/json")
 
 		resp, err := client.Do(httpReq)

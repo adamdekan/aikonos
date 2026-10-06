@@ -51,8 +51,8 @@ function prependOrgPreamble(prompt: string, preamble?: string): string {
 }
 
 export function buildSystemPrompt(activeToolNames: string[], soul?: string, skillCatalog?: string, orgPreamble?: string, hasPersonalSkills?: boolean, hasSkillBundles?: boolean): string {
-  const base = `You are a Aikonos agent. You help the user by calling tools.
-All tool calls are governed by the Aikonos policy broker: some run immediately,
+  const base = `You are an aikonOS agent. You help the user by calling tools.
+All tool calls are governed by the aikonOS policy broker: some run immediately,
 some require human approval, some are denied. If a tool is blocked, explain why
 to the user and adapt. Only use the provided tools`;
   const list = activeToolNames.length > 0 ? ` (${activeToolNames.join(", ")})` : "";
@@ -62,11 +62,11 @@ to the user and adapt. Only use the provided tools`;
     prompt += `\n\nWorkflow tools are available. To capture a repeatable procedure, use \`workflow_save\` to store it, \`workflow_run\` to run it by lineageId, and \`workflow_publish\` to share it with a group. Do not save a workflow as a file in the workspace (no \`doc.write\` or markdown) and do not use \`delegate\` to share a workflow — \`workflow_publish\` is the only sharing path. \`workflow_publish\` only works after the workflow has run successfully and the user rated it successful. To improve or refine an existing workflow, use \`workflow_propose\` — this creates a proposed version of the lineage that the owner must approve before it becomes current. \`workflow_save\` is for new authoring only; \`workflow_propose\` is the improve path.`;
     // Bind the model to the real tool vocabulary when authoring workflow steps.
     // Without this it invents skill ids (data.transform, template.render,
-    // chat.output, …) that have no aikonos tool behind them, so every such step is
+    // chat.output, …) that have no aikonOS tool behind them, so every such step is
     // denied at run time and the whole workflow is rejected.
     const workflowSkills = piAllowedToBrokerIds(activeToolNames);
     if (workflowSkills.length > 0) {
-      prompt += ` Each step's \`skill\` MUST be exactly one of your available aikonos tool ids: ${workflowSkills.join(", ")}. Do not invent skills — there is no data.transform, template.render, chat.output, or similar. Compose every workflow using only these tool ids; a workflow step referencing anything else is rejected.`;
+      prompt += ` Each step's \`skill\` MUST be exactly one of your available aikonOS tool ids: ${workflowSkills.join(", ")}. Do not invent skills — there is no data.transform, template.render, chat.output, or similar. Compose every workflow using only these tool ids; a workflow step referencing anything else is rejected.`;
       prompt += ` Parameterise variable values with \`\${inputs.<name>}\` (declared in \`inputs\`). To feed one step's result into a later step, reference \`\${steps.<index>.output}\` (0-based, earlier steps only) or drill into it with \`\${steps.<index>.output.<field>}\`. Tool outputs are objects: \`doc.read\` and \`web.fetch\` return \`{ content, ... }\`, so to write a file's text into another file use \`\${steps.<index>.output.content}\`, not the bare \`\${steps.<index>.output}\` (which is the whole JSON object).`;
       prompt += ` A step can also have \`kind: reason\` instead of a tool call: this is a bounded reasoning/synthesis step you write as an \`instruction\` (no \`skill\`/\`args\`), interpolated the same way with \`\${inputs.*}\` and \`\${steps.<index>.output[.field]}\`. When authoring a workflow, factor your own work like this — every tool call you actually made becomes a \`tool\` step (\`kind\` omitted or \`"tool"\`), and every bit of thinking, computation, or synthesis you did between tool calls becomes a \`reason\` step with that thinking written down as the instruction. Add \`output_schema\` (a JSON Schema object with \`type: object\` and named properties) to a reason step only when a later step needs to reference specific fields of its output; for free-text output (prose, an email body, a summary) omit \`output_schema\` entirely — never use a bare \`{"type": "string"}\` schema. Never invent skill ids for computation or synthesis (no data.transform, template.render, chat.output, or similar) — that work belongs in a reason step, not a fabricated tool step.`;
     }

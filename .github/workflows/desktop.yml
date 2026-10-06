@@ -1,6 +1,6 @@
 name: Desktop
 
-# Aikonos for Windows (desktop/). A workflow of its own so the Windows build
+# aikonOS for Windows (desktop/). A workflow of its own so the Windows build
 # runs only when the app (or the web styles it copies) changes; the server side
 # of it (the web server's /desktop.json) is covered by CI's webui job.
 on:

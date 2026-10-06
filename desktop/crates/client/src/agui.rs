@@ -41,7 +41,7 @@ pub struct RunRequest {
 pub struct ApprovalRequest {
     #[serde(rename = "toolCallId")]
     pub tool_call_id: String,
-    /// The Aikonos tool id, e.g. `web.fetch` or `mcp:<connector>:<tool>`.
+    /// The aikonOS tool id, e.g. `web.fetch` or `mcp:<connector>:<tool>`.
     #[serde(rename = "toolId", default)]
     pub tool_id: String,
     /// The agent harness's name for the tool, e.g. `web_fetch`.

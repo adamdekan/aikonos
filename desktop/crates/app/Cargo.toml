@@ -1,6 +1,6 @@
 [package]
 name = "aikonos-desktop"
-description = "Aikonos for Windows: the member console as a native app, with local files."
+description = "aikonOS for Windows: the member console as a native app, with local files."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

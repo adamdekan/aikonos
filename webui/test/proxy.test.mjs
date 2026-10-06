@@ -363,7 +363,7 @@ test("GET /desktop.json exposes only its public settings, never other env", asyn
 test("GET /desktop.json answers JSON even where the SPA fallback answers unknown paths", async (t) => {
   const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
   t.after(() => rmSync(dist, { recursive: true, force: true }));
-  writeFileSync(join(dist, "index.html"), "<!doctype html><title>Aikonos</title>");
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
   const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: dist, env: {} });
   await app.ready();
   t.after(() => app.close());

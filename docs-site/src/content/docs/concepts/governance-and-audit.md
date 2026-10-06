@@ -1,6 +1,6 @@
 ---
 title: Governance & audit
-description: How Aikonos checks every action against your organization's rules, and how those decisions are recorded.
+description: How aikonOS checks every action against your organization's rules, and how those decisions are recorded.
 sidebar:
   order: 7
 ---

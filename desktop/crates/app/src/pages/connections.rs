@@ -199,7 +199,7 @@ impl Render for ConnectionsPage {
                                 div()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child("Finish connecting in your browser, then come back here. If the browser asks you to sign in to Aikonos first, do that too."),
+                                    .child("Finish connecting in your browser, then come back here. If the browser asks you to sign in to aikonOS first, do that too."),
                             )
                         }),
                 )

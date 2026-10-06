@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-Access Control (`/admin/roles`) is where you manage who can use Aikonos and what they can do
+Access Control (`/admin/roles`) is where you manage who can use aikonOS and what they can do
 once they're in. It is a tab strip with seven tabs, each covering a different slice of the same
 underlying grants.
 

@@ -129,7 +129,7 @@ function isActive(path) {
 <template>
   <aside :class="['sidebar', { rail: collapsed }]">
     <div class="sidebar-header">
-      <span v-if="!collapsed" class="brand-text">aikonos</span>
+      <span v-if="!collapsed" class="brand-text">aikonOS</span>
       <button
         class="toggle-btn"
         data-testid="sidebar-toggle"

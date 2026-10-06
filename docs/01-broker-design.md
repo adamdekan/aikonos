@@ -1,12 +1,12 @@
-# Aikonos Broker — Design Document
+# aikonOS Broker — Design Document
 
-**Component**: Aikonos Broker (core orchestration service)
+**Component**: aikonOS Broker (core orchestration service)
 **Version**: v0.1
 **Status**: Design
 
 ## 1. Purpose
 
-The Broker is the single policy enforcement and orchestration point for all agentic activity in Aikonos. No agent spawns, no tool call, no inter-agent message, no skill execution happens without passing through it. It is deliberately a chokepoint — the security model depends on it.
+The Broker is the single policy enforcement and orchestration point for all agentic activity in aikonOS. No agent spawns, no tool call, no inter-agent message, no skill execution happens without passing through it. It is deliberately a chokepoint — the security model depends on it.
 
 ## 2. Responsibilities
 
@@ -67,7 +67,7 @@ Each box is a logical module. In implementation they can be one process (Go or P
 
 ## 5. Task State Machine
 
-Every task in Aikonos runs through this state machine. The Broker owns it.
+Every task in aikonOS runs through this state machine. The Broker owns it.
 
 ```
    CREATED

@@ -1,5 +1,5 @@
-// Build a 1-step aikonos Plan from a single Pi tool call (the JIT single-step
-// plan that reconciles Pi's interactive loop with aikonos's plan-then-execute).
+// Build a 1-step aikonOS Plan from a single Pi tool call (the JIT single-step
+// plan that reconciles Pi's interactive loop with aikonOS's plan-then-execute).
 import type { Plan } from "../../gen/ts/proto/plan";
 import type { ToolMapping } from "./mapping";
 

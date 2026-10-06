@@ -4,7 +4,7 @@
 // the gateway executes and reports the outcome.
 //
 // Unattended approvals: a run carries an approved_tools allowlist (standing
-// human-consent). The pre-auth approver grants a NEEDS_HUMAN tool iff its aikonos
+// human-consent). The pre-auth approver grants a NEEDS_HUMAN tool iff its aikonOS
 // tool id is in that list, else denies. It never overrides an OPA DENY or a
 // capability-scope failure — those still come back as a blocked tool call.
 //
@@ -52,7 +52,7 @@ interface RunOutcome {
 }
 
 // preAuthApprover is the unattended-run approval policy: a tool requiring human
-// approval is granted iff its aikonos tool id is in the schedule's standing
+// approval is granted iff its aikonOS tool id is in the schedule's standing
 // allowlist. Exposed for testing — the governance semantics are the crux of the
 // feature.
 export function preAuthApprover(approvedTools: string[], log?: Logger): Approver {

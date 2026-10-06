@@ -6,7 +6,7 @@ option go_package = "github.com/adamdekan/aikonos/gen/go/audit/v1;auditv1";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
 
-// AuditEvent is the single canonical audit record emitted by every Aikonos service.
+// AuditEvent is the single canonical audit record emitted by every aikonOS service.
 // Written append-only to MinIO with object lock. Hash-chained for tamper evidence.
 // ALL fields except context are indexed; context is free-form per event type.
 message AuditEvent {

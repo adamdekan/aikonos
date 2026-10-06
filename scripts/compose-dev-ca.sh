@@ -47,7 +47,7 @@ if need_regen "ca"; then
     -key "${TLS_DIR}/ca.key" \
     -out "${TLS_DIR}/ca.crt" \
     -days 3650 \
-    -subj "/CN=aikonos-dev-ca/O=Aikonos Dev" \
+    -subj "/CN=aikonos-dev-ca/O=aikonOS Dev" \
     -extensions v3_ca \
     -addext "basicConstraints=critical,CA:TRUE" \
     -addext "keyUsage=critical,keyCertSign,cRLSign"
@@ -89,7 +89,7 @@ prompt             = no
 
 [req_dn]
 CN = ${name}
-O  = Aikonos Dev
+O  = aikonOS Dev
 
 [v3_req]
 subjectAltName = URI:${spiffe_id},DNS:${dns_san}

@@ -1,6 +1,6 @@
 [package]
 name = "aikonos-client"
-description = "The Aikonos user API as the desktop client speaks it: sign-in, requests, streams and the session file format. No UI."
+description = "The aikonOS user API as the desktop client speaks it: sign-in, requests, streams and the session file format. No UI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

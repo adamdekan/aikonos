@@ -308,7 +308,7 @@ func TestOneDriveBackend_FirstUse_AutoCreatesAndPersistsIds(t *testing.T) {
 func TestOneDriveBackend_ExistingIds_SkipsEnsureFolder(t *testing.T) {
 	repo := newFakeWorkspacePrefsRepo()
 	repo.rows[repo.key("t1", "u1")] = db.WorkspacePrefs{
-		Backend: "onedrive", OneDriveFolderPath: "Apps/Aikonos", DriveID: "DRV9", RootItemID: "ITEM9",
+		Backend: "onedrive", OneDriveFolderPath: "Apps/aikonOS", DriveID: "DRV9", RootItemID: "ITEM9",
 	}
 	resolver := NewWorkspacePrefResolver(repo, fakeConfiguredChecker{configured: true})
 	store := &fakeGraphStore{root: &recordingRoot{}}

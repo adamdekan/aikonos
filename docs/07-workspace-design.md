@@ -1,4 +1,4 @@
-# Aikonos User Workspace — Design Document
+# aikonOS User Workspace — Design Document
 
 **Component**: Persistent User Workspace
 **Version**: v0.1
@@ -9,7 +9,7 @@
 
 ## 1. Purpose & Scope
 
-Every Aikonos user owns a persistent, encrypted, isolated workspace. It is their private environment inside the platform — the place their agent "lives," their data is stored, their preferences are applied, and their history is retained.
+Every aikonOS user owns a persistent, encrypted, isolated workspace. It is their private environment inside the platform — the place their agent "lives," their data is stored, their preferences are applied, and their history is retained.
 
 The workspace is **not** ephemeral. Unlike sandboxes (which are destroyed after each task), the workspace persists across sessions, tasks, reboots, and platform upgrades. It is the continuity layer between interactions.
 

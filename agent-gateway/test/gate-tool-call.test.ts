@@ -77,25 +77,25 @@ test("gate-tool-call: normal tool is allowed when bridge.gate approves", async (
   assert.equal(bridge.calls[0]?.toolName, "web_fetch");
 });
 
-test("gate-tool-call: block reason is prefixed with 'aikonos:' from bridge reason", async () => {
+test("gate-tool-call: block reason is prefixed with 'aikonOS:' from bridge reason", async () => {
   // WHY: the reason string format is the message the user sees in the chat UI
-  // when a tool is blocked. The 'aikonos:' prefix is the UX convention; a
+  // when a tool is blocked. The 'aikonOS:' prefix is the UX convention; a
   // refactor that drops it would surface confusing raw policy strings to users.
   const bridge = makeBridge(false, "policy: skill not granted");
   const result = await gateToolCall(bridge, makeEvent("doc_write"), silentLog);
 
-  assert.ok(result?.reason?.startsWith("aikonos:"), `reason must start with 'aikonos:'; got: ${result?.reason}`);
+  assert.ok(result?.reason?.startsWith("aikonOS:"), `reason must start with 'aikonOS:'; got: ${result?.reason}`);
   assert.ok(result?.reason?.includes("policy: skill not granted"), "reason must include bridge's message");
 });
 
 test("gate-tool-call: block reason falls back to 'denied' when bridge provides no reason", async () => {
   // WHY: bridge.gate may return { allow: false } without a reason string
   // (e.g. early-exit OPA deny). The hook must not produce undefined/null in
-  // the reason field — 'aikonos: denied' is the required fallback.
+  // the reason field — 'aikonOS: denied' is the required fallback.
   const bridge = makeBridge(false, undefined);
   const result = await gateToolCall(bridge, makeEvent("email_draft"), silentLog);
 
-  assert.equal(result?.reason, "aikonos: denied", `fallback reason must be 'aikonos: denied'; got: ${result?.reason}`);
+  assert.equal(result?.reason, "aikonOS: denied", `fallback reason must be 'aikonOS: denied'; got: ${result?.reason}`);
 });
 
 test("gate-tool-call: workflow_run is allowed when GovernanceBridge short-circuits to allow=true", async () => {

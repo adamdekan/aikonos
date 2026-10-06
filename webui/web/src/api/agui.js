@@ -112,7 +112,7 @@ function dispatch(ev, h) {
       h.onTextEnd?.();
       break;
     case "TOOL_CALL_START":
-      // toolDescription is a aikonos extra field the gateway adds to the START frame.
+      // toolDescription is an aikonOS extra field the gateway adds to the START frame.
       h.onToolCall?.({ id: ev.toolCallId, name: ev.toolCallName, description: ev.toolDescription });
       break;
     case "TOOL_CALL_ARGS":

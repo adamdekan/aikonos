@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "Aikonos unified web UI — Vue 3 SPA + Node proxy backend (static dist/ + gateway proxy).",
+  "description": "aikonOS unified web UI — Vue 3 SPA + Node proxy backend (static dist/ + gateway proxy).",
   "scripts": {
     "build": "npm --prefix web install && npm --prefix web run build",
     "start": "node server.mjs",

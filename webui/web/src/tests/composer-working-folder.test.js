@@ -95,18 +95,18 @@ describe("Composer.vue — working-folder control", () => {
   });
 
   it("shows the OneDrive path when backend is onedrive", () => {
-    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" });
+    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" });
     const w = mountComposer();
     const label = w.find("[data-testid='workspace-control-btn']").text();
     expect(label).toContain("OneDrive");
-    expect(label).toContain("Apps/Aikonos");
+    expect(label).toContain("Apps/aikonOS");
   });
 
   it("selecting 'Local workspace' calls setBackend with backend:local", async () => {
     workspaceApi.setWorkspaceBackend.mockResolvedValue({
       pref: { backend: "local", onedriveFolderPath: "" },
     });
-    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" });
+    seedWorkspace({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" });
     const w = mountComposer();
 
     await w.find("[data-testid='workspace-control-btn']").trigger("click");

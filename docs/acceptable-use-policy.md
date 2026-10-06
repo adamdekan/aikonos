@@ -1,4 +1,4 @@
-# Aikonos Acceptable Use Policy
+# aikonOS Acceptable Use Policy
 
 **Version:** 1.0  
 **Status:** Active  
@@ -9,9 +9,9 @@
 
 ## 1. Permitted Principals
 
-Access to the Aikonos platform is restricted to:
+Access to the aikonOS platform is restricted to:
 
-- Employees and contractors provisioned into the Aikonos tenant via Keycloak (OIDC auth-code + PKCE S256) or a federated enterprise IdP (Entra ID).
+- Employees and contractors provisioned into the aikonOS tenant via Keycloak (OIDC auth-code + PKCE S256) or a federated enterprise IdP (Entra ID).
 - Service accounts provisioned via `AIKONOS_PROVISIONING_SEED_FILE` at broker startup; each must be scoped to a named tenant.
 
 **Not permitted:**
@@ -23,7 +23,7 @@ Access to the Aikonos platform is restricted to:
 
 ## 2. Data Classification
 
-| Class | Definition | Aikonos handling |
+| Class | Definition | aikonOS handling |
 |-------|------------|-----------------|
 | **PUBLIC** | No confidentiality requirement | Permitted in agent plans and tool calls without additional approval |
 | **INTERNAL** | Internal business data, not regulated | Permitted without additional approval; workspace isolation (`Root/<tenant>/<user>/`) enforced by `workspacefs` |
@@ -55,7 +55,7 @@ The following are prohibited for all principals regardless of granted permission
 
 - **Credential exfiltration.** Using any tool or agent to read, copy, or transmit Vault secrets, OIDC tokens, Biscuit capability tokens, API keys, or mTLS private keys outside their intended runtime scope. The `EgressProxy` structurally prevents the Pi child from accessing the LLM provider key; this policy extends the intent to all credential classes.
 
-- **Training external models on Aikonos output.** Submitting conversations, agent outputs, or workspace artifacts to external model training pipelines (including fine-tuning endpoints) without explicit security team approval and a data handling contract with the provider.
+- **Training external models on aikonOS output.** Submitting conversations, agent outputs, or workspace artifacts to external model training pipelines (including fine-tuning endpoints) without explicit security team approval and a data handling contract with the provider.
 
 - **Rate limit bypass.** Deliberately triggering the `CheckRateLimit` fail-open condition (e.g., by disrupting broker gRPC on the mesh network) to exceed RPM/TPM quotas. Rate limits are a cost-control and DoS mitigation — circumventing them is a policy violation regardless of technical feasibility.
 

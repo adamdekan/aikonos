@@ -75,7 +75,7 @@ async function setSharing(next) {
 
     <template v-else>
       <p class="lede">
-        Controls over reusable, user-authored workflows — Aikonos's shareable automation
+        Controls over reusable, user-authored workflows — aikonOS's shareable automation
         artifact. Authoring and running workflows stays governed by the per-user
         <code>skill:workflows</code> grant in Access Control; this page adds org-wide masters
         on top of that.

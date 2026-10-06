@@ -1,12 +1,12 @@
 ---
-title: Aikonos for Windows
+title: aikonOS for Windows
 description: The Windows app - signing in, moving files between your PC and your workspace, updates, and what it keeps on your PC.
 sidebar:
   order: 9
 ---
 
-Aikonos for Windows is the Aikonos console as an app on your PC. It connects to the same
-Aikonos server as the web console, shows the same screens (Home, Chat, Files, Connections,
+aikonOS for Windows is the aikonOS console as an app on your PC. It connects to the same
+aikonOS server as the web console, shows the same screens (Home, Chat, Files, Connections,
 Schedules, Workflows, My Skills, Inbox and your settings) and works on the same
 conversations and files, so you can switch between the app and the browser at any time.
 What you can do is decided by your organization exactly as in the browser.
@@ -15,7 +15,7 @@ Your organization provides the app; ask your administrator where to get it.
 
 ## Signing in
 
-The first time you open the app, enter the address of your organization's Aikonos server,
+The first time you open the app, enter the address of your organization's aikonOS server,
 the same address you use in the browser, and choose **Sign in**. Your browser opens your
 organization's sign-in page; once you have signed in there, the app comes back to the front.
 If you closed the browser before finishing, choose **Open the browser again**.
@@ -27,7 +27,7 @@ straight to your sign-in page.
 
 ## Files from your PC
 
-The agent can't see the files on your PC. A file reaches Aikonos only when you send it:
+The agent can't see the files on your PC. A file reaches aikonOS only when you send it:
 
 - **In a chat**, use the attach button in the composer (**Attach files from this PC**), or
   drag files onto it. Each file is uploaded to your workspace (pictures go into the

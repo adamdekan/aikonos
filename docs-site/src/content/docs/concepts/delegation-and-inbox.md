@@ -8,7 +8,7 @@ sidebar:
 Delegation lets you hand a task to someone else's agent instead of running it yourself. In
 the chat composer, typing `@` opens a palette of teammates and groups you are able to
 delegate to. Selecting a person or a group and sending the message routes it as a delegation
-rather than an ordinary chat turn, and Aikonos asks you to confirm before it sends.
+rather than an ordinary chat turn, and aikonOS asks you to confirm before it sends.
 
 ## What the recipient sees
 

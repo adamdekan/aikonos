@@ -3,7 +3,7 @@ apiVersion: 1
 groups:
   - orgId: 1
     name: aikonos-security
-    folder: Aikonos Security
+    folder: aikonOS Security
     interval: 1m
     rules:
       - uid: baseline-drift-detected

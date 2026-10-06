@@ -1,12 +1,12 @@
 # User lifecycle: sign-in, access, and disablement
 
-> Review note (2026-06-12). Records the current — intentional — design: Aikonos has no
-> user disable/delete. Identity lifecycle belongs to the IdP; Aikonos governs only
+> Review note (2026-06-12). Records the current — intentional — design: aikonOS has no
+> user disable/delete. Identity lifecycle belongs to the IdP; aikonOS governs only
 > authorization after sign-in.
 
 ## How a user gets the ability to sign in
 
-Aikonos stores no passwords and no user accounts. Authentication is fully delegated to
+aikonOS stores no passwords and no user accounts. Authentication is fully delegated to
 the OIDC identity provider (Entra ID in the live deployment; Keycloak in dev).
 
 A user can sign in if and only if the IdP issues them a valid token for the configured
@@ -55,7 +55,7 @@ Provisioning tab always win. The file is not auto-mounted — you must add a bin
 set the env var explicitly. See `deploy/compose/provisioning.yaml.example` for the
 format.
 
-## What Aikonos controls: authorization, not authentication
+## What aikonOS controls: authorization, not authentication
 
 A signed-in user with zero group memberships hits deny-by-default:
 
@@ -74,6 +74,6 @@ A signed-in user with zero group memberships hits deny-by-default:
 | Remove a stale user from the Users list | `user_directory` rows persist forever | delete-from-directory action, paired with a bulk revoke of the user's tuples |
 | One-click "revoke everything" | revoke group-by-group in the Users tab | "Revoke all access" button = delete every tuple whose subject is the user |
 
-Decision: the current design stands. Entra is the front door; Aikonos is the permission
-system behind it. Revisit this note if a Aikonos-side kill switch or directory cleanup
+Decision: the current design stands. Entra is the front door; aikonOS is the permission
+system behind it. Revisit this note if an aikonOS-side kill switch or directory cleanup
 becomes necessary.

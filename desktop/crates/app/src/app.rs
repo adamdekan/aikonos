@@ -109,7 +109,7 @@ impl Render for Workspace {
         // theme; the system one follows Windows' setting instead.
         let title_bar = TitleBar::new()
             .bg(theme.title_bar)
-            .child(div().text_xs().text_color(theme.muted_foreground).child("Aikonos"));
+            .child(div().text_xs().text_color(theme.muted_foreground).child("aikonOS"));
         v_flex()
             .size_full()
             .bg(theme.background)
@@ -185,7 +185,7 @@ pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {
     if is_web_link(url) {
         cx.open_url(url);
     } else {
-        toast_error("That link is not a web address, so Aikonos won't open it.", window, cx);
+        toast_error("That link is not a web address, so aikonOS won't open it.", window, cx);
     }
 }
 
