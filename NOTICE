@@ -15,3 +15,6 @@ their licence texts alongside them in webui/web/public/fonts/:
 
   Inter          Copyright (c) 2016 The Inter Project Authors
   Space Grotesk  Copyright 2020 The Space Grotesk Project Authors
+
+The aikonOS wordmark (docs/img/aikonos-wordmark.png and the docs site's
+docs-site/src/assets/aikonos-wordmark*.svg) is drawn from Space Grotesk Bold.
