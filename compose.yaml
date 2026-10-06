@@ -193,7 +193,11 @@ services:
     <<: *hardening
     # read_only omitted: MinIO writes runtime state to rootfs paths alongside its
     # data volume; already isolated on the backend-internal network (H1).
-    image: minio/minio:latest
+    # MinIO stopped publishing images in October 2025 and archived the project;
+    # minio/minio no longer exists on Docker Hub. pgsty/minio is Pigsty's
+    # maintained build of the same server: same command, ships curl for the
+    # healthcheck. Keep the tag a dated release, never `latest`.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     networks: [backend]
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
