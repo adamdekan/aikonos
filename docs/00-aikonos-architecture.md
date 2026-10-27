@@ -57,7 +57,7 @@ Web app (your interaction surface), behind mTLS-terminating reverse proxy. All A
 
 ## 2. Identity, Access & Zero Trust
 
-**IdP**: Keycloak or external OIDC (Entra ID, Okta). SAML/OIDC federation for enterprise customers.
+**IdP**: Keycloak or external OIDC (e.g. Entra ID). SAML/OIDC federation for enterprise customers.
 
 **Authentication**: WebAuthn/FIDO2 mandatory for humans. Short-lived OIDC tokens (5–15 min). Device posture checks (managed device, disk encryption, patch level) gate session issuance.
 
