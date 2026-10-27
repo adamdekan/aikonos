@@ -500,11 +500,15 @@ func (s *BrokerService) DeleteScheduledRun(ctx context.Context, req *brokerv1.De
 
 // requireGatewayPeer restricts the scheduler infra RPCs to the agent-gateway's
 // verified SVID — these advance durable state, so no arbitrary sandbox may call
-// them. When GatewaySpiffeID is unset (dev), any trust-domain peer is accepted.
+// them. When GatewaySpiffeID is unset, any trust-domain peer is accepted in
+// DevMode and every peer is refused otherwise (fail closed).
 func (s *SandboxService) requireGatewayPeer(ctx context.Context) error {
 	id, ok := auth.IdentityFromContext(ctx)
 	if !ok || id.SpiffeID == "" {
 		return status.Error(codes.PermissionDenied, "peer identity required")
+	}
+	if s.deps.GatewaySpiffeID == "" && !s.deps.DevMode {
+		return status.Error(codes.PermissionDenied, "agent-gateway identity not configured")
 	}
 	if s.deps.GatewaySpiffeID != "" && id.SpiffeID != s.deps.GatewaySpiffeID {
 		return status.Error(codes.PermissionDenied, "not the agent-gateway identity")

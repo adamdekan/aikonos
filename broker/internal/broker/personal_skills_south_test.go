@@ -3,7 +3,7 @@
 // ListPersonalSkillsSouth / GetPersonalSkillSouth: the gateway-peer gate, the
 // empty-not-error FGA chokepoint (granted/ungranted/error), the svc-/group-
 // synthetic-user rejection, and the valid/invalid skill Get outcomes
-//.
+// .
 package broker
 
 import (
@@ -40,6 +40,7 @@ func personalSkillsDeps(t *testing.T, fgaURL, root string) Deps {
 		Policy:    eng,
 		TenantID:  "aikonos-dev",
 		Workspace: WorkspaceDeps{Local: workspacefs.New(root)},
+		DevMode:   true, // south RPCs: any trust-domain peer, GatewaySpiffeID unset
 	}
 }
 

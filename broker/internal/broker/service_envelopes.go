@@ -30,11 +30,19 @@ func (s *BrokerService) SendEnvelope(ctx context.Context, req *brokerv1.SendEnve
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
 
+	// H-01: bind tenant and sender to the authenticated identity — a forged
+	// from_user_id must never resolve another user's delegable scopes into the
+	// minted Biscuit.
+	tenant, from, err := s.callerIdentity(ctx, req.TenantId, req.FromUserId)
+	if err != nil {
+		return nil, err
+	}
+
 	switch {
 	case req.GetRecipient().GetUserId() != "":
-		return s.sendEnvelopeToUser(ctx, req, req.GetRecipient().GetUserId(), traceID)
+		return s.sendEnvelopeToUser(ctx, req, tenant, from, req.GetRecipient().GetUserId(), traceID)
 	case req.GetRecipient().GetGroupId() != "":
-		return s.sendEnvelopeToGroup(ctx, req, req.GetRecipient().GetGroupId(), traceID)
+		return s.sendEnvelopeToGroup(ctx, req, tenant, from, req.GetRecipient().GetGroupId(), traceID)
 	case req.GetRecipient().GetRole() != "":
 		return nil, status.Error(codes.Unimplemented, "role recipient targeting is not supported")
 	default:
@@ -45,17 +53,17 @@ func (s *BrokerService) SendEnvelope(ctx context.Context, req *brokerv1.SendEnve
 // sendEnvelopeToUser delivers one envelope to a single recipient user. It is
 // the canonical per-user delivery path; both the user_id arm and the group
 // fan-out loop call this helper so the logic lives in exactly one place.
-func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.SendEnvelopeRequest, recipient, traceID string) (*brokerv1.EnvelopeHandle, error) {
+func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.SendEnvelopeRequest, tenant, from, recipient, traceID string) (*brokerv1.EnvelopeHandle, error) {
 	// Self-delegation is denied by design. A member is in their own group's
 	// delegatable_member set, so the delegation-group fallback below would
 	// otherwise allow from==to — this guard is load-bearing, not incidental.
 	// EqualFold: OIDC subjects are lowercased upstream, but defense-in-depth
 	// against a mixed-case subject bypassing the byte-exact check.
-	if strings.EqualFold(req.FromUserId, recipient) {
-		s.emitEnvelopeAudit(ctx, traceID, req.TenantId, req.FromUserId, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
+	if strings.EqualFold(from, recipient) {
+		s.emitEnvelopeAudit(ctx, traceID, tenant, from, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
 		return nil, status.Error(codes.PermissionDenied, "self-delegation not permitted")
 	}
-	tenantUUID, err := uuid.Parse(req.TenantId)
+	tenantUUID, err := uuid.Parse(tenant)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tenant_id: %v", err)
 	}
@@ -72,21 +80,21 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 	// the OPA attenuation check below and the Biscuit mint in
 	// buildDelegationToken, so the authority checked and the authority minted
 	// can never drift apart from two independent resolutions.
-	senderScopes, scopeSource, err := s.senderDelegableScopes(ctx, req.FromUserId)
+	senderScopes, scopeSource, err := s.senderDelegableScopes(ctx, from)
 	if err != nil {
 		s.deps.Logger.Error("SendEnvelope: delegation scope resolution failed", zap.Error(err))
-		s.emitEnvelopeAudit(ctx, traceID, req.TenantId, req.FromUserId, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
+		s.emitEnvelopeAudit(ctx, traceID, tenant, from, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
 		return nil, status.Error(codes.Internal, "delegation scope resolution failed")
 	}
 
 	// ReBAC: sender must be allowed to delegate to recipient (OpenFGA stub allows).
-	fgaDirect, _ := s.deps.Policy.CheckFGA(ctx, "user:"+req.FromUserId, "can_delegate_to_user", "user:"+recipient)
+	fgaDirect, _ := s.deps.Policy.CheckFGA(ctx, "user:"+from, "can_delegate_to_user", "user:"+recipient)
 	fgaOK := fgaDirect
 	// Delegation-group fallback: when no direct peer/manager edge grants the
 	// send, allow it if sender and recipient share a delegatable group. Runs
 	// only on the deny path, so the peer/manager case costs no extra FGA calls.
 	if !fgaOK {
-		fgaOK = s.sharesDelegatableGroup(ctx, req.FromUserId, recipient)
+		fgaOK = s.sharesDelegatableGroup(ctx, from, recipient)
 	}
 	fgaDecision := "allow"
 	if !fgaOK {
@@ -111,8 +119,8 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 	}
 	emitPolicyDecision(ctx, s.deps.Audit, s.deps.Logger, &auditv1.AuditEvent{
 		TraceId:     traceID,
-		TenantId:    req.TenantId,
-		ActorUserId: req.FromUserId,
+		TenantId:    tenant,
+		ActorUserId: from,
 		ResourceRef: "user:" + recipient,
 		Decision:    envAudit,
 	}, decisionRecord{
@@ -120,13 +128,13 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 		Outcome: decisionOutcome{Decision: envOutcome, DecidedBy: "opa:aikonos/envelope_send",
 			Reasons: append(append([]string{}, dec.ScopeViolations...), dec.DenyReasons...)},
 		OPA: dec.Evidence,
-		FGA: &fgaRecord{ModelID: s.deps.Policy.FGAModelID(), User: "user:" + req.FromUserId,
+		FGA: &fgaRecord{ModelID: s.deps.Policy.FGAModelID(), User: "user:" + from,
 			Relation: "can_delegate_to_user", Object: "user:" + recipient, Allowed: fgaDirect},
 		Settings: map[string]any{"delegation_group_fallback": !fgaDirect && fgaOK},
 	})
 	if !dec.Allow {
 		reasons := append(append([]string{}, dec.ScopeViolations...), dec.DenyReasons...)
-		s.emitEnvelopeAudit(ctx, traceID, req.TenantId, req.FromUserId, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
+		s.emitEnvelopeAudit(ctx, traceID, tenant, from, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
 		return nil, status.Errorf(codes.PermissionDenied, "delegation denied: %s", joinReasons(reasons))
 	}
 
@@ -146,7 +154,7 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 
 	env := &db.Envelope{
 		TenantID:   tenantUUID,
-		FromUserID: req.FromUserId,
+		FromUserID: from,
 		ToTarget:   map[string]any{"type": "user", "id": recipient},
 		TaskSpec: map[string]any{
 			"intent":          req.GetTask().GetIntent(),
@@ -161,7 +169,7 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 		},
 		Depth:     1,
 		TraceID:   traceID,
-		ExpiresAt: time.Now().UTC().Add(72 * time.Hour),
+		ExpiresAt: time.Now().UTC().Add(envelopeTTL),
 	}
 	envID, err := s.deps.Tasks.CreateEnvelope(ctx, env, initial)
 	if err != nil {
@@ -178,15 +186,15 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 
 	s.deps.Logger.Info("SendEnvelope",
 		zap.String("envelope_id", envID.String()),
-		zap.String("from", req.FromUserId),
+		zap.String("from", from),
 		zap.String("to", recipient),
 		zap.String("state", string(initial)),
 		zap.Bool("auto_accept", dec.AutoAccept),
 	)
-	s.emitEnvelopeAudit(ctx, traceID, req.TenantId, req.FromUserId, "aikonos.broker.envelope.sent", auditv1.PolicyDecision_ALLOW, scopeSource)
+	s.emitEnvelopeAudit(ctx, traceID, tenant, from, "aikonos.broker.envelope.sent", auditv1.PolicyDecision_ALLOW, scopeSource)
 
-	publishInboxEvent(ctx, s.deps, req.TenantId, recipient, envID.String(), "ENVELOPE_DELIVERED", map[string]any{
-		"from":        req.FromUserId,
+	publishInboxEvent(ctx, s.deps, tenant, recipient, envID.String(), "ENVELOPE_DELIVERED", map[string]any{
+		"from":        from,
 		"intent":      req.GetTask().GetIntent(),
 		"state":       string(initial),
 		"auto_accept": dec.AutoAccept,
@@ -201,13 +209,13 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 // Per-member delivery uses sendEnvelopeToUser; a member that fails authz or
 // persistence is logged and skipped (best-effort). Returns an EnvelopeHandle
 // with an empty EnvelopeId if ≥1 member was delivered to, else PermissionDenied.
-func (s *BrokerService) sendEnvelopeToGroup(ctx context.Context, req *brokerv1.SendEnvelopeRequest, groupID, traceID string) (*brokerv1.EnvelopeHandle, error) {
+func (s *BrokerService) sendEnvelopeToGroup(ctx context.Context, req *brokerv1.SendEnvelopeRequest, tenant, from, groupID, traceID string) (*brokerv1.EnvelopeHandle, error) {
 	// Verify the sender is a delegatable_member of the target group before fan-out.
 	// ListObjects returns the groups the caller belongs to; the target group must be
 	// in that set. Fails closed: FGA error → PermissionDenied.
-	senderGroups, err := s.deps.Policy.ListObjects(ctx, "user:"+req.FromUserId, "delegatable_member", "group")
+	senderGroups, err := s.deps.Policy.ListObjects(ctx, "user:"+from, "delegatable_member", "group")
 	if err != nil {
-		s.deps.Logger.Warn("sendEnvelopeToGroup: ListObjects failed for sender", zap.String("from", req.FromUserId), zap.Error(err))
+		s.deps.Logger.Warn("sendEnvelopeToGroup: ListObjects failed for sender", zap.String("from", from), zap.Error(err))
 		return nil, status.Errorf(codes.PermissionDenied, "delegation denied: could not verify group membership")
 	}
 	senderInGroup := false
@@ -222,7 +230,7 @@ func (s *BrokerService) sendEnvelopeToGroup(ctx context.Context, req *brokerv1.S
 	}
 
 	// Resolve the group's members, excluding the sender (self-exclusion invariant).
-	members, err := s.groupMembersExcluding(ctx, groupID, req.FromUserId)
+	members, err := s.groupMembersExcluding(ctx, groupID, from)
 	if err != nil {
 		s.deps.Logger.Warn("sendEnvelopeToGroup: groupMembersExcluding failed", zap.String("group", groupID), zap.Error(err))
 		return nil, status.Errorf(codes.PermissionDenied, "delegation denied: could not resolve group members")
@@ -230,7 +238,7 @@ func (s *BrokerService) sendEnvelopeToGroup(ctx context.Context, req *brokerv1.S
 
 	delivered := 0
 	for _, member := range members {
-		if _, err := s.sendEnvelopeToUser(ctx, req, member, traceID); err != nil {
+		if _, err := s.sendEnvelopeToUser(ctx, req, tenant, from, member, traceID); err != nil {
 			// Log the skip; do not abort the loop.
 			s.deps.Logger.Info("sendEnvelopeToGroup: skipping member",
 				zap.String("member", member),
@@ -254,7 +262,13 @@ func (s *BrokerService) ListInboxEnvelopes(ctx context.Context, req *brokerv1.Li
 	ctx, span := tracer.Start(ctx, "broker.envelope.inbox")
 	defer span.End()
 
-	envs, err := s.deps.Tasks.ListInbox(ctx, req.TenantId, req.UserId, req.IncludeAccepted)
+	// H-01: a forged user_id must never read another user's inbox.
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, req.UserId)
+	if err != nil {
+		return nil, err
+	}
+
+	envs, err := s.deps.Tasks.ListInbox(ctx, tenant, user, req.IncludeAccepted)
 	if err != nil {
 		s.deps.Logger.Error("ListInboxEnvelopes: query failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to list inbox")
@@ -265,7 +279,7 @@ func (s *BrokerService) ListInboxEnvelopes(ctx context.Context, req *brokerv1.Li
 		return nil, err
 	}
 
-	names := s.userDisplayNames(ctx, req.TenantId)
+	names := s.userDisplayNames(ctx, tenant)
 	out := make([]*brokerv1.InboxEnvelope, 0, len(envs))
 	for _, e := range envs {
 		out = append(out, &brokerv1.InboxEnvelope{
@@ -410,6 +424,10 @@ func (s *BrokerService) RespondToEnvelope(ctx context.Context, req *brokerv1.Res
 	return &brokerv1.RespondToEnvelopeResponse{Success: true}, nil
 }
 
+// envelopeTTL is how long a delegation envelope (and the capability token
+// recorded on it) stays valid.
+const envelopeTTL = 72 * time.Hour
+
 // buildDelegationToken produces the base64 Biscuit capability stored on an
 // envelope. When the caller forwards a parent token (an agent re-delegating its
 // own capability) it is attenuated in place; otherwise the broker mints a fresh
@@ -433,7 +451,11 @@ func (s *BrokerService) buildDelegationToken(recipient, parentB64 string, attenu
 		raw, err = capability.Attenuate(parent, attenuated)
 	} else {
 		var minted []byte
-		if minted, err = s.deps.Capability.Mint(recipient, "", senderScopes); err == nil {
+		// Task-less on purpose: this token is a record on the envelope and is
+		// never presented to InvokeTool (Authorize rejects an empty task). The
+		// recipient's spawned task gets its own step tokens at approval. Lives
+		// as long as the envelope, not as long as a step token.
+		if minted, err = s.deps.Capability.MintTTL(recipient, "", senderScopes, envelopeTTL); err == nil {
 			raw, err = capability.Attenuate(minted, attenuated)
 		}
 	}

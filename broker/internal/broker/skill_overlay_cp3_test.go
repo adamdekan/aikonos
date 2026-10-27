@@ -248,6 +248,7 @@ func TestInvokeTool_OverlayDisabledRowDenies(t *testing.T) {
 		SkillOverlay:  store,
 		OverlayLoader: loader,
 		TenantID:      testTenantUUID,
+		Tasks:         executingTaskStore(""),
 	})
 
 	tok := mintFor(t, m, "doc:write")
@@ -285,6 +286,7 @@ func TestInvokeTool_NoCuratedRowAllowsThrough(t *testing.T) {
 		SkillOverlay:  store,
 		OverlayLoader: loader,
 		TenantID:      testTenantUUID,
+		Tasks:         executingTaskStore(""),
 	})
 
 	tok := mintFor(t, m, "doc:write")
@@ -355,6 +357,7 @@ func TestSubmitPlan_UncuratedStepAllowed(t *testing.T) {
 		TenantID:      testTenantUUID,
 		Audit:         nopAuditEmitter(t),
 		Tasks:         taskStore,
+		DevMode:       true, // no verified SPIFFE identity on these contexts
 	})
 	svc.policy = pol
 
@@ -395,6 +398,7 @@ func TestSubmitPlan_OverlayDisabledStepDenied(t *testing.T) {
 		TenantID:      testTenantUUID,
 		Audit:         nopAuditEmitter(t),
 		Tasks:         taskStore,
+		DevMode:       true, // no verified SPIFFE identity on these contexts
 	})
 	svc.policy = pol
 

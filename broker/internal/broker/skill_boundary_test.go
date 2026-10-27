@@ -99,10 +99,11 @@ func newSvcWithAgent(t *testing.T, agentSkills []string, ts taskStore, pol planP
 	}
 
 	return &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  ts,
-		Agents: agentStore,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   ts,
+		Agents:  agentStore,
 	}, policy: pol}
 }
 
@@ -178,10 +179,11 @@ func TestSkillBoundary_NullAgentID_Unaffected(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  store,
-		Agents: agentStore,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   store,
+		Agents:  agentStore,
 	}, policy: allowPol()}
 
 	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
@@ -223,10 +225,11 @@ func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore,
 		},
 	}
 	return &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  ts,
-		Agents: agentStore,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   ts,
+		Agents:  agentStore,
 	}, policy: pol}
 }
 

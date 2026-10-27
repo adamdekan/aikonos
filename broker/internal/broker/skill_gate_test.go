@@ -30,13 +30,13 @@ import (
 // fakeSkillPolicy is also used by approval_n_test.go to disable the skill gate
 // while exercising the n-of-m approver-set logic.
 type fakeSkillPolicy struct {
-	enabled        bool
-	granted        bool
-	err            error
-	checkFGACalls  int
-	lastUser       string
-	lastRelation   string
-	lastObject     string
+	enabled       bool
+	granted       bool
+	err           error
+	checkFGACalls int
+	lastUser      string
+	lastRelation  string
+	lastObject    string
 }
 
 func (f *fakeSkillPolicy) FGAEnabled() bool { return f.enabled }
@@ -59,6 +59,8 @@ func newSvcWithSkillPolicy(ts taskStore, pol planPolicyEngine, sp skillGatePolic
 		Logger: zap.NewNop(),
 		Audit:  em,
 		Tasks:  ts,
+
+		DevMode: true,
 	}, policy: pol, skillPolicy: sp}
 }
 
@@ -166,6 +168,8 @@ func TestUserSkillGate_AgentBound_SkipsFGACheck(t *testing.T) {
 		Audit:  em,
 		Tasks:  ts,
 		Agents: agentStore,
+
+		DevMode: true,
 	}, policy: allowPol(), skillPolicy: sp}
 
 	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{

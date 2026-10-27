@@ -158,3 +158,101 @@ func TestApproveTask_InternalError_ReturnsInternal(t *testing.T) {
 		t.Errorf("expected Internal for non-sentinel error, got %s", st.Code())
 	}
 }
+
+// ── C-01: approver/tenant bound to the authenticated identity ───────────────
+
+// recordingApproveTaskStore records the tenant/approver ResolveApproval saw.
+type recordingApproveTaskStore struct {
+	fakeApproveTaskStore
+	gotTenant, gotApprover string
+}
+
+func (f *recordingApproveTaskStore) ResolveApproval(ctx context.Context, tenantID, approvalID, approverUserID string, approved bool, reason string) (db.ApprovalState, bool, error) {
+	f.gotTenant, f.gotApprover = tenantID, approverUserID
+	return f.fakeApproveTaskStore.ResolveApproval(ctx, tenantID, approvalID, approverUserID, approved, reason)
+}
+
+func newRecordingApproveStore() *recordingApproveTaskStore {
+	return &recordingApproveTaskStore{fakeApproveTaskStore: fakeApproveTaskStore{ar: &db.ApprovalRequest{
+		ApprovalID:  uuid.New(),
+		TaskID:      uuid.New(),
+		TenantID:    uuid.MustParse(testTenantUUID),
+		RequesterID: "alice@example.com",
+		ApproverSet: []string{"alice@example.com"},
+		RequiresN:   1,
+		State:       db.ApprovalPending,
+	}}}
+}
+
+func TestApproveTask_ForgedApprover_PermissionDenied(t *testing.T) {
+	store := newRecordingApproveStore()
+	svc := newBrokerSvcForApproveTest(t, store)
+	ctx := ctxWithIdentity(testTenantUUID, "eve@example.com")
+
+	_, err := svc.ApproveTask(ctx, &brokerv1.ApproveTaskRequest{
+		TenantId:       testTenantUUID,
+		TaskId:         store.ar.TaskID.String(),
+		ApproverUserId: "alice@example.com", // forged: the task owner
+		Approved:       true,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged approver_user_id, got %v", err)
+	}
+	if store.gotApprover != "" {
+		t.Fatalf("ResolveApproval ran as %q despite the forged approver", store.gotApprover)
+	}
+}
+
+func TestApproveTask_ForgedTenant_PermissionDenied(t *testing.T) {
+	store := newRecordingApproveStore()
+	svc := newBrokerSvcForApproveTest(t, store)
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+
+	_, err := svc.ApproveTask(ctx, &brokerv1.ApproveTaskRequest{
+		TenantId:       spoofedTenantUUID,
+		TaskId:         store.ar.TaskID.String(),
+		ApproverUserId: "alice@example.com",
+		Approved:       true,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged tenant_id, got %v", err)
+	}
+	if store.gotTenant != "" {
+		t.Fatalf("ResolveApproval ran under tenant %q despite the forged tenant", store.gotTenant)
+	}
+}
+
+func TestApproveTask_UsesAuthenticatedIdentity(t *testing.T) {
+	store := newRecordingApproveStore()
+	svc := newBrokerSvcForApproveTest(t, store)
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+
+	// Request fields omitted: tenant and approver come from the verified identity.
+	if _, err := svc.ApproveTask(ctx, &brokerv1.ApproveTaskRequest{
+		TaskId:   store.ar.TaskID.String(),
+		Approved: true,
+	}); err != nil {
+		t.Fatalf("matching identity: unexpected error: %v", err)
+	}
+	if store.gotTenant != testTenantUUID || store.gotApprover != "alice@example.com" {
+		t.Fatalf("ResolveApproval got (%q, %q), want (%q, alice@example.com)", store.gotTenant, store.gotApprover, testTenantUUID)
+	}
+}
+
+func TestApproveTask_DevModeUsesRequestApprover(t *testing.T) {
+	store := newRecordingApproveStore()
+	svc := newBrokerSvcForApproveTest(t, store)
+
+	// No identity on the context (OIDC disabled): request fields are the source.
+	if _, err := svc.ApproveTask(context.Background(), &brokerv1.ApproveTaskRequest{
+		TenantId:       testTenantUUID,
+		TaskId:         store.ar.TaskID.String(),
+		ApproverUserId: "alice@example.com",
+		Approved:       true,
+	}); err != nil {
+		t.Fatalf("dev mode: unexpected error: %v", err)
+	}
+	if store.gotApprover != "alice@example.com" {
+		t.Fatalf("ResolveApproval approver = %q, want alice@example.com", store.gotApprover)
+	}
+}

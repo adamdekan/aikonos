@@ -82,6 +82,7 @@ func memoryDeps(t *testing.T, fgaURL, root string) (Deps, *memoryAudit) {
 		Policy:    eng,
 		TenantID:  "aikonos-dev",
 		Workspace: WorkspaceDeps{Local: workspacefs.New(root)},
+		DevMode:   true, // south RPCs: any trust-domain peer, GatewaySpiffeID unset
 	}, em
 }
 
@@ -623,7 +624,7 @@ func TestVerifyMemoryConcept_SerializesWithConcurrentToolWrite(t *testing.T) {
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  toolproxy.New(toolproxy.Config{WorkspaceFS: workspacefs.New(root)}, zap.NewNop()),
-		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 1000}},
+		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 1000, OwnerUserID: memUser}},
 		Audit:      deps.Audit,
 	}}
 

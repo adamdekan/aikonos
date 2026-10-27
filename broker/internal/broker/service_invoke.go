@@ -116,9 +116,10 @@ func (s *SandboxService) emitResultFlagged(ctx context.Context, req *brokerv1.In
 //
 // Membership is checked for the task row's owner, not req.UserId: the request
 // field is caller-supplied, and a group bundle is shared writable state. Fails
-// closed — a missing group_id, an unloadable task row, an empty owner, a nil
-// policy engine, a check error, or a false decision all deny.
-func (s *SandboxService) memoryGroupPreGate(ctx context.Context, req *brokerv1.InvokeToolRequest, scope, ownerUserID string, taskLoadFailed bool) error {
+// closed — a missing group_id, an empty owner (no task store, or a row with no
+// owner), a nil policy engine, a check error, or a false decision all deny.
+// An unloadable row never reaches here: InvokeTool's task binding denies first.
+func (s *SandboxService) memoryGroupPreGate(ctx context.Context, req *brokerv1.InvokeToolRequest, scope, ownerUserID string) error {
 	if req.ToolId != "memory.read" && req.ToolId != "memory.write" {
 		return nil
 	}
@@ -131,12 +132,11 @@ func (s *SandboxService) memoryGroupPreGate(ctx context.Context, req *brokerv1.I
 		s.emitToolDenied(ctx, req, scope, "memory_group_id_missing", nil, nil)
 		return status.Error(codes.PermissionDenied, "group_id required for a group-scoped memory call")
 	}
-	// No owner, no gate: an unloadable row (or one with no owner, or no task store
-	// at all) leaves nothing to check membership for. Denied explicitly rather
-	// than passing a bare "user:" subject down and relying on OpenFGA to reject
-	// it — same reasoning as the mcp: branch's taskLoadFailed guard.
+	// No owner, no gate: a row with no owner, or no task store at all, leaves
+	// nothing to check membership for. Denied explicitly rather than passing a
+	// bare "user:" subject down and relying on OpenFGA to reject it.
 	owner := strings.TrimSpace(ownerUserID)
-	if taskLoadFailed || owner == "" {
+	if owner == "" {
 		s.emitToolDenied(ctx, req, scope, "memory_group_owner_unknown", nil, map[string]any{"group_id": groupID})
 		return status.Error(codes.PermissionDenied, "task owner unknown, cannot verify group membership")
 	}
@@ -189,11 +189,88 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		return nil, status.Errorf(codes.PermissionDenied, "unknown tool %q", req.ToolId)
 	}
 
+	// Task binding: the task row, not the request, decides who the tool runs as
+	// — the tenant, the user whose workspace / connector tokens / memory it
+	// touches, and the agent the rate limit and baseline are keyed on. The
+	// request tenant only locates the row; a request user, tenant or agent that
+	// names someone other than the row's is refused, never silently replaced.
+	// No task store, no row, or a foreign tenant denies: there is no identity to
+	// run as. A store failure is Unavailable, not a policy decision.
+	// These checks run before the capability gate (disabled_tools below needs
+	// the row tenant), so every caller-facing denial here carries one generic
+	// message and the specific reason lives only in the audit context.
+	if s.deps.Tasks == nil {
+		return nil, status.Error(codes.PermissionDenied, "task store not configured")
+	}
+	task, tenantID, terr := s.southTask(ctx, req.TenantId, req.TaskId)
+	if terr != nil {
+		if !errors.Is(terr, db.ErrNotFound) && status.Code(terr) != codes.PermissionDenied {
+			// Mirrors the capability-timeout branch: no decision was computed, so
+			// no tool.denied goes into the audit chain and the caller may retry.
+			s.deps.Logger.Error("InvokeTool: task load failed",
+				zap.String("task_id", req.TaskId), zap.Error(terr))
+			return nil, status.Errorf(codes.Unavailable, "task %s could not be loaded; retry", req.TaskId)
+		}
+		s.deps.Logger.Warn("InvokeTool: task binding failed",
+			zap.String("task_id", req.TaskId), zap.Error(terr))
+		s.emitToolDenied(ctx, req, scope, "task_unbound", terr, nil)
+		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
+	}
+	// boundAgentID is the row's agent binding ("" for a personal task). It keys
+	// the rate limit and baseline, and is the only agent memory scope=agent and
+	// the mcp: FGA check may resolve for a bound task.
+	var boundAgentID string
+	if task.AgentID != nil {
+		boundAgentID = task.AgentID.String()
+	}
+	if req.UserId != "" && req.UserId != task.OwnerUserID {
+		s.emitToolDenied(ctx, req, scope, "task_owner_mismatch", nil, nil)
+		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
+	}
+	// callerAgent is the caller's agent claim, kept only for the mcp: fallback
+	// below; req.AgentId itself is normalized to the bound agent.
+	callerAgent := strings.TrimSpace(req.AgentId)
+	// ponytail: an unbound task ignores req.AgentId instead of refusing it —
+	// the gateway always sends its session agent id ("<user>-agent",
+	// "agent:<uuid>") and north CreateTask cannot bind an agent yet.
+	if reqAgent := strings.TrimPrefix(callerAgent, "agent:"); boundAgentID != "" && reqAgent != "" && !strings.EqualFold(reqAgent, boundAgentID) {
+		s.emitToolDenied(ctx, req, scope, "agent_mismatch", nil, map[string]any{
+			"req_agent_id":   req.AgentId,
+			"bound_agent_id": boundAgentID,
+		})
+		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
+	}
+	if task.State != db.TaskStateApproved && task.State != db.TaskStateExecuting {
+		s.emitToolDenied(ctx, req, scope, "task_not_executable", nil, map[string]any{"state": string(task.State)})
+		return nil, status.Errorf(codes.FailedPrecondition, "task %s not available to this caller", req.TaskId)
+	}
+	// userID is the row's owner — the identity the tool runs as and the one
+	// the memory group pre-gate checks membership for.
+	userID := task.OwnerUserID
+	// Normalize the request to the bound identity so every audit event below
+	// (denials, rate limit, budget, invoked) records who actually ran, never a
+	// caller-chosen agent.
+	req.TenantId, req.UserId, req.AgentId = tenantID, userID, boundAgentID
+	// preCallConsumed/taskCostBudget are reused by the post-call
+	// budget_exceeded emit, so both audit events describe the same numbers.
+	// taskState drives the APPROVED → EXECUTING transition once dispatched.
+	preCallConsumed, taskCostBudget, taskState := task.CostConsumed, task.CostBudget, task.State
+
+	// Cost-budget pre-gate: a task whose cost_consumed already meets or
+	// exceeds cost_budget is denied before any Biscuit/proxy work runs.
+	if task.CostConsumed >= task.CostBudget {
+		s.emitToolDenied(ctx, req, scope, "budget_exceeded", nil, map[string]any{
+			"consumed": task.CostConsumed,
+			"budget":   task.CostBudget,
+		})
+		return nil, status.Errorf(codes.ResourceExhausted, "task %s cost budget exceeded: consumed=%d budget=%d", req.TaskId, task.CostConsumed, task.CostBudget)
+	}
+
 	// Runtime disable check: tenant admin may disable tools via the
 	// disabled_tools config key. Runs before the capability gate so a disabled
 	// tool is denied regardless of token validity (deny-only; cannot grant).
 	// Fails closed when the setting cannot be read.
-	disabledTools, err := s.cfg().GetString(ctx, req.TenantId, "disabled_tools")
+	disabledTools, err := s.cfg().GetString(ctx, tenantID, "disabled_tools")
 	if err != nil {
 		s.emitToolDenied(ctx, req, scope, "settings_check_failed", err, nil)
 		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
@@ -207,20 +284,12 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// overlay (CP3). Runs after disabled_tools so both paths are additive.
 	// Only fires when a loader is wired and the tenant overlay is cached.
 	if s.deps.OverlayLoader != nil {
-		tenantForOverlay := s.resolveTenant(ctx, req.TenantId)
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenantForOverlay, s.deps.Logger)
-		if enabled, known := s.toolReg().IsEnabled(tenantForOverlay, req.ToolId); known && !enabled {
+		s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger)
+		if enabled, known := s.toolReg().IsEnabled(tenantID, req.ToolId); known && !enabled {
 			s.emitToolDenied(ctx, req, scope, "skill_disabled", nil, nil)
 			return nil, status.Errorf(codes.PermissionDenied, "tool %q is disabled", req.ToolId)
 		}
 	}
-
-	// South-bound callers carry no OIDC tenant (the SPIFFE identity has none),
-	// so the caller echoes the task's tenant on the request. Fall back to the
-	// peer identity then the broker default for older callers. Resolved here
-	// (rather than just before the proxy call) so the cost-budget pre-gate
-	// below can look up the task under the right tenant.
-	tenantID := s.resolveTenant(ctx, req.TenantId)
 
 	// A2 org capability master: deny org-wide when the tool's authoritative
 	// effect class is in the tenant's disabled set. Runs before the FGA/capability
@@ -242,60 +311,6 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 	}
 
-	// Cost-budget pre-gate: a task whose cost_consumed already meets or
-	// exceeds cost_budget is denied before any Biscuit/proxy work runs.
-	// Fails open (skipped) when no task store is wired — matching the
-	// nil-safe pattern of the other optional gates in this method.
-	// preCallConsumed/taskCostBudget are captured here for reuse by the
-	// post-call budget_exceeded emit below, so both audit events describe the
-	// same task's numbers without a second Get round-trip.
-	var preCallConsumed, taskCostBudget int64
-	// boundAgentID is the task's own agent_id binding (empty when the task has
-	// none, or wasn't loadable) — captured here for the mcp: FGA re-check below
-	// so a caller-supplied req.AgentId can be cross-checked against it instead
-	// of trusted verbatim.
-	var boundAgentID string
-	// taskOwnerUserID is the task row's owner — the identity the plan-time skill
-	// gate authorized. The memory group pre-gate below checks membership for it
-	// rather than req.UserId, which the caller controls.
-	var taskOwnerUserID string
-	// taskLoadFailed distinguishes a transport/DB error from a genuine
-	// not-found: a not-found means there's simply nothing to bind against
-	// (proceed, same as an unwired task store), but a transport error must not
-	// silently skip the mcp: mismatch check below — that would let a caller
-	// widen its own accounting by spoofing req.AgentId whenever the task store
-	// hiccups, reopening the window fix 4 closes. The memory group pre-gate reads
-	// it for the same reason: no loaded row means no owner to check membership for.
-	var taskLoadFailed bool
-	// taskState is the task's state as of the pre-gate load, used below to drive
-	// the APPROVED → EXECUTING transition once the call is actually dispatched.
-	var taskState db.TaskState
-	if tasks := s.deps.Tasks; tasks != nil {
-		if task, err := tasks.Get(ctx, tenantID, req.TaskId); err != nil {
-			if !errors.Is(err, db.ErrNotFound) {
-				taskLoadFailed = true
-			}
-			s.deps.Logger.Warn("InvokeTool: budget pre-gate task load failed",
-				zap.String("task_id", req.TaskId), zap.Error(err))
-		} else if task != nil {
-			// A production Get always errors ErrNotFound instead of returning a
-			// nil task; the nil guard only protects against a minimal test double.
-			preCallConsumed, taskCostBudget = task.CostConsumed, task.CostBudget
-			taskState = task.State
-			taskOwnerUserID = task.OwnerUserID
-			if task.AgentID != nil {
-				boundAgentID = task.AgentID.String()
-			}
-			if task.CostConsumed >= task.CostBudget {
-				s.emitToolDenied(ctx, req, scope, "budget_exceeded", nil, map[string]any{
-					"consumed": task.CostConsumed,
-					"budget":   task.CostBudget,
-				})
-				return nil, status.Errorf(codes.ResourceExhausted, "task %s cost budget exceeded: consumed=%d budget=%d", req.TaskId, task.CostConsumed, task.CostBudget)
-			}
-		}
-	}
-
 	// Capability gate: the step's Biscuit token must be signed by the broker
 	// root and must grant the scope this tool requires. This is enforced before
 	// any routing — a forged or over-broad token never reaches a tool.
@@ -307,7 +322,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, "malformed capability token")
 		}
-		if err := s.deps.Capability.Authorize(raw, scope); err != nil {
+		// The token is bound to req.TaskId (H-03): a token for another task, a
+		// task-less delegation record, or an expired token is denied here.
+		if err := s.deps.Capability.Authorize(raw, scope, req.TaskId); err != nil {
 			// A datalog runtime-limit error means evaluation never reached a
 			// decision, so the call still fails closed but is reported as a
 			// transient fault: emitting tool.denied here would write a policy
@@ -326,49 +343,46 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 				zap.String("scope", scope),
 				zap.Error(err),
 			)
+			switch {
+			case errors.Is(err, capability.ErrExpired):
+				s.emitToolDenied(ctx, req, scope, "capability_expired", err, nil)
+				return nil, status.Error(codes.PermissionDenied, "capability token expired")
+			case errors.Is(err, capability.ErrTaskMismatch):
+				s.emitToolDenied(ctx, req, scope, "capability_task_mismatch", err, nil)
+				return nil, status.Errorf(codes.PermissionDenied, "capability token is not bound to task %s", req.TaskId)
+			}
 			s.emitToolDenied(ctx, req, scope, "capability_denied", err, nil)
 			return nil, status.Errorf(codes.PermissionDenied, "capability does not grant %q", scope)
 		}
 	}
 
+	// The rate limit and baseline are keyed on the task's bound agent only — a
+	// caller-supplied agent_id must not choose whose per-agent RPM bucket or
+	// behavioral baseline a call counts against.
+	effectiveAgentID := boundAgentID
+
 	// Per-call RBAC for MCP tools: InvokeTool re-checks whether the calling
 	// agent is still permitted to access the connector. A revoked FGA grant
 	// denies the next call without requiring a new capability token.
-	// Fails closed: empty agent_id, a nil Policy engine, a Check error, a
-	// transport/DB error loading the task, or a caller-supplied agent_id that
-	// doesn't match the task's own bound agent (when the task is loadable) all
-	// deny.
-	effectiveAgentID := req.AgentId
+	// Fails closed: no agent, a nil Policy engine, or a Check error all deny.
+	// A caller-supplied agent_id that differs from the task's bound agent was
+	// already refused by the task binding above.
 	if strings.HasPrefix(req.ToolId, "mcp:") {
 		connID, _, ok := toolregistry.ParseMcpToolID(req.ToolId)
 		if !ok {
 			return nil, status.Errorf(codes.InvalidArgument, "malformed mcp tool_id %q", req.ToolId)
 		}
-		agentID := strings.TrimSpace(req.AgentId)
+		agentID := boundAgentID
+		if agentID == "" {
+			// ponytail: an unbound task (every interactive task — north
+			// CreateTask carries no agent) falls back to the caller's claim,
+			// which only the FGA can_access check below vets. Binding the agent
+			// at task creation closes this.
+			agentID = callerAgent
+		}
 		if agentID == "" {
 			return nil, status.Errorf(codes.PermissionDenied, "agent_id required for mcp tool calls")
 		}
-		// A transport/DB error loading the task means boundAgentID couldn't be
-		// established, so the mismatch check below would silently trust
-		// agentID verbatim — fail closed instead of reopening that gap.
-		if taskLoadFailed {
-			s.emitToolDenied(ctx, req, scope, "mcp_task_load_error", nil, nil)
-			return nil, status.Errorf(codes.Internal, "task load failed, cannot verify agent binding")
-		}
-		// A caller could otherwise pass an agent_id different from the one
-		// actually bound to the task to widen its FGA/rate-limit/baseline
-		// accounting beyond what its own task grants it.
-		if boundAgentID != "" && !strings.EqualFold(agentID, boundAgentID) {
-			s.emitToolDenied(ctx, req, scope, "mcp_agent_mismatch", nil, map[string]any{
-				"req_agent_id":   agentID,
-				"bound_agent_id": boundAgentID,
-			})
-			return nil, status.Errorf(codes.PermissionDenied, "agent_id %q does not match task's bound agent", agentID)
-		}
-		if boundAgentID != "" {
-			agentID = boundAgentID // prefer the task-derived id
-		}
-		effectiveAgentID = agentID
 		agentRef := agentID
 		if !strings.HasPrefix(agentRef, "agent:") {
 			agentRef = "agent:" + agentRef
@@ -403,7 +417,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 	}
 
-	if err := s.memoryGroupPreGate(ctx, req, scope, taskOwnerUserID, taskLoadFailed); err != nil {
+	if err := s.memoryGroupPreGate(ctx, req, scope, userID); err != nil {
 		return nil, err
 	}
 
@@ -449,7 +463,10 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		Args:     args,
 		TaskID:   req.TaskId,
 		TenantID: tenantID,
-		UserID:   req.UserId,
+		// Task-row-sourced (the owner), never the caller's claim: UserID keys
+		// the workspace, connector OAuth tokens, user memory and the netacl
+		// principal.
+		UserID: userID,
 		// Task-row-sourced, never req.AgentId: memory.*'s scope=agent resolves a
 		// bundle segment from this, so a caller-supplied id would be a
 		// cross-agent memory read or write.
@@ -576,23 +593,23 @@ func (s *SandboxService) EmitStatus(ctx context.Context, req *brokerv1.EmitStatu
 		return nil, status.Errorf(codes.InvalidArgument, "unmappable task status %q", req.Status)
 	}
 
-	// South-bound calls carry no OIDC tenant; the sandbox echoes the task's
-	// tenant so the per-tenant RLS lookup resolves. Fall back to the broker's
-	// default tenant for older callers that don't set it.
-	tenant := req.TenantId
-	if tenant == "" {
-		tenant = s.deps.TenantID
-	}
-
+	// South-bound calls carry no OIDC tenant; the request tenant (or the broker
+	// default for older callers) only locates the row, and the tenant the
+	// transition runs under is the row's. A differing request tenant is refused.
 	tasks := s.deps.Tasks
-	t, err := tasks.Get(ctx, tenant, req.TaskId)
+	t, tenant, err := s.southTask(ctx, req.TenantId, req.TaskId)
 	if err != nil {
-		s.deps.Logger.Warn("EmitStatus: task not found",
-			zap.String("task_id", req.TaskId), zap.String("tenant_id", tenant))
-		if errors.Is(err, db.ErrNotFound) {
+		logFields := []zap.Field{zap.String("task_id", req.TaskId), zap.String("tenant_id", req.TenantId), zap.Error(err)}
+		switch {
+		case status.Code(err) == codes.PermissionDenied:
+			s.deps.Logger.Warn("EmitStatus: tenant mismatch", logFields...)
+			return nil, err
+		case errors.Is(err, db.ErrNotFound):
+			s.deps.Logger.Warn("EmitStatus: task not found", logFields...)
 			return nil, status.Errorf(codes.NotFound, "task %s not found", req.TaskId)
 		}
-		return nil, status.Errorf(codes.Internal, "failed to get task")
+		s.deps.Logger.Error("EmitStatus: task load failed", logFields...)
+		return nil, status.Errorf(codes.Unavailable, "task %s could not be loaded; retry", req.TaskId)
 	}
 
 	if err := tasks.Transition(ctx, tenant, req.TaskId, t.State, toState); err != nil {

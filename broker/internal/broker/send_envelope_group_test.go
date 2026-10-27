@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -271,5 +272,115 @@ func TestSendEnvelope_NilRecipient_InvalidArgument(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("nil recipient: want InvalidArgument, got %v", err)
+	}
+}
+
+// ── H-01: sender / inbox user bound to the authenticated identity ───────────
+
+func TestSendEnvelope_ForgedFromUser_PermissionDenied(t *testing.T) {
+	store := &trackingEnvelopeStore{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store}}
+	ctx := ctxWithIdentity(testTenantUUID, "eve@example.com")
+
+	_, err := svc.SendEnvelope(ctx, &brokerv1.SendEnvelopeRequest{
+		TenantId:   testTenantUUID,
+		FromUserId: "admin@example.com", // forged: borrow the admin's delegable scopes
+		Recipient:  &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_UserId{UserId: "eve@example.com"}},
+		Task:       &brokerv1.EnvelopeTask{Intent: "escalate"},
+		Delegation: &brokerv1.EnvelopeDelegation{AttenuatedScopes: []string{"admin:all"}},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged from_user_id, got %v", err)
+	}
+	if store.count != 0 {
+		t.Fatalf("forged send persisted %d envelope(s)", store.count)
+	}
+}
+
+func TestSendEnvelope_ForgedTenant_PermissionDenied(t *testing.T) {
+	store := &trackingEnvelopeStore{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store}}
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+
+	_, err := svc.SendEnvelope(ctx, &brokerv1.SendEnvelopeRequest{
+		TenantId:   spoofedTenantUUID,
+		FromUserId: "alice@example.com",
+		Recipient:  &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_UserId{UserId: "bob@example.com"}},
+		Task:       &brokerv1.EnvelopeTask{Intent: "cross-tenant"},
+		Delegation: &brokerv1.EnvelopeDelegation{},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged tenant_id, got %v", err)
+	}
+	if store.count != 0 {
+		t.Fatalf("forged send persisted %d envelope(s)", store.count)
+	}
+}
+
+// inboxRecordingStore records the (tenant, user) ListInbox was queried with.
+type inboxRecordingStore struct {
+	stubTaskStore
+	gotTenant, gotUser string
+}
+
+func (s *inboxRecordingStore) ListInbox(_ context.Context, tenantID, userID string, _ bool) ([]*db.Envelope, error) {
+	s.gotTenant, s.gotUser = tenantID, userID
+	return nil, nil
+}
+
+func TestListInboxEnvelopes_ForgedUser_PermissionDenied(t *testing.T) {
+	store := &inboxRecordingStore{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store}}
+	ctx := ctxWithIdentity(testTenantUUID, "eve@example.com")
+
+	_, err := svc.ListInboxEnvelopes(ctx, &brokerv1.ListInboxEnvelopesRequest{
+		TenantId: testTenantUUID,
+		UserId:   "alice@example.com", // forged: read alice's inbox
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged user_id, got %v", err)
+	}
+	if store.gotUser != "" {
+		t.Fatalf("inbox queried for %q despite the forged user_id", store.gotUser)
+	}
+}
+
+func TestListInboxEnvelopes_ForgedTenant_PermissionDenied(t *testing.T) {
+	store := &inboxRecordingStore{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store}}
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+
+	_, err := svc.ListInboxEnvelopes(ctx, &brokerv1.ListInboxEnvelopesRequest{
+		TenantId: spoofedTenantUUID,
+		UserId:   "alice@example.com",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied for forged tenant_id, got %v", err)
+	}
+	if store.gotTenant != "" {
+		t.Fatalf("inbox queried under tenant %q despite the forged tenant", store.gotTenant)
+	}
+}
+
+func TestListInboxEnvelopes_BindsIdentity(t *testing.T) {
+	store := &inboxRecordingStore{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store}}
+
+	// Verified identity, request fields omitted → identity is the source.
+	if _, err := svc.ListInboxEnvelopes(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.ListInboxEnvelopesRequest{}); err != nil {
+		t.Fatalf("matching identity: %v", err)
+	}
+	if store.gotTenant != testTenantUUID || store.gotUser != "alice@example.com" {
+		t.Fatalf("ListInbox got (%q, %q), want (%q, alice@example.com)", store.gotTenant, store.gotUser, testTenantUUID)
+	}
+
+	// OIDC disabled (no identity) → request fields are the source.
+	if _, err := svc.ListInboxEnvelopes(context.Background(), &brokerv1.ListInboxEnvelopesRequest{
+		TenantId: testTenantUUID, UserId: "bob@example.com",
+	}); err != nil {
+		t.Fatalf("dev mode: %v", err)
+	}
+	if store.gotUser != "bob@example.com" {
+		t.Fatalf("dev mode ListInbox user = %q, want bob@example.com", store.gotUser)
 	}
 }

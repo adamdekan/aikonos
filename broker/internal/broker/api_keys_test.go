@@ -130,6 +130,7 @@ func newApiKeyDeps(t *testing.T, adminUser string, keyStore ApiKeyStore, agentSt
 		ApiKeyPepper:    "test-pepper",
 		GatewayGrantKey: testGrantKey,
 		GatewayGrantTTL: testGrantTTL,
+		DevMode:         true, // south RPCs: any trust-domain peer, GatewaySpiffeID unset
 	}
 }
 
@@ -160,6 +161,7 @@ func newApiKeyDepsWithFGA(t *testing.T, adminUser string, fga *fakeFGA, keyStore
 		ApiKeyPepper:    "test-pepper",
 		GatewayGrantKey: testGrantKey,
 		GatewayGrantTTL: testGrantTTL,
+		DevMode:         true, // south RPCs: any trust-domain peer, GatewaySpiffeID unset
 	}
 }
 

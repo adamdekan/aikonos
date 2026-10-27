@@ -50,7 +50,15 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		return nil, status.Error(codes.InvalidArgument, "plan is required")
 	}
 	plan := req.Plan
-	tenantID := plan.TenantId // the plan carries its tenant; south-bound has no OIDC tenant
+
+	// The OPA actor, the capability holder and the approval/audit actor are the
+	// verified peer, never the request's self-reported sandbox_spiffe_id.
+	// Normalized onto req so every record below carries the verified id.
+	peer, err := s.southPeer(ctx, req.SandboxSpiffeId)
+	if err != nil {
+		return nil, err
+	}
+	req.SandboxSpiffeId = peer
 
 	s.deps.Logger.Info("SubmitPlan",
 		zap.String("task_id", req.TaskId),
@@ -61,8 +69,12 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	taskStore := s.deps.Tasks
 	policyEng := s.planPolicyFor()
 
-	task, err := taskStore.Get(ctx, tenantID, req.TaskId)
+	// The tenant comes from the task row; plan.tenant_id only locates it.
+	task, tenantID, err := s.southTask(ctx, plan.TenantId, req.TaskId)
 	if err != nil {
+		if status.Code(err) == codes.PermissionDenied {
+			return nil, err
+		}
 		if errors.Is(err, db.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "task %s not found", req.TaskId)
 		}
@@ -624,4 +636,59 @@ func (s *SandboxService) resolveTenant(ctx context.Context, reqTenant string) st
 		return id.TenantID
 	}
 	return s.deps.TenantID
+}
+
+// devUnverifiedPeer stands in for the south-bound caller in a dev-mode broker
+// with no verified SPIFFE identity. It is fixed, never the caller's claim, so
+// an unauthenticated dev caller cannot pass itself off as the gateway to the
+// OPA sandbox rule or become the holder of the tokens it is minted.
+const devUnverifiedPeer = "spiffe://aikonos.com/sandbox/dev-unverified"
+
+// southPeer returns the verified SPIFFE ID of a south-bound caller, as set on
+// the context by auth.SPIFFEInterceptor. claimed is the request's self-reported
+// id (sandbox_spiffe_id): a non-empty value that differs is refused rather than
+// trusted. With no verified identity on the context a dev-mode broker returns
+// devUnverifiedPeer (the claim is ignored); otherwise the call is
+// unauthenticated.
+func (s *SandboxService) southPeer(ctx context.Context, claimed string) (string, error) {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok || id.SpiffeID == "" {
+		if s.deps.DevMode {
+			if claimed != "" {
+				s.deps.Logger.Debug("southPeer: ignoring unverified sandbox_spiffe_id in dev mode",
+					zap.String("claimed", claimed))
+			}
+			return devUnverifiedPeer, nil
+		}
+		return "", status.Error(codes.Unauthenticated, "no verified SPIFFE peer identity")
+	}
+	if claimed != "" && claimed != id.SpiffeID {
+		return "", status.Error(codes.PermissionDenied, "sandbox_spiffe_id does not match the verified peer identity")
+	}
+	return id.SpiffeID, nil
+}
+
+// southTask loads the task a south-bound call acts on and returns it with the
+// tenant taken from its row. reqTenant only locates the row (via resolveTenant);
+// a non-empty value that differs from the row's tenant is refused with
+// PermissionDenied. Load errors (db.ErrNotFound, store errors) are returned
+// as-is so each caller keeps its own status mapping.
+func (s *SandboxService) southTask(ctx context.Context, reqTenant, taskID string) (*db.Task, string, error) {
+	tenant := s.resolveTenant(ctx, reqTenant)
+	t, err := s.deps.Tasks.Get(ctx, tenant, taskID)
+	if err != nil {
+		return nil, "", err
+	}
+	if t == nil {
+		return nil, "", db.ErrNotFound
+	}
+	// ponytail: a zero tenant only comes from a minimal test double — the
+	// tasks.tenant_id column is NOT NULL — so the lookup tenant stands in.
+	if t.TenantID != uuid.Nil {
+		tenant = t.TenantID.String()
+	}
+	if reqTenant != "" && !strings.EqualFold(reqTenant, tenant) {
+		return nil, "", status.Error(codes.PermissionDenied, "tenant_id does not match the task's tenant")
+	}
+	return t, tenant, nil
 }

@@ -106,9 +106,15 @@ func TestRequireGatewayPeer(t *testing.T) {
 		}
 	})
 	t.Run("dev: any peer when unset", func(t *testing.T) {
-		dev := NewSandboxService(Deps{GatewaySpiffeID: ""})
+		dev := NewSandboxService(Deps{GatewaySpiffeID: "", DevMode: true})
 		if err := dev.requireGatewayPeer(gatewayCtx("spiffe://aikonos.com/whatever")); err != nil {
 			t.Fatalf("unset gateway id should accept any trust-domain peer: %v", err)
+		}
+	})
+	t.Run("non-dev: unset gateway id denies every peer", func(t *testing.T) {
+		prod := NewSandboxService(Deps{GatewaySpiffeID: ""})
+		if status.Code(prod.requireGatewayPeer(gatewayCtx(gw))) != codes.PermissionDenied {
+			t.Fatal("an unset gateway id outside dev mode must fail closed")
 		}
 	})
 }

@@ -40,11 +40,12 @@ func newSvcWithCfgAndFGA(t *testing.T, tasks taskStore, pol planPolicyEngine, cf
 		t.Fatal(err)
 	}
 	return &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  tasks,
-		Policy: eng,
-		Config: cfg,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   tasks,
+		Policy:  eng,
+		Config:  cfg,
 	},
 		policy: pol,
 		// The approval_n tests exercise the approver-set / n-of-m logic, not

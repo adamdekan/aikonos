@@ -134,17 +134,25 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
 
+	// C-01: bind tenant and approver to the authenticated identity — a forged
+	// approver_user_id (e.g. the task owner) must never satisfy the FGA gate or
+	// be counted as a voter.
+	tenant, approver, err := s.callerIdentity(ctx, req.TenantId, req.ApproverUserId)
+	if err != nil {
+		return nil, err
+	}
+
 	// North-only pre-check: ReBAC gate before touching the approval record.
 	// resolveApprovalAndMint re-runs CheckFGA internally; this early check gives
 	// a cleaner PermissionDenied before any DB load on the north surface.
-	allowed, err := s.deps.Policy.CheckFGA(ctx, "user:"+req.ApproverUserId, "can_approve", "task:"+req.TaskId)
+	allowed, err := s.deps.Policy.CheckFGA(ctx, "user:"+approver, "can_approve", "task:"+req.TaskId)
 	if err != nil || !allowed {
 		return nil, status.Errorf(codes.PermissionDenied, "approver not authorized for task %s", req.TaskId)
 	}
 
 	respStatus, capTokens, eventType, decision, err := approvalsvc.Resolve(
 		ctx, s.deps.Tasks, s.deps.Policy, approvalMinter(s.deps.Capability, s.toolReg()), s.deps.Logger,
-		req.TenantId, req.TaskId, req.ApproverUserId,
+		tenant, req.TaskId, approver,
 		req.Approved, req.Reason,
 	)
 	if err != nil {
@@ -154,16 +162,16 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 	s.deps.Logger.Info("ApproveTask",
 		zap.String("task_id", req.TaskId),
 		zap.Bool("approved", req.Approved),
-		zap.String("approver", req.ApproverUserId),
+		zap.String("approver", approver),
 		zap.String("new_status", respStatus.String()),
 	)
 
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
-		TenantId:    req.TenantId,
+		TenantId:    tenant,
 		OccurredAt:  timestampNow(),
-		ActorUserId: req.ApproverUserId,
+		ActorUserId: approver,
 		EventType:   eventType,
 		ResourceRef: "aikonos:task:" + req.TaskId,
 		Decision:    decision,
@@ -171,9 +179,9 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, eventType)
 	}
 
-	publishTaskEvent(ctx, s.deps, req.TenantId, req.TaskId, "APPROVAL_RECEIVED", map[string]any{
+	publishTaskEvent(ctx, s.deps, tenant, req.TaskId, "APPROVAL_RECEIVED", map[string]any{
 		"approved":   req.Approved,
-		"approver":   req.ApproverUserId,
+		"approver":   approver,
 		"new_status": respStatus.String(),
 	})
 

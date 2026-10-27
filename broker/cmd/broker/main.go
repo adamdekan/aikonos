@@ -167,6 +167,7 @@ func main() {
 	// vault.addr is set), so it survives restarts and is shared across replicas;
 	// with no Vault either, an ephemeral per-pod key is generated (dev only).
 	viper.SetDefault("capability.root_key", "")
+	viper.SetDefault("capability.ttl", "30m") // step-token lifetime (H-03)
 	// Vault (connector OAuth tokens + capability root key). Empty addr → Vault
 	// disabled: connector tools are not registered and connector RPCs fail closed.
 	// auth_method selects how the broker authenticates: "kubernetes" (SA-JWT, in
@@ -572,6 +573,14 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to init capability minter", zap.Error(err))
 	}
+	// Parsed strictly: viper.GetDuration turns a typo into 0, which would
+	// silently keep the 30m default instead of the configured lifetime.
+	rawTTL := viper.GetString("capability.ttl")
+	capTTL, err := time.ParseDuration(rawTTL)
+	if err != nil || capTTL <= 0 {
+		log.Fatal("Invalid capability.ttl: want a positive duration such as 30m", zap.String("capability.ttl", rawTTL), zap.Error(err))
+	}
+	capMinter.TTL = capTTL
 	// Startup security guard: refuse to serve if critical subsystems are in dev
 	// fallback state and AIKONOS_DEV_MODE is not explicitly true.
 	{
@@ -1035,6 +1044,7 @@ func main() {
 		Scheduled:       scheduledRepo,
 		Workspace:       brokersvc.WorkspaceDeps{Local: sharedWorkspaceRouter},
 		GatewaySpiffeID: viper.GetString("scheduler.gateway_spiffe_id"),
+		DevMode:         viper.GetBool("dev_mode"),
 		ACL:             netChecker,
 		Mcp: brokersvc.McpDeps{
 			Connections:  mcpRepo,

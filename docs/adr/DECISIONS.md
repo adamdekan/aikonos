@@ -148,7 +148,12 @@ in Redis on first use. Subsequent use of the same nonce returns 401.
 Redis service in `compose.yaml`. The Tool Proxy is **in-process** in the broker and
 `InvokeTool` authorizes the Biscuit scope directly (`broker/internal/capability` →
 `Authorize`); replay-hardening via single-use nonces is deferred. Capability tokens are
-short-lived and minted per step, which bounds the replay window in practice.
+minted per step and carry a TTL (default 30 minutes, `capability.ttl`) as a Biscuit
+expiry check, and a task binding: `Authorize` supplies `time(now)` and requires the
+token's authority `task` fact to equal the `InvokeTool` task id. An expired token, a token
+for another task, or a task-less delegation token (the record stored on an envelope, valid
+for the envelope's 72 h) is denied. Within the TTL a token can be replayed for the same
+task; holder (sandbox SPIFFE id) and argument binding are also deferred (H-03).
 
 ---
 

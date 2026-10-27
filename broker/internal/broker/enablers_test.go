@@ -35,7 +35,7 @@ func TestMintStepTokens_RoundTripAndTenant(t *testing.T) {
 		gotTenant = req.TenantID
 		return map[string]any{"ok": true}, 1, nil
 	})
-	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy})
+	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: executingTaskStore("")})
 
 	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "spiffe://aikonos.com/agent-gateway", "task-1",
 		[]stepScope{{Seq: 1, ToolID: "web.fetch"}})
@@ -68,7 +68,7 @@ func TestMintStepTokens_ScopeIsLeastPrivilege(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m})
+	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")})
 
 	// Mint for doc.write (scope doc:write) but try to invoke siem.query (siem:read).
 	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "holder", "task-1", []stepScope{{Seq: 1, ToolID: "doc.write"}})
