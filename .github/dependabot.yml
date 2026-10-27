@@ -1,0 +1,66 @@
+# Weekly, grouped dependency updates. Groups are split by semver level so the
+# auto-merge workflow (.github/workflows/dependabot-automerge.yml) can merge
+# patch PRs on green CI while minor and major bumps wait for a human.
+# With `directories`, Dependabot opens one grouped PR per directory.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: &schedule
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Vienna
+    groups: &groups
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+      patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["patch"]
+      minor:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor"]
+      # Majors are left ungrouped: one PR each, merged by hand.
+
+  - package-ecosystem: npm
+    directories:
+      - /agent-gateway
+      - /docs-mcp
+      - /docs-site
+      - /office-worker
+      - /webui
+      - /webui/web
+    schedule: *schedule
+    groups: *groups
+
+  - package-ecosystem: uv
+    directory: /office-worker
+    schedule: *schedule
+    groups: *groups
+
+  - package-ecosystem: cargo
+    directory: /desktop
+    schedule: *schedule
+    groups: *groups
+
+  - package-ecosystem: docker
+    directories:
+      - /agent-gateway
+      - /broker
+      - /docs-mcp
+      - /docs-site
+      - /office-worker
+      - /webui
+      - /test/mcp-echo-server
+    schedule: *schedule
+    groups: *groups
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: *schedule
+    groups: *groups
