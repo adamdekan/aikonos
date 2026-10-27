@@ -23,7 +23,7 @@ func newSandboxSvc(t *testing.T) (*SandboxService, *capability.Minter) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	return NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m}), m
+	return NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")}), m
 }
 
 func mintFor(t *testing.T, m *capability.Minter, scopes ...string) string {
@@ -81,7 +81,7 @@ func TestInvokeTool_RoutesToProxyOnSuccess(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200, "url": req.Args["url"]}, 7, nil
 	})
-	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy})
+	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: executingTaskStore("")})
 
 	tok := mintFor(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})

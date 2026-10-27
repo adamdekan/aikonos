@@ -91,7 +91,7 @@ func TestSubmitPlan_RecordsEachDecision(t *testing.T) {
 	pol := &fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{NeedsApproval: true, Reason: "needs a human",
 		PolicyRuleID: "opa:tool_invocation", Evidence: evidence}}
 	tasks := &fakeTaskStore{task: newFakeTask(db.TaskStateValidating)}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks}, policy: pol}
+	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: pol}
 
 	step := makeStep(1, "web.fetch", map[string]any{"url": "https://example.org"})
 	step.EffectClass = planv1.EffectClass_NETWORK_EGRESS
@@ -147,7 +147,7 @@ func TestSubmitPlan_AgentBoundaryDenialIsRecorded(t *testing.T) {
 	tasks := &fakeTaskStore{task: newFakeTask(db.TaskStateValidating)}
 	agentID := uuid.MustParse(validTaskUUID())
 	tasks.task.AgentID = &agentID
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks}, policy: &fakePolicyEngine{planAllow: true}}
+	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: &fakePolicyEngine{planAllow: true}}
 
 	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),

@@ -19,9 +19,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
+	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/netacl"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
@@ -143,21 +146,23 @@ func makeStep(seq int32, toolID string, args map[string]any) *planv1.PlanStep {
 func newSandboxSvcForPlan(tasks taskStore, pol planPolicyEngine, acl aclDecider) *SandboxService {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
 	return &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  tasks,
-		ACL:    acl,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   tasks,
+		ACL:     acl,
 	}, policy: pol}
 }
 
 func newSandboxSvcForPlanWithConfig(tasks taskStore, pol planPolicyEngine, acl aclDecider, cfg Config) *SandboxService {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
 	return &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  tasks,
-		ACL:    acl,
-		Config: cfg,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   tasks,
+		ACL:     acl,
+		Config:  cfg,
 	}, policy: pol}
 }
 
@@ -366,6 +371,7 @@ func TestSubmitPlan_RecordsPlanOutcome(t *testing.T) {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
 	tm := &fakeTaskMetrics{}
 	svc := &SandboxService{deps: Deps{
+		DevMode:     true,
 		Logger:      zap.NewNop(),
 		Audit:       em,
 		Tasks:       taskStore,
@@ -447,5 +453,159 @@ func TestSubmitPlan_CP2_ApprovalExpiryFromConfig(t *testing.T) {
 	hi := after.Add(70 * time.Minute)
 	if req.ExpiresAt.Before(lo) || req.ExpiresAt.After(hi) {
 		t.Errorf("ExpiresAt = %v, want in [%v, %v] (config=1h)", req.ExpiresAt, lo, hi)
+	}
+}
+
+// ── H-04: SubmitPlan binds to the verified peer and the task row ─────────────
+
+// actorCapturePolicy records the OPA actor SubmitPlan evaluates the plan as.
+type actorCapturePolicy struct {
+	fakePolicyEngine
+	actor string
+}
+
+func (a *actorCapturePolicy) DecidePlan(ctx context.Context, p *planv1.Plan, pctx policy.PlanContext) (*policy.PlanDecision, error) {
+	a.actor = pctx.ActorSpiffeID
+	return a.fakePolicyEngine.DecidePlan(ctx, p, pctx)
+}
+
+func peerCtx(spiffeID string) context.Context {
+	return auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: spiffeID})
+}
+
+func TestSubmitPlan_SpiffeIDDiffersFromVerifiedPeerDenied(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
+
+	_, err := svc.SubmitPlan(peerCtx("spiffe://aikonos.com/sandbox/a"), &brokerv1.SubmitPlanRequest{
+		TaskId:          validTaskUUID(),
+		SandboxSpiffeId: "spiffe://aikonos.com/control-plane",
+		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if len(taskStore.transitions) != 0 {
+		t.Fatalf("a spoofed peer must not move the task, got %+v", taskStore.transitions)
+	}
+}
+
+func TestSubmitPlan_VerifiedPeerIsTheActor(t *testing.T) {
+	const peer = "spiffe://aikonos.com/agent-gateway"
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+	svc.deps.DevMode = false
+
+	if _, err := svc.SubmitPlan(peerCtx(peer), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+	}); err != nil {
+		t.Fatalf("SubmitPlan: %v", err)
+	}
+	if pol.actor != peer {
+		t.Fatalf("OPA actor = %q, want the verified peer %q", pol.actor, peer)
+	}
+}
+
+func TestSubmitPlan_NoVerifiedPeerOutsideDevModeUnauthenticated(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
+	svc.deps.DevMode = false
+
+	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId:          validTaskUUID(),
+		SandboxSpiffeId: "spiffe://aikonos.com/agent-gateway",
+		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+	})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("want Unauthenticated, got %v", err)
+	}
+}
+
+func TestSubmitPlan_PlanTenantDiffersFromTaskDenied(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
+
+	_, err := svc.SubmitPlan(peerCtx("spiffe://aikonos.com/agent-gateway"), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan:   makePlan("bbbbbbbb-0000-0000-0000-000000000002", []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if len(taskStore.transitions) != 0 {
+		t.Fatalf("a foreign tenant must not move the task, got %+v", taskStore.transitions)
+	}
+}
+
+// TestSubmitPlan_DevModeIgnoresClaimedPeer: with no verified identity a
+// dev-mode broker evaluates the plan as the fixed devUnverifiedPeer, never the
+// sandbox_spiffe_id the caller claims — a dev caller cannot pose as the gateway.
+func TestSubmitPlan_DevModeIgnoresClaimedPeer(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+
+	if _, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId:          validTaskUUID(),
+		SandboxSpiffeId: "spiffe://aikonos.com/agent-gateway",
+		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+	}); err != nil {
+		t.Fatalf("SubmitPlan: %v", err)
+	}
+	if pol.actor != devUnverifiedPeer {
+		t.Fatalf("OPA actor = %q, want %q", pol.actor, devUnverifiedPeer)
+	}
+}
+
+// TestInvokeTool_SubmitPlanTokenRoundTrip: the token SubmitPlan mints for a
+// step is accepted by InvokeTool on the same task — mintStepTokens and
+// InvokeTool's Authorize agree on the task id end to end.
+func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
+	m, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	var got toolproxy.Request
+	proxy := toolproxy.New(toolproxy.Config{}, zap.NewNop())
+	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
+		got = req
+		return map[string]any{"content": "ok"}, 1, nil
+	})
+	task := newFakeTask(db.TaskStateCreated)
+	task.CostBudget = 100
+	taskStore := &fakeTaskStore{task: task}
+	pol := &fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+	svc.deps.Capability, svc.deps.ToolProxy = m, proxy
+
+	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
+			makeStep(1, "web.fetch", map[string]any{"url": "https://example.com"}),
+		}),
+	})
+	if err != nil || res.Outcome != planv1.ValidationOutcome_APPROVED {
+		t.Fatalf("SubmitPlan: res=%v err=%v", res, err)
+	}
+	tok := res.CapabilityTokenIds[1]
+	if tok == "" {
+		t.Fatalf("no capability token for step 1: %v", res.CapabilityTokenIds)
+	}
+	if task.State != db.TaskStateApproved {
+		t.Fatalf("task state after SubmitPlan = %s, want APPROVED", task.State)
+	}
+
+	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
+	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId: validTaskUUID(), ToolId: "web.fetch", CapabilityToken: tok, Args: args,
+		UserId: task.OwnerUserID,
+	})
+	if err != nil || !resp.Success {
+		t.Fatalf("InvokeTool with the SubmitPlan token: resp=%v err=%v", resp, err)
+	}
+	if got.ToolID != "web.fetch" || got.TaskID != validTaskUUID() || got.UserID != task.OwnerUserID {
+		t.Fatalf("handler did not run as the task: %+v", got)
 	}
 }

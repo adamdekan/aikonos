@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -39,6 +40,12 @@ type fakeInvokeToolTaskStore struct {
 	incrementErr   error
 	transitions    [][2]db.TaskState
 	transErr       error
+}
+
+// executingTaskStore holds one EXECUTING task owned by owner — the minimum
+// InvokeTool needs to bind a call to a task row.
+func executingTaskStore(owner string) *fakeInvokeToolTaskStore {
+	return &fakeInvokeToolTaskStore{task: &db.Task{OwnerUserID: owner, State: db.TaskStateExecuting, CostBudget: 100}}
 }
 
 func (f *fakeInvokeToolTaskStore) Transition(_ context.Context, _, _ string, from, to db.TaskState) error {
@@ -106,7 +113,7 @@ func TestInvokeTool_PreGateDeniesWhenBudgetExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 10, CostConsumed: 10}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 10, CostConsumed: 10}}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, Tasks: tasks}}
 
 	// A garbage capability token would normally trip InvalidArgument first —
@@ -133,7 +140,7 @@ func TestInvokeTool_PostCallIncrementsCost(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 7, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
@@ -163,7 +170,7 @@ func TestInvokeTool_ZeroCostCallSkipsIncrement(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 0, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
@@ -192,7 +199,7 @@ func TestInvokeTool_CrossingBudgetEmitsAuditEventAndStillSucceeds(t *testing.T) 
 		return map[string]any{"status_code": 200}, 11, nil
 	})
 	tasks := &fakeInvokeToolTaskStore{
-		task:         &db.Task{CostBudget: 10, CostConsumed: 0},
+		task:         &db.Task{State: db.TaskStateExecuting, CostBudget: 10, CostConsumed: 0},
 		incrementErr: fmt.Errorf("cost budget exceeded: consumed=11 budget=10: %w", db.ErrBudgetExceeded),
 	}
 	aud := &fakeInvokeAudit{}
@@ -243,7 +250,7 @@ func TestInvokeTool_IncrementCostOtherErrorDoesNotFailCall(t *testing.T) {
 		return map[string]any{"status_code": 200}, 3, nil
 	})
 	tasks := &fakeInvokeToolTaskStore{
-		task:         &db.Task{CostBudget: 100, CostConsumed: 0},
+		task:         &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0},
 		incrementErr: errors.New("transient db error"),
 	}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
@@ -273,7 +280,7 @@ func TestInvokeTool_RecordsToolInvokeDuration(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 0, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	tm := &fakeTaskMetrics{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, TaskMetrics: tm}}
 
@@ -303,7 +310,7 @@ func TestInvokeTool_NilTaskMetrics_NoPanic(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 0, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
@@ -342,7 +349,8 @@ func TestInvokeTool_ObservesBaselineOnSuccessWithAgentID(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 9, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	bound := uuid.New()
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0, AgentID: &bound}}
 	bl := &fakeBaselineRecorder{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
 
@@ -350,7 +358,7 @@ func TestInvokeTool_ObservesBaselineOnSuccessWithAgentID(t *testing.T) {
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
 	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
-		TenantId: "tenant-x", AgentId: "agent-1",
+		TenantId: "tenant-x", AgentId: bound.String(),
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
 	}
@@ -358,7 +366,7 @@ func TestInvokeTool_ObservesBaselineOnSuccessWithAgentID(t *testing.T) {
 		t.Fatalf("expected exactly one Observe call, got %d: %+v", len(bl.calls), bl.calls)
 	}
 	got := bl.calls[0]
-	if got.tenant != "tenant-x" || got.agent != "agent-1" || got.tool != "web.fetch" || got.costUnits != 9 {
+	if got.tenant != "tenant-x" || got.agent != bound.String() || got.tool != "web.fetch" || got.costUnits != 9 {
 		t.Fatalf("unexpected Observe args: %+v", got)
 	}
 }
@@ -374,7 +382,7 @@ func TestInvokeTool_NoBaselineObserveWithoutAgentID(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200}, 9, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	bl := &fakeBaselineRecorder{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
 
@@ -397,7 +405,7 @@ func TestInvokeTool_NoBaselineObserveOnDenial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 10, CostConsumed: 10}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 10, CostConsumed: 10}}
 	bl := &fakeBaselineRecorder{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, Tasks: tasks, Baseline: bl}}
 
@@ -424,7 +432,7 @@ func TestInvokeTool_NoBaselineObserveOnToolFailure(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return nil, 0, errors.New("tool failed")
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	bl := &fakeBaselineRecorder{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
 
@@ -466,7 +474,7 @@ func TestInvokeTool_EmitsResultFlaggedWhenInjectionFlagsPresent(t *testing.T) {
 			"injection_flags": []any{"instruction_tag", "role_override"},
 		}, 1, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	aud := &fakeInvokeAudit{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
@@ -512,7 +520,7 @@ func TestInvokeTool_NoResultFlaggedWhenClean(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"content": "clean text"}, 1, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	aud := &fakeInvokeAudit{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
@@ -545,7 +553,7 @@ func TestInvokeTool_InvalidUTF8ResultIsToolFailureNotInternal(t *testing.T) {
 		// rejects. Stands in for a handler that skipped decodeToUTF8.
 		return map[string]any{"content": "M\xe1jer"}, 5, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, CostConsumed: 0}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	aud := &fakeInvokeAudit{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
@@ -690,18 +698,19 @@ func memoryArgs(t *testing.T, fields map[string]any) *structpb.Struct {
 // TestInvokeTool_RequestAgentIDComesFromTaskRow pins the contract memory's
 // scope=agent resolution depends on: the bound agent id reaching the proxy is
 // the task row's, never the caller-supplied req.AgentId — otherwise a caller
-// could name another agent and read or overwrite its memory tree.
+// could name another agent and read or overwrite its memory tree. A differing
+// req.AgentId is refused outright (TestInvokeTool_Binding_AgentMismatchDenied);
+// the gateway's "agent:<uuid>" form of the same agent is accepted.
 func TestInvokeTool_RequestAgentIDComesFromTaskRow(t *testing.T) {
 	bound := uuid.New()
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, AgentID: &bound}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, AgentID: &bound}}
 	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 
 	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
-		Args: memoryArgs(t, map[string]any{"scope": "agent", "id": "c1"}),
-		// A different agent id on the request must have no effect.
-		AgentId: uuid.New().String(),
+		Args:    memoryArgs(t, map[string]any{"scope": "agent", "id": "c1"}),
+		AgentId: "agent:" + bound.String(),
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
 	}
@@ -715,7 +724,7 @@ func TestInvokeTool_RequestAgentIDComesFromTaskRow(t *testing.T) {
 // one — scope=agent must fail in the handler rather than resolve a bundle.
 func TestInvokeTool_RequestAgentIDEmptyForPersonalTask(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100}}
 	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 
 	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
@@ -734,7 +743,7 @@ func TestInvokeTool_RequestAgentIDEmptyForPersonalTask(t *testing.T) {
 // and lets a member through.
 func TestInvokeTool_MemoryGroupScope_MemberAllowed(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: "owner@example.com"}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com"}}
 	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 	pol := &fakeSkillPolicy{enabled: true, granted: true}
 	svc.skillPolicy = pol
@@ -742,8 +751,6 @@ func TestInvokeTool_MemoryGroupScope_MemberAllowed(t *testing.T) {
 	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "id": "c1"}),
-		// A caller-named user must not be what membership is checked for.
-		UserId: "attacker@example.com",
 	})
 	if err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -764,7 +771,7 @@ func TestInvokeTool_MemoryGroupScope_MemberAllowed(t *testing.T) {
 // group-membership reason.
 func TestInvokeTool_MemoryGroupScope_NonMemberDenied(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: "owner@example.com"}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com"}}
 	svc, m, aud := newMemorySvc(t, "memory.write", tasks, &got)
 	svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: false}
 
@@ -793,7 +800,7 @@ func TestInvokeTool_MemoryGroupScope_NonMemberDenied(t *testing.T) {
 // closed on an FGA transport error.
 func TestInvokeTool_MemoryGroupScope_CheckErrorDenied(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: "owner@example.com"}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com"}}
 	svc, m, _ := newMemorySvc(t, "memory.read", tasks, &got)
 	svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: true, err: errors.New("openfga unreachable")}
 
@@ -813,7 +820,7 @@ func TestInvokeTool_MemoryGroupScope_CheckErrorDenied(t *testing.T) {
 // no group_id is denied without an FGA call — there is no group to check.
 func TestInvokeTool_MemoryGroupScope_MissingGroupIDDenied(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: "owner@example.com"}}
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com"}}
 	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 	pol := &fakeSkillPolicy{enabled: true, granted: true}
 	svc.skillPolicy = pol
@@ -830,13 +837,12 @@ func TestInvokeTool_MemoryGroupScope_MissingGroupIDDenied(t *testing.T) {
 	}
 }
 
-// TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied verifies the gate fails
-// closed when the task row could not be loaded: without an owner there is no
-// identity to check membership for, and handing OpenFGA a bare "user:" to
-// reject would make the deny depend on the store's input validation.
+// TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied verifies a group-scoped
+// memory call fails closed when the task row does not exist: the task binding
+// denies first, so no membership check ever runs for an unknown owner.
 func TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied(t *testing.T) {
 	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{getErr: errors.New("postgres unreachable")}
+	tasks := &fakeInvokeToolTaskStore{getErr: db.ErrNotFound}
 	svc, m, aud := newMemorySvc(t, "memory.write", tasks, &got)
 	pol := &fakeSkillPolicy{enabled: true, granted: true} // would allow if consulted
 	svc.skillPolicy = pol
@@ -854,8 +860,8 @@ func TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied(t *testing.T) {
 	if got.ToolID != "" {
 		t.Fatalf("handler must not run on a denied call, got %+v", got)
 	}
-	if !memoryDeniedReason(aud, "owner") {
-		t.Fatalf("expected a tool-denied event naming the unknown owner, got %+v", aud.events)
+	if !memoryDeniedReason(aud, "task_unbound") {
+		t.Fatalf("expected a tool-denied event naming the unbound task, got %+v", aud.events)
 	}
 }
 
@@ -864,7 +870,7 @@ func TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied(t *testing.T) {
 func TestInvokeTool_MemoryGroupScope_EmptyOwnerDenied(t *testing.T) {
 	for _, owner := range []string{"", "   "} {
 		var got toolproxy.Request
-		tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: owner}}
+		tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: owner}}
 		svc, m, aud := newMemorySvc(t, "memory.read", tasks, &got)
 		pol := &fakeSkillPolicy{enabled: true, granted: true}
 		svc.skillPolicy = pol
@@ -919,7 +925,7 @@ func TestInvokeTool_MemoryGroupPreGateSkipped(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bound := uuid.New()
 			var got toolproxy.Request
-			tasks := &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 100, OwnerUserID: "owner@example.com", AgentID: &bound}}
+			tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com", AgentID: &bound}}
 			svc, m, _ := newMemorySvc(t, tc.toolID, tasks, &got)
 			pol := &fakeSkillPolicy{enabled: true, granted: false} // would deny if consulted
 			svc.skillPolicy = pol
@@ -1004,11 +1010,11 @@ func TestEmitStatus_TaskNotFound_ReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestEmitStatus_TaskGetInfraError_ReturnsInternal verifies a non-ErrNotFound
+// TestEmitStatus_TaskGetInfraError_ReturnsUnavailable verifies a non-ErrNotFound
 // failure from the task store's Get (conn acquire, withTenant, scan — infra
-// faults) maps to Internal, not NotFound, matching CancelTask's handling of
+// faults) maps to Unavailable, not NotFound, matching InvokeTool's handling of
 // the same distinction.
-func TestEmitStatus_TaskGetInfraError_ReturnsInternal(t *testing.T) {
+func TestEmitStatus_TaskGetInfraError_ReturnsUnavailable(t *testing.T) {
 	svc := newEmitStatusSvc(&fakeEmitStatusTaskStore{getErr: errors.New("conn acquire failed")})
 
 	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
@@ -1016,8 +1022,8 @@ func TestEmitStatus_TaskGetInfraError_ReturnsInternal(t *testing.T) {
 		TenantId: "tenant-1",
 		Status:   brokerv1.TaskStatus_COMPLETED,
 	})
-	if status.Code(err) != codes.Internal {
-		t.Fatalf("want Internal, got %v", err)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
 	}
 }
 
@@ -1061,5 +1067,286 @@ func TestEmitStatus_Success_TransitionsAndReturnsNoError(t *testing.T) {
 	}
 	if len(store.transitions) != 1 || store.transitions[0] != [2]db.TaskState{db.TaskStateExecuting, db.TaskStateCompleted} {
 		t.Fatalf("unexpected transitions recorded: %+v", store.transitions)
+	}
+}
+
+// ── H-02: InvokeTool runs as the task row, not the request ──────────────────
+
+// newBindingSvc wires a SandboxService whose web.fetch handler captures the
+// toolproxy.Request it is dispatched with, plus a baseline recorder.
+func newBindingSvc(t *testing.T, tasks taskStore, got *toolproxy.Request) (*SandboxService, string, *fakeBaselineRecorder) {
+	t.Helper()
+	m, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	proxy := toolproxy.New(toolproxy.Config{}, zap.NewNop())
+	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
+		*got = req
+		return map[string]any{"content": "ok"}, 1, nil
+	})
+	bl := &fakeBaselineRecorder{}
+	svc := &SandboxService{deps: Deps{
+		Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: &fakeInvokeAudit{}, Baseline: bl,
+	}}
+	return svc, mintForScope(t, m, "web:read"), bl
+}
+
+const (
+	bindTenantA = "aaaaaaaa-0000-0000-0000-000000000001"
+	bindTenantB = "bbbbbbbb-0000-0000-0000-000000000002"
+	bindOwner   = "owner@example.com"
+)
+
+func boundTask(agent *uuid.UUID) *db.Task {
+	return &db.Task{
+		TenantID: uuid.MustParse(bindTenantA), OwnerUserID: bindOwner, AgentID: agent,
+		State: db.TaskStateExecuting, CostBudget: 100,
+	}
+}
+
+func fetchArgs(t *testing.T) *structpb.Struct {
+	t.Helper()
+	return memoryArgs(t, map[string]any{"url": "https://example.com"})
+}
+
+func TestInvokeTool_Binding_UnknownTaskDenied(t *testing.T) {
+	for getErr, want := range map[error]codes.Code{
+		db.ErrNotFound:                     codes.PermissionDenied,
+		errors.New("postgres unreachable"): codes.Unavailable, // no decision, no tool.denied
+	} {
+		var got toolproxy.Request
+		svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{getErr: getErr}, &got)
+		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			TaskId: "task-x", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+			TenantId: bindTenantA, UserId: bindOwner,
+		})
+		if status.Code(err) != want {
+			t.Fatalf("Get error %v: want %v, got %v", getErr, want, err)
+		}
+		if denied := svc.deps.Audit.(*fakeInvokeAudit).events; (want == codes.Unavailable) != (len(denied) == 0) {
+			t.Fatalf("Get error %v: tool.denied events = %d", getErr, len(denied))
+		}
+		if got.ToolID != "" {
+			t.Fatalf("Get error %v: handler must not run without a task row", getErr)
+		}
+	}
+}
+
+func TestInvokeTool_Binding_UserMismatchDenied(t *testing.T) {
+	var got toolproxy.Request
+	svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		TenantId: bindTenantA, UserId: "victim@example.com",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if got.ToolID != "" {
+		t.Fatal("handler must not run for a foreign user_id")
+	}
+}
+
+func TestInvokeTool_Binding_TenantMismatchDenied(t *testing.T) {
+	var got toolproxy.Request
+	svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		TenantId: bindTenantB, UserId: bindOwner,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if got.ToolID != "" {
+		t.Fatal("handler must not run for a foreign tenant_id")
+	}
+}
+
+// A non-MCP tool: before the fix only mcp: calls compared req.AgentId with the
+// task's agent, so any other tool let the caller pick its RPM/baseline key.
+func TestInvokeTool_Binding_AgentMismatchDenied(t *testing.T) {
+	bound := uuid.New()
+	var got toolproxy.Request
+	svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(&bound)}, &got)
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		TenantId: bindTenantA, UserId: bindOwner, AgentId: uuid.New().String(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if got.ToolID != "" || len(bl.calls) != 0 {
+		t.Fatal("handler and baseline must not run for a foreign agent_id")
+	}
+}
+
+func TestInvokeTool_Binding_NonExecutableTaskFailedPrecondition(t *testing.T) {
+	for _, st := range []db.TaskState{
+		db.TaskStateCompleted, db.TaskStateFailed, db.TaskStateCancelled, db.TaskStateDenied,
+		db.TaskStateTimeout, db.TaskStateAwaitingApproval, db.TaskStateValidating,
+	} {
+		task := boundTask(nil)
+		task.State = st
+		tasks := &fakeInvokeToolTaskStore{task: task}
+		var got toolproxy.Request
+		svc, tok, _ := newBindingSvc(t, tasks, &got)
+		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+			TenantId: bindTenantA, UserId: bindOwner,
+		})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("state %s: want FailedPrecondition, got %v", st, err)
+		}
+		if got.ToolID != "" || len(tasks.transitions) != 0 {
+			t.Fatalf("state %s: no execution and no transition expected", st)
+		}
+	}
+}
+
+// The happy path: matching or empty request fields execute, and the proxy runs
+// as the row's owner, tenant and agent.
+func TestInvokeTool_Binding_RunsAsTaskOwner(t *testing.T) {
+	bound := uuid.New()
+	for name, req := range map[string]*brokerv1.InvokeToolRequest{
+		"matching": {TenantId: bindTenantA, UserId: bindOwner, AgentId: bound.String()},
+		"empty":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got toolproxy.Request
+			svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(&bound)}, &got)
+			req.TaskId, req.ToolId, req.CapabilityToken, req.Args = "task-1", "web.fetch", tok, fetchArgs(t)
+			resp, err := svc.InvokeTool(context.Background(), req)
+			if err != nil || !resp.Success {
+				t.Fatalf("InvokeTool: resp=%v err=%v", resp, err)
+			}
+			if req.AgentId != bound.String() {
+				t.Fatalf("req.AgentId = %q after binding, want the bound agent", req.AgentId)
+			}
+			if got.UserID != bindOwner || got.TenantID != bindTenantA || got.AgentID != bound.String() {
+				t.Fatalf("proxy request = (user %q, tenant %q, agent %q), want the task row's", got.UserID, got.TenantID, got.AgentID)
+			}
+			if len(bl.calls) != 1 || bl.calls[0].agent != bound.String() || bl.calls[0].tenant != bindTenantA {
+				t.Fatalf("baseline must key on the bound agent and row tenant, got %+v", bl.calls)
+			}
+		})
+	}
+}
+
+// An unbound (personal/interactive) task ignores the gateway's session agent
+// id: it neither fails the call nor keys the baseline (M-07).
+func TestInvokeTool_Binding_UnboundTaskIgnoresRequestAgent(t *testing.T) {
+	var got toolproxy.Request
+	svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
+	req := &brokerv1.InvokeToolRequest{
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		TenantId: bindTenantA, UserId: bindOwner, AgentId: "owner@example.com-agent",
+	}
+	resp, err := svc.InvokeTool(context.Background(), req)
+	if err != nil || !resp.Success {
+		t.Fatalf("InvokeTool: resp=%v err=%v", resp, err)
+	}
+	// Every audit event after the binding reads req, so the caller's agent
+	// claim must be gone from it.
+	if req.AgentId != "" {
+		t.Fatalf("req.AgentId = %q after binding, want the bound agent (none)", req.AgentId)
+	}
+	if got.AgentID != "" || len(bl.calls) != 0 {
+		t.Fatalf("unbound task: want no agent and no baseline, got agent %q, baseline %+v", got.AgentID, bl.calls)
+	}
+}
+
+// ── H-03: capability tokens expire and are bound to one task ────────────────
+
+// TestInvokeTool_CapabilityTokenBinding: a fresh token for the call's task is
+// accepted; a token for another task, a task-less delegation token and an
+// expired token are each denied with their own audit reason before any handler
+// runs.
+func TestInvokeTool_CapabilityTokenBinding(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		mint       func(m *capability.Minter) ([]byte, error)
+		advance    time.Duration
+		taskID     string
+		wantReason string // "" = allowed
+	}{
+		"matching task, fresh": {
+			mint:   func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			taskID: "task-1",
+		},
+		"token for T1 used on T2": {
+			mint:       func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			taskID:     "task-2",
+			wantReason: "capability_task_mismatch",
+		},
+		"task-less delegation token": {
+			mint: func(m *capability.Minter) ([]byte, error) {
+				return m.MintTTL("bob", "", []string{"web:read"}, envelopeTTL)
+			},
+			taskID:     "task-1",
+			wantReason: "capability_task_mismatch",
+		},
+		"expired": {
+			mint:       func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			advance:    capability.DefaultTTL,
+			taskID:     "task-1",
+			wantReason: "capability_expired",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got toolproxy.Request
+			svc, _, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
+			m := svc.deps.Capability
+			clock := now
+			m.Now = func() time.Time { return clock }
+			raw, err := tc.mint(m)
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			clock = clock.Add(tc.advance)
+
+			resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+				TaskId: tc.taskID, ToolId: "web.fetch", Args: fetchArgs(t),
+				CapabilityToken: base64.StdEncoding.EncodeToString(raw),
+			})
+			if tc.wantReason == "" {
+				if err != nil || !resp.Success {
+					t.Fatalf("InvokeTool: resp=%v err=%v", resp, err)
+				}
+				return
+			}
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("want PermissionDenied, got %v", err)
+			}
+			if got.ToolID != "" {
+				t.Fatal("handler must not run on a capability denial")
+			}
+			events := svc.deps.Audit.(*fakeInvokeAudit).events
+			if len(events) == 0 {
+				t.Fatal("want a tool.denied audit event")
+			}
+			if r := events[len(events)-1].Context.Fields["reason"].GetStringValue(); r != tc.wantReason {
+				t.Fatalf("audit reason = %q, want %q", r, tc.wantReason)
+			}
+		})
+	}
+}
+
+// ── H-04: EmitStatus binds to the task row's tenant ─────────────────────────
+
+func TestEmitStatus_ForeignTenantDenied(t *testing.T) {
+	store := &fakeEmitStatusTaskStore{task: &db.Task{TenantID: uuid.MustParse(bindTenantA), State: db.TaskStateExecuting}}
+	svc := newEmitStatusSvc(store)
+
+	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+		TaskId:   "task-1",
+		TenantId: bindTenantB,
+		Status:   brokerv1.TaskStatus_FAILED,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("a foreign tenant must not move the task, got %+v", store.transitions)
 	}
 }

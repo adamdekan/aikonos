@@ -40,6 +40,7 @@ func TestInvokeTool_DisabledTool_EmitsDenyAndReturnsPermissionDenied(t *testing.
 		Audit:    em,
 		TenantID: "aikonos-dev",
 		Config:   cfg,
+		Tasks:    executingTaskStore("alice@example.com"),
 	})
 
 	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
@@ -90,6 +91,7 @@ func TestInvokeTool_EmptyDisabledTools_DoesNotDeny(t *testing.T) {
 		TenantID:   "aikonos-dev",
 		Config:     cfg,
 		Capability: m,
+		Tasks:      executingTaskStore("alice@example.com"),
 	})
 
 	// No capability token → capability gate fires "capability token required",
@@ -116,6 +118,7 @@ func TestInvokeTool_NilConfig_NoPanic(t *testing.T) {
 	svc := NewSandboxService(Deps{
 		Logger:   zap.NewNop(),
 		TenantID: "aikonos-dev",
+		Tasks:    executingTaskStore("alice@example.com"),
 		// Config intentionally nil — nopConfig fallback must activate
 	})
 
@@ -166,10 +169,11 @@ func TestSubmitPlan_DisabledTool_DeniesStep(t *testing.T) {
 	t.Cleanup(sub.Unsubscribe)
 
 	svc := &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  taskStore,
-		Config: cfg,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   taskStore,
+		Config:  cfg,
 	}, policy: pol}
 
 	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
@@ -220,6 +224,7 @@ func TestInvokeTool_UnreadableDisabledTools_FailsClosed(t *testing.T) {
 		Audit:    em,
 		TenantID: "aikonos-dev",
 		Config:   cfg,
+		Tasks:    executingTaskStore("alice@example.com"),
 	})
 
 	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
@@ -258,10 +263,11 @@ func TestSubmitPlan_UnreadableSettings_FailsClosed(t *testing.T) {
 		t.Fatalf("NewEmitter: %v", err)
 	}
 	svc := &SandboxService{deps: Deps{
-		Logger: zap.NewNop(),
-		Audit:  em,
-		Tasks:  taskStore,
-		Config: cfg,
+		DevMode: true,
+		Logger:  zap.NewNop(),
+		Audit:   em,
+		Tasks:   taskStore,
+		Config:  cfg,
 	}, policy: pol}
 
 	_, err = svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{

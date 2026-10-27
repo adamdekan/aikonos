@@ -172,6 +172,7 @@ func xferDeps(t *testing.T, fgaURL, root string, store *memEnvelopeStore) (Deps,
 		TenantID:  "aikonos-dev",
 		Workspace: WorkspaceDeps{Local: workspacefs.New(root)},
 		Tasks:     store,
+		DevMode:   true, // south RPCs: any trust-domain peer, GatewaySpiffeID unset
 	}, em
 }
 

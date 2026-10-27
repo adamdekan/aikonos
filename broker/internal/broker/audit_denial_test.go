@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/google/uuid"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/db"
@@ -20,6 +19,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
+	"github.com/google/uuid"
 )
 
 // receiveAuditEvent drains the subscription until an event with the given
@@ -160,9 +160,10 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		Audit:      em,
 		Mcp:        McpDeps{Connections: repo},
 		TenantID:   "aikonos-dev",
+		Tasks:      executingTaskStore("alice@example.com"),
 	})
 
-	tok := mintMcpToken(t, m, connID)
+	tok := mintMcpToken(t, m, connID, "task-mcp-deny-1")
 	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId:          "task-mcp-deny-1",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),

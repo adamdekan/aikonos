@@ -167,8 +167,13 @@ type Deps struct {
 	Network *db.NetworkRuleRepo
 	ACL     aclDecider
 	// GatewaySpiffeID is the agent-gateway SVID allowed to call the south-bound
-	// scheduler claim/report RPCs. Empty ⇒ any trust-domain peer (dev).
+	// scheduler claim/report RPCs. Empty ⇒ any trust-domain peer in DevMode,
+	// no peer at all otherwise.
 	GatewaySpiffeID string
+	// DevMode mirrors AIKONOS_DEV_MODE. The south surface relaxes only here: an
+	// unset GatewaySpiffeID admits any trust-domain peer, and a call with no
+	// verified SPIFFE identity on the context falls back to the request's claim.
+	DevMode bool
 
 	// KnownUsers seeds the admin principal directory (the future user-directory
 	// seam). Emails without the "user:" prefix.

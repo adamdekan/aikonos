@@ -1,10 +1,14 @@
 package capability
 
 import (
+	"crypto/rand"
 	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	biscuit "github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/biscuit-auth/biscuit-go/v2/parser"
 )
 
 func newMinter(t *testing.T) *Minter {
@@ -23,13 +27,13 @@ func TestMintAndAuthorize(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	if err := m.Authorize(tok, "siem:read"); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1"); err != nil {
 		t.Errorf("granted scope siem:read should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "slack:write"); err != nil {
+	if err := m.Authorize(tok, "slack:write", "task-1"); err != nil {
 		t.Errorf("granted scope slack:write should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "db:drop"); err == nil {
+	if err := m.Authorize(tok, "db:drop", "task-1"); err == nil {
 		t.Error("ungranted scope db:drop must be denied")
 	}
 }
@@ -63,7 +67,7 @@ func TestAuthorizeUnderConcurrencyDoesNotTimeOut(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // release together, so the calls genuinely contend
-			errs[i] = m.Authorize(tok, "web:read")
+			errs[i] = m.Authorize(tok, "web:read", "task-1")
 		}(i)
 	}
 	close(start)
@@ -92,7 +96,7 @@ func TestAuthorizeTimeoutIsNotADenial(t *testing.T) {
 	authorizeMaxDuration = time.Nanosecond // no evaluation can finish in 1ns
 	t.Cleanup(func() { authorizeMaxDuration = orig })
 
-	err = m.Authorize(tok, "web:read")
+	err = m.Authorize(tok, "web:read", "task-1")
 	if err == nil {
 		t.Fatal("expected a failure when the datalog budget is exhausted")
 	}
@@ -111,7 +115,7 @@ func TestAuthorizeDenialIsNotATimeout(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	err = m.Authorize(tok, "db:drop")
+	err = m.Authorize(tok, "db:drop", "task-1")
 	if err == nil {
 		t.Fatal("ungranted scope must be denied")
 	}
@@ -140,11 +144,11 @@ func TestAttenuationNarrows(t *testing.T) {
 		t.Fatalf("Attenuate: %v", err)
 	}
 
-	if err := m.Authorize(child, "siem:read"); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1"); err != nil {
 		t.Errorf("attenuated scope siem:read should still be allowed: %v", err)
 	}
 	// slack:write was in the root but dropped by attenuation.
-	if err := m.Authorize(child, "slack:write"); err == nil {
+	if err := m.Authorize(child, "slack:write", "task-1"); err == nil {
 		t.Error("attenuated-away scope slack:write must be denied on the child")
 	}
 }
@@ -163,10 +167,10 @@ func TestAttenuationCannotWiden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attenuate: %v", err)
 	}
-	if err := m.Authorize(child, "db:drop"); err == nil {
+	if err := m.Authorize(child, "db:drop", "task-1"); err == nil {
 		t.Error("attenuation must never grant a scope absent from the root token")
 	}
-	if err := m.Authorize(child, "siem:read"); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1"); err != nil {
 		t.Errorf("siem:read should remain allowed: %v", err)
 	}
 }
@@ -184,11 +188,11 @@ func TestChainedAttenuationIntersects(t *testing.T) {
 	}
 
 	// Effective = {a,b,c} ∩ {a,b} ∩ {b,c} = {b}.
-	if err := m.Authorize(step2, "b"); err != nil {
+	if err := m.Authorize(step2, "b", "task-1"); err != nil {
 		t.Errorf("b survives both attenuations: %v", err)
 	}
 	for _, s := range []string{"a", "c"} {
-		if err := m.Authorize(step2, s); err == nil {
+		if err := m.Authorize(step2, s, "task-1"); err == nil {
 			t.Errorf("scope %q dropped by an attenuation must be denied", s)
 		}
 	}
@@ -199,7 +203,7 @@ func TestForeignRootKeyRejected(t *testing.T) {
 	tok, _ := m.Mint("alice", "task-1", []string{"siem:read"})
 
 	other := newMinter(t)
-	if err := other.Authorize(tok, "siem:read"); err == nil {
+	if err := other.Authorize(tok, "siem:read", "task-1"); err == nil {
 		t.Error("a token must not verify under a different root key")
 	}
 }
@@ -208,7 +212,7 @@ func TestTamperedTokenRejected(t *testing.T) {
 	m := newMinter(t)
 	tok, _ := m.Mint("alice", "task-1", []string{"siem:read"})
 	tok[len(tok)-1] ^= 0xFF // flip bits in the signature region
-	if err := m.Authorize(tok, "siem:read"); err == nil {
+	if err := m.Authorize(tok, "siem:read", "task-1"); err == nil {
 		t.Error("a tampered token must be rejected")
 	}
 }
@@ -223,7 +227,134 @@ func TestRoundTripMinterFromKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if err := m.Authorize(tok, "siem:read"); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1"); err != nil {
 		t.Errorf("Authorize: %v", err)
+	}
+}
+
+// fixedClock pins the minter's clock and returns a setter to move it.
+func fixedClock(m *Minter) func(time.Time) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	m.Now = func() time.Time { return now }
+	return func(t time.Time) { now = t }
+}
+
+// H-03: a token past its TTL is denied as ErrExpired, a fresh one is allowed.
+func TestAuthorizeExpiredTokenDenied(t *testing.T) {
+	m := newMinter(t)
+	m.TTL = time.Minute
+	set := fixedClock(m)
+	start := m.Now()
+	tok, err := m.Mint("alice", "task-1", []string{"web:read"})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	set(start.Add(59 * time.Second))
+	if err := m.Authorize(tok, "web:read", "task-1"); err != nil {
+		t.Fatalf("token inside its TTL must authorize: %v", err)
+	}
+	set(start.Add(time.Minute))
+	err = m.Authorize(tok, "web:read", "task-1")
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("want ErrExpired at exp, got %v", err)
+	}
+}
+
+// H-03: an attenuated child inherits the parent's expiry.
+func TestAttenuatedTokenKeepsExpiry(t *testing.T) {
+	m := newMinter(t)
+	set := fixedClock(m)
+	root, _ := m.Mint("alice", "task-1", []string{"a", "b"})
+	child, err := Attenuate(root, []string{"a"})
+	if err != nil {
+		t.Fatalf("Attenuate: %v", err)
+	}
+	set(m.Now().Add(DefaultTTL + time.Second))
+	if err := m.Authorize(child, "a", "task-1"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("want ErrExpired, got %v", err)
+	}
+}
+
+// H-03: a token minted for T1 is denied on T2; an empty task id or a task-less
+// (delegation) token is never accepted.
+func TestAuthorizeTaskBinding(t *testing.T) {
+	m := newMinter(t)
+	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
+	if err := m.Authorize(tok, "web:read", "T1"); err != nil {
+		t.Fatalf("matching task must authorize: %v", err)
+	}
+	if err := m.Authorize(tok, "web:read", "T2"); !errors.Is(err, ErrTaskMismatch) {
+		t.Fatalf("want ErrTaskMismatch for T2, got %v", err)
+	}
+	if err := m.Authorize(tok, "web:read", ""); !errors.Is(err, ErrTaskMismatch) {
+		t.Fatalf("want ErrTaskMismatch for empty task id, got %v", err)
+	}
+
+	deleg, _ := m.MintTTL("bob", "", []string{"web:read"}, 72*time.Hour)
+	if err := m.Authorize(deleg, "web:read", "T1"); !errors.Is(err, ErrTaskMismatch) {
+		t.Fatalf("task-less delegation token must be denied, got %v", err)
+	}
+}
+
+// H-03: a holder cannot rebind a token by appending a block with its own
+// task() / expires() facts — authority checks never see block facts.
+func TestAppendedBlockCannotForgeTaskOrExpiry(t *testing.T) {
+	m := newMinter(t)
+	set := fixedClock(m)
+	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
+	parsed, err := biscuit.Unmarshal(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb := parsed.CreateBlock()
+	blk, err := parser.FromStringBlock(`task("T2"); expires(2099-01-01T00:00:00Z);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bb.AddBlock(blk); err != nil {
+		t.Fatal(err)
+	}
+	forged, err := parsed.Append(rand.Reader, bb.Build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := forged.Serialize()
+	if err := m.Authorize(raw, "web:read", "T2"); !errors.Is(err, ErrTaskMismatch) {
+		t.Fatalf("forged task fact must not bind, got %v", err)
+	}
+	set(m.Now().Add(DefaultTTL + time.Second))
+	if err := m.Authorize(raw, "web:read", "T1"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("forged expires fact must not extend, got %v", err)
+	}
+}
+
+// H-03: a pre-TTL token (no expires fact) is refused even though it carries a
+// valid signature, task and right.
+func TestLegacyTokenWithoutExpiryDenied(t *testing.T) {
+	m := newMinter(t)
+	b := biscuit.NewBuilder(m.priv)
+	for _, f := range []biscuit.Fact{stringFact("task", "T1"), stringFact("right", "web:read")} {
+		if err := b.AddAuthorityFact(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tok, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := tok.Serialize()
+	if err := m.Authorize(raw, "web:read", "T1"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("want ErrExpired for a token with no lifetime, got %v", err)
+	}
+}
+
+// A plain scope denial on a live, correctly bound token keeps its generic
+// classification — not expired, not task mismatch.
+func TestScopeDenialNotMislabelled(t *testing.T) {
+	m := newMinter(t)
+	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
+	err := m.Authorize(tok, "db:drop", "T1")
+	if err == nil || errors.Is(err, ErrExpired) || errors.Is(err, ErrTaskMismatch) {
+		t.Fatalf("want a plain denial, got %v", err)
 	}
 }

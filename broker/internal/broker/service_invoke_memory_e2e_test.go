@@ -36,7 +36,7 @@ func TestInvokeTool_MemoryRoundTripThroughRealPlugin(t *testing.T) {
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  toolproxy.New(toolproxy.Config{WorkspaceFS: workspacefs.New(root)}, zap.NewNop()),
-		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{CostBudget: 1000}},
+		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 1000, OwnerUserID: "user-1"}},
 		Audit:      &fakeInvokeAudit{},
 	}}
 
