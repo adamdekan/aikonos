@@ -136,6 +136,7 @@ describe("Agents.vue", () => {
         // Derived from the model choice — the two are one selection now.
         preferredProvider: "openai",
         gatewayEnabled: false,
+        serviceAgent: false,
       }),
     );
     w.unmount();

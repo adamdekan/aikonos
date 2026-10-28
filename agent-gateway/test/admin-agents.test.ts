@@ -70,6 +70,7 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     preferredProvider: "openai",
     soul: "",
     gatewayEnabled: false,
+    serviceAgent: false,
   };
 
   const json = agentJson(agent);
@@ -94,6 +95,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     preferredProvider: "",
     soul: "",
     gatewayEnabled: false,
+    serviceAgent: false,
   };
 
   const json = agentJson(agent);
@@ -120,6 +122,8 @@ test("agentInputFromBody — POST path: id is empty string, provider fields forw
   assert.equal(input.id, "");
   assert.deepEqual(input.allowedProviders, ["openai", "anthropic"]);
   assert.equal(input.preferredProvider, "anthropic");
+  assert.equal(input.serviceAgent, false, "omitted serviceAgent defaults to false");
+  assert.equal(agentInputFromBody("", { serviceAgent: true }).serviceAgent, true);
 });
 
 test("agentInputFromBody — PATCH path: id comes from param, not body", () => {

@@ -21,6 +21,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -754,4 +755,76 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── AG-17 S5: a key must belong to a service agent ──────────────────────────
+
+// resolveForAgent mints a key for the test agent (service flag as given) and
+// resolves it under identity.obo=mode ("" = schema default, audit).
+func resolveForAgent(t *testing.T, serviceAgent bool, mode string) (*brokerv1.ResolveAgentApiKeyResponse, *fakeInvokeAudit) {
+	t.Helper()
+	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	agents := agentStoreWithAgent(t)
+	agents.(*fakeAgentStore).agents[0].ServiceAgent = serviceAgent
+	deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, &fakeApiKeyStore{}, agents)
+	aud := &fakeInvokeAudit{}
+	deps.Audit = aud
+	if mode != "" {
+		cfg := newFakeConfigStore()
+		cfg.values[apiKeyTestTenantUUID+":identity.obo"] = mode
+		deps.Config = cfg
+	}
+	mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID,
+	})
+	if err != nil {
+		t.Fatalf("MintAgentApiKey: %v", err)
+	}
+	resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
+		KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID,
+	})
+	if err != nil {
+		t.Fatalf("ResolveAgentApiKey: %v", err)
+	}
+	return resp, aud
+}
+
+func serviceAgentDenied(aud *fakeInvokeAudit) bool {
+	for _, ev := range aud.events {
+		if ev.EventType == "aikonos.broker.apikey.denied" && ev.Decision == auditv1.PolicyDecision_DENY &&
+			ev.Context.Fields["reason"].GetStringValue() == "service_agent_required" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestResolveAgentApiKey_NonServiceAgentRefusedUnderEnforce(t *testing.T) {
+	resp, aud := resolveForAgent(t, false, "enforce")
+	if resp.Valid || resp.OwnerGrant != "" {
+		t.Fatalf("non-service agent under enforce: want invalid, got %+v", resp)
+	}
+	if !serviceAgentDenied(aud) {
+		t.Fatalf("want service_agent_required DENY, got %v", aud.events)
+	}
+}
+
+func TestResolveAgentApiKey_NonServiceAgentAuditOnly(t *testing.T) {
+	resp, aud := resolveForAgent(t, false, "")
+	if !resp.Valid {
+		t.Fatal("audit mode must keep pre-S5 keys working")
+	}
+	if serviceAgentDenied(aud) {
+		t.Fatalf("audit mode must not write a DENY for a call it allows, got %v", aud.events)
+	}
+}
+
+func TestResolveAgentApiKey_ServiceAgentAllowedUnderEnforce(t *testing.T) {
+	resp, aud := resolveForAgent(t, true, "enforce")
+	if !resp.Valid {
+		t.Fatal("service agent under enforce: want valid")
+	}
+	if serviceAgentDenied(aud) {
+		t.Fatalf("service agent must not record a denial, got %v", aud.events)
+	}
 }

@@ -1,8 +1,12 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // Pure-logic tests for Agent struct and JSON marshal/unmarshal invariants.
@@ -12,7 +16,7 @@ import (
 // to/from JSON correctly, matching the jsonb column behaviour.
 func TestAgentAllowedProvidersJSONRoundTrip(t *testing.T) {
 	a := Agent{
-		AllowedProviders: []string{"anthropic", "openrouter"},
+		AllowedProviders:  []string{"anthropic", "openrouter"},
 		PreferredProvider: "anthropic",
 	}
 
@@ -71,5 +75,27 @@ func TestAgentRepoNonNilConstruct(t *testing.T) {
 	repo := NewAgentRepo(nil, nil)
 	if repo == nil {
 		t.Fatal("NewAgentRepo returned nil")
+	}
+}
+
+// TestAgentRepo_ServiceAgentRoundTrip pins AG-17 S5: service_agent survives
+// Create, Get and Update (the admin toggle) in both directions.
+func TestAgentRepo_ServiceAgentRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAgentRepo(openTestPool(t), zap.NewNop())
+	a := &Agent{ID: uuid.New(), TenantID: uuid.New(), Name: "svc", ApprovalMode: "auto", ServiceAgent: true}
+	if err := repo.Create(ctx, a); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := repo.Get(ctx, a.TenantID.String(), a.ID.String())
+	if err != nil || !got.ServiceAgent {
+		t.Fatalf("Get after create: service_agent=%v err=%v, want true", got != nil && got.ServiceAgent, err)
+	}
+	a.ServiceAgent = false
+	if err := repo.Update(ctx, a); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got, err = repo.Get(ctx, a.TenantID.String(), a.ID.String()); err != nil || got.ServiceAgent {
+		t.Fatalf("Get after update: err=%v, want service_agent=false", err)
 	}
 }

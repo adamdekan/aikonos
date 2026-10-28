@@ -23,6 +23,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/workspacefs"
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
@@ -44,6 +45,9 @@ type Request struct {
 	// non-agent-bound call.
 	AgentID     string
 	EffectClass planv1.EffectClass
+	// OBO is the task's on-behalf-of chain (task-row-sourced). Connector tools
+	// refuse ServiceRun: there is no human whose token to use.
+	OBO db.OnBehalfOf
 }
 
 // wsKey is the per-user workspace segment: the owning user when known (so a

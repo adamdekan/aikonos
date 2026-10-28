@@ -32,6 +32,7 @@ type Agent struct {
 	PreferredProvider string
 	Soul              string
 	GatewayEnabled    bool
+	ServiceAgent      bool // AG-17: may run subject-less (external tk_ key, no user)
 	CreatedBy         string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -46,7 +47,7 @@ func NewAgentRepo(pool *pgxpool.Pool, logger *zap.Logger) *AgentRepo {
 	return &AgentRepo{pool: pool, logger: logger}
 }
 
-const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, created_by, created_at, updated_at`
+const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -55,7 +56,7 @@ func scanAgent(row interface {
 	var skillsJSON, mcpJSON, allowedProvidersJSON []byte
 	if err := row.Scan(&a.ID, &a.TenantID, &a.Name, &a.LLMModel, &a.ApprovalMode,
 		&skillsJSON, &mcpJSON, &allowedProvidersJSON, &a.PreferredProvider,
-		&a.Soul, &a.GatewayEnabled, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(skillsJSON, &a.Skills); err != nil {
@@ -97,9 +98,9 @@ func (r *AgentRepo) Create(ctx context.Context, a *Agent) error {
 			return fmt.Errorf("marshal allowed_providers: %w", err)
 		}
 		_, err = conn.Exec(ctx, `
-		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.CreatedBy,
+		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, service_agent, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.CreatedBy,
 		)
 		if err != nil {
 			return fmt.Errorf("insert agent: %w", err)
@@ -160,9 +161,9 @@ func (r *AgentRepo) Update(ctx context.Context, a *Agent) error {
 		}
 		tag, err := conn.Exec(ctx, `
 		UPDATE agents
-		SET name=$1, llm_model=$2, approval_mode=$3, skills=$4, mcp_servers=$5, allowed_providers=$6, preferred_provider=$7, gateway_enabled=$8, updated_at=NOW()
-		WHERE id=$9 AND tenant_id=$10`,
-			a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ID, a.TenantID,
+		SET name=$1, llm_model=$2, approval_mode=$3, skills=$4, mcp_servers=$5, allowed_providers=$6, preferred_provider=$7, gateway_enabled=$8, service_agent=$9, updated_at=NOW()
+		WHERE id=$10 AND tenant_id=$11`,
+			a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.ID, a.TenantID,
 		)
 		if err != nil {
 			return fmt.Errorf("update agent: %w", err)

@@ -60,6 +60,10 @@ func connectorIdentity(req Request) (tenant, user string, err error) {
 	if req.TenantID == "" {
 		return "", "", fmt.Errorf("connector tools require a tenant context")
 	}
+	// AG-17 S5: a service run's UserID is svc-<agent>, never a person.
+	if req.OBO.ServiceRun {
+		return "", "", fmt.Errorf("connector tools require a human subject")
+	}
 	if req.UserID == "" {
 		return "", "", fmt.Errorf("connector tools require a user context")
 	}
@@ -67,8 +71,8 @@ func connectorIdentity(req Request) (tenant, user string, err error) {
 }
 
 // freshAccessToken resolves the user's access token for a provider API call.
-// For onedrive, when the tenant has a configured tenant-wide OBO connection
-//, the OBO broker is preferred over the
+// For onedrive, when the tenant has a configured tenant-wide OBO connection,
+// the OBO broker is preferred over the
 // legacy per-user Registry path — and an OBO error propagates as-is, with no
 // silent fallback to the legacy per-user token (the Invariants' "falls back
 // to legacy" applies only when the tenant isn't OBO-configured at all, not
