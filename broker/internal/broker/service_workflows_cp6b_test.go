@@ -29,7 +29,7 @@ import (
 // mintGrantFor mints an owner grant for an arbitrary user (used by non-owner tests).
 func mintGrantFor(t *testing.T, tenant, userID string) string {
 	t.Helper()
-	g, err := gatewaygrant.Mint(testGrantKey, tenant, userID, testGrantTTL)
+	g, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: tenant, Subject: userID}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("mintGrantFor(%s): %v", userID, err)
 	}

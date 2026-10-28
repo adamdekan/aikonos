@@ -123,20 +123,14 @@ func (s *SandboxService) workflowCallerSouth(ctx context.Context, tenantID, owne
 	if err := s.requireGatewayPeer(ctx); err != nil {
 		return "", "", err
 	}
-	if ownerGrant == "" {
-		return "", "", status.Error(codes.PermissionDenied, "owner grant required")
-	}
-	grantTenant, grantOwner, grantErr := gatewaygrant.Verify(s.deps.GatewayGrantKey, ownerGrant)
-	if grantErr != nil {
-		return "", "", status.Errorf(codes.PermissionDenied, "invalid owner grant: %v", grantErr)
-	}
-	if grantTenant != tenantID {
-		return "", "", status.Error(codes.PermissionDenied, "owner grant tenant mismatch")
-	}
-	if err := s.checkWorkflowSkill(ctx, grantOwner); err != nil {
+	grant, err := s.verifyOwnerGrant(ctx, tenantID, ownerGrant)
+	if err != nil {
 		return "", "", err
 	}
-	return grantTenant, grantOwner, nil
+	if err := s.checkWorkflowSkill(ctx, grant.Owner()); err != nil {
+		return "", "", err
+	}
+	return grant.TenantID, grant.Owner(), nil
 }
 
 // ── South handlers (SandboxService — SPIFFE-gated, owner from grant) ─────────
@@ -611,7 +605,9 @@ func (s *BrokerService) BeginWorkflowRun(ctx context.Context, req *brokerv1.Begi
 		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
 	}
 
-	grant, err := gatewaygrant.Mint(s.deps.GatewayGrantKey, tenant, user, s.deps.GatewayGrantTTL)
+	grant, err := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
+		TenantID: tenant, Subject: user, Actor: agentID, Kind: gatewaygrant.KindWorkflow, GrantID: lineageID.String(),
+	}, s.deps.GatewayGrantTTL)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "mint owner grant: %v", err)
 	}

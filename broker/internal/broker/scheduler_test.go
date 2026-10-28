@@ -237,14 +237,17 @@ func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
 	if run.OwnerGrant == "" {
 		t.Fatal("OwnerGrant must be non-empty")
 	}
-	grantTenant, grantOwner, err := gatewaygrant.Verify(testGrantKey, run.OwnerGrant)
+	g, err := gatewaygrant.Verify(testGrantKey, run.OwnerGrant, false)
 	if err != nil {
 		t.Fatalf("Verify owner grant: %v", err)
 	}
-	if grantTenant != testTenantUUID {
-		t.Errorf("grant tenant = %q, want %q", grantTenant, testTenantUUID)
+	if g.TenantID != testTenantUUID {
+		t.Errorf("grant tenant = %q, want %q", g.TenantID, testTenantUUID)
 	}
-	if grantOwner != "alice@example.com" {
-		t.Errorf("grant owner = %q, want alice@example.com", grantOwner)
+	if g.Owner() != "alice@example.com" || g.Kind != gatewaygrant.KindScheduled || g.GrantID != runID.String() || g.Actor != "" {
+		t.Errorf("grant = %+v, want owner alice@example.com, kind scheduled, grant_id %s, no actor", g, runID)
+	}
+	if obo["kind"].GetStringValue() != "scheduled" {
+		t.Errorf("run.fired obo kind = %q, want scheduled", obo["kind"].GetStringValue())
 	}
 }

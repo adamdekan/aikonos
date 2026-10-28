@@ -231,6 +231,9 @@ type Deps struct {
 	// GatewayGrantTTL is the validity window for minted owner-grant tokens.
 	// Resolved from AIKONOS_GATEWAY_GRANT_TTL (Go duration), default 1h.
 	GatewayGrantTTL time.Duration
+	// GatewayGrantAcceptV1 lets Verify accept legacy v1 grants during the
+	// AG-17 rollout window (gateway_grant.accept_v1, default true).
+	GatewayGrantAcceptV1 bool
 
 	// Providers backs the LLM provider admin + south RPCs. Nil ⇒ provider RPCs
 	// return FailedPrecondition (fail closed).

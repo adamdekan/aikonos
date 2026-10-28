@@ -107,6 +107,7 @@ type OnBehalfOf struct {
 	EnvelopeID       string // AG-11 writes it; "" until then
 	ExternalClientID string // api_keys.id for an external REST run, else ""
 	GrantID          string // scheduled_runs.id for a scheduled run, else ""
+	Kind             string // "scheduled" | "external" from the row; "" when the row cannot tell
 }
 
 // OnBehalfOf derives the task's on-behalf-of chain from the row.
@@ -124,10 +125,10 @@ func (t *Task) OnBehalfOf() OnBehalfOf {
 		o.DelegatedBy = *t.DelegatedByUserID
 	}
 	if t.ExternalClientID != nil {
-		o.ExternalClientID = t.ExternalClientID.String()
+		o.ExternalClientID, o.Kind = t.ExternalClientID.String(), "external"
 	}
 	if t.GrantID != nil {
-		o.GrantID = t.GrantID.String()
+		o.GrantID, o.Kind = t.GrantID.String(), "scheduled"
 	}
 	return o
 }

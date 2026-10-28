@@ -131,7 +131,7 @@ func gatewayCtxForWorkflow() context.Context {
 // mintWFGrant mints an owner grant for workflow tests.
 func mintWFGrant(t *testing.T) string {
 	t.Helper()
-	g, err := gatewaygrant.Mint(testGrantKey, testWFTenant, testWFOwner, testGrantTTL)
+	g, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: testWFTenant, Subject: testWFOwner}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("mintWFGrant: %v", err)
 	}

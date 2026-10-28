@@ -280,7 +280,10 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
-	ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, k.TenantID.String(), "svc-"+k.AgentID.String(), s.deps.GatewayGrantTTL)
+	ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
+		// No subject: Grant.Owner() yields the same svc-<agent> owner as before.
+		TenantID: k.TenantID.String(), Actor: k.AgentID.String(), Kind: gatewaygrant.KindExternal, GrantID: k.ID.String(),
+	}, s.deps.GatewayGrantTTL)
 	if mintErr != nil {
 		// Cannot hand the gateway a usable resolution without a grant — fail closed.
 		s.deps.Logger.Warn("ResolveAgentApiKey: mint owner grant failed",

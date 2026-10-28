@@ -699,16 +699,16 @@ func TestResolveAgentApiKey_GrantVerifiesToSvcPrincipal(t *testing.T) {
 	if resolveResp.OwnerGrant == "" {
 		t.Fatal("OwnerGrant must be non-empty on a valid resolve")
 	}
-	grantTenant, grantOwner, verifyErr := gatewaygrant.Verify(testGrantKey, resolveResp.OwnerGrant)
+	g, verifyErr := gatewaygrant.Verify(testGrantKey, resolveResp.OwnerGrant, false)
 	if verifyErr != nil {
 		t.Fatalf("Verify owner grant: %v", verifyErr)
 	}
-	if grantTenant != apiKeyTestTenantUUID {
-		t.Errorf("grant tenant = %q, want %q", grantTenant, apiKeyTestTenantUUID)
+	if g.TenantID != apiKeyTestTenantUUID {
+		t.Errorf("grant tenant = %q, want %q", g.TenantID, apiKeyTestTenantUUID)
 	}
 	wantOwner := "svc-" + apiKeyTestAgentUUID
-	if grantOwner != wantOwner {
-		t.Errorf("grant owner = %q, want %q", grantOwner, wantOwner)
+	if g.Owner() != wantOwner || g.Subject != "" || g.Actor != apiKeyTestAgentUUID || g.Kind != gatewaygrant.KindExternal {
+		t.Errorf("grant = %+v, want external, actor %s, owner %q", g, apiKeyTestAgentUUID, wantOwner)
 	}
 }
 

@@ -126,7 +126,8 @@ func TestBeginWorkflowRun_BoundAllowed(t *testing.T) {
 	if resp.OwnerGrant == "" {
 		t.Fatal("bound+allowed: want non-empty owner grant")
 	}
-	gt, gu, verr := gatewaygrant.Verify(testGrantKey, resp.OwnerGrant)
+	g, verr := gatewaygrant.Verify(testGrantKey, resp.OwnerGrant, false)
+	gt, gu := g.TenantID, g.Owner()
 	if verr != nil {
 		t.Fatalf("grant does not verify: %v", verr)
 	}
@@ -135,6 +136,9 @@ func TestBeginWorkflowRun_BoundAllowed(t *testing.T) {
 	}
 	if gu != beginRunUser {
 		t.Errorf("grant owner: want the requesting user %q, got %q", beginRunUser, gu)
+	}
+	if g.Actor != agentID.String() || g.Kind != gatewaygrant.KindWorkflow {
+		t.Errorf("grant actor/kind: got %q/%q, want %s/workflow", g.Actor, g.Kind, agentID)
 	}
 	if resp.BoundAgentId != agentID.String() {
 		t.Errorf("bound_agent_id: want %q, got %q", agentID.String(), resp.BoundAgentId)

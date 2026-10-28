@@ -40,7 +40,6 @@ func oboTask(ctx context.Context) *db.Task {
 
 // withOBO stamps ev with t's on-behalf-of chain: actor_agent_id and
 // context.obo. Audit-only; a nil task leaves ev untouched (no row in scope).
-// kind is "" until grant v2 (AG-17 S2) knows it.
 func withOBO(ev *auditv1.AuditEvent, t *db.Task) *auditv1.AuditEvent {
 	if t == nil {
 		return ev
@@ -61,7 +60,7 @@ func withOBO(ev *auditv1.AuditEvent, t *db.Task) *auditv1.AuditEvent {
 		"envelope_id":        o.EnvelopeID,
 		"external_client_id": o.ExternalClientID,
 		"grant_id":           o.GrantID,
-		"kind":               "",
+		"kind":               o.Kind,
 	})
 	ev.Context.Fields["obo"] = structpb.NewStructValue(obo)
 	return ev

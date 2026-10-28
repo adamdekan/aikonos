@@ -8,6 +8,10 @@ package broker
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,7 +137,7 @@ func newSandboxSvcForGatewayTest(t *testing.T, store taskStore, minter *capabili
 // mintTestGrant mints a grant for the given tenant+owner using the test key.
 func mintTestGrant(t *testing.T, tenantID, ownerUserID string) string {
 	t.Helper()
-	g, err := gatewaygrant.Mint(testGrantKey, tenantID, ownerUserID, testGrantTTL)
+	g, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: tenantID, Subject: ownerUserID}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("mintTestGrant: %v", err)
 	}
@@ -494,7 +498,7 @@ func TestCreateGatewayTask_ExpiredGrant_PermissionDenied(t *testing.T) {
 
 	// A negative TTL sets expiresUnix in the past, so Verify rejects it as
 	// ErrExpired without any clock manipulation.
-	grant, err := gatewaygrant.Mint(testGrantKey, testTenantUUID, "alice@example.com", -1*time.Hour)
+	grant, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: testTenantUUID, Subject: "alice@example.com"}, -1*time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -583,5 +587,162 @@ func TestCreateTask_TenantMismatch_PermissionDenied(t *testing.T) {
 	}
 	if len(store.created) != 0 {
 		t.Error("no task must be created when tenant check fails")
+	}
+}
+
+// ── AG-17 S2: grant v2 actor binding ─────────────────────────────────────────
+
+func mintV2Grant(t *testing.T, g gatewaygrant.Grant) string {
+	t.Helper()
+	tok, err := gatewaygrant.Mint(testGrantKey, g, testGrantTTL)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	return tok
+}
+
+// A grant naming an actor refuses any other asserted agent_id, with a DENY audit.
+func TestCreateGatewayTask_GrantActorMismatch_PermissionDenied(t *testing.T) {
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	em, sub := buildAuditBus(t, testTenantUUID)
+	svc.deps.Audit = em
+
+	actor := uuid.NewString()
+	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: testTenantUUID, Subject: "alice@example.com",
+		Actor: actor, Kind: gatewaygrant.KindWorkflow})
+	_, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: uuid.NewString(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if len(store.created) != 0 {
+		t.Error("no task must be created on actor mismatch")
+	}
+	ev := receiveAuditEvent(t, sub, "aikonos.broker.task.denied", 2*time.Second)
+	if r := ev.Context.Fields["reason"].GetStringValue(); r != "grant_actor_mismatch" {
+		t.Errorf("reason = %q, want grant_actor_mismatch", r)
+	}
+	if ev.ActorAgentId != actor {
+		t.Errorf("actor_agent_id = %q, want %q", ev.ActorAgentId, actor)
+	}
+}
+
+// An external grant binds the task to its actor (agent_id empty), keeps the
+// svc-<agent> owner, and records the api key as external_client_id.
+func TestCreateGatewayTask_GrantActorBindsTask(t *testing.T) {
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	agent, key := uuid.New(), uuid.New()
+
+	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: testTenantUUID, Actor: agent.String(),
+		Kind: gatewaygrant.KindExternal, GrantID: key.String()})
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant,
+	}); err != nil {
+		t.Fatalf("CreateGatewayTask: %v", err)
+	}
+	got := store.created[0]
+	if got.AgentID == nil || *got.AgentID != agent {
+		t.Errorf("agent = %v, want %s", got.AgentID, agent)
+	}
+	if got.OwnerUserID != "svc-"+agent.String() {
+		t.Errorf("owner = %q, want svc-%s", got.OwnerUserID, agent)
+	}
+	if got.ExternalClientID == nil || *got.ExternalClientID != key || got.GrantID != nil {
+		t.Errorf("external_client_id/grant_id = %v/%v, want %s/nil", got.ExternalClientID, got.GrantID, key)
+	}
+}
+
+// A scheduled grant records the schedule id as the task's grant_id.
+func TestCreateGatewayTask_ScheduledGrantSetsGrantID(t *testing.T) {
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	runID := uuid.New()
+
+	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: testTenantUUID, Subject: "alice@example.com",
+		Kind: gatewaygrant.KindScheduled, GrantID: runID.String()})
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: "alice-agent",
+	}); err != nil {
+		t.Fatalf("CreateGatewayTask: %v", err)
+	}
+	got := store.created[0]
+	if got.GrantID == nil || *got.GrantID != runID || got.OwnerUserID != "alice@example.com" || got.AgentID != nil {
+		t.Errorf("task = grant %v owner %q agent %v, want %s / alice / nil", got.GrantID, got.OwnerUserID, got.AgentID, runID)
+	}
+}
+
+// v1Grant hand-builds a legacy v1 token (Mint only emits v2).
+func v1Grant(tenantID, owner string) string {
+	payload := []byte("v1|" + tenantID + "|" + owner + "|9999999999")
+	mac := hmac.New(sha256.New, testGrantKey)
+	mac.Write(payload)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// Deps.GatewayGrantAcceptV1 gates legacy grants end to end: refused (and
+// audited) when off, bound to the v1 owner when on.
+func TestCreateGatewayTask_V1Grant_GatedByAcceptV1(t *testing.T) {
+	req := &brokerv1.CreateGatewayTaskRequest{TenantId: testTenantUUID, Prompt: "p",
+		OwnerGrant: v1Grant(testTenantUUID, "alice@example.com")}
+
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	em, sub := buildAuditBus(t, testTenantUUID)
+	svc.deps.Audit = em
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("accept_v1=false: want PermissionDenied, got %v", err)
+	}
+	ev := receiveAuditEvent(t, sub, "aikonos.broker.task.denied", 2*time.Second)
+	if r := ev.Context.Fields["reason"].GetStringValue(); r != "invalid_grant" {
+		t.Errorf("reason = %q, want invalid_grant", r)
+	}
+
+	svc.deps.GatewayGrantAcceptV1 = true
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), req); err != nil {
+		t.Fatalf("accept_v1=true: %v", err)
+	}
+	if got := store.created[0].OwnerUserID; got != "alice@example.com" {
+		t.Errorf("owner = %q, want alice@example.com", got)
+	}
+}
+
+// A grant replayed into another tenant is refused with an audited denial.
+func TestCreateGatewayTask_GrantTenantMismatch_Audited(t *testing.T) {
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	em, sub := buildAuditBus(t, testTenantUUID)
+	svc.deps.Audit = em
+
+	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: uuid.NewString(), Subject: "alice@example.com"})
+	_, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	ev := receiveAuditEvent(t, sub, "aikonos.broker.task.denied", 2*time.Second)
+	if r := ev.Context.Fields["reason"].GetStringValue(); r != "grant_tenant_mismatch" {
+		t.Errorf("reason = %q, want grant_tenant_mismatch", r)
+	}
+}
+
+// The actor check compares UUIDs, not strings: an uppercase echo is the same agent.
+func TestCreateGatewayTask_GrantActorCaseInsensitive(t *testing.T) {
+	store := &fakeCreateStore{}
+	svc := newSandboxSvcForGatewayTest(t, store, nil)
+	agent := uuid.New()
+
+	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: testTenantUUID, Subject: "alice@example.com",
+		Actor: agent.String(), Kind: gatewaygrant.KindWorkflow})
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: strings.ToUpper(agent.String()),
+	}); err != nil {
+		t.Fatalf("CreateGatewayTask: %v", err)
+	}
+	if got := store.created[0].AgentID; got == nil || *got != agent {
+		t.Errorf("agent = %v, want %s", got, agent)
 	}
 }
