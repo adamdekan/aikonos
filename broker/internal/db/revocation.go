@@ -1,7 +1,8 @@
 // broker/internal/db/revocation.go
 // AG-06 revocation state: user and tenant blocks (kill_switches, migration 001)
 // and the per-principal revocation epoch ("not before"): user_directory and
-// agents.revoked_before (migration 054). Reads back the broker's cached
+// agents.revoked_before (migration 054), and the agent status (AG-03,
+// migration 056). Reads back the broker's cached
 // checker (internal/revocation); writes back the admin RPCs.
 package db
 
@@ -55,23 +56,49 @@ func (r *RevocationRepo) UserState(ctx context.Context, tenantID, subject string
 	return blocked, notBefore, nil
 }
 
-// AgentNotBefore returns the agent's revocation epoch; zero when never revoked
-// or when the agent does not exist (callers deny unknown agents elsewhere).
-func (r *RevocationRepo) AgentNotBefore(ctx context.Context, tenantID, agentID string) (time.Time, error) {
+// AgentState returns the agent's lifecycle status (AG-03) and revocation
+// epoch (zero when never revoked). status is "" when the agent does not exist.
+func (r *RevocationRepo) AgentState(ctx context.Context, tenantID, agentID string) (string, time.Time, error) {
 	var nb *time.Time
+	var st *string
 	err := withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		return conn.QueryRow(ctx,
-			`SELECT (SELECT revoked_before FROM agents WHERE id = $1 AND tenant_id = $2)`,
+			`SELECT (SELECT revoked_before FROM agents WHERE id = $1 AND tenant_id = $2),
+			        (SELECT status FROM agents WHERE id = $1 AND tenant_id = $2)`,
 			agentID, tenantID,
-		).Scan(&nb)
+		).Scan(&nb, &st)
 	})
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read agent revocation: %w", err)
+		return "", time.Time{}, fmt.Errorf("read agent revocation: %w", err)
 	}
-	if nb == nil {
-		return time.Time{}, nil
+	var notBefore time.Time
+	if nb != nil {
+		notBefore = *nb
 	}
-	return *nb, nil
+	if st == nil {
+		return "", notBefore, nil
+	}
+	return *st, notBefore, nil
+}
+
+// SetAgentStatus moves the agent from one lifecycle status to another (AG-03)
+// and records the reason. Compare-and-set: ErrAgentNotFound when the agent
+// does not exist in the tenant or is no longer in status from.
+func (r *RevocationRepo) SetAgentStatus(ctx context.Context, tenantID, agentID, from, to, reason string) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		tag, err := conn.Exec(ctx,
+			`UPDATE agents SET status = $4, status_reason = $5, updated_at = NOW()
+			  WHERE id = $2 AND tenant_id = $1 AND status = $3`,
+			tenantID, agentID, from, to, reason,
+		)
+		if err != nil {
+			return fmt.Errorf("set agent status: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrAgentNotFound
+		}
+		return nil
+	})
 }
 
 // BlockUser activates a user block. It reports false when one is already

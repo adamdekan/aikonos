@@ -13,6 +13,7 @@ type fakeStore struct {
 	blocked bool
 	userNB  time.Time
 	agentNB time.Time
+	agentSt string
 	err     error
 	reads   int
 }
@@ -21,9 +22,13 @@ func (f *fakeStore) UserState(context.Context, string, string) (bool, time.Time,
 	f.reads++
 	return f.blocked, f.userNB, f.err
 }
-func (f *fakeStore) AgentNotBefore(context.Context, string, string) (time.Time, error) {
+func (f *fakeStore) AgentState(context.Context, string, string) (string, time.Time, error) {
 	f.reads++
-	return f.agentNB, f.err
+	return f.agentSt, f.agentNB, f.err
+}
+func (f *fakeStore) SetAgentStatus(_ context.Context, _, _, _, to, _ string) error {
+	f.agentSt = to
+	return nil
 }
 func (f *fakeStore) BlockUser(context.Context, string, string, string, string) (bool, error) {
 	f.blocked = true
@@ -104,5 +109,32 @@ func TestChecker_OnBehalfOfAndErrors(t *testing.T) {
 	var nilChecker *Checker
 	if st, err := nilChecker.OnBehalfOf(ctx, "t", "bob", "a"); err != nil || st.Blocked || !st.NotBefore.IsZero() {
 		t.Fatal("nil checker revokes nothing")
+	}
+}
+
+// AG-03: a suspension written through this Checker refuses at once; the
+// status rides along OnBehalfOf so InvokeTool sees it with the epoch, and an
+// unknown agent is refused as missing.
+func TestChecker_AgentStatus(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{agentSt: db.AgentActive}
+	c := New(store)
+
+	if st, _ := c.OnBehalfOf(ctx, "t", "bob", "a1"); st.AgentRefusal() != "" {
+		t.Fatalf("active agent refused: %q", st.AgentRefusal())
+	}
+	if err := c.SetAgentStatus(ctx, "t", "a1", db.AgentActive, db.AgentSuspended, "incident"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := c.OnBehalfOf(ctx, "t", "bob", "a1"); st.AgentRefusal() != "agent_suspended" {
+		t.Fatalf("suspended agent: refusal = %q", st.AgentRefusal())
+	}
+	if st, _ := c.OnBehalfOf(ctx, "t", "bob", ""); st.AgentRefusal() != "" {
+		t.Fatalf("no agent in scope must not refuse: %q", st.AgentRefusal())
+	}
+	store.agentSt = ""
+	c.reset()
+	if st, _ := c.Agent(ctx, "t", "gone"); st.AgentRefusal() != "agent_missing" {
+		t.Fatalf("unknown agent: refusal = %q", st.AgentRefusal())
 	}
 }

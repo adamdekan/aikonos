@@ -23,18 +23,30 @@ type fakeRevStore struct {
 	blocks  map[string]db.UserBlock
 	userNB  map[string]time.Time
 	agentNB map[string]time.Time
+	agentSt map[string]string
 }
 
 func newFakeRevStore() *fakeRevStore {
-	return &fakeRevStore{blocks: map[string]db.UserBlock{}, userNB: map[string]time.Time{}, agentNB: map[string]time.Time{}}
+	return &fakeRevStore{blocks: map[string]db.UserBlock{}, userNB: map[string]time.Time{}, agentNB: map[string]time.Time{}, agentSt: map[string]string{}}
 }
 
 func (f *fakeRevStore) UserState(_ context.Context, _, subject string) (bool, time.Time, error) {
 	_, blocked := f.blocks[subject]
 	return blocked, f.userNB[subject], nil
 }
-func (f *fakeRevStore) AgentNotBefore(_ context.Context, _, agentID string) (time.Time, error) {
-	return f.agentNB[agentID], nil
+func (f *fakeRevStore) AgentState(_ context.Context, _, agentID string) (string, time.Time, error) {
+	st := f.agentSt[agentID]
+	if st == "" {
+		st = db.AgentActive // agents in these fakes predate AG-03: active
+	}
+	return st, f.agentNB[agentID], nil
+}
+func (f *fakeRevStore) SetAgentStatus(_ context.Context, _, agentID, from, to, _ string) error {
+	if cur, _, _ := f.AgentState(context.Background(), "", agentID); cur != from {
+		return db.ErrAgentNotFound
+	}
+	f.agentSt[agentID] = to
+	return nil
 }
 func (f *fakeRevStore) BlockUser(_ context.Context, _, subject, reason, by string) (bool, error) {
 	if _, ok := f.blocks[subject]; ok {

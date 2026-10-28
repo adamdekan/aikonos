@@ -193,7 +193,7 @@ func (s *BrokerService) northActor(ctx context.Context, tenant, owner, agentID s
 	}
 	if reason != "" {
 		emitAgentEvent(ctx, s.deps, tenant, owner, agentID, "aikonos.broker.task.denied", reason, nil)
-		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
+		return nil, runAgentErr(reason, agentID)
 	}
 	return &a.ID, nil
 }

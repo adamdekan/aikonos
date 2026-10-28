@@ -654,10 +654,9 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	traceID := span.SpanContext().TraceID().String()
 	for _, r := range due {
 		obo := runOBO(r)
-		// ClaimDue parked a revoked/expired delegation, a blocked subject or a
-		// revoked-all actor (AG-06) instead of advancing it.
-		// ponytail: the suspended-actor (AG-03) check belongs here; no agent
-		// status exists yet.
+		// ClaimDue parked a revoked/expired delegation, a blocked subject, a
+		// revoked-all actor (AG-06) or a retired actor (AG-03) instead of
+		// advancing it.
 		if r.SkipReason != "" {
 			schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 				"aikonos.scheduler.run.skipped."+r.SkipReason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
@@ -675,8 +674,11 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 				continue
 			}
 			if reason != "" {
+				if !strings.HasPrefix(reason, "agent_") {
+					reason = "actor_not_permitted"
+				}
 				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
-					"aikonos.scheduler.run.skipped.actor_not_permitted", r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+					"aikonos.scheduler.run.skipped."+reason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
 				continue
 			}
 			actor = a.ID.String()
@@ -687,6 +689,19 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			if !mayOperateActor(ctx, s.deps, r.OwnerUserID, actor) {
 				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 					"aikonos.scheduler.run.skipped.actor_not_permitted", r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				continue
+			}
+			// AG-03: a suspended (or staged) actor skips this fire and keeps
+			// the row, so reactivation resumes it; a state read failure skips too.
+			refusal, rerr := agentRunRefusal(ctx, s.deps, req.TenantId, actor)
+			if rerr != nil {
+				s.deps.Logger.Warn("ClaimDueScheduledRuns: agent state read failed, skipping run",
+					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(rerr))
+				continue
+			}
+			if refusal != "" {
+				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
+					"aikonos.scheduler.run.skipped."+refusal, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
 				continue
 			}
 		}

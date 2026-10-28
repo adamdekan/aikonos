@@ -44,7 +44,7 @@ Indicators:
 ### Isolate
 
 1. Identify the `agent_id` or `user_sub` from the audit event.
-2. Disable the agent: Admin → Agents → (agent) → Disable. This stops new child spawns; in-flight tasks drain naturally (the child pool evicts on next request).
+2. Suspend the agent: Admin → Agents → (agent row) → Suspend, with a reason (audited as `aikonos.broker.agent.suspended`). Its running tasks stop at their next tool call (`PermissionDenied`, reason `agent_suspended`), new chats, external API key calls (403) and plans are refused, scheduled fires are skipped, and the gateway that served the click evicts the agent's children at once (busy ones too). Other broker replicas see it within 30 s. Activate on the same row lifts it; Retire is final.
 3. If a personal user session: block the user (Admin → Access Control → Members → Block, with a reason) or, to end their sessions without blocking, Revoke sessions on the same row. To cut an agent's outstanding capability tokens and owner grants at their next use, use Admin → Agents → Revoke sessions (this also voids its existing API keys and parks its existing schedules).
 4. Block further task submission: set a rate-limit policy of 0 RPM/TPM for the subject via Admin → Settings → Rate Limits.
 
@@ -184,7 +184,7 @@ Or query the reader directly — `broker/internal/audit/reader.go` loads the cha
    ```bash
    docker compose restart broker
    ```
-4. If a runaway agent loop: disable the agent (Admin → Agents → Disable) to stop new child spawns.
+4. If a runaway agent loop: suspend the agent (Admin → Agents → Suspend, with a reason). The loop stops at its next tool call and the agent's gateway children are evicted.
 
 ### Gather Evidence
 

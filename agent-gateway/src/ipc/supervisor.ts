@@ -604,9 +604,13 @@ export class ChildSupervisor {
   // src/routes/agui.ts's sessionAgentId prefixes named agents as
   // "agent:<id>" when spawning — the synthetic personal-agent ids stay bare.
   // Match both forms so eviction actually finds named-agent children.
-  evictIdleForAgent(agentId: string, reason: string): void {
+  //
+  // includeBusy (AG-03 kill switch) also evicts children mid-run: an agent
+  // that is no longer active must not keep a live session on this replica.
+  // The broker refuses its next tool call anyway; this ends the LLM loop too.
+  evictIdleForAgent(agentId: string, reason: string, includeBusy = false): void {
     for (const [key, handle] of this.children) {
-      if ((handle.agentId === agentId || handle.agentId === `agent:${agentId}`) && !handle.busy) {
+      if ((handle.agentId === agentId || handle.agentId === `agent:${agentId}`) && (includeBusy || !handle.busy)) {
         this.evict(key, reason);
       }
     }

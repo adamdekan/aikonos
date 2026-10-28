@@ -105,6 +105,13 @@ Give every agent more than one owner, or a group owner, so it keeps an
 accountable owner when a person leaves. Admin → Agents marks an agent
 *orphaned* when it has no owner or all its owners are blocked.
 
+To stop an agent, suspend it (Admin → Agents → Suspend, with a reason; AG-03).
+Its running tasks stop at their next tool call, and new runs, API key calls and
+scheduled fires are refused until it is activated again. New agents start
+staged and need an owner who is not blocked to activate. An agent orphaned for
+longer than `identity.orphan_grace_days` (default 7) is suspended
+automatically.
+
 Every task runs as a registered agent (AG-01). A chat or schedule that picks
 none runs as the user's default agent (Settings → Chat → *Default agent*) or,
 without one, the tenant default agent, which acts with the user's own skills.

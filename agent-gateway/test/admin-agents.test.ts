@@ -74,11 +74,15 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     sessionsRevokedAt: "",
     orphaned: true,
     isDefault: false,
+    status: "suspended",
+    statusReason: "incident",
   };
 
   const json = agentJson(agent);
 
   assert.equal(json.orphaned, true); // AG-04 flag passes through
+  assert.equal(json.status, "suspended"); // AG-03 lifecycle passes through
+  assert.equal(json.statusReason, "incident");
   assert.deepEqual(json.allowedProviders, ["openai", "anthropic"]);
   assert.equal(json.preferredProvider, "openai");
 });
@@ -103,6 +107,8 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     sessionsRevokedAt: "",
     orphaned: false,
     isDefault: false,
+    status: "",
+    statusReason: "",
   };
 
   const json = agentJson(agent);

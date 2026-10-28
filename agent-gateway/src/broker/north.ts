@@ -205,6 +205,8 @@ import type {
   RevokeUserSessionsRequest,
   RevokeAgentSessionsRequest,
   RevokeSessionsResponse,
+  SetAgentStatusRequest,
+  SetAgentStatusResponse,
   GetWorkspaceBackendRequest,
   GetWorkspaceBackendResponse,
   SetWorkspaceBackendRequest,
@@ -774,6 +776,11 @@ export class NorthClient {
 
   revokeAgentSessions(req: RevokeAgentSessionsRequest, token?: string): Promise<RevokeSessionsResponse> {
     return unary((r, m, o, cb) => this.client.revokeAgentSessions(r, m, o, cb), req, bearer(token));
+  }
+
+  // AG-03: activate / suspend / retire an agent.
+  setAgentStatus(req: SetAgentStatusRequest, token?: string): Promise<SetAgentStatusResponse> {
+    return unary((r, m, o, cb) => this.client.setAgentStatus(r, m, o, cb), req, bearer(token));
   }
 
   updateOrgSettings(req: UpdateOrgSettingsRequest, token?: string): Promise<UpdateOrgSettingsResponse> {

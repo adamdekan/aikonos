@@ -30,8 +30,11 @@ import (
 // which an admin can replace with group grants to narrow it.
 
 // runAgent resolves the agent a run binds to. agentID "" resolves the default.
-// A refusal comes back as a reason (actor_not_found, actor_not_permitted) with
-// a nil error; err is a store failure (callers return Unavailable).
+// A refusal comes back as a reason (actor_not_found, actor_not_permitted, or
+// AG-03 agent_<status> for an agent that is not active) with a nil error; err
+// is a store or state read failure (callers return Unavailable). A default
+// setting the user may no longer use, or whose agent is not active, falls
+// back to the tenant default agent.
 func runAgent(ctx context.Context, deps Deps, tenant, user, agentID string) (*db.Agent, string, error) {
 	if agentID != "" {
 		if _, err := uuid.Parse(agentID); err != nil {
@@ -44,7 +47,7 @@ func runAgent(ctx context.Context, deps Deps, tenant, user, agentID string) (*db
 		if !mayOperateActor(ctx, deps, user, a.ID.String()) {
 			return nil, "actor_not_permitted", nil
 		}
-		return a, "", nil
+		return runnable(ctx, deps, tenant, a)
 	}
 	pref, err := deps.Agents.UserDefault(ctx, tenant, user)
 	if err != nil {
@@ -54,7 +57,11 @@ func runAgent(ctx context.Context, deps Deps, tenant, user, agentID string) (*db
 		// A setting the user may no longer use falls back to the tenant
 		// default rather than refusing the chat; it is re-checked every run.
 		if a, err := deps.Agents.Get(ctx, tenant, pref); err == nil && mayOperateActor(ctx, deps, user, pref) {
-			return a, "", nil
+			if r, err := agentRunRefusal(ctx, deps, tenant, pref); err != nil {
+				return nil, "", err
+			} else if r == "" {
+				return a, "", nil
+			}
 		}
 		deps.Logger.Info("default-agent setting not usable; using the tenant default agent",
 			zap.String("user", user), zap.String("agent_id", pref))
@@ -65,6 +72,15 @@ func runAgent(ctx context.Context, deps Deps, tenant, user, agentID string) (*db
 	}
 	if !mayOperateActor(ctx, deps, user, a.ID.String()) {
 		return nil, "actor_not_permitted", nil
+	}
+	return runnable(ctx, deps, tenant, a)
+}
+
+// runnable passes a through runAgent's AG-03 status gate.
+func runnable(ctx context.Context, deps Deps, tenant string, a *db.Agent) (*db.Agent, string, error) {
+	r, err := agentRunRefusal(ctx, deps, tenant, a.ID.String())
+	if err != nil || r != "" {
+		return nil, r, err
 	}
 	return a, "", nil
 }
@@ -175,7 +191,7 @@ func (s *SandboxService) ResolveRunAgent(ctx context.Context, req *brokerv1.Reso
 	}
 	if reason != "" {
 		emitAgentEvent(ctx, s.deps, req.TenantId, req.UserId, req.AgentId, "aikonos.broker.task.denied", reason, nil)
-		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", req.AgentId)
+		return nil, runAgentErr(reason, req.AgentId)
 	}
 	return &brokerv1.ResolveRunAgentResponse{AgentId: a.ID.String(), IsDefault: a.IsDefault}, nil
 }
@@ -217,7 +233,7 @@ func (s *BrokerService) SetMyDefaultAgent(ctx context.Context, req *brokerv1.Set
 		}
 		if reason != "" {
 			emitAgentEvent(ctx, s.deps, tenant, user, id, "aikonos.broker.agent.default.set", reason, nil)
-			return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", id)
+			return nil, runAgentErr(reason, id)
 		}
 		id = a.ID.String()
 		if a.IsDefault {

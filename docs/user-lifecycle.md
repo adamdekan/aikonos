@@ -130,8 +130,44 @@ owner tuple: at startup the broker grants `owner_user` to the creator
 
 **Admin → Agents** marks an agent *orphaned* when it has no owner or every owner is a
 blocked user. A group owner counts as present without checking its members. Fix it by
-adding an owner who is not blocked. Orphaned agents still run today; activation
-and automatic suspension of orphaned agents come with AG-03.
+adding an owner who is not blocked. An orphaned agent cannot be activated, and an
+active agent that stays orphaned for `identity.orphan_grace_days` (tenant setting,
+default 7, Admin → Settings → General) is suspended by an hourly sweep, audited as
+`aikonos.broker.agent.suspended` with actor `system:orphan-sweep`. The clock starts
+at the latest block among its owners (at creation for an agent with no owner). Add an
+owner and activate it again.
+
+## Agent lifecycle
+
+Every agent has a status (AG-03): `staged`, `active`, `suspended` or `retired`. Only
+an active agent runs.
+
+| Action (Admin → Agents) | From | To | Audit event |
+|---|---|---|---|
+| Activate | staged | active | `aikonos.broker.agent.activated` |
+| Activate | suspended | active | `aikonos.broker.agent.reactivated` |
+| Suspend (reason) | active | suspended | `aikonos.broker.agent.suspended` |
+| Retire (reason) | staged, active, suspended | retired | `aikonos.broker.agent.retired` |
+
+- A new agent starts `staged`. Activation needs at least one owner who is not blocked
+  (`FailedPrecondition` otherwise). Agents that existed before the change, and the
+  tenant default agent, are `active`.
+- The broker checks the status at `CreateGatewayTask`, north `CreateTask`,
+  `ResolveRunAgent`, `SubmitPlan`, `ResolveAgentApiKey`, every scheduled fire and every
+  `InvokeTool`. A suspension therefore stops a running task at its next tool call
+  (`PermissionDenied`, reason `agent_suspended`) without waiting for its capability
+  token to expire. The read is cached like a block: at once on the replica that made
+  the change, within 30 s on the others.
+- The gateway that serves the Suspend or Retire click evicts the agent's children,
+  busy ones included.
+- A scheduled fire of a suspended agent is skipped (`aikonos.scheduler.run.skipped.agent_suspended`)
+  and the schedule is kept, so activation resumes it. A schedule of a retired agent is
+  parked (`last_status = actor_retired`).
+- A user's default-agent setting that points at an agent that is not active falls back
+  to the tenant default agent. The tenant default agent may be suspended (this stops
+  every chat that picks no agent) but not retired.
+- `gateway_enabled` stays a per-channel switch under the status: it opens the external
+  `:8090` surface for an agent only while the agent is active.
 
 ## Default agents
 

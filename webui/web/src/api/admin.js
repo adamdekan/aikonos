@@ -314,6 +314,12 @@ export function revokeAgentSessions(agentId, reason) {
   return post(`/admin/agents/${encodeURIComponent(agentId)}/revoke-sessions`, { body: { reason } });
 }
 
+// AG-03: move an agent to active | suspended | retired (reason required for
+// suspended and retired).
+export function setAgentStatus(agentId, status, reason = "") {
+  return post(`/admin/agents/${encodeURIComponent(agentId)}/status`, { body: { status, reason } });
+}
+
 // ── Observability info (A9) ──────────────────────────────────────────────────
 
 // getObservability returns read-only telemetry-export state. The OTLP endpoint

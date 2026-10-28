@@ -313,6 +313,10 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
 	} else if st.Revoked(k.CreatedAt) {
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+	} else if r := st.AgentRefusal(); r != "" {
+		// AG-03: the key is valid but its agent may not run; say why.
+		s.emitApiKeyDenied(ctx, k, r, "")
+		return nil, agentRefusedErr(r)
 	}
 
 	// AG-17 S6: an optional user assertion names the person the agent acts

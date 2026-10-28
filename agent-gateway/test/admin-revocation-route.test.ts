@@ -44,11 +44,21 @@ async function buildApp() {
       calls.push({ method: "revokeAgentSessions", req, token: t });
       return Promise.resolve({ notBefore: "2026-10-28T12:00:00Z" });
     },
+    setAgentStatus(req: Record<string, unknown>, t?: string) {
+      calls.push({ method: "setAgentStatus", req, token: t });
+      return Promise.resolve({ agent: { id: req.agentId, name: "a", status: req.status, statusReason: req.reason } });
+    },
   });
   clients.north = north;
-  registerAdminRoutes(app, { clients, jwksResolver, verifyOpts: VERIFY_OPTS });
+  const evicted: [string, string, boolean | undefined][] = [];
+  const supervisor = {
+    evictIdleForAgent(agentId: string, reason: string, includeBusy?: boolean) {
+      evicted.push([agentId, reason, includeBusy]);
+    },
+  };
+  registerAdminRoutes(app, { clients, jwksResolver, verifyOpts: VERIFY_OPTS, supervisor });
   await app.ready();
-  return { app, token, calls };
+  return { app, token, calls, evicted };
 }
 
 test("AG-06 revocation routes forward subject, reason and the caller token", async () => {
@@ -83,5 +93,27 @@ test("AG-06 revocation routes refuse a caller without a bearer", async () => {
   const res = await app.inject({ method: "POST", url: "/admin/members/bob/block", payload: { reason: "x" } });
   assert.equal(res.statusCode, 401);
   assert.equal(calls.length, 0);
+  await app.close();
+});
+
+test("AG-03 status route forwards status and reason; leaving active evicts busy children too", async () => {
+  const { app, token, calls, evicted } = await buildApp();
+  const post = (payload: object) =>
+    app.inject({ method: "POST", url: "/admin/agents/agent-1/status", headers: { authorization: `Bearer ${token}` }, payload });
+
+  let res = await post({ status: "suspended", reason: "incident" });
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).agent.status, "suspended");
+  res = await post({ status: "active" });
+  assert.equal(res.statusCode, 200);
+
+  assert.deepEqual(
+    calls.map((c) => [c.method, c.req.agentId, c.req.status, c.req.reason, c.req.userId, c.token]),
+    [
+      ["setAgentStatus", "agent-1", "suspended", "incident", "admin-oid", token],
+      ["setAgentStatus", "agent-1", "active", "", "admin-oid", token],
+    ],
+  );
+  assert.deepEqual(evicted, [["agent-1", "agent suspended", true]], "only the suspension evicts");
   await app.close();
 });

@@ -191,7 +191,7 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 		}
 		if reason != "" {
 			s.emitGrantDenied(ctx, req.TenantId, grantOwner, req.AgentId, reason, nil)
-			return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", req.AgentId)
+			return nil, runAgentErr(reason, req.AgentId)
 		}
 		agentRef = a.ID.String()
 	}
@@ -233,7 +233,7 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 // verifyOwnerGrant requires an owner grant, verifies it with the configured key
 // and v1 policy, and checks it names tenantID. Every rejection is audited
 // (invalid_grant / grant_tenant_mismatch / grant_v1_refused /
-// grant_actor_missing / subject_blocked / grant_revoked) and returned as
+// grant_actor_missing / subject_blocked / grant_revoked / agent_<status>) and returned as
 // PermissionDenied; grant_v1_used is
 // logged when a legacy grant is accepted.
 // ponytail: plain log per v1 use; rate-limit per gateway SVID if it gets noisy.
@@ -289,6 +289,12 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 	if st.Revoked(g.Expires.Add(-s.deps.GatewayGrantTTL)) {
 		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "grant_revoked", nil)
 		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant revoked")
+	}
+	// AG-03: a grant naming an actor dies with the actor's activity. An
+	// actorless grant binds its agent through runAgent, which checks the same.
+	if r := st.AgentRefusal(); r != "" {
+		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, r, nil)
+		return gatewaygrant.Grant{}, agentRefusedErr(r)
 	}
 	return g, nil
 }

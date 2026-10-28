@@ -58,6 +58,7 @@ All items must be checked before an agent or MCP server is promoted to productio
 ### Smoke Test
 
 - [ ] `task compose:verify` returns all checks green against the stack with the new agent configured.
+- [ ] The agent has at least one owner who is not blocked (a group owner or several users), and it was activated (Admin → Agents → Activate) only after the items above were checked. New agents start staged and cannot run until activated (AG-03).
 - [ ] At least one test invocation of the agent has been run; the resulting audit events are visible in `/api/audit/stream` and contain the correct `agent_id`.
 - [ ] HITL flow tested for any `destructive` or `external` write steps: approval appears in Inbox, task proceeds only after approval, denial halts execution.
 

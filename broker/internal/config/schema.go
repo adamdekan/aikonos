@@ -275,6 +275,26 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// identity.orphan_grace_days is how long an active agent may stay
+	// orphaned (no owner, or every owner blocked) before the orphan sweep
+	// suspends it (AG-03/AG-04). It grants nothing: an admin can suspend at
+	// any time, and the agent stays flagged orphaned meanwhile.
+	"identity.orphan_grace_days": {
+		Name:    "identity.orphan_grace_days",
+		Kind:    KindInt,
+		Default: "7",
+		Doc:     "Days an active agent may stay orphaned (no owner, or every owner blocked) before it is suspended automatically. Range [1, 30].",
+		Validate: func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("identity.orphan_grace_days: must be an integer, got %q", v)
+			}
+			if n < 1 || n > 30 {
+				return fmt.Errorf("identity.orphan_grace_days: must be in [1, 30], got %d", n)
+			}
+			return nil
+		},
+	},
 }
 
 // ParseList splits a comma-separated config string into trimmed, non-empty

@@ -286,8 +286,8 @@ func TestPersonalSkillsE2E_NoNewMigrations(t *testing.T) {
 	// llm_usage_events_units, 048 is tasks_obo, 049 is
 	// scheduled_runs_delegation, 050 is agents_service_agent, 051 is
 	// tasks_obo_kind, 052 is agent_api_keys_expiry, 053 is approval_expiry,
-	// 054 is revocation_epoch.
-	const knownMaxMigration = 55
+	// 054 is revocation_epoch, 055 is default_agent, 056 is agent_status.
+	const knownMaxMigration = 56
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

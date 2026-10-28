@@ -71,23 +71,44 @@ func TestRevocationRepo_BlockAndEpochs(t *testing.T) {
 	if err := agents.Create(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if nb, err := repo.AgentNotBefore(ctx, tenant, a.ID.String()); err != nil || !nb.IsZero() {
-		t.Fatalf("fresh agent epoch = %v %v", nb, err)
+	if st, nb, err := repo.AgentState(ctx, tenant, a.ID.String()); err != nil || !nb.IsZero() || st != AgentStaged {
+		t.Fatalf("fresh agent state = %q %v %v", st, nb, err)
 	}
 	if err := repo.RevokeAgentSessions(ctx, tenant, a.ID.String(), at); err != nil {
 		t.Fatal(err)
 	}
-	if nb, _ := repo.AgentNotBefore(ctx, tenant, a.ID.String()); !nb.Equal(at) {
+	if _, nb, _ := repo.AgentState(ctx, tenant, a.ID.String()); !nb.Equal(at) {
 		t.Fatalf("agent epoch = %v", nb)
 	}
 	if err := repo.RevokeAgentSessions(ctx, other, a.ID.String(), at); !errors.Is(err, ErrAgentNotFound) {
 		t.Fatalf("foreign tenant: want ErrAgentNotFound, got %v", err)
 	}
+
+	// AG-03: status moves compare-and-set, scoped to the tenant.
+	if err := repo.SetAgentStatus(ctx, tenant, a.ID.String(), AgentActive, AgentSuspended, "x"); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("stale from: want ErrAgentNotFound, got %v", err)
+	}
+	if err := repo.SetAgentStatus(ctx, other, a.ID.String(), AgentStaged, AgentActive, ""); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("foreign tenant: want ErrAgentNotFound, got %v", err)
+	}
+	if err := repo.SetAgentStatus(ctx, tenant, a.ID.String(), AgentStaged, AgentActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetAgentStatus(ctx, tenant, a.ID.String(), AgentActive, AgentSuspended, "incident 42"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := agents.Get(ctx, tenant, a.ID.String()); got.Status != AgentSuspended || got.StatusReason != "incident 42" {
+		t.Fatalf("agent = %q %q", got.Status, got.StatusReason)
+	}
+	if st, _, _ := repo.AgentState(ctx, tenant, uuid.NewString()); st != "" {
+		t.Fatalf("unknown agent status = %q, want empty", st)
+	}
 }
 
 // AG-06 with AG-17 S4: a scheduled-run claim parks the run of a blocked owner
 // ("subject_blocked") and of an actor revoked after the schedule was created
-// ("actor_revoked"); a schedule created after the revoke-all still fires.
+// ("actor_revoked") and of a retired actor (AG-03, "actor_retired"); a schedule
+// created after the revoke-all still fires.
 func TestScheduledRun_ClaimParksBlockedAndRevoked(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -115,6 +136,11 @@ func TestScheduledRun_ClaimParksBlockedAndRevoked(t *testing.T) {
 	}
 	blockedRun := mk("bob", nil)
 	revokedRun := mk("alice", &agent.ID)
+	retired := &Agent{ID: uuid.New(), TenantID: tenant, Name: "r-" + uuid.NewString()[:8], ApprovalMode: "auto", CreatedBy: "alice", Status: AgentRetired}
+	if err := agents.Create(ctx, retired); err != nil {
+		t.Fatal(err)
+	}
+	retiredRun := mk("alice", &retired.ID)
 	if _, err := rev.BlockUser(ctx, tenant.String(), "bob", "left", "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -132,13 +158,13 @@ func TestScheduledRun_ClaimParksBlockedAndRevoked(t *testing.T) {
 	for _, r := range due {
 		got[r.ScheduledRunID] = r.SkipReason
 	}
-	want := map[uuid.UUID]string{blockedRun: "subject_blocked", revokedRun: "actor_revoked", liveRun: ""}
+	want := map[uuid.UUID]string{blockedRun: "subject_blocked", revokedRun: "actor_revoked", retiredRun: "actor_retired", liveRun: ""}
 	for id, w := range want {
 		if r, ok := got[id]; !ok || r != w {
 			t.Errorf("run %s: reason %q (claimed %v), want %q", id, r, ok, w)
 		}
 	}
-	for _, id := range []uuid.UUID{blockedRun, revokedRun} {
+	for _, id := range []uuid.UUID{blockedRun, revokedRun, retiredRun} {
 		r, err := repo.Get(ctx, tenant.String(), id.String())
 		if err != nil {
 			t.Fatal(err)
