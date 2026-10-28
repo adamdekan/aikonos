@@ -21,8 +21,8 @@ type Identity struct {
 	// Keycloak dev it is `preferred_username` (== email). Configured via
 	// AIKONOS_OIDC_SUBJECT_CLAIM. Use PrincipalID() for authz and per-user
 	// storage keys; never ActorID() for those purposes.
-	Subject  string
-	Email    string   // OIDC `email`/`preferred_username` — display label only
+	Subject string
+	Email   string // OIDC `email`/`preferred_username` — display label only
 	// Name is the OIDC `name` claim — display label only, never an authz input.
 	Name     string
 	TenantID string   // tenant claim (north-bound)
@@ -31,6 +31,12 @@ type Identity struct {
 	// IssuedAt is the token's `iat` (zero when absent), checked against the
 	// user's revocation epoch (AG-06).
 	IssuedAt time.Time
+	// Sign-in strength (AG-13), read for step-up approvals: `acr`, Entra's
+	// authentication-context `acrs`, `amr` and `auth_time` (zero when absent).
+	ACR      string
+	ACRS     []string
+	AMR      []string
+	AuthTime time.Time
 }
 
 // PrincipalID returns the verified principal used for authorization decisions

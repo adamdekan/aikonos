@@ -1,6 +1,8 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { post } from "../api/client.js";
+import { decideApproval, isStepUpRequired } from "../api/approvals.js";
+import { stepUpSignin } from "../auth/oidc.js";
 import Icon from "./Icon.vue";
 import ArgsView from "./ArgsView.vue";
 import ToggleSwitch from "./ui/ToggleSwitch.vue";
@@ -21,6 +23,7 @@ const pending = ref(false);
 const pendingAction = ref(null); // "approve" | "deny"
 const error = ref(null);
 const reviewed = ref(false);
+const stepUpAcr = ref(null); // set while a fresh MFA sign-in is due (AG-13)
 
 // Whether the request is high-risk (step-up or future risk:"high" field).
 // Approve is locked until reviewed when true.
@@ -115,6 +118,7 @@ watch(
   () => {
     reviewed.value = false;
     error.value = null;
+    stepUpAcr.value = null;
   }
 );
 
@@ -133,20 +137,44 @@ async function respond(approved) {
   pending.value = true;
   pendingAction.value = approved ? "approve" : "deny";
   error.value = null;
+  stepUpAcr.value = null;
   try {
     // AG-07 (M-28): echo the digest of the arguments shown; the gateway and the
     // broker refuse an approval whose digest no longer matches them.
-    await post(`/approve/${encodeURIComponent(props.request.toolCallId)}`, {
-      body: { approved, argsDigest: props.request.argsDigest ?? "" },
-    });
+    // AG-13: a yes on a step-up approval goes to the broker with this
+    // browser's own token, which must carry a recent MFA sign-in; the run
+    // resumes from the broker's decision.
+    if (approved && props.request.stepUp && props.request.taskId) {
+      await decideApproval(props.request.taskId, true, props.request.argsDigest ?? "");
+    } else {
+      await post(`/approve/${encodeURIComponent(props.request.toolCallId)}`, {
+        body: { approved, argsDigest: props.request.argsDigest ?? "" },
+      });
+    }
     emit("close");
   } catch (err) {
     // Keep modal open; surface inline error so the decision is not silently lost.
-    error.value = err?.message ?? "Request failed. Please try again.";
+    if (isStepUpRequired(err)) {
+      stepUpAcr.value = err.data.acr ?? "";
+      error.value = "This approval needs a recent multi-factor sign-in.";
+    } else {
+      error.value = err?.message ?? "Request failed. Please try again.";
+    }
   } finally {
     pending.value = false;
     pendingAction.value = null;
   }
+}
+
+// Fresh MFA sign-in in a popup (keeps this page and its run alive), then retry.
+async function verifyAndApprove() {
+  try {
+    await stepUpSignin(stepUpAcr.value);
+  } catch (err) {
+    error.value = err?.message ?? "Sign-in failed";
+    return;
+  }
+  await respond(true);
 }
 
 function respondCancel() {
@@ -221,6 +249,15 @@ function respondCancel() {
 
         <!-- Inline error (kept visible; modal stays open on failure) -->
         <p v-if="error" class="approval-error" role="alert">{{ error }}</p>
+        <button
+          v-if="stepUpAcr !== null"
+          class="btn-approve"
+          data-testid="approval-step-up"
+          :disabled="pending"
+          @click="verifyAndApprove"
+        >
+          Verify sign-in and approve
+        </button>
 
         <!-- FOOTER: decide — Deny first (ghost, auto-focused), Approve last (solid) -->
         <footer class="approval-actions">

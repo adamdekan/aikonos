@@ -145,6 +145,49 @@ registration — a different `client_id` means the OBO exchange fails with
 AADSTS500011. Dev/Keycloak stacks have no Entra app registration, so they show
 no OneDrive option.
 
+## Step-up for risky approvals (AG-13)
+
+An approval that OPA marks `require_step_up` (credential access, destructive
+and infrastructure tools, unconfirmed MCP tools) needs a recent multi-factor
+sign-in from the approver, not only a second person. The broker reads the
+approver's verified token at north `ApproveTask`: a yes counts only when `amr`
+names a second factor (`mfa`, `otp`, `hwk`, ...) or `acr` / `acrs` holds the
+tenant's `approvals.step_up_acr`, and `auth_time` is within
+`approvals.step_up_max_age_minutes` (default 10). Otherwise it refuses with
+`step_up_required` and the vote is not counted. A no needs no step-up. The
+gateway's own vote (`ApproveGatewayTask`, the gateway SVID) carries no sign-in,
+so it is always refused for a step-up approval; the run then waits for the
+approver's vote.
+
+On `step_up_required` the web UI (chat approval dialog, Inbox → Pending
+approvals) shows *Verify sign-in and approve*: a popup sign-in with `max_age=0`,
+then the approval is sent again with the new token.
+
+Entra v2 access tokens carry no `amr`, so use a Conditional Access
+authentication context and a claims challenge:
+
+1. Entra admin center → Protection → Conditional Access → Authentication
+   contexts → create one (for example `c1`, "aikonOS risky approvals") and
+   publish it to apps.
+2. Create a Conditional Access policy: Target resources → Authentication
+   context `c1`; Grant → Require multifactor authentication (or an
+   authentication strength); Session → Sign-in frequency → Every time.
+3. App registration → Token configuration → add the optional claim
+   `auth_time` to the token the broker receives (the access token, or the ID
+   token for the login-only model). Decode one token after sign-in and check
+   that `auth_time` is there: without it the broker refuses every step-up
+   approval (fail closed).
+4. Set the tenant setting `approvals.step_up_acr=c1` (Admin → Settings →
+   General configuration).
+
+For an acr of the form `c1`..`c99` the web UI does not send `acr_values`. It
+sends the claims challenge
+`claims={"access_token":{"acrs":{"essential":true,"value":"c1"}}}` (`id_token`
+for the login-only model). Entra runs the policy and issues a token whose
+`acrs` holds `c1`. Any other acr value goes as `acr_values`. The local Keycloak
+realm maps `acr_values=mfa` to an OTP step (enrol TOTP at the first prompt), so
+set `approvals.step_up_acr=mfa` to test it locally.
+
 ## Migrate to the enterprise tenant (later)
 
 1. Register the app in the enterprise tenant (single-tenant), expose the API, grant consent.

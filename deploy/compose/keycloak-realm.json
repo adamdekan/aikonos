@@ -3,6 +3,57 @@
   "enabled": true,
   "sslRequired": "none",
   "accessTokenLifespan": 1800,
+  "attributes": {
+    "acr.loa.map": "{\"mfa\":2}"
+  },
+  "browserFlow": "browser step-up",
+  "authenticationFlows": [
+    {
+      "alias": "browser step-up",
+      "description": "Cookie or forms; forms step up to OTP when acr_values=mfa (AG-13)",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "auth-cookie", "requirement": "ALTERNATIVE", "priority": 10, "authenticatorFlow": false, "autheticatorFlow": false, "userSetupAllowed": false },
+        { "flowAlias": "step-up forms", "requirement": "ALTERNATIVE", "priority": 20, "authenticatorFlow": true, "autheticatorFlow": true, "userSetupAllowed": false }
+      ]
+    },
+    {
+      "alias": "step-up forms",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "flowAlias": "step-up level 1", "requirement": "CONDITIONAL", "priority": 10, "authenticatorFlow": true, "autheticatorFlow": true, "userSetupAllowed": false },
+        { "flowAlias": "step-up level 2", "requirement": "CONDITIONAL", "priority": 20, "authenticatorFlow": true, "autheticatorFlow": true, "userSetupAllowed": false }
+      ]
+    },
+    {
+      "alias": "step-up level 1",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "conditional-level-of-authentication", "authenticatorConfig": "loa1", "requirement": "REQUIRED", "priority": 10, "authenticatorFlow": false, "autheticatorFlow": false, "userSetupAllowed": false },
+        { "authenticator": "auth-username-password-form", "requirement": "REQUIRED", "priority": 20, "authenticatorFlow": false, "autheticatorFlow": false, "userSetupAllowed": false }
+      ]
+    },
+    {
+      "alias": "step-up level 2",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "conditional-level-of-authentication", "authenticatorConfig": "loa2", "requirement": "REQUIRED", "priority": 10, "authenticatorFlow": false, "autheticatorFlow": false, "userSetupAllowed": false },
+        { "authenticator": "auth-otp-form", "requirement": "REQUIRED", "priority": 20, "authenticatorFlow": false, "autheticatorFlow": false, "userSetupAllowed": false }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    { "alias": "loa1", "config": { "loa-condition-level": "1", "loa-max-age": "36000" } },
+    { "alias": "loa2", "config": { "loa-condition-level": "2", "loa-max-age": "0" } }
+  ],
   "clients": [
     {
       "clientId": "aikonos-broker",

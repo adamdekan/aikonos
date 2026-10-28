@@ -12,7 +12,7 @@ vi.mock("oidc-client-ts", () => ({
   },
 }));
 
-import { selectBrokerToken } from "../auth/oidc.js";
+import { selectBrokerToken, stepUpArgs } from "../auth/oidc.js";
 
 describe("selectBrokerToken", () => {
   const user = { access_token: "AT", id_token: "IT", expired: false };
@@ -40,5 +40,24 @@ describe("selectBrokerToken", () => {
     const expired = { ...user, expired: true };
     expect(selectBrokerToken(expired, "access")).toBeNull();
     expect(selectBrokerToken(expired, "id")).toBeNull();
+  });
+});
+
+// AG-13: the step-up re-authentication asks for a fresh login and the
+// tenant's MFA acr; an Entra authentication context goes as a claims challenge.
+describe("stepUpArgs", () => {
+  it("forces a fresh login with acr_values for Keycloak-style acrs", () => {
+    expect(stepUpArgs("mfa", "access")).toEqual({ max_age: 0, acr_values: "mfa" });
+  });
+
+  it("forces a fresh login only when no acr is configured", () => {
+    expect(stepUpArgs("", "access")).toEqual({ max_age: 0 });
+  });
+
+  it("sends an Entra auth context as a claims challenge on the broker's token", () => {
+    const claims = (kind) => JSON.parse(stepUpArgs("c1", kind).extraQueryParams.claims);
+    expect(claims("access")).toEqual({ access_token: { acrs: { essential: true, value: "c1" } } });
+    expect(claims("id")).toEqual({ id_token: { acrs: { essential: true, value: "c1" } } });
+    expect(stepUpArgs("c1", "access").acr_values).toBeUndefined();
   });
 });

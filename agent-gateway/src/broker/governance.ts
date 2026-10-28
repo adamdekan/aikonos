@@ -32,6 +32,7 @@ import { chatCandidates, visionCandidates, shouldFailover } from "../llm/provide
 import { decisionOnlyGatedTools, gateSkippedTools } from "../pi/gating-manifest.js";
 import { PERSONAL_SKILL_PREFIX } from "../pi/load-skill.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
+import { isStepUpRequired } from "../http-errors.js";
 // CP5: a runtime import of runSubagents plus a
 // type-only import of BranchSupervisor/SubagentBranch/BranchResult. There is no
 // runtime cycle back to this file: subagent/run.ts's own import of this module
@@ -80,6 +81,9 @@ export interface Identity {
 
 export interface ApprovalInfo {
   toolCallId: string;
+  // The broker task: a step-up approval is decided against it with the
+  // approver's own fresh sign-in (AG-13), not through this run.
+  taskId?: string;
   toolName: string;
   toolId: string;
   effectClass: number;
@@ -309,6 +313,7 @@ export class GovernanceBridge {
         const gate = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
         const decided = await this.awaitApproval(taskId, result.argsDigest, {
           toolCallId,
+          taskId,
           toolName,
           toolId: mapping.toolId,
           effectClass: mapping.effectClass,
@@ -356,8 +361,11 @@ export class GovernanceBridge {
       if (state === undefined) {
         if (!local) return { reason: "approval declined" };
         if (info.ownerMayApprove) {
-          const vote = this.identity.token
-            ? await this.north.approveTask(
+          // AG-13: a step-up approval refuses this vote unless the session's
+          // token carries a fresh MFA sign-in; the approver then decides with
+          // one from the dialog or the Inbox, and the poll below sees it.
+          const vote = await (this.identity.token
+            ? this.north.approveTask(
                 {
                   taskId,
                   tenantId: this.identity.tenantId,
@@ -368,16 +376,20 @@ export class GovernanceBridge {
                 },
                 this.identity.token,
               )
-            : await this.south.approveGatewayTask({
+            : this.south.approveGatewayTask({
                 taskId,
                 tenantId: this.identity.tenantId,
                 ownerUserId: this.identity.userId,
                 approved: true,
                 reason: "approved via agent-gateway",
                 argsDigest,
-              });
-          if (vote.newStatus === TaskStatus.APPROVED) return { tokens: vote.capabilityTokenIds };
-          if (vote.newStatus === TaskStatus.DENIED) return { reason: "approval declined" };
+              })
+          ).catch((err: unknown) => {
+            if (isStepUpRequired(err)) return undefined;
+            throw err;
+          });
+          if (vote?.newStatus === TaskStatus.APPROVED) return { tokens: vote.capabilityTokenIds };
+          if (vote?.newStatus === TaskStatus.DENIED) return { reason: "approval declined" };
         }
         this.log.info({ taskId, requiresN: info.requiresN }, "approval waits for other approvers");
         state = await remote;

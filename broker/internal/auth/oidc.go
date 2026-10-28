@@ -88,10 +88,14 @@ func (v *Validator) Enabled() bool { return v.cfg.Issuer != "" }
 
 // standardClaims is the subset of registered + Keycloak claims we read.
 type oidcClaims struct {
-	Email             string `json:"email"`
-	PreferredUsername string `json:"preferred_username"`
-	Scope             string `json:"scope"`
-	AuthorizedParty   string `json:"azp"`
+	Email             string   `json:"email"`
+	PreferredUsername string   `json:"preferred_username"`
+	Scope             string   `json:"scope"`
+	AuthorizedParty   string   `json:"azp"`
+	ACR               string   `json:"acr"`
+	ACRS              []string `json:"acrs"`
+	AMR               []string `json:"amr"`
+	AuthTime          int64    `json:"auth_time"`
 }
 
 // Validate verifies a raw bearer token and returns the caller identity.
@@ -140,9 +144,15 @@ func (v *Validator) Validate(ctx context.Context, raw string) (*Identity, error)
 		Subject: std.Subject,
 		Email:   custom.Email,
 		Scopes:  splitScopes(custom.Scope),
+		ACR:     custom.ACR,
+		ACRS:    custom.ACRS,
+		AMR:     custom.AMR,
 	}
 	if std.IssuedAt != nil {
 		id.IssuedAt = std.IssuedAt.Time()
+	}
+	if custom.AuthTime > 0 {
+		id.AuthTime = time.Unix(custom.AuthTime, 0)
 	}
 	// Override the principal from a configured claim (e.g. Entra "oid"). Falls
 	// back to the standard "sub" when the claim is "sub" or absent/non-string.

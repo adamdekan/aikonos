@@ -261,12 +261,20 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		return nil, status.Errorf(codes.PermissionDenied, "approver not authorized for task %s", req.TaskId)
 	}
 
+	stepUp, err := stepUpRule(ctx, s.configFor(), tenant)
+	if err != nil {
+		return nil, err
+	}
 	respStatus, capTokens, eventType, decision, err := approvalsvc.Resolve(
 		ctx, s.deps.Tasks, s.deps.Policy, approvalMinter(s.deps.Capability, s.toolReg()), s.deps.Logger,
 		tenant, req.TaskId, approver,
-		req.Approved, req.Reason, req.ArgsDigest,
+		req.Approved, req.Reason, req.ArgsDigest, stepUp,
 	)
 	if err != nil {
+		if approvalsvc.IsStepUpRequired(err) {
+			task, _ := s.deps.Tasks.Get(ctx, tenant, req.TaskId)
+			emitStepUpRefused(ctx, s.deps, traceID, tenant, req.TaskId, approver, task)
+		}
 		return nil, err
 	}
 
@@ -304,6 +312,38 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		NewStatus:          respStatus,
 		CapabilityTokenIds: capTokens,
 	}, nil
+}
+
+// stepUpRule reads the tenant's step-up rule (AG-13). A config read failure
+// refuses the approval rather than guessing a laxer rule.
+func stepUpRule(ctx context.Context, cfg Config, tenant string) (approvalsvc.StepUp, error) {
+	acr, err := cfg.GetString(ctx, tenant, "approvals.step_up_acr")
+	if err != nil {
+		return approvalsvc.StepUp{}, status.Error(codes.Internal, "failed to load step-up settings")
+	}
+	mins, err := cfg.GetInt(ctx, tenant, "approvals.step_up_max_age_minutes")
+	if err != nil {
+		return approvalsvc.StepUp{}, status.Error(codes.Internal, "failed to load step-up settings")
+	}
+	return approvalsvc.StepUp{ACR: acr, MaxAge: time.Duration(mins) * time.Minute}, nil
+}
+
+// emitStepUpRefused records a yes refused for want of a recent MFA sign-in
+// (AG-13); the vote was not counted.
+func emitStepUpRefused(ctx context.Context, d Deps, traceID, tenant, taskID, approver string, task *db.Task) {
+	const eventType = "aikonos.broker.task.step_up_required"
+	if err := d.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
+		EventId:     ids.EventID(),
+		TraceId:     traceID,
+		TenantId:    tenant,
+		OccurredAt:  timestampNow(),
+		ActorUserId: approver,
+		EventType:   eventType,
+		ResourceRef: "aikonos:task:" + taskID,
+		Decision:    auditv1.PolicyDecision_DENY,
+	}, task)); err != nil {
+		audit.RecordEmitFailure(ctx, d.Logger, err, eventType)
+	}
 }
 
 // ListPendingApprovals returns the pending, unexpired approval requests the

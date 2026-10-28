@@ -13,6 +13,9 @@ vi.mock("../api/client.js", () => ({
   patch: vi.fn(),
 }));
 
+const mockStepUpSignin = vi.fn().mockResolvedValue(undefined);
+vi.mock("../auth/oidc.js", () => ({ stepUpSignin: (...a) => mockStepUpSignin(...a) }));
+
 const baseInfo = {
   toolId: "web.fetch",
   toolCallId: "tc-99",
@@ -113,4 +116,27 @@ describe("ApprovalModal.vue", () => {
     const buttons = w.findAll("[data-action='approve']");
     expect(buttons.length).toBe(1);
   });
+
+  // AG-13: a yes on a step-up approval goes to the broker with the browser's
+  // own token; refused for want of MFA, the dialog offers a fresh sign-in
+  // (popup, acr from the refusal) and then retries.
+  it("step-up approve: decides via the broker, signs in again on step_up_required and retries", async () => {
+    const stepUpErr = Object.assign(new Error("step_up_required"), { status: 401, data: { error: "step_up_required", acr: "mfa" } });
+    mockPost.mockRejectedValueOnce(stepUpErr).mockResolvedValueOnce({ newStatus: 4 });
+    const w = makeModal({ request: { ...baseInfo, stepUp: true, taskId: "task-7" } });
+    await w.find(".review-gate button[role='switch']").trigger("click");
+    await w.find("[data-action='approve']").trigger("click");
+    await flushPromises();
+
+    expect(mockPost).toHaveBeenCalledWith("/pending-approvals/task-7", { body: { approved: true, argsDigest: "digest-99" } });
+    expect(w.emitted("close")).toBeFalsy();
+    expect(w.find("[role='alert']").text()).toContain("multi-factor");
+
+    await w.find("[data-testid='approval-step-up']").trigger("click");
+    await flushPromises();
+    expect(mockStepUpSignin).toHaveBeenCalledWith("mfa");
+    expect(mockPost).toHaveBeenCalledTimes(2);
+    expect(w.emitted("close")).toBeTruthy();
+  });
 });
+

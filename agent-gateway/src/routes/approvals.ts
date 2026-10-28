@@ -6,7 +6,7 @@ import { requireUser } from "../auth/require-user.js";
 import type { JwksResolver, VerifyOptions } from "../auth/verify.js";
 import type { ApprovalRegistry } from "../agui/hitl.js";
 import type { NorthClient } from "../broker/north.js";
-import { sendError } from "../http-errors.js";
+import { isStepUpRequired, sendError, stepUpAcr } from "../http-errors.js";
 import { log } from "../log.js";
 
 export interface ApprovalRoutesCtx {
@@ -81,6 +81,11 @@ export function registerApprovalRoutes(app: FastifyInstance, ctx: ApprovalRoutes
         );
         reply.send({ newStatus: resp.newStatus });
       } catch (err) {
+        // AG-13: 401 tells the browser to sign in again with MFA and retry.
+        if (isStepUpRequired(err)) {
+          reply.code(401).send({ error: "step_up_required", acr: stepUpAcr(err) });
+          return;
+        }
         sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: {} });
       }
     },

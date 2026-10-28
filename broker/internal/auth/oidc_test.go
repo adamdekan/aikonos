@@ -308,3 +308,30 @@ func TestValidator_AzpMatch_Accepted(t *testing.T) {
 		t.Fatalf("expected matching azp to be accepted: %v", err)
 	}
 }
+
+// TestValidator_SignInStrengthClaims: acr, acrs, amr and auth_time reach the
+// Identity for the step-up check (AG-13).
+func TestValidator_SignInStrengthClaims(t *testing.T) {
+	idp := newTestIDP(t)
+	v := mustValidator(t, OIDCConfig{Issuer: idp.srv.URL, Audience: "aikonos-broker"})
+	authTime := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
+	tok := idp.mint(t, jwt.Claims{
+		Issuer:   idp.srv.URL,
+		Subject:  "alice",
+		Audience: jwt.Audience{"aikonos-broker"},
+		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}, map[string]any{
+		"acr":       "mfa",
+		"acrs":      []string{"c1"},
+		"amr":       []string{"pwd", "otp"},
+		"auth_time": authTime.Unix(),
+	})
+	id, err := v.Validate(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if id.ACR != "mfa" || len(id.ACRS) != 1 || id.ACRS[0] != "c1" ||
+		len(id.AMR) != 2 || id.AMR[1] != "otp" || !id.AuthTime.Equal(authTime) {
+		t.Errorf("claims = acr %q acrs %v amr %v auth_time %v", id.ACR, id.ACRS, id.AMR, id.AuthTime)
+	}
+}

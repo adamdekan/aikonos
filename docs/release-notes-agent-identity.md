@@ -149,3 +149,22 @@ an agent ("Acts as") in the edit form first, then resumes.
   the external surface, shown as the SCIM tenant URL in the admin page.
 - The gateway and broker must both be from this release: the gateway forwards
   SCIM calls over the new south RPC `ScimCall`.
+
+## Step-up sign-in for risky approvals (AG-13)
+
+- A yes on a step-up approval now needs the approver's recent MFA sign-in
+  (`amr` with a second factor or `acr`/`acrs` = `approvals.step_up_acr`, and
+  `auth_time` within `approvals.step_up_max_age_minutes`, default 10). Without
+  it the broker answers `step_up_required` and audits
+  `aikonos.broker.task.step_up_required`. Denials are unchanged.
+- New tenant settings `approvals.step_up_acr` (default empty: only `amr`
+  counts) and `approvals.step_up_max_age_minutes` (1 to 60).
+- A token without `auth_time` never qualifies. For Entra, add the `auth_time`
+  optional claim and an authentication context (`docs/12-entra-login.md`).
+  Until then step-up approvals cannot be approved; denials still work.
+- The run's own vote through the gateway is refused for step-up approvals. The
+  approver decides from the chat dialog or the Inbox with *Verify sign-in and
+  approve* (popup sign-in), and the run resumes.
+- The local Keycloak realm gets a step-up browser flow: `acr_values=mfa` asks
+  for an OTP (TOTP enrolment at the first prompt). Re-import the realm to use it.
+- The gateway and the web UI must both be from this release.

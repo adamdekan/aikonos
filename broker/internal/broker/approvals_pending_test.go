@@ -14,7 +14,8 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -58,15 +59,12 @@ func TestListPendingApprovals_TwoApproversOneOutsider(t *testing.T) {
 	}}
 	srv := fga.server(t)
 	t.Cleanup(srv.Close)
-	em, err := audit.NewEmitter(context.Background(), audit.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	eng, err := policy.NewEngine(context.Background(), policy.Config{OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Audit: em, Policy: eng, Tasks: store})
+	rec := &recordingEmitter{}
+	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Audit: rec, Policy: eng, Tasks: store})
 
 	list := func(user string) []*brokerv1.PendingApproval {
 		t.Helper()
@@ -89,11 +87,22 @@ func TestListPendingApprovals_TwoApproversOneOutsider(t *testing.T) {
 		t.Fatalf("unexpected pending approval: %+v", pa)
 	}
 
-	// The second approver completes the gate from their own session with the
-	// digest the list handed out.
-	resp, err := svc.ApproveTask(ctxWithIdentity(testTenantUUID, "carol@example.com"), &brokerv1.ApproveTaskRequest{
-		TaskId: pa.TaskId, Approved: true, ArgsDigest: pa.ArgsDigest,
+	// AG-13: the gate is step-up, so carol's password-only sign-in is
+	// refused (audited, no vote) ...
+	req := &brokerv1.ApproveTaskRequest{TaskId: pa.TaskId, Approved: true, ArgsDigest: pa.ArgsDigest}
+	if _, err := svc.ApproveTask(ctxWithIdentity(testTenantUUID, "carol@example.com"), req); !approvalsvc.IsStepUpRequired(err) {
+		t.Fatalf("ApproveTask without MFA: err=%v, want step_up_required", err)
+	}
+	if n := len(rec.events); n != 1 || rec.events[0].EventType != "aikonos.broker.task.step_up_required" {
+		t.Fatalf("audit after refusal = %v, want one step_up_required event", rec.events)
+	}
+
+	// ... and a fresh MFA sign-in completes the gate from her own session with
+	// the digest the list handed out.
+	mfa := auth.WithIdentity(context.Background(), &auth.Identity{
+		TenantID: testTenantUUID, Email: "carol@example.com", AMR: []string{"pwd", "otp"}, AuthTime: time.Now(),
 	})
+	resp, err := svc.ApproveTask(mfa, req)
 	if err != nil || resp.NewStatus != brokerv1.TaskStatus_APPROVED {
 		t.Fatalf("ApproveTask with listed digest: resp=%v err=%v", resp, err)
 	}

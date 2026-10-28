@@ -87,7 +87,35 @@ export async function login() {
  * Returns the oidc User on success.
  */
 export async function handleCallback() {
-  return mgr.signinRedirectCallback();
+  // signinCallback also completes a step-up popup (AG-13): it hands the new
+  // user to the opener and closes the popup, returning undefined.
+  return mgr.signinCallback();
+}
+
+/**
+ * Sign-in arguments for a step-up approval (AG-13): max_age=0 forces a fresh
+ * login, and the tenant's acr (approvals.step_up_acr) asks for MFA. An Entra
+ * authentication-context id (c1..c99) goes as a conditional-access claims
+ * challenge on the token the broker receives; any other value as acr_values
+ * (Keycloak and other OIDC providers). Pure; exported for tests.
+ */
+export function stepUpArgs(acr, kind = brokerTokenKind) {
+  const args = { max_age: 0 };
+  if (/^c[1-9][0-9]?$/.test(acr ?? "")) {
+    const token = kind === "id" ? "id_token" : "access_token";
+    args.extraQueryParams = { claims: JSON.stringify({ [token]: { acrs: { essential: true, value: acr } } }) };
+  } else if (acr) {
+    args.acr_values = acr;
+  }
+  return args;
+}
+
+/**
+ * Re-authenticates in a popup for a step-up approval; the new tokens replace
+ * the session's. Call it from a click: browsers block popups opened later.
+ */
+export async function stepUpSignin(acr) {
+  await mgr.signinPopup(stepUpArgs(acr));
 }
 
 /**

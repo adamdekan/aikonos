@@ -207,3 +207,25 @@ test("GET /pending-approvals and POST /pending-approvals/:taskId act as the call
   assert.equal((await app.inject({ method: "GET", url: "/pending-approvals" })).statusCode, 401);
   await app.close();
 });
+
+// AG-13: the broker's step_up_required refusal reaches the browser as a 401
+// naming the tenant's acr, so the web UI signs in again with MFA and retries.
+test("POST /pending-approvals/:taskId maps step_up_required to 401 with the acr", async () => {
+  const { app, north, bob } = await buildApp();
+  const { Metadata, status } = await import("@grpc/grpc-js");
+  const md = new Metadata();
+  md.set("aikonos-step-up-acr", "mfa");
+  north.approveTask = () =>
+    Promise.reject(Object.assign(new Error("7 PERMISSION_DENIED: step_up_required"), {
+      code: status.PERMISSION_DENIED, details: "step_up_required", metadata: md,
+    }));
+  const res = await app.inject({
+    method: "POST",
+    url: "/pending-approvals/task-1",
+    headers: { authorization: `Bearer ${bob}` },
+    payload: { approved: true, argsDigest: "d1" },
+  });
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.json(), { error: "step_up_required", acr: "mfa" });
+  await app.close();
+});
