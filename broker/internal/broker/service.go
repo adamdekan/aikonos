@@ -33,6 +33,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/notify"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/ratelimit"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
@@ -306,6 +307,12 @@ type Deps struct {
 	// via viper "otel.endpoint"). Reported read-only by GetObservabilityInfo;
 	// empty ⇒ telemetry export disabled. Process-global, not tenant-scoped.
 	OtelEndpoint string
+
+	// Revocation is the cached AG-06 view of user/tenant blocks and revocation
+	// epochs, shared with the north RevocationInterceptor so a write here
+	// resets the interceptor's cache too. Nil ⇒ nothing is revoked and the
+	// block/revoke RPCs return FailedPrecondition.
+	Revocation *revocation.Checker
 
 	// UserDirectory is the passive display-name cache. Populated by upserts in
 	// callerIdentity after every verified north call; read by ListAssignments to

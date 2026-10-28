@@ -141,6 +141,9 @@ func (v *Validator) Validate(ctx context.Context, raw string) (*Identity, error)
 		Email:   custom.Email,
 		Scopes:  splitScopes(custom.Scope),
 	}
+	if std.IssuedAt != nil {
+		id.IssuedAt = std.IssuedAt.Time()
+	}
 	// Override the principal from a configured claim (e.g. Entra "oid"). Falls
 	// back to the standard "sub" when the claim is "sub" or absent/non-string.
 	if v.cfg.SubjectClaim != "sub" {

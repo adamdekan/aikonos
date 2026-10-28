@@ -149,9 +149,22 @@ scope for this phase, so every restart requires the manual step above. `vault-da
 ## Kill switch procedures
 
 ### Freeze a user immediately
+Use **Admin → Access Control → Members → Block** (reason required, audited as
+`aikonos.broker.user.blocked`). The block refuses the user's next north RPC,
+owner grant, tool call and scheduled run within at most 30 s on every broker
+replica (immediately on the one that wrote it); see
+[`user-lifecycle.md`](user-lifecycle.md#blocking-a-user-and-revoking-sessions).
+**Revoke sessions** on the same row ends every session without blocking.
+
+When the UI is not reachable, write the row directly (the subject is the
+user's principal id, i.e. the `oid`; the user's tenant comes from
+`AIKONOS_TENANT_ID`):
 ```bash
-python3 scripts/aikonosctl kill-switch user alice@corp
+python3 scripts/aikonosctl kill-switch user <principal-id>
 ```
+`aikonosctl kill-switch tenant <tenant-id>` blocks every user of a tenant,
+including its admins; it has no UI and is lifted with the SQL below
+(`scope='tenant'`).
 
 ### Check active kill switches
 ```bash
@@ -159,6 +172,7 @@ python3 scripts/aikonosctl kill-switch status
 ```
 
 ### Deactivate a kill switch
+Unblock in the UI (Members → Unblock), or:
 ```bash
 docker compose exec postgres \
   psql -U aikonos -d aikonos -c \

@@ -377,6 +377,15 @@ service BrokerService {
   // A3 — unified members roster (read-only aggregation). Admin only.
   rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
 
+  // ── Revocation (AG-06, tenant-admin gated) ─────────────────────────────────
+  // Block or unblock a user (reason required); a block refuses the user's
+  // next north RPC, owner grant, tool call and scheduled run.
+  rpc SetUserBlocked(SetUserBlockedRequest) returns (SetUserBlockedResponse);
+  // Revoke all sessions: move the principal's revocation epoch to now, voiding
+  // every IdP token, owner grant and capability token issued before it.
+  rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeSessionsResponse);
+  rpc RevokeAgentSessions(RevokeAgentSessionsRequest) returns (RevokeSessionsResponse);
+
   // ── Workflow RPCs (north/OIDC path) — reuse south message types ──────────
   // owner_grant is ignored on the north path; identity comes from the OIDC bearer.
   rpc SaveWorkflow(SaveWorkflowRequest)   returns (SaveWorkflowResponse);
@@ -1728,6 +1737,7 @@ message Agent {
   string soul = 13;
   bool   gateway_enabled = 14;     // when true, agent is invokable via the external :8090 surface
   bool   service_agent = 15;       // AG-17: may run subject-less (external key, no user)
+  string sessions_revoked_at = 16; // AG-06: RFC3339 revocation epoch; empty if never
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
@@ -2492,6 +2502,38 @@ message MemberInfo {
   bool   provisioned   = 5; // true if JIT-provisioned (provisioned_at set)
   string provisioned_at = 6; // RFC3339; empty if manual
   bool   is_admin      = 7; // holds the tenant admin relation
+  // AG-06 revocation state.
+  bool   blocked             = 8;
+  string block_reason        = 9;
+  string blocked_by          = 10;
+  string blocked_at          = 11; // RFC3339; empty when not blocked
+  string sessions_revoked_at = 12; // RFC3339 revocation epoch; empty if never
+}
+
+message SetUserBlockedRequest {
+  string tenant_id = 1;
+  string user_id   = 2; // caller (admin); must match the bearer
+  string subject   = 3; // the user to block / unblock
+  bool   blocked   = 4;
+  string reason    = 5; // required
+}
+message SetUserBlockedResponse {
+  bool changed = 1; // false when the user was already in the requested state
+}
+message RevokeUserSessionsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string subject   = 3;
+  string reason    = 4; // required
+}
+message RevokeAgentSessionsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+  string agent_id  = 3;
+  string reason    = 4; // required
+}
+message RevokeSessionsResponse {
+  string not_before = 1; // RFC3339Nano: the new revocation epoch
 }
 
 message ListMembersRequest {

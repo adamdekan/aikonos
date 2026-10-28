@@ -159,6 +159,7 @@ export function agentJson(a: Agent) {
     soul: a.soul ?? "",
     gatewayEnabled: a.gatewayEnabled ?? false,
     serviceAgent: a.serviceAgent ?? false,
+    sessionsRevokedAt: a.sessionsRevokedAt ?? "",
   };
 }
 
@@ -191,6 +192,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     soul: "",
     gatewayEnabled: b.gatewayEnabled ?? false,
     serviceAgent: b.serviceAgent ?? false,
+    sessionsRevokedAt: "", // read-only (AG-06); UpdateAgent ignores it
     usableBy: [],
     createdBy: "",
     createdAt: undefined,
@@ -1636,6 +1638,66 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
       sendError(reply, log, err, { route: `${req.method} ${req.url}` });
     }
   });
+
+  // ── Revocation (AG-06, admin) ──────────────────────────────────────────────
+  // Block / unblock a member and revoke all sessions of a member or an agent.
+  // The broker enforces tenant-admin and requires a non-empty reason.
+  app.post<{ Params: { subject: string }; Body: { blocked?: boolean; reason?: string } }>(
+    "/admin/members/:subject/block",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.setUserBlocked(
+          {
+            tenantId: principal.tenant,
+            userId: principal.sub,
+            subject: req.params.subject,
+            blocked: req.body?.blocked !== false,
+            reason: String(req.body?.reason ?? ""),
+          },
+          principal.token,
+        );
+        reply.send({ changed: resp.changed });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { subject: string }; Body: { reason?: string } }>(
+    "/admin/members/:subject/revoke-sessions",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.revokeUserSessions(
+          { tenantId: principal.tenant, userId: principal.sub, subject: req.params.subject, reason: String(req.body?.reason ?? "") },
+          principal.token,
+        );
+        reply.send({ notBefore: resp.notBefore });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/admin/agents/:id/revoke-sessions",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.revokeAgentSessions(
+          { tenantId: principal.tenant, userId: principal.sub, agentId: req.params.id, reason: String(req.body?.reason ?? "") },
+          principal.token,
+        );
+        reply.send({ notBefore: resp.notBefore });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
 
   app.post<{ Params: { id: string }; Body: { label?: string; ttlDays?: number } }>(
     "/admin/agents/:id/keys",

@@ -45,7 +45,7 @@ Indicators:
 
 1. Identify the `agent_id` or `user_sub` from the audit event.
 2. Disable the agent: Admin → Agents → (agent) → Disable. This stops new child spawns; in-flight tasks drain naturally (the child pool evicts on next request).
-3. If a personal user session: revoke all FGA tuples for the user via Admin → Access Control → Users → Remove all grants.
+3. If a personal user session: block the user (Admin → Access Control → Members → Block, with a reason) or, to end their sessions without blocking, Revoke sessions on the same row. To cut an agent's outstanding capability tokens and owner grants at their next use, use Admin → Agents → Revoke sessions (this also voids its existing API keys and parks its existing schedules).
 4. Block further task submission: set a rate-limit policy of 0 RPM/TPM for the subject via Admin → Settings → Rate Limits.
 
 ### Gather Evidence

@@ -197,6 +197,11 @@ import type {
   UpdateOrgSettingsResponse,
   ListMembersRequest,
   ListMembersResponse,
+  SetUserBlockedRequest,
+  SetUserBlockedResponse,
+  RevokeUserSessionsRequest,
+  RevokeAgentSessionsRequest,
+  RevokeSessionsResponse,
   GetWorkspaceBackendRequest,
   GetWorkspaceBackendResponse,
   SetWorkspaceBackendRequest,
@@ -744,6 +749,19 @@ export class NorthClient {
 
   listMembers(req: ListMembersRequest, token?: string): Promise<ListMembersResponse> {
     return unary((r, m, o, cb) => this.client.listMembers(r, m, o, cb), req, bearer(token));
+  }
+
+  // AG-06: block / unblock a user, revoke all sessions of a user or an agent.
+  setUserBlocked(req: SetUserBlockedRequest, token?: string): Promise<SetUserBlockedResponse> {
+    return unary((r, m, o, cb) => this.client.setUserBlocked(r, m, o, cb), req, bearer(token));
+  }
+
+  revokeUserSessions(req: RevokeUserSessionsRequest, token?: string): Promise<RevokeSessionsResponse> {
+    return unary((r, m, o, cb) => this.client.revokeUserSessions(r, m, o, cb), req, bearer(token));
+  }
+
+  revokeAgentSessions(req: RevokeAgentSessionsRequest, token?: string): Promise<RevokeSessionsResponse> {
+    return unary((r, m, o, cb) => this.client.revokeAgentSessions(r, m, o, cb), req, bearer(token));
   }
 
   updateOrgSettings(req: UpdateOrgSettingsRequest, token?: string): Promise<UpdateOrgSettingsResponse> {

@@ -307,6 +307,14 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
+	// AG-06: a key minted before the agent's revoke-all is void, like a
+	// revoked one. A state read failure refuses rather than resolves.
+	if st, rerr := s.deps.Revocation.Agent(ctx, k.TenantID.String(), k.AgentID.String()); rerr != nil {
+		return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+	} else if st.Revoked(k.CreatedAt) {
+		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+	}
+
 	// AG-17 S6: an optional user assertion names the person the agent acts
 	// for. A bad one refuses the key outright, never falls back to svc-.
 	var subject string

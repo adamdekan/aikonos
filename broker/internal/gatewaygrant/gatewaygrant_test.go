@@ -33,6 +33,10 @@ func TestRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Verify(acceptV1=%v): %v", acceptV1, err)
 		}
+		if exp := g.Expires; exp.Before(time.Now().Add(59*time.Minute)) || exp.After(time.Now().Add(time.Hour)) {
+			t.Errorf("Expires %v, want ~1h ahead", exp)
+		}
+		g.Expires = time.Time{}
 		if g != testGrant {
 			t.Errorf("got %+v, want %+v", g, testGrant)
 		}
@@ -46,7 +50,7 @@ func TestV1AcceptedOnlyWithFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify(acceptV1): %v", err)
 	}
-	if want := (Grant{TenantID: "tenant-abc", Subject: "svc-a1", Kind: KindLegacy}); g != want {
+	if want := (Grant{TenantID: "tenant-abc", Subject: "svc-a1", Kind: KindLegacy, Expires: time.Unix(9999999999, 0)}); g != want {
 		t.Errorf("got %+v, want %+v", g, want)
 	}
 	if g.Owner() != "svc-a1" {

@@ -24,6 +24,7 @@ vi.mock("../api/admin.js", () => ({
   mintAgentApiKey:      vi.fn(),
   listAgentApiKeys:     vi.fn(),
   revokeAgentApiKey:    vi.fn(),
+  revokeAgentSessions:  vi.fn(),
   listLlmProviders:     vi.fn(),
   listSkills:           vi.fn(),
 }));

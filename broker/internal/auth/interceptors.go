@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adamdekan/aikonos/broker/internal/ids"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
 
@@ -90,6 +91,42 @@ func TenantInterceptor(emitter auditEmitter, defaultTenant string, log *zap.Logg
 			log.Warn("authenticated caller has no tenant claim", zap.String("subject", id.Subject))
 			emitAuthDenied(ctx, emitter, defaultTenant, "auth.tenant.missing", info.FullMethod, id.Subject, id.Email, "no_tenant_claim")
 			return nil, status.Error(codes.PermissionDenied, "token carries no tenant")
+		}
+		return handler(ctx, req)
+	}
+}
+
+// UserRevocations reports a north caller's block and revocation epoch
+// (AG-06). *revocation.Checker satisfies it.
+type UserRevocations interface {
+	User(ctx context.Context, tenantID, subject string) (revocation.State, error)
+}
+
+// RevocationInterceptor refuses a blocked user (or a user of a blocked
+// tenant) and a token issued before the user's revocation epoch, so a block or
+// revoke-all cuts a still-valid IdP token at the next RPC (within the checker's
+// cache TTL). It runs after TenantInterceptor; with no identity on the context
+// (OIDC disabled, dev) or no checker it is a no-op. A state read failure fails
+// closed with Unavailable.
+func RevocationInterceptor(rc UserRevocations, emitter auditEmitter, log *zap.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		id, ok := IdentityFromContext(ctx)
+		if !ok || rc == nil {
+			return handler(ctx, req)
+		}
+		subject := id.PrincipalID()
+		st, err := rc.User(ctx, id.TenantID, subject)
+		if err != nil {
+			log.Error("revocation state read failed", zap.String("method", info.FullMethod), zap.Error(err))
+			return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+		}
+		if st.Blocked {
+			emitAuthDenied(ctx, emitter, id.TenantID, "auth.subject.blocked", info.FullMethod, subject, id.Email, "user_blocked")
+			return nil, status.Error(codes.PermissionDenied, "user is blocked")
+		}
+		if st.Revoked(id.IssuedAt) {
+			emitAuthDenied(ctx, emitter, id.TenantID, "auth.token.revoked", info.FullMethod, subject, id.Email, "session_revoked")
+			return nil, status.Error(codes.Unauthenticated, "session revoked; sign in again")
 		}
 		return handler(ctx, req)
 	}

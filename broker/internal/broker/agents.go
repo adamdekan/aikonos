@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -94,7 +95,12 @@ func (s *BrokerService) validateAgentSkills(a *brokerv1.Agent) error {
 func (s *BrokerService) agentsEnabled() bool { return s.deps.Agents != nil }
 
 func toProtoAgent(a *db.Agent) *brokerv1.Agent {
+	revoked := ""
+	if a.RevokedBefore != nil {
+		revoked = a.RevokedBefore.UTC().Format(time.RFC3339)
+	}
 	return &brokerv1.Agent{
+		SessionsRevokedAt: revoked,
 		Id:                a.ID.String(),
 		Name:              a.Name,
 		LlmModel:          a.LLMModel,
