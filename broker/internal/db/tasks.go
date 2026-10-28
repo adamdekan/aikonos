@@ -99,6 +99,12 @@ type Task struct {
 	// north CreateTask, the grant kind for a gateway workflow run; nil when
 	// the producer did not say.
 	OBOKind *string `db:"obo_kind"`
+	// Delegation limits (migration 059, AG-11): the envelope a delegated task
+	// came from and the sender's attenuated scopes. DelegatedScopes nil = no
+	// limit (not a delegation); non-nil (even empty) = SubmitPlan refuses any
+	// step whose required scope is outside it.
+	EnvelopeID      *uuid.UUID `db:"envelope_id"`
+	DelegatedScopes []string   `db:"delegated_scopes"`
 }
 
 // OnBehalfOf is who a task acts for (Subject) and as (Actor), plus how that
@@ -108,10 +114,10 @@ type OnBehalfOf struct {
 	Actor            string // agent UUID; "" for an unbound task
 	ServiceRun       bool   // owner is svc-<agent>, so there is no human subject
 	DelegatedBy      string // sender user of an accepted envelope, else ""
-	EnvelopeID       string // AG-11 writes it; "" until then
+	EnvelopeID       string // envelope a delegated task came from (AG-11), else ""
 	ExternalClientID string // api_keys.id for an external REST run, else ""
 	GrantID          string // scheduled_runs.id for a scheduled run, else ""
-	Kind             string // "interactive" | "workflow" stamped, "scheduled" | "external" derived; "" when unknown
+	Kind             string // "interactive" | "workflow" | "delegated" stamped, "scheduled" | "external" derived; "" when unknown
 }
 
 // OnBehalfOf derives the task's on-behalf-of chain from the row.
@@ -127,6 +133,9 @@ func (t *Task) OnBehalfOf() OnBehalfOf {
 	}
 	if t.DelegatedByUserID != nil {
 		o.DelegatedBy = *t.DelegatedByUserID
+	}
+	if t.EnvelopeID != nil {
+		o.EnvelopeID = t.EnvelopeID.String()
 	}
 	if t.ExternalClientID != nil {
 		o.ExternalClientID, o.Kind = t.ExternalClientID.String(), "external"
@@ -176,11 +185,13 @@ func (r *TaskRepo) Create(ctx context.Context, t *Task) error {
 		INSERT INTO tasks (
 			task_id, parent_task_id, tenant_id, owner_user_id,
 			state, prompt, cost_budget, trace_id, deadline, gateway_managed, agent_id,
-			client_request_id, delegated_by_user_id, external_client_id, grant_id, obo_kind
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+			client_request_id, delegated_by_user_id, external_client_id, grant_id, obo_kind,
+			envelope_id, delegated_scopes
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 			t.TaskID, t.ParentTaskID, t.TenantID, t.OwnerUserID,
 			TaskStateCreated, t.Prompt, t.CostBudget, t.TraceID, t.Deadline, t.GatewayManaged, t.AgentID,
 			t.ClientRequestID, t.DelegatedByUserID, t.ExternalClientID, t.GrantID, t.OBOKind,
+			t.EnvelopeID, t.DelegatedScopes,
 		)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -211,7 +222,8 @@ func (r *TaskRepo) getByClientRequestID(ctx context.Context, conn *pgxpool.Conn,
 		       state, prompt, cost_budget, cost_consumed, replan_count,
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
-		       delegated_by_user_id, external_client_id, grant_id, obo_kind
+		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
+		       envelope_id, delegated_scopes
 		FROM tasks WHERE tenant_id = $1 AND client_request_id = $2`, tenantID, clientRequestID)
 	if err != nil {
 		return nil, fmt.Errorf("query task by client_request_id: %w", err)
@@ -237,7 +249,8 @@ func (r *TaskRepo) Get(ctx context.Context, tenantID, taskID string) (*Task, err
 		       state, prompt, cost_budget, cost_consumed, replan_count,
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
-		       delegated_by_user_id, external_client_id, grant_id, obo_kind
+		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
+		       envelope_id, delegated_scopes
 		FROM tasks WHERE task_id = $1`, taskID)
 		if err != nil {
 			return nil, fmt.Errorf("query task: %w", err)
@@ -325,7 +338,8 @@ func (r *TaskRepo) ListPending(ctx context.Context, tenantID, userID string) ([]
 		       state, prompt, cost_budget, cost_consumed, replan_count,
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
-		       delegated_by_user_id, external_client_id, grant_id, obo_kind
+		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
+		       envelope_id, delegated_scopes
 		FROM tasks
 		WHERE owner_user_id = $1
 		  AND state NOT IN ('COMPLETED','FAILED','DENIED','CANCELLED','TERMINATED','TIMEOUT')

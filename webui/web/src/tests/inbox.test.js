@@ -288,4 +288,28 @@ describe("Inbox.vue — CP5", () => {
     expect(w.findComponent({ name: "SkillTransferModal" }).props("visible")).toBe(false);
     expect(inboxApi.listInbox).toHaveBeenCalledTimes(2);
   });
+
+  // ── AG-11: delegation limits ──────────────────────────────────────────────
+
+  const SCOPED_ENV = { ...SAMPLE_ENV, fromDisplayName: "Alice Smith", attenuatedScopes: ["siem:read"], maxCostUnits: 50 };
+
+  it("an envelope row shows its scopes and cost limit", async () => {
+    const { w } = await mountInbox([SCOPED_ENV]);
+    const limits = w.find("[data-testid='envelope-limits-env-1']");
+    expect(limits.text()).toContain("siem:read");
+    expect(limits.text()).toContain("max 50 cost units");
+  });
+
+  it("an envelope with no scopes says so", async () => {
+    const { w } = await mountInbox([SAMPLE_ENV]);
+    expect(w.find("[data-testid='envelope-limits-env-1']").text()).toContain("no scopes");
+  });
+
+  it("Send to agent hands the sender and limits to the chat", async () => {
+    inboxApi.dismiss.mockResolvedValue({ success: true });
+    const { w } = await mountInbox([SCOPED_ENV]);
+    await w.find("[data-testid='send-to-agent-env-1']").trigger("click");
+    await flushPromises();
+    expect(usePromptStore().delegation).toEqual({ from: "Alice Smith", scopes: ["siem:read"], maxCost: 50 });
+  });
 });

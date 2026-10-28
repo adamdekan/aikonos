@@ -65,6 +65,8 @@ const draft = ref("");
 // Inbox delegation this chat handles (AG-17) — seeded from promptStore on mount,
 // consumed by the first run.
 const pendingEnvelopeId = ref("");
+// Sender and limits of that delegation (AG-11) — shown as a banner for the chat.
+const delegation = ref(null);
 
 const { pendingDelegation, cancelDelegate, confirmDelegate } = useDelegation({
   draft,
@@ -127,6 +129,8 @@ onMounted(async () => {
   await initResume();
 
   pendingEnvelopeId.value = promptStore.takeEnvelopeId();
+  const deleg = promptStore.takeDelegation();
+  delegation.value = pendingEnvelopeId.value ? deleg : null;
 
   // Two independent prefill paths — callers set exactly ONE, never both.
   // pending = auto-submit path (sets draft AND calls submit immediately).
@@ -156,6 +160,17 @@ onMounted(async () => {
       >
         Personality
       </button>
+    </div>
+
+    <div
+      v-if="delegation"
+      class="delegation-banner"
+      role="note"
+      data-testid="delegation-banner"
+    >
+      Delegated by {{ delegation.from }}, limited to:
+      {{ delegation.scopes.length ? delegation.scopes.join(", ") : "no scopes" }}<template v-if="delegation.maxCost > 0">
+        (max {{ delegation.maxCost }} cost units)</template>
     </div>
 
     <ErrorBanner
@@ -307,6 +322,17 @@ onMounted(async () => {
 .discovery-banner {
   margin: 8px 1.5rem 0;
   flex-shrink: 0;
+}
+
+.delegation-banner {
+  margin: 8px 1.5rem 0;
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--fill-muted);
+  color: var(--text-muted);
+  font-size: 0.8125rem;
 }
 
 .btn-ghost-chat {

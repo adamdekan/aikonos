@@ -17,6 +17,10 @@ const isTransfer = computed(() => props.envelope.task?.kind === "skill_transfer"
 // The name isn't a separate EnvelopeTask field — SendSkillTransfer fixes the
 // envelope's intent to "Skill transfer: <name>" (same spec section), so that
 // is the one place to read it from without an extra fetch.
+// AG-11: the delegation's limits; the recipient's task is held to them.
+const scopes  = computed(() => props.envelope.attenuatedScopes ?? []);
+const maxCost = computed(() => Number(props.envelope.maxCostUnits ?? 0));
+
 const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").replace(/^Skill transfer: /, ""));
 </script>
 
@@ -85,6 +89,15 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
         >
           {{ envelope.task?.intent }}
         </div>
+        <div
+          class="env-limits"
+          :data-testid="`envelope-limits-${envelope.envelopeId}`"
+        >
+          <span class="limit-label">Limited to:</span>
+          <span v-if="scopes.length === 0" class="limit-chip">no scopes</span>
+          <span v-for="s in scopes" :key="s" class="limit-chip">{{ s }}</span>
+          <span v-if="maxCost > 0" class="limit-cost">· max {{ maxCost }} cost units</span>
+        </div>
       </template>
     </div>
   </li>
@@ -128,6 +141,22 @@ const transferSkillName = computed(() => (props.envelope.task?.intent ?? "").rep
   overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.env-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.limit-chip {
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--fill-muted);
+  font-family: var(--font-mono, monospace);
 }
 
 .transfer-badge {

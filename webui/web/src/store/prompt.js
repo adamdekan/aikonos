@@ -5,11 +5,15 @@ export const usePromptStore = defineStore("prompt", () => {
   // envelopeId: the inbox delegation the next chat handles (AG-17). Set with
   // either path below; Chat hands it to the first run only.
   const envelopeId = ref("");
+  // delegation: { from, scopes, maxCost } of that envelope (AG-11), shown as
+  // the chat banner. Set and taken together with envelopeId.
+  const delegation = ref(null);
 
   const pending = ref("");
-  function set(text, envId = "") {
+  function set(text, envId = "", deleg = null) {
     pending.value = text;
     envelopeId.value = envId;
+    delegation.value = deleg;
   }
   function clear() {
     pending.value = "";
@@ -17,9 +21,10 @@ export const usePromptStore = defineStore("prompt", () => {
 
   // prefill: lands text in the chat composer draft WITHOUT auto-submitting.
   const prefill = ref("");
-  function setPrefill(text, envId = "") {
+  function setPrefill(text, envId = "", deleg = null) {
     prefill.value = text;
     envelopeId.value = envId;
+    delegation.value = deleg;
   }
   function clearPrefill() {
     prefill.value = "";
@@ -32,5 +37,12 @@ export const usePromptStore = defineStore("prompt", () => {
     return id;
   }
 
-  return { pending, set, clear, prefill, setPrefill, clearPrefill, envelopeId, takeEnvelopeId };
+  // takeDelegation returns and clears the pending delegation limits.
+  function takeDelegation() {
+    const d = delegation.value;
+    delegation.value = null;
+    return d;
+  }
+
+  return { pending, set, clear, prefill, setPrefill, clearPrefill, envelopeId, takeEnvelopeId, delegation, takeDelegation };
 });

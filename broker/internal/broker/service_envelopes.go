@@ -19,6 +19,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
@@ -179,7 +180,8 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 
 	// Auto-accepted delegations immediately spawn the recipient's task.
 	if dec.AutoAccept {
-		if _, err := s.spawnDelegatedTask(ctx, tenantUUID, recipient, from, req.GetTask().GetIntent(), maxCost, traceID); err != nil {
+		env.EnvelopeID = envID
+		if _, err := s.spawnDelegatedTask(ctx, env, recipient, traceID); err != nil {
 			s.deps.Logger.Error("SendEnvelope: auto-accept task spawn failed", zap.Error(err))
 		}
 	}
@@ -282,13 +284,16 @@ func (s *BrokerService) ListInboxEnvelopes(ctx context.Context, req *brokerv1.Li
 	names := s.userDisplayNames(ctx, tenant)
 	out := make([]*brokerv1.InboxEnvelope, 0, len(envs))
 	for _, e := range envs {
+		scopes, _ := delegationScopes(e)
 		out = append(out, &brokerv1.InboxEnvelope{
-			EnvelopeId:      e.EnvelopeID.String(),
-			FromUserId:      e.FromUserID,
-			FromDisplayName: names[e.FromUserID],
-			Task:            envelopeTaskFromSpec(e.TaskSpec),
-			ReceivedAt:      timestamppb.New(e.CreatedAt),
-			Status:          strings.ToLower(string(e.State)),
+			EnvelopeId:       e.EnvelopeID.String(),
+			FromUserId:       e.FromUserID,
+			FromDisplayName:  names[e.FromUserID],
+			Task:             envelopeTaskFromSpec(e.TaskSpec),
+			ReceivedAt:       timestamppb.New(e.CreatedAt),
+			Status:           strings.ToLower(string(e.State)),
+			AttenuatedScopes: scopes,
+			MaxCostUnits:     delegationMaxCost(e),
 		})
 	}
 	return &brokerv1.ListInboxEnvelopesResponse{Envelopes: out, NextCursor: nextCursor}, nil
@@ -407,8 +412,7 @@ func (s *BrokerService) RespondToEnvelope(ctx context.Context, req *brokerv1.Res
 		eventType = "aikonos.broker.envelope.accepted"
 		decision = auditv1.PolicyDecision_ALLOW
 		// Accepting a delegation spawns the recipient's task to do the work.
-		intent, _ := env.TaskSpec["intent"].(string)
-		if _, err := s.spawnDelegatedTask(ctx, env.TenantID, user, env.FromUserID, intent, delegationMaxCost(env), traceID); err != nil {
+		if _, err := s.spawnDelegatedTask(ctx, env, user, traceID); err != nil {
 			s.deps.Logger.Error("RespondToEnvelope: task spawn failed", zap.Error(err))
 		}
 	}
@@ -466,25 +470,20 @@ func (s *BrokerService) buildDelegationToken(recipient, parentB64 string, attenu
 }
 
 // spawnDelegatedTask creates a task owned by the recipient for an accepted
-// delegation, using the envelope intent as the prompt. sender is recorded as
-// delegated_by so the task's on-behalf-of chain names who handed the work over.
-// ponytail: parent_task_id stays nil — envelopes never carry a sender task
-// today; copy env.ParentTaskID here once SendEnvelope records one.
-func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UUID, owner, sender, intent string, costBudget int64, traceID string) (uuid.UUID, error) {
-	if costBudget <= 0 {
-		costBudget = 1000
-	}
+// delegation, using the envelope intent as the prompt. The task carries the
+// envelope's sender, id, attenuated scopes and cost limit (AG-11), so the
+// sender's narrowing is enforced at SubmitPlan.
+func (s *BrokerService) spawnDelegatedTask(ctx context.Context, env *db.Envelope, owner, traceID string) (uuid.UUID, error) {
+	intent, _ := env.TaskSpec["intent"].(string)
 	t := &db.Task{
 		TaskID:      uuid.New(),
-		TenantID:    tenantID,
+		TenantID:    env.TenantID,
 		OwnerUserID: owner,
 		Prompt:      intent,
-		CostBudget:  costBudget,
+		CostBudget:  1000,
 		TraceID:     traceID,
 	}
-	if sender != "" {
-		t.DelegatedByUserID = &sender
-	}
+	applyEnvelopeLimits(t, env)
 	if err := s.deps.Tasks.Create(ctx, t); err != nil {
 		return uuid.Nil, err
 	}
@@ -492,9 +491,55 @@ func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UU
 	s.deps.Logger.Info("delegated task spawned",
 		zap.String("task_id", t.TaskID.String()),
 		zap.String("owner", owner),
-		zap.String("delegated_by", sender),
+		zap.String("delegated_by", env.FromUserID),
+		zap.String("envelope_id", env.EnvelopeID.String()),
 	)
 	return t.TaskID, nil
+}
+
+// applyEnvelopeLimits stamps t as run on env's delegation (AG-11): the sender
+// as delegated_by, the envelope id, obo kind "delegated", the sender's task as
+// parent when the envelope names one, the cost budget capped at the
+// envelope's max_cost_units, and — for an envelope that delegates authority —
+// the attenuated scopes SubmitPlan holds every step to. A notification
+// envelope (no delegation spec) limits nothing: it conveys no authority.
+func applyEnvelopeLimits(t *db.Task, env *db.Envelope) {
+	from, kind, envID := env.FromUserID, gatewaygrant.KindDelegated, env.EnvelopeID
+	t.DelegatedByUserID = &from
+	t.OBOKind = &kind
+	t.EnvelopeID = &envID
+	if env.ParentTaskID != nil {
+		t.ParentTaskID = env.ParentTaskID
+	}
+	if c := delegationMaxCost(env); c > 0 && (t.CostBudget <= 0 || c < t.CostBudget) {
+		t.CostBudget = c
+	}
+	if scopes, ok := delegationScopes(env); ok {
+		t.DelegatedScopes = scopes
+	}
+}
+
+// delegationScopes returns the envelope's attenuated_scopes and whether the
+// envelope carries any (the key is present). Handles both the in-memory
+// []string (SendEnvelope's auto-accept path) and the JSON-decoded []any.
+// The result is non-nil when ok, so an empty grant still limits the task.
+func delegationScopes(env *db.Envelope) ([]string, bool) {
+	raw, ok := env.DelegationSpec["attenuated_scopes"]
+	if !ok {
+		return nil, false
+	}
+	out := []string{}
+	switch v := raw.(type) {
+	case []string:
+		out = append(out, v...)
+	case []any:
+		for _, s := range v {
+			if str, isStr := s.(string); isStr {
+				out = append(out, str)
+			}
+		}
+	}
+	return out, true
 }
 
 // DismissEnvelope transitions a PENDING/DELIVERED envelope to DISMISSED.

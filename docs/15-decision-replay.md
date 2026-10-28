@@ -24,6 +24,7 @@ decision it is:
 | `plan_validation` | Once per submitted plan | OPA `aikonos/plan_validation` |
 | `envelope_send` | Once per delegation to a colleague | OPA `aikonos/envelope_send` |
 | `agent_skill_boundary` | A plan names a tool outside an agent's skills | The broker (no OPA evaluation) |
+| `delegation_scope` | A delegated task's plan names a tool outside the sender's attenuated scopes (AG-11) | The broker (no OPA evaluation) |
 
 The event's `context` carries:
 

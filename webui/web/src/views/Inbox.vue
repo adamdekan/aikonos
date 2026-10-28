@@ -48,13 +48,22 @@ async function load() {
   }
 }
 
+// The envelope's sender and limits (AG-11), for the chat's delegation banner.
+function delegationOf(env) {
+  return {
+    from: env.fromDisplayName || env.fromUserId,
+    scopes: env.attenuatedScopes ?? [],
+    maxCost: Number(env.maxCostUnits ?? 0),
+  };
+}
+
 async function sendToAgent(env) {
   const intent = env.task?.intent ?? "";
   if (!intent.trim()) {
     push("error", "Nothing to send");
     return;
   }
-  promptStore.set(intent, env.envelopeId);
+  promptStore.set(intent, env.envelopeId, delegationOf(env));
   try {
     await dismiss(env.envelopeId);
   } catch (e) {
@@ -65,7 +74,7 @@ async function sendToAgent(env) {
 }
 
 function startSession(env) {
-  promptStore.setPrefill(env.task?.intent ?? "", env.envelopeId);
+  promptStore.setPrefill(env.task?.intent ?? "", env.envelopeId, delegationOf(env));
   router.push("/chat");
 }
 

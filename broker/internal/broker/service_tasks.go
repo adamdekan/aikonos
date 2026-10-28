@@ -99,7 +99,9 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 		t.ParentTaskID = &pid
 	}
 	if req.EnvelopeId != "" {
-		t.DelegatedByUserID = s.envelopeDelegator(ctx, traceID, tenant, owner, req.EnvelopeId)
+		if env := s.envelopeDelegator(ctx, traceID, tenant, owner, req.EnvelopeId); env != nil {
+			applyEnvelopeLimits(t, env)
+		}
 	}
 
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
@@ -107,11 +109,12 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 
 // envelopeDelegator resolves CreateTaskRequest.envelope_id (AG-17): when the
 // caller is the addressed recipient of a live (pending, delivered, accepted or
-// dismissed) envelope in their tenant, it returns the envelope sender as the
-// task's delegated_by. Anything else is ignored rather than failing the chat —
-// the task is just not marked delegated — and audited as
-// aikonos.broker.task.delegation_ignored with the reason.
-func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, owner, envelopeID string) *string {
+// dismissed) envelope in their tenant, it returns the envelope, whose sender
+// and limits the task then carries (applyEnvelopeLimits). Anything else is
+// ignored rather than failing the chat — the task is just not marked
+// delegated — and audited as aikonos.broker.task.delegation_ignored with the
+// reason.
+func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, owner, envelopeID string) *db.Envelope {
 	reason := "envelope_not_found"
 	var env *db.Envelope
 	if _, err := uuid.Parse(envelopeID); err == nil {
@@ -128,8 +131,7 @@ func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, 
 		case !envelopeUsable(env):
 			reason = "envelope_not_active"
 		default:
-			from := env.FromUserID
-			return &from
+			return env
 		}
 	}
 	ctxStruct, _ := structpb.NewStruct(map[string]any{"reason": reason, "envelope_id": envelopeID})

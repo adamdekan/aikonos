@@ -849,6 +849,10 @@ message InboxEnvelope {
   google.protobuf.Timestamp received_at = 4;
   string status = 5;   // pending | accepted | rejected | completed
   string from_display_name = 6;   // directory display name; empty if unresolved
+  // AG-11: the delegation's limits, shown on the inbox row and carried onto
+  // the recipient's task. Empty / 0 when the envelope delegates no authority.
+  repeated string attenuated_scopes = 7;
+  int64 max_cost_units = 8;
 }
 
 message RespondToEnvelopeRequest {

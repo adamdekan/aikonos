@@ -397,8 +397,8 @@ When Alice (manager) sends a task to Bob (report):
 3. Broker mints delegated capability: Alice's scope ∩ policy-permitted subset
 4. Envelope routed to Bob's inbox
 5. Bob's policy evaluates auto-accept vs. manual accept
-6. On execution, Bob's agent runs with Bob's identity + the delegated capability
-7. Audit records both: "Alice delegated to Bob", and "Bob executed on behalf of Alice"
+6. On execution, Bob's agent runs with Bob's identity + the delegated capability. The task (spawned on accept, or started from the inbox with "Send to agent") stores the envelope id, Alice's attenuated scopes and the cost limit (AG-11). `SubmitPlan` refuses any step whose required scope is outside those scopes (decision kind `delegation_scope`), and Bob's own grants are still checked, so a step needs both. A notification envelope with no delegation spec sets no scope limit.
+7. Audit records both: "Alice delegated to Bob", and "Bob executed on behalf of Alice". Every task-scoped event carries `context.obo` with `kind: delegated`, `delegated_by` and `envelope_id`
 
 **Crucial**: Bob cannot re-delegate to someone outside Alice's delegation scope. Biscuit attenuation plus a delegation depth counter enforces this.
 
