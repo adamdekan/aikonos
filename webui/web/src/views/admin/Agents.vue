@@ -11,6 +11,9 @@ import {
   mintAgentApiKey,
   listAgentApiKeys,
   revokeAgentApiKey,
+  registerAgentPublicKey,
+  listAgentPublicKeys,
+  retireAgentPublicKey,
   revokeAgentSessions,
   setAgentStatus,
   listLlmProviders,
@@ -72,6 +75,13 @@ const mintLabel     = ref("");
 const mintTtlDays   = ref(90);   // AG-15: defaults to the tenant max from the key list
 const keysMaxTtl    = ref(90);
 const newRawKey     = ref("");   // shown once after minting; cleared on close
+
+// Public keys state (AG-05: external agents sign client assertions)
+const pubKeys       = ref([]);
+const pubKeysError  = ref("");
+const pubKeyText    = ref("");   // pasted PEM or JWK
+const pubKeyKid     = ref("");   // optional; default is the JWK kid or thumbprint
+const pubKeyTtlDays = ref(90);
 
 // autofocus ref
 const nameInputRef  = ref(null);
@@ -227,8 +237,13 @@ async function openEdit(agent) {
   keysError.value          = "";
   mintLabel.value          = "";
   newRawKey.value          = "";
+  pubKeys.value            = [];
+  pubKeysError.value       = "";
+  pubKeyText.value         = "";
+  pubKeyKid.value          = "";
   showModal.value          = true;
   loadKeys(targetId);
+  loadPubKeys(targetId);
   const r = await getAgentSoul(targetId);
   // guard: a newer openEdit call may have already set editId to a different agent
   if (editId.value !== targetId) return;
@@ -308,6 +323,42 @@ async function revokeKey(agentId, keyId) {
     await loadKeys(agentId);
   } catch (e) {
     keysError.value = e.message;
+  }
+}
+
+async function loadPubKeys(agentId) {
+  pubKeysError.value = "";
+  try {
+    const data    = await listAgentPublicKeys(agentId);
+    pubKeys.value = data.keys ?? [];
+    if (data.maxTtlDays) pubKeyTtlDays.value = data.maxTtlDays;
+  } catch (e) {
+    pubKeysError.value = e.message;
+  }
+}
+
+async function registerPubKey(agentId) {
+  pubKeysError.value = "";
+  if (!pubKeyText.value.trim()) { pubKeysError.value = "Paste a PEM or JWK public key."; return; }
+  try {
+    await registerAgentPublicKey(agentId, pubKeyText.value.trim(), pubKeyKid.value.trim(), Number(pubKeyTtlDays.value));
+    pubKeyText.value = "";
+    pubKeyKid.value  = "";
+    toast("ok", "Public key registered.");
+    await loadPubKeys(agentId);
+  } catch (e) {
+    pubKeysError.value = e.message;
+  }
+}
+
+async function retirePubKey(agentId, keyId) {
+  pubKeysError.value = "";
+  try {
+    await retireAgentPublicKey(agentId, keyId);
+    toast("ok", "Public key retired.");
+    await loadPubKeys(agentId);
+  } catch (e) {
+    pubKeysError.value = e.message;
   }
 }
 
@@ -929,6 +980,79 @@ const TABLE_COLS = [
           </div>
         </FormSection>
 
+        <!-- ── Section 6: Public keys (AG-05, edit only) ── -->
+        <FormSection v-if="editId" title="Public keys" icon="code">
+          <p class="small muted">
+            The agent signs a short-lived JWT client assertion with its private key
+            instead of sending an API key. Rotate by registering the new key, then retiring the old one.
+          </p>
+          <div v-if="pubKeysError" class="field-error" data-testid="public-key-error">{{ pubKeysError }}</div>
+          <div
+            v-for="key in pubKeys"
+            :key="key.id"
+            class="assignment-row"
+            data-testid="public-key-row"
+          >
+            <div class="key-info">
+              <span class="mono key-prefix" data-testid="public-key-kid">{{ key.kid }}</span>
+              <span class="badge key-label" data-testid="public-key-alg">{{ key.alg }}</span>
+              <span
+                v-if="keyExpiry(key).text"
+                class="small key-meta"
+                :class="{ 'key-expiring': keyExpiry(key).warn }"
+                data-testid="public-key-expiry"
+              >{{ keyExpiry(key).text }}</span>
+              <span class="small muted key-meta" data-testid="public-key-last-used">{{ lastUsedText(key) }}</span>
+            </div>
+            <button
+              class="btn-danger-sm"
+              :data-testid="`retire-public-key-${key.id}`"
+              @click="retirePubKey(editId, key.id)"
+            >
+              <Icon name="trash" /> Retire
+            </button>
+          </div>
+          <div v-if="pubKeys.length === 0" class="muted">No public keys yet.</div>
+
+          <textarea
+            v-model="pubKeyText"
+            rows="4"
+            class="mono pubkey-input"
+            placeholder="-----BEGIN PUBLIC KEY----- … or a public JWK (P-256 or Ed25519)"
+            aria-label="Public key (PEM or JWK)"
+            data-testid="public-key-input"
+          ></textarea>
+          <div class="mint-row">
+            <input
+              v-model="pubKeyKid"
+              placeholder="kid (optional)"
+              aria-label="Key id (kid)"
+              data-testid="public-key-kid-input"
+              class="mint-label-input"
+            />
+            <label class="small muted">
+              Expires in
+              <input
+                v-model.number="pubKeyTtlDays"
+                type="number"
+                min="1"
+                :max="keysMaxTtl"
+                data-testid="public-key-ttl"
+                class="mint-ttl-input"
+                aria-label="Public key lifetime in days"
+              />
+              days
+            </label>
+            <button
+              class="btn-secondary-sm"
+              data-testid="register-public-key-btn"
+              @click="registerPubKey(editId)"
+            >
+              Register key
+            </button>
+          </div>
+        </FormSection>
+
       </div>
 
       <template #footer>
@@ -1082,6 +1206,12 @@ select {
   padding: 5px 9px; font-size: 13px;
 }
 
+.pubkey-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  margin: 8px 0;
+}
 .mint-row {
   display: flex; gap: var(--space-2); align-items: center;
 }

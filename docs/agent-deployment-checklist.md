@@ -47,7 +47,7 @@ All items must be checked before an agent or MCP server is promoted to productio
 
 - [ ] `AIKONOS_GATEWAY_CHILD_KEYING=per-user` confirmed in the running gateway config. The default is `single` (all users share one child process — **not** a cross-user isolation boundary); production multi-user agents must set `per-user` so each (tenant, user, agent) gets its own forked child. Valid values are `single` and `per-user`.
 - [ ] Child pool cap (`AIKONOS_GATEWAY_MAX_CHILDREN`, default 32) is appropriate for this agent's concurrency needs; documented if changed.
-- [ ] Agent has a dedicated API key minted via Admin → Agents → Keys. The key is not shared with any other agent or service account. Key is stored in a secrets manager, not in source control or environment files. Key lifetime is no longer than needed (every key expires, at most `api_keys.max_ttl_days`, default 90 days) and a rotation before expiry is scheduled.
+- [ ] Agent has a dedicated API key minted via Admin → Agents → Keys. The key is not shared with any other agent or service account. Key is stored in a secrets manager, not in source control or environment files. Key lifetime is no longer than needed (every key expires, at most `api_keys.max_ttl_days`, default 90 days) and a rotation before expiry is scheduled. Better: register a public key under Admin → Agents → Public keys and have the agent sign short-lived client assertions (AG-05, `scripts/sign-agent-assertion.mjs`); the private key stays with the agent.
 
 ### Persona (soul)
 

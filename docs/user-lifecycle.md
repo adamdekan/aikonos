@@ -90,8 +90,8 @@ per user; each needs a reason):
 
 **Admin → Agents → Revoke sessions** does the same for an agent: its outstanding
 capability tokens (refused as `capability_revoked`) and owner grants (`grant_revoked`)
-die at their next use, its API keys (`tk_`) minted before the revoke stop resolving
-(mint new ones), and its schedules created before the revoke are parked at the next
+die at their next use, its API keys (`tk_`) minted and public keys (AG-05)
+registered before the revoke stop resolving (mint or register new ones), and its schedules created before the revoke are parked at the next
 claim (`actor_revoked`); recreate them to resume.
 
 Every action is audited with the acting admin and the reason:

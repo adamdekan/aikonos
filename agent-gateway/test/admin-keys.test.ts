@@ -26,7 +26,7 @@ import type {
   AgentApiKey,
 } from "../gen/ts/proto/broker.js";
 import { buildExternalApp } from "../src/external/server.js";
-import { apiKeyView } from "../src/routes/admin.js";
+import { apiKeyView, publicKeyView } from "../src/routes/admin.js";
 import type { Config } from "../src/config.js";
 import { BrokerClients } from "../src/broker/clients.js";
 import pino from "pino";
@@ -429,4 +429,13 @@ test("AG-15: apiKeyView exposes expiresAt and lastUsedAt as ISO strings (null wh
   assert.equal(v.expiresAt, "2027-01-01T00:00:00.000Z");
   assert.equal(v.lastUsedAt, "2026-10-01T00:00:00.000Z");
   assert.equal(apiKeyView({ id: "k", keyPrefix: "", label: "", createdBy: "" }).lastUsedAt, null);
+});
+
+// AG-05: the public key view carries kid, alg, expiry and last use, never key material.
+test("publicKeyView maps the proto key to the webui shape", () => {
+  const v = publicKeyView({
+    id: "pk-1", kid: "k1", alg: "ES256", createdBy: "admin@example.com",
+    createdAt: undefined, expiresAt: new Date("2027-01-01T00:00:00Z"), lastUsedAt: undefined,
+  });
+  assert.deepEqual(v, { id: "pk-1", kid: "k1", alg: "ES256", expiresAt: "2027-01-01T00:00:00.000Z", lastUsedAt: null });
 });

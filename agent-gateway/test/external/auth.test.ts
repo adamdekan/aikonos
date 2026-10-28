@@ -131,3 +131,37 @@ test("AG-17 S6: assertion answered as svc- (pre-S6 broker) → 401, no silent fa
   const result = await authenticateApiKey(`Bearer ${RAW_KEY}`, TENANT, south, undefined, "user.jwt");
   assert.equal(result.ok, false);
 });
+
+// ── AG-05: signed client assertion instead of a tk_ key ─────────────────────
+
+const ASSERTION = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJhIn0.c2ln";
+
+test("AG-05: Bearer JWT is sent as clientAssertion with the configured audience, no key hash", async () => {
+  let seen: Record<string, unknown> | undefined;
+  const south = makeSouth(async (req) => {
+    seen = req as unknown as Record<string, unknown>;
+    return { valid: true, agentId: AGENT_ID, tenantId: TENANT, principal: `svc-${AGENT_ID}` };
+  });
+  const result = await authenticateApiKey(`Bearer ${ASSERTION}`, TENANT, south, undefined, undefined, "https://gw/aud");
+  assert.ok(result.ok);
+  assert.equal(seen?.clientAssertion, ASSERTION);
+  assert.equal(seen?.audience, "https://gw/aud");
+  assert.equal(seen?.keyHashHex, "");
+});
+
+test("AG-05: no configured audience → 401 without calling the broker", async () => {
+  let called = false;
+  const south = makeSouth(async () => { called = true; return { valid: true, agentId: AGENT_ID, tenantId: TENANT, principal: "x" }; });
+  const result = await authenticateApiKey(`Bearer ${ASSERTION}`, TENANT, south);
+  assert.equal(result.ok, false);
+  assert.equal(called, false);
+});
+
+test("AG-05: broker rejects the assertion (valid:false) → 401", async () => {
+  const south = makeSouth(revokedResolve());
+  const result = await authenticateApiKey(`Bearer ${ASSERTION}`, TENANT, south, undefined, undefined, "aud");
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.status, 401);
+  assert.equal(result.message, "client assertion rejected");
+});

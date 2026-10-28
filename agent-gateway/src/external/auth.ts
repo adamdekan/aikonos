@@ -3,6 +3,9 @@
 // calls south.resolveAgentApiKey with the hex digest, and returns the resolved
 // principal or a 401 error (403 when the broker refuses a valid key on AG-17
 // grounds). The raw key never leaves this module.
+// AG-05: `Bearer <JWT>` is a signed client assertion (RFC 7523); the broker
+// verifies it against the agent's registered public keys and `audience`
+// (AIKONOS_EXTERNAL_AUDIENCE). No audience configured ⇒ assertions refused.
 import { createHash } from "node:crypto";
 import { status } from "@grpc/grpc-js";
 import type { SouthClient } from "../broker/south.js";
@@ -36,19 +39,23 @@ export async function authenticateApiKey(
   south: SouthClient,
   log?: Logger,
   userAssertion?: string, // X-Aikonos-Subject-Token; the broker validates it
+  audience = "", // AG-05: expected aud of a client assertion
 ): Promise<AuthResult> {
   if (!authHeader) return fail("missing Authorization header");
 
-  // Require `Bearer tk_…` format.
-  const match = /^Bearer (tk_\S+)$/.exec(authHeader);
-  if (!match) return fail("invalid Authorization format; expected Bearer tk_…");
+  // `Bearer tk_…`, or `Bearer <header>.<payload>.<signature>` (AG-05).
+  const key = /^Bearer (tk_\S+)$/.exec(authHeader);
+  const jwt = /^Bearer ([\w-]+\.[\w-]+\.[\w-]+)$/.exec(authHeader);
+  if (!key && !jwt) return fail("invalid Authorization format; expected Bearer tk_… or a signed client assertion");
+  if (jwt && !audience) return fail("client assertions are not enabled on this gateway");
 
-  const rawKey = match[1];
-  const keyHashHex = sha256Hex(rawKey);
+  const req = key
+    ? { keyHashHex: sha256Hex(key[1]), clientAssertion: "", audience: "" }
+    : { keyHashHex: "", clientAssertion: jwt![1], audience };
 
   try {
-    const resp = await south.resolveAgentApiKey({ keyHashHex, tenantId, userAssertion: userAssertion ?? "" });
-    if (!resp.valid) return fail("key revoked, expired or not found");
+    const resp = await south.resolveAgentApiKey({ ...req, tenantId, userAssertion: userAssertion ?? "" });
+    if (!resp.valid) return fail(key ? "key revoked, expired or not found" : "client assertion rejected");
     // A pre-S6 broker drops user_assertion and answers as svc-; never run that.
     if (userAssertion && resp.principal.startsWith("svc-")) return fail("user assertion not honoured");
     return {
