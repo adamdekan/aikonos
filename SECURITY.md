@@ -91,3 +91,7 @@ stack that has not been seeded logs `OpenFGA is disabled — dev allow-all
 mode` and authorizes everything. Never run that configuration anywhere real.
 See the enforcement guide in `docs/` for the seeding steps and how to verify
 the result.
+
+External agent API keys (`tk_…`) always expire. Lower the tenant setting
+`api_keys.max_ttl_days` (default and ceiling 90) to force faster rotation, and
+watch the key list for keys about to expire or unused for a long time.

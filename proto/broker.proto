@@ -1781,6 +1781,7 @@ message AgentApiKey {
   string created_by   = 4;
   google.protobuf.Timestamp created_at   = 5;
   google.protobuf.Timestamp last_used_at = 6;  // unset if never used
+  google.protobuf.Timestamp expires_at   = 7;  // always set (AG-15)
 }
 
 message MintAgentApiKeyRequest {
@@ -1788,6 +1789,8 @@ message MintAgentApiKeyRequest {
   string user_id   = 2;  // acting admin (echoed; OIDC identity preferred)
   string agent_id  = 3;  // bare UUID
   string label     = 4;  // optional human label
+  // Required lifetime in days, 1..api_keys.max_ttl_days (AG-15); else InvalidArgument.
+  int32  ttl_days  = 5;
 }
 
 message MintAgentApiKeyResponse {
@@ -1803,6 +1806,7 @@ message ListAgentApiKeysRequest {
 
 message ListAgentApiKeysResponse {
   repeated AgentApiKey keys = 1;
+  int32 max_ttl_days = 2;  // tenant api_keys.max_ttl_days, for the mint form default
 }
 
 message RevokeAgentApiKeyRequest {

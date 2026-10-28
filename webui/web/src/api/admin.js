@@ -87,8 +87,8 @@ export function deleteAgent(id) {
 
 // ── Per-agent API keys ────────────────────────────────────────────────────────
 
-export function mintAgentApiKey(agentId, label = "") {
-  return post(`/admin/agents/${agentId}/keys`, { body: { label } });
+export function mintAgentApiKey(agentId, label = "", ttlDays) {
+  return post(`/admin/agents/${agentId}/keys`, { body: { label, ttlDays } });
 }
 
 export function listAgentApiKeys(agentId) {

@@ -26,6 +26,7 @@ import type {
   AgentApiKey,
 } from "../gen/ts/proto/broker.js";
 import { buildExternalApp } from "../src/external/server.js";
+import { apiKeyView } from "../src/routes/admin.js";
 import type { Config } from "../src/config.js";
 import { BrokerClients } from "../src/broker/clients.js";
 import pino from "pino";
@@ -135,6 +136,7 @@ function makeNorth() {
     createdBy: "admin@example.com",
     createdAt: undefined,
     lastUsedAt: undefined,
+    expiresAt: new Date("2027-01-01T00:00:00Z"),
   };
 
   return {
@@ -145,7 +147,7 @@ function makeNorth() {
     },
     listAgentApiKeys(req: ListAgentApiKeysRequest, token?: string): Promise<ListAgentApiKeysResponse> {
       calls.push({ method: "listAgentApiKeys", req, token });
-      return Promise.resolve({ keys: [fakeKey] });
+      return Promise.resolve({ keys: [fakeKey], maxTtlDays: 90 });
     },
     revokeAgentApiKey(req: RevokeAgentApiKeyRequest, token?: string): Promise<RevokeAgentApiKeyResponse> {
       calls.push({ method: "revokeAgentApiKey", req, token });
@@ -170,15 +172,18 @@ async function handleMint(
   north: ReturnType<typeof makeNorth>,
   agentId: string,
   label: string | undefined,
+  ttlDays?: number,
 ) {
   const principal = await requireUser(req, reply, jwksResolver, VERIFY_OPTS);
   if (!principal) return;
   try {
-    const mintReq: MintAgentApiKeyRequest = { tenantId: principal.tenant, userId: principal.sub, agentId, label: label ?? "" };
+    const mintReq: MintAgentApiKeyRequest = {
+      tenantId: principal.tenant, userId: principal.sub, agentId, label: label ?? "", ttlDays: Number(ttlDays) || 0,
+    };
     const resp = await north.mintAgentApiKey(mintReq, principal.token);
     reply.send({
       rawKey: resp.rawKey,
-      key: resp.key ? { id: resp.key.id, keyPrefix: resp.key.keyPrefix, label: resp.key.label } : null,
+      key: resp.key ? apiKeyView(resp.key) : null,
     });
   } catch (err) {
     reply.code(500).send({ error: String(err) });
@@ -197,9 +202,7 @@ async function handleList(
   try {
     const listReq: ListAgentApiKeysRequest = { tenantId: principal.tenant, userId: principal.sub, agentId };
     const resp = await north.listAgentApiKeys(listReq, principal.token);
-    reply.send({
-      keys: (resp.keys ?? []).map((k) => ({ id: k.id, keyPrefix: k.keyPrefix, label: k.label })),
-    });
+    reply.send({ keys: (resp.keys ?? []).map(apiKeyView), maxTtlDays: resp.maxTtlDays });
   } catch (err) {
     reply.code(500).send({ error: String(err) });
   }
@@ -271,7 +274,7 @@ test("POST /admin/agents/:id/keys — valid bearer calls mintAgentApiKey with fo
   const token = await mintToken(privateKey);
   const reply = fakeReply();
 
-  await handleMint(fakeReq(`Bearer ${token}`), reply, resolver, north, "agent-uuid-1", "ci-key");
+  await handleMint(fakeReq(`Bearer ${token}`), reply, resolver, north, "agent-uuid-1", "ci-key", 30);
 
   assert.equal(north.calls.length, 1);
   const call = north.calls[0];
@@ -282,6 +285,7 @@ test("POST /admin/agents/:id/keys — valid bearer calls mintAgentApiKey with fo
   assert.equal(call.req.userId, "user-uuid-admin");
   assert.equal(call.req.agentId, "agent-uuid-1");
   assert.equal(call.req.label, "ci-key");
+  assert.equal(call.req.ttlDays, 30);
 
   const body = asMintBody(reply.body);
   assert.equal(body.rawKey, "tk_live_xxSECRET");
@@ -416,4 +420,14 @@ test("DELETE /admin/agents/:id/keys/:keyId — valid bearer calls revokeAgentApi
 
   const body = asRevokeBody(reply.body);
   assert.equal(body.success, true);
+});
+
+test("AG-15: apiKeyView exposes expiresAt and lastUsedAt as ISO strings (null when unset)", () => {
+  const v = apiKeyView({
+    id: "k", keyPrefix: "tk_x", label: "", createdBy: "", createdAt: undefined,
+    lastUsedAt: new Date("2026-10-01T00:00:00Z"), expiresAt: new Date("2027-01-01T00:00:00Z"),
+  });
+  assert.equal(v.expiresAt, "2027-01-01T00:00:00.000Z");
+  assert.equal(v.lastUsedAt, "2026-10-01T00:00:00.000Z");
+  assert.equal(apiKeyView({ id: "k", keyPrefix: "", label: "", createdBy: "" }).lastUsedAt, null);
 });

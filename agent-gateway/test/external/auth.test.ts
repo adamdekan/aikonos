@@ -73,7 +73,7 @@ test("valid key → principal attached with correct agentId + tenantId", async (
   assert.equal(principal.principal, `svc-${AGENT_ID}`);
 });
 
-test("south returns valid:false (revoked) → 401", async () => {
+test("south returns valid:false (revoked or expired, AG-15) → 401", async () => {
   const south = makeSouth(revokedResolve());
   const result = await authenticateApiKey(`Bearer ${RAW_KEY}`, TENANT, south);
   assert.equal(result.ok, false);

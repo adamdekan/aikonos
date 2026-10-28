@@ -15,7 +15,7 @@ replays it on every call via `history`. That is the entire multi-turn protocol.
 
 1. The target agent must have **external access enabled** (`gateway_enabled: true`) — otherwise every call returns 403.
 2. The agent's **approval mode must be `auto`** — agents requiring human approval are not externally drivable (409). Tool calls are still authorized per-call by the broker (OPA + OpenFGA + capability tokens); `auto` only removes the human-in-the-loop prompt.
-3. Mint an **agent API key** in the webui: Admin → Agents → API keys. Keys look like `tk_…`, are shown once, and are bound to exactly one agent.
+3. Mint an **agent API key** in the webui: Admin → Agents → API keys. Keys look like `tk_…`, are shown once, are bound to exactly one agent, and expire after the lifetime chosen at minting (at most the tenant's `api_keys.max_ttl_days`, default 90 days). Mint a replacement before the old key expires.
 4. If the client is a browser app, its origin must be in `AIKONOS_EXTERNAL_CORS_ORIGINS` (comma-separated; empty = no CORS, same-origin only).
 
 Base URL: `http://<gateway-host>:8090` (compose publishes `8090:8090`).
@@ -71,7 +71,7 @@ Closing the connection early aborts the run server-side (no orphaned token burn)
 | Code | Cause |
 |------|-------|
 | 400 | malformed `history` (bad shape, >100 turns, >200 KiB content) |
-| 401 | missing/invalid/revoked API key |
+| 401 | missing/invalid/revoked/expired API key |
 | 403 | agent not `gateway_enabled` |
 | 409 | agent not `approvalMode:auto`, or URL id ≠ key-resolved agent |
 | 413 | prompt > 16 KiB, or body > 256 KiB |

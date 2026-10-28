@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +123,7 @@ func TestRLS_ResolveAgentApiKey_TenantAgnostic(t *testing.T) {
 		Label:     "rls-resolve",
 		CreatedBy: "test@example.com",
 		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
 	}); err != nil {
 		t.Fatalf("create api key: %v", err)
 	}
@@ -142,5 +144,18 @@ func TestRLS_ResolveAgentApiKey_TenantAgnostic(t *testing.T) {
 	// A hash that was never minted still resolves to not-found, not a leak.
 	if _, err := keys.Resolve(ctx, "0000000000000000000000000000000000000000000000000000000000000000"); !errors.Is(err, ErrApiKeyNotFound) {
 		t.Fatalf("unknown-hash Resolve: got err=%v, want ErrApiKeyNotFound", err)
+	}
+
+	// AG-15: an expired key resolves exactly like a revoked one (migration 052).
+	expiredHash := strings.ReplaceAll(uuid.NewString()+uuid.NewString(), "-", "")
+	if err := keys.Create(ctx, &StoredApiKey{
+		ID: uuid.New(), TenantID: tenant, AgentID: agentID, KeyHash: expiredHash,
+		KeyPrefix: "tk_test1", CreatedBy: "test@example.com",
+		CreatedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("create expired api key: %v", err)
+	}
+	if _, err := keys.Resolve(ctx, expiredHash); !errors.Is(err, ErrApiKeyNotFound) {
+		t.Fatalf("expired-key Resolve: got err=%v, want ErrApiKeyNotFound", err)
 	}
 }

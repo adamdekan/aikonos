@@ -48,7 +48,7 @@ export async function authenticateApiKey(
 
   try {
     const resp = await south.resolveAgentApiKey({ keyHashHex, tenantId, userAssertion: userAssertion ?? "" });
-    if (!resp.valid) return fail("key revoked or not found");
+    if (!resp.valid) return fail("key revoked, expired or not found");
     // A pre-S6 broker drops user_assertion and answers as svc-; never run that.
     if (userAssertion && resp.principal.startsWith("svc-")) return fail("user assertion not honoured");
     return {

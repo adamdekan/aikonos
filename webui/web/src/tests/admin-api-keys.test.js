@@ -19,16 +19,16 @@ import { isSvcPrincipal, filterTuples, filterPrincipals } from "../utils/svc-fil
 describe("api/admin.js — agent API key functions", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("mintAgentApiKey POSTs to /admin/agents/:id/keys with label body", async () => {
+  it("mintAgentApiKey POSTs to /admin/agents/:id/keys with label and ttlDays body", async () => {
     clientMod.post.mockResolvedValue({ rawKey: "tk_abc", key: { id: "k1", keyPrefix: "tk_abc123", label: "ci" } });
-    await mintAgentApiKey("agent-1", "ci");
-    expect(clientMod.post).toHaveBeenCalledWith("/admin/agents/agent-1/keys", { body: { label: "ci" } });
+    await mintAgentApiKey("agent-1", "ci", 30);
+    expect(clientMod.post).toHaveBeenCalledWith("/admin/agents/agent-1/keys", { body: { label: "ci", ttlDays: 30 } });
   });
 
   it("mintAgentApiKey sends empty string label when omitted", async () => {
     clientMod.post.mockResolvedValue({ rawKey: "tk_xyz", key: { id: "k2", keyPrefix: "tk_xyz999", label: "" } });
     await mintAgentApiKey("agent-2");
-    expect(clientMod.post).toHaveBeenCalledWith("/admin/agents/agent-2/keys", { body: { label: "" } });
+    expect(clientMod.post).toHaveBeenCalledWith("/admin/agents/agent-2/keys", { body: { label: "", ttlDays: undefined } });
   });
 
   it("listAgentApiKeys GETs /admin/agents/:id/keys", async () => {

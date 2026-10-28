@@ -67,6 +67,8 @@ const apiKeys       = ref([]);
 const keysLoading   = ref(false);
 const keysError     = ref("");
 const mintLabel     = ref("");
+const mintTtlDays   = ref(90);   // AG-15: defaults to the tenant max from the key list
+const keysMaxTtl    = ref(90);
 const newRawKey     = ref("");   // shown once after minting; cleared on close
 
 // autofocus ref
@@ -259,6 +261,7 @@ async function loadKeys(agentId) {
   try {
     const data     = await listAgentApiKeys(agentId);
     apiKeys.value  = data.keys ?? [];
+    if (data.maxTtlDays) keysMaxTtl.value = mintTtlDays.value = data.maxTtlDays;
   } catch (e) {
     keysError.value = e.message;
   } finally {
@@ -270,7 +273,7 @@ async function mintKey(agentId) {
   keysError.value = "";
   newRawKey.value = "";
   try {
-    const data      = await mintAgentApiKey(agentId, mintLabel.value.trim());
+    const data      = await mintAgentApiKey(agentId, mintLabel.value.trim(), Number(mintTtlDays.value));
     newRawKey.value = data.rawKey ?? "";
     mintLabel.value = "";
     toast("ok", "API key minted — copy it now.");
@@ -278,6 +281,20 @@ async function mintKey(agentId) {
   } catch (e) {
     keysError.value = e.message;
   }
+}
+
+// keyExpiry labels a key's expiry; keys expiring within 7 days get a warning (AG-15).
+const DAY_MS = 86400000;
+function keyExpiry(key) {
+  if (!key.expiresAt) return { text: "", warn: false };
+  const at = new Date(key.expiresAt);
+  const left = at.getTime() - Date.now();
+  if (left <= 0) return { text: "Expired", warn: true };
+  return { text: `Expires ${at.toLocaleDateString()}`, warn: left < 7 * DAY_MS };
+}
+
+function lastUsedText(key) {
+  return key.lastUsedAt ? `Last used ${new Date(key.lastUsedAt).toLocaleString()}` : "Never used";
 }
 
 async function revokeKey(agentId, keyId) {
@@ -660,6 +677,13 @@ const TABLE_COLS = [
             <div class="key-info">
               <span class="mono key-prefix">{{ key.keyPrefix }}…</span>
               <span v-if="key.label" class="badge key-label">{{ key.label }}</span>
+              <span
+                v-if="keyExpiry(key).text"
+                class="small key-meta"
+                :class="{ 'key-expiring': keyExpiry(key).warn }"
+                data-testid="api-key-expiry"
+              >{{ keyExpiry(key).text }}</span>
+              <span class="small muted key-meta" data-testid="api-key-last-used">{{ lastUsedText(key) }}</span>
             </div>
             <button
               class="btn-danger-sm"
@@ -681,6 +705,19 @@ const TABLE_COLS = [
               data-testid="mint-key-label"
               class="mint-label-input"
             />
+            <label class="small muted">
+              Expires in
+              <input
+                v-model.number="mintTtlDays"
+                type="number"
+                min="1"
+                :max="keysMaxTtl"
+                data-testid="mint-key-ttl"
+                class="mint-ttl-input"
+                aria-label="Key lifetime in days"
+              />
+              days
+            </label>
             <button
               class="btn-secondary-sm"
               data-testid="mint-key-btn"
@@ -826,6 +863,14 @@ select {
 .key-info { display: flex; align-items: center; gap: var(--space-2); flex: 1; }
 .key-prefix { font-size: 12px; }
 .key-label { font-size: 11px; }
+.key-meta { white-space: nowrap; }
+.key-expiring { color: var(--danger); }
+.mint-ttl-input {
+  width: 64px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 9px; font-size: 13px;
+}
 
 .mint-row {
   display: flex; gap: var(--space-2); align-items: center;

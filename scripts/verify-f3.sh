@@ -134,7 +134,7 @@ else
     # 4b. mint an API key
     KEY_JSON=$(curl -s --max-time 8 -X POST "${GATEWAY}/admin/agents/${AGENT_ID}/keys" \
       -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-      -d '{"label":"verify"}' 2>/dev/null)
+      -d '{"label":"verify","ttlDays":1}' 2>/dev/null)
     RAW_KEY=$(echo "$KEY_JSON" | sed -n 's/.*"rawKey":"\([^"]*\)".*/\1/p')
     KEY_ID=$(echo "$KEY_JSON" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 
