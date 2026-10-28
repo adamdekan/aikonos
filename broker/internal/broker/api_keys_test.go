@@ -761,7 +761,7 @@ func min(a, b int) int {
 
 // resolveForAgent mints a key for the test agent (service flag as given) and
 // resolves it under identity.obo=mode ("" = schema default, audit).
-func resolveForAgent(t *testing.T, serviceAgent bool, mode string) (*brokerv1.ResolveAgentApiKeyResponse, *fakeInvokeAudit) {
+func resolveForAgent(t *testing.T, serviceAgent bool, mode string) (*brokerv1.ResolveAgentApiKeyResponse, *fakeInvokeAudit, error) {
 	t.Helper()
 	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
 	agents := agentStoreWithAgent(t)
@@ -783,10 +783,7 @@ func resolveForAgent(t *testing.T, serviceAgent bool, mode string) (*brokerv1.Re
 	resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
 		KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID,
 	})
-	if err != nil {
-		t.Fatalf("ResolveAgentApiKey: %v", err)
-	}
-	return resp, aud
+	return resp, aud, err
 }
 
 func serviceAgentDenied(aud *fakeInvokeAudit) bool {
@@ -800,9 +797,9 @@ func serviceAgentDenied(aud *fakeInvokeAudit) bool {
 }
 
 func TestResolveAgentApiKey_NonServiceAgentRefusedUnderEnforce(t *testing.T) {
-	resp, aud := resolveForAgent(t, false, "enforce")
-	if resp.Valid || resp.OwnerGrant != "" {
-		t.Fatalf("non-service agent under enforce: want invalid, got %+v", resp)
+	resp, aud, err := resolveForAgent(t, false, "enforce")
+	if status.Code(err) != codes.PermissionDenied || !strings.Contains(status.Convert(err).Message(), "service agent") {
+		t.Fatalf("non-service agent under enforce: want PermissionDenied naming the cause, got resp=%+v err=%v", resp, err)
 	}
 	if !serviceAgentDenied(aud) {
 		t.Fatalf("want service_agent_required DENY, got %v", aud.events)
@@ -810,8 +807,8 @@ func TestResolveAgentApiKey_NonServiceAgentRefusedUnderEnforce(t *testing.T) {
 }
 
 func TestResolveAgentApiKey_NonServiceAgentAuditOnly(t *testing.T) {
-	resp, aud := resolveForAgent(t, false, "")
-	if !resp.Valid {
+	resp, aud, err := resolveForAgent(t, false, "")
+	if err != nil || !resp.Valid {
 		t.Fatal("audit mode must keep pre-S5 keys working")
 	}
 	if serviceAgentDenied(aud) {
@@ -820,8 +817,8 @@ func TestResolveAgentApiKey_NonServiceAgentAuditOnly(t *testing.T) {
 }
 
 func TestResolveAgentApiKey_ServiceAgentAllowedUnderEnforce(t *testing.T) {
-	resp, aud := resolveForAgent(t, true, "enforce")
-	if !resp.Valid {
+	resp, aud, err := resolveForAgent(t, true, "enforce")
+	if err != nil || !resp.Valid {
 		t.Fatal("service agent under enforce: want valid")
 	}
 	if serviceAgentDenied(aud) {
@@ -878,12 +875,9 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 			resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
 				KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID, UserAssertion: "token",
 			})
-			if err != nil {
-				t.Fatalf("ResolveAgentApiKey: %v", err)
-			}
 			if tc.wantReason != "" {
-				if resp.Valid || resp.OwnerGrant != "" {
-					t.Fatalf("want refused, got %+v", resp)
+				if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != "user assertion rejected: "+tc.wantReason {
+					t.Fatalf("want PermissionDenied %q, got resp=%+v err=%v", tc.wantReason, resp, err)
 				}
 				for _, ev := range aud.events {
 					if ev.EventType == "aikonos.broker.apikey.denied" && ev.Context.Fields["reason"].GetStringValue() == tc.wantReason {
@@ -891,6 +885,9 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 					}
 				}
 				t.Fatalf("want %s DENY, got %v", tc.wantReason, aud.events)
+			}
+			if err != nil {
+				t.Fatalf("ResolveAgentApiKey: %v", err)
 			}
 			if !resp.Valid || resp.Principal != alice {
 				t.Fatalf("want valid with principal %q, got %+v", alice, resp)
@@ -906,5 +903,19 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 				t.Fatalf("an asserted subject must skip the service-agent gate, got %v", aud.events)
 			}
 		})
+	}
+}
+
+// TestNewSandboxService_WarnsWithoutConfig guards the south wiring: a missing
+// Config made identity.obo=enforce silently read as audit.
+func TestNewSandboxService_WarnsWithoutConfig(t *testing.T) {
+	core, recorded := observer.New(zapcore.WarnLevel)
+	NewSandboxService(Deps{Logger: zap.New(core)})
+	if recorded.FilterMessageSnippet("Deps.Config is nil").Len() != 1 {
+		t.Fatalf("want a Config-missing warning, got %v", recorded.All())
+	}
+	NewSandboxService(Deps{Logger: zap.New(core), Config: newFakeConfigStore()})
+	if recorded.Len() != 1 {
+		t.Fatalf("wired Config must not warn, got %v", recorded.All())
 	}
 }

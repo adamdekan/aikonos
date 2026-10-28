@@ -289,7 +289,8 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		var reason string
 		if subject, reason = s.verifyUserAssertion(ctx, k, req.UserAssertion); reason != "" {
 			s.emitApiKeyDenied(ctx, k, reason, "")
-			return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+			// The key itself is valid, so say why (unknown keys stay Valid:false).
+			return nil, status.Error(codes.PermissionDenied, "user assertion rejected: "+reason)
 		}
 	}
 
@@ -314,7 +315,7 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 			}
 			if mode == "enforce" {
 				s.emitApiKeyDenied(ctx, k, "service_agent_required", mode)
-				return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+				return nil, status.Error(codes.PermissionDenied, "identity.obo=enforce: agent is not a service agent; send a user assertion")
 			}
 			s.deps.Logger.Warn("ResolveAgentApiKey: key for non-service agent (identity.obo=audit)",
 				zap.String("agent_id", k.AgentID.String()), zap.String("key_id", k.ID.String()))

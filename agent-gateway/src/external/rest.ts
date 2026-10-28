@@ -21,7 +21,7 @@
 // Prompt cap: 16 KiB. Exceeding it returns 413.
 // History caps: not an array, a bad role/content shape, >100 turns, or >200 KiB
 // of total content → 400. Body cap (256 KiB, server.ts) return Fastify's own 413.
-// Auth: authenticateApiKey middleware (Bearer tk_…). 401 on miss/revoke.
+// Auth: authenticateApiKey middleware (Bearer tk_…). 401 on miss/revoke, 403 on an AG-17 refusal.
 // Optional X-Aikonos-Subject-Token (AG-17 S6): a user OIDC token the broker
 // validates; the run then acts for that user instead of svc-<agentId>. A bad
 // token is a 401, never a silent svc- fallback.

@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -484,6 +485,66 @@ func TestUpdateScheduledRun_Actor(t *testing.T) {
 			if ev := receiveAuditEvent(t, sub, "aikonos.scheduler.run.actor_denied", 2*time.Second); ev.Decision != auditv1.PolicyDecision_DENY {
 				t.Errorf("decision = %v, want DENY", ev.Decision)
 			}
+		})
+	}
+}
+
+// run.created and run.completed carry the same owner/actor/grant chain as
+// run.fired (AG-17), so a schedule's whole lifecycle traces to its agent.
+func TestSchedulerLifecycleEvents_CarryOBO(t *testing.T) {
+	actorID := uuid.New()
+	checkOBO := func(t *testing.T, ev *auditv1.AuditEvent, runID string) {
+		t.Helper()
+		obo := ev.Context.Fields["obo"].GetStructValue().GetFields()
+		if ev.ActorUserId != "alice@example.com" || ev.ActorAgentId != actorID.String() ||
+			obo["subject"].GetStringValue() != "alice@example.com" || obo["grant_id"].GetStringValue() != runID {
+			t.Errorf("%s: actor_user=%q actor_agent=%q obo=%v, want alice@example.com / %s / grant %s",
+				ev.EventType, ev.ActorUserId, ev.ActorAgentId, obo, actorID, runID)
+		}
+	}
+
+	t.Run("created", func(t *testing.T) {
+		deps := testAdminDeps(t, "") // FGA disabled: skill and can_use allow-all
+		deps.Agents = &fakeAgentStore{agents: []*db.Agent{{ID: actorID, TenantID: uuid.MustParse(testTenantUUID), Name: "a"}}}
+		store := &captureScheduledStore{}
+		deps.Scheduled = store
+		aud := &fakeInvokeAudit{}
+		deps.Audit = aud
+		_, err := NewBrokerService(deps).CreateScheduledRun(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.CreateScheduledRunRequest{
+			UserId: "alice@example.com", Prompt: "summarize", Kind: brokerv1.ScheduleKind_SCHEDULE_KIND_CRON,
+			CronExpr: "0 9 * * *", ActorAgentId: actorID.String(),
+		})
+		if err != nil {
+			t.Fatalf("CreateScheduledRun: %v", err)
+		}
+		for _, ev := range aud.events {
+			if ev.EventType == "aikonos.scheduler.run.created" {
+				checkOBO(t, ev, store.created.ScheduledRunID.String())
+				return
+			}
+		}
+		t.Fatalf("no run.created event in %v", aud.events)
+	})
+
+	for _, success := range []bool{true, false} {
+		t.Run(fmt.Sprintf("report success=%v", success), func(t *testing.T) {
+			runID := uuid.New()
+			aud := &fakeInvokeAudit{}
+			svc := NewSandboxService(Deps{
+				Logger: zap.NewNop(), Audit: aud, GatewaySpiffeID: testGWSpiffeID,
+				Scheduled: &fakeReportStore{runs: map[string]*db.ScheduledRun{
+					runID.String(): {ScheduledRunID: runID, OwnerUserID: "alice@example.com", ActorAgentID: &actorID},
+				}},
+			})
+			if _, err := svc.ReportScheduledRunResult(gwReportCtx(), &brokerv1.ReportScheduledRunResultRequest{
+				TenantId: testTenantUUID, Id: runID.String(), Success: success,
+			}); err != nil {
+				t.Fatalf("ReportScheduledRunResult: %v", err)
+			}
+			if len(aud.events) != 1 {
+				t.Fatalf("want 1 event, got %v", aud.events)
+			}
+			checkOBO(t, aud.events[0], runID.String())
 		})
 	}
 }
