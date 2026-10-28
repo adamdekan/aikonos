@@ -202,6 +202,8 @@ watch(
         </div>
       </div>
     </template>
+    <!-- Inline cards the view appends to the transcript (pending approvals). -->
+    <slot />
     </div>
   </div>
 </template>

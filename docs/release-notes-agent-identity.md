@@ -77,6 +77,13 @@ waiting. A denial needs no digest. As a result:
   STARTTLS unless the relay is on loopback.
 - Not yet: a run that was waiting when the gateway restarted is gone; its
   approval stays in the Inbox until it expires, and approving it runs nothing.
+- The chat decides in the transcript, not a dialog: each pending approval is
+  an inline card (tool, STEP-UP or APPROVAL, arguments, Approve / Deny, or
+  "Waiting for N more approvers" with Withdraw). Reloading the page or
+  reopening the session shows the card again from the broker's pending list
+  (this session's tasks only). Approve and Deny go to the broker with the
+  arguments digest; when the run that asked is gone (the reload ended it, or
+  the gateway restarted) the card says so after the decision.
 
 ## Scheduled runs
 

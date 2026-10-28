@@ -160,7 +160,7 @@ gateway's own vote (`ApproveGatewayTask`, the gateway SVID) carries no sign-in,
 so it is always refused for a step-up approval; the run then waits for the
 approver's vote.
 
-On `step_up_required` the web UI (chat approval dialog, Inbox → Pending
+On `step_up_required` the web UI (chat approval card, Inbox → Pending
 approvals) shows *Verify sign-in and approve*: a popup sign-in with `max_age=0`,
 then the approval is sent again with the new token.
 

@@ -45,7 +45,7 @@ vi.mock("../api/inbox.js", () => ({
   delegate: (...args) => mockDelegate(...args),
 }));
 
-// Mock the api client so ApprovalModal's poll doesn't need a real server.
+// Mock the api client so the approval poll doesn't need a real server.
 vi.mock("../api/client.js", () => ({
   get: vi.fn().mockResolvedValue({ approvals: [] }),
   post: vi.fn().mockResolvedValue({}),
@@ -53,6 +53,9 @@ vi.mock("../api/client.js", () => ({
   del: vi.fn(),
   patch: vi.fn(),
 }));
+
+// One inline approval card (AG-07) per pending approval.
+const CARD = "[data-testid^='chat-deny-']";
 
 function makeRouter() {
   return createRouter({
@@ -442,7 +445,7 @@ describe("Chat.vue — HITL approval dedup (cross-source)", () => {
     await nextTick();
 
     // One modal visible.
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(1);
 
     // Advance time to let at least one poll interval fire.
     vi.useFakeTimers();
@@ -451,12 +454,71 @@ describe("Chat.vue — HITL approval dedup (cross-source)", () => {
     await nextTick();
 
     // Still exactly one modal — poll did not re-render a duplicate.
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(1);
 
-    // The modal's displayed toolId matches the original info.
+    // The card's displayed toolId matches the original info.
     expect(w.text()).toContain(info.toolId);
+    expect(w.find(`[data-testid='chat-approve-${info.toolCallId}']`).exists()).toBe(true);
 
     vi.useRealTimers();
+    resolveStream();
+    await flushPromises();
+  });
+});
+
+describe("Chat.vue — inline approval card from the stream (AG-07)", () => {
+  let router;
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    router = makeRouter();
+    mockDelegate = vi.fn().mockResolvedValue({ ok: true });
+    clientMod.get.mockResolvedValue({ approvals: [] });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("shows the card in the transcript, keeps the task on the tool call, and approves with the digest", async () => {
+    const info = {
+      toolCallId: "tc-s1", taskId: "task-s1", toolId: "web.fetch", toolName: "web_fetch",
+      reason: "human approval required", args: { url: "https://example.com" },
+      argsDigest: "digest-s1", stepUp: false, requiresN: 1, approvals: 0, ownerMayApprove: true,
+    };
+    let resolveStream;
+    mockRunAgui = vi.fn().mockImplementation(async (_opts, handlers) => {
+      handlers.onRunStarted();
+      handlers.onToolCall({ id: "tc-s1", name: "web_fetch" });
+      handlers.onApprovalRequest(info);
+      await new Promise((res) => { resolveStream = res; });
+      handlers.onFinished();
+      return "thread-abc";
+    });
+    const ps = usePromptStore();
+    ps.set("need approval");
+    await router.push("/chat");
+    const w = mount(Chat, { global: { plugins: [router] } });
+    await flushPromises();
+
+    const card = w.find("[data-testid='chat-approval-tc-s1']");
+    expect(card.exists()).toBe(true);
+    // Inside the transcript, not a dialog.
+    expect(w.find(".message-list [data-testid='chat-approval-tc-s1']").exists()).toBe(true);
+    const chatStore = (await import("../store/chat.js")).useChatStore();
+    const tool = chatStore.currentBuffer().messages.flatMap((m) => m.tools ?? []).find((t) => t.id === "tc-s1");
+    expect(tool.taskId).toBe("task-s1");
+
+    // The run is live: the gateway still holds the approval.
+    clientMod.get.mockResolvedValue({ approvals: [info] });
+    clientMod.post.mockResolvedValue({ newStatus: 5 });
+    await w.find("[data-testid='chat-approve-tc-s1']").trigger("click");
+    await flushPromises();
+    expect(clientMod.post).toHaveBeenCalledWith("/pending-approvals/task-s1", { body: { approved: true, argsDigest: "digest-s1" } });
+    expect(w.find("[data-testid='chat-approval-tc-s1']").exists()).toBe(false);
+
     resolveStream();
     await flushPromises();
   });

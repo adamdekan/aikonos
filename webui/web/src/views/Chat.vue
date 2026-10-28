@@ -8,12 +8,13 @@ import { useAgentsStore } from "../store/agents.js";
 import MessageList from "../components/MessageList.vue";
 import Composer from "../components/Composer.vue";
 import SessionUsage from "../components/SessionUsage.vue";
-import ApprovalModal from "../components/ApprovalModal.vue";
+import ApprovalCard from "../components/ApprovalCard.vue";
 import Modal from "../components/ui/Modal.vue";
 import FormField from "../components/ui/FormField.vue";
 import ErrorBanner from "../components/ui/ErrorBanner.vue";
 import { useDiscoveryStore } from "../store/discovery.js";
 import { useApprovals } from "../composables/useApprovals.js";
+import { listPendingApprovals } from "../api/approvals.js";
 import { useSoulEditor } from "../composables/useSoulEditor.js";
 import { useSessionLifecycle } from "../composables/useSessionLifecycle.js";
 import { useDelegation } from "../composables/useDelegation.js";
@@ -45,7 +46,7 @@ const discoveryFailed = computed(() =>
   Object.values(discoveryStore.errors).some((e) => e !== null)
 );
 
-const { approval, pendingCount, onApprovalRequest, onApprovalResolved, scheduleOneShotPoll, stopPolling, resetApprovals, onApprovalClose } = useApprovals();
+const { approvals, addApproval, removeApproval, onApprovalRequest, onApprovalResolved, scheduleOneShotPoll, stopPolling, resetApprovals } = useApprovals();
 
 const {
   soulEditable, showSoulModal, soulDraft, soulDraftBytes, soulError, soulSaving,
@@ -94,6 +95,46 @@ const { running, textStreaming, stop, submit, editAndResend } = useAguiRun({
   persistSessionMessages,
   pendingDelegation,
   pendingEnvelopeId,
+});
+
+// AG-07: a reload or a reopened session finds its open approvals in the
+// broker: each tool call that waited on one keeps its task id. The broker list
+// holds only requests this user may decide; a run gone with the reload is told
+// apart by the card when deciding.
+async function loadSessionApprovals() {
+  const waiting = new Map();
+  for (const m of messages.value) {
+    for (const t of m.tools ?? []) if (t.taskId && !t.done) waiting.set(t.taskId, t);
+  }
+  if (!waiting.size) return;
+  try {
+    for (const a of (await listPendingApprovals()).approvals ?? []) {
+      const tool = waiting.get(a.taskId);
+      if (!tool) continue;
+      const step = a.steps?.[0] ?? {};
+      addApproval({
+        toolCallId: tool.id,
+        taskId: a.taskId,
+        toolId: step.toolId ?? tool.name,
+        args: step.args ?? null,
+        argsDigest: a.argsDigest,
+        stepUp: a.stepUp,
+        requiresN: a.requiresN,
+        approvals: a.approvals,
+        ownerMayApprove: true,
+        reason: a.stepUp ? "elevated (step-up) approval required" : "human approval required",
+      });
+    }
+  } catch {
+    // Best effort: the Inbox lists the same requests.
+  }
+}
+
+// A switched or reloaded conversation shows its own approvals only.
+watch(messages, () => {
+  if (running.value) return;
+  resetApprovals();
+  loadSessionApprovals();
 });
 
 // ── per-message actions ───────────────────────────────────────────────────────
@@ -193,14 +234,14 @@ onMounted(async () => {
       :text-streaming="textStreaming"
       @reply="onReply"
       @edit="onEdit"
-    />
-
-    <ApprovalModal
-      :visible="!!approval"
-      :request="approval"
-      :pending-count="pendingCount"
-      @close="onApprovalClose"
-    />
+    >
+      <ApprovalCard
+        v-for="a in approvals"
+        :key="a.toolCallId"
+        :request="a"
+        @done="removeApproval"
+      />
+    </MessageList>
 
     <!-- Personality editor modal -->
     <Modal

@@ -49,6 +49,9 @@ vi.mock("../api/client.js", () => ({
   patch: vi.fn(),
 }));
 
+// One inline approval card (AG-07) per pending approval.
+const CARD = "[data-testid^='chat-deny-']";
+
 function makeRouter() {
   return createRouter({
     history: createMemoryHistory(),
@@ -124,7 +127,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     // Exactly one /approvals GET (the one-shot safety check) — no recurring poll.
     const approvalsCalls = clientMod.get.mock.calls.filter(([url]) => url === "/approvals");
     expect(approvalsCalls.length).toBe(1);
-    expect(w.findAll(".approval-modal").length).toBe(0);
+    expect(w.findAll(CARD).length).toBe(0);
 
     vi.useRealTimers();
     resolveStream();
@@ -143,7 +146,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
 
     vi.useFakeTimers();
     const w = await mountChat();
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(1);
 
     vi.advanceTimersByTime(2000);
     await flushPromises();
@@ -155,7 +158,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     await flushPromises();
   });
 
-  it("two distinct approvals enqueue FIFO — one modal at a time, no thrash", async () => {
+  it("two distinct approvals show two inline cards in the transcript", async () => {
     let resolveStream;
     mockRunAgui = vi.fn().mockImplementation(async (_opts, handlers) => {
       handlers.onRunStarted();
@@ -169,24 +172,14 @@ describe("F37 — conditional, queue-aware approval polling", () => {
 
     vi.useFakeTimers();
     const w = await mountChat();
-    expect(w.findAll(".approval-modal").length).toBe(1);
-    expect(w.text()).toContain(info1.toolId);
+    expect(w.findAll(CARD).length).toBe(1);
 
     vi.advanceTimersByTime(2000);
     await flushPromises();
     await nextTick();
 
-    // Still exactly one modal visible — info1 remains current; info2 queued behind it.
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(2);
     expect(w.text()).toContain(info1.toolId);
-    expect(w.text()).toContain("1 of 2");
-
-    // Resolve the current approval — the queue advances to info2.
-    await w.find("[data-action='deny']").trigger("click");
-    await flushPromises();
-    await nextTick();
-
-    expect(w.findAll(".approval-modal").length).toBe(1);
     expect(w.text()).toContain(info2.toolId);
 
     vi.useRealTimers();
@@ -212,9 +205,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     await flushPromises();
     await nextTick();
 
-    expect(w.findAll(".approval-modal").length).toBe(1);
-    // No queue badge — only one distinct entry was ever enqueued.
-    expect(w.text()).not.toContain("1 of");
+    expect(w.findAll(CARD).length).toBe(1);
 
     vi.useRealTimers();
     resolveStream();
@@ -235,10 +226,10 @@ describe("F37 — conditional, queue-aware approval polling", () => {
       return "thread-abc";
     });
     const w = await mountChat();
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(1);
     h.onApprovalResolved({ toolCallId: info1.toolCallId });
     await flushPromises();
-    expect(w.findAll(".approval-modal").length).toBe(0);
+    expect(w.findAll(CARD).length).toBe(0);
     resolveStream();
     await flushPromises();
   });
@@ -289,14 +280,14 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     const w = await mountChat();
 
     // Before the one-shot fires, no approval is visible yet.
-    expect(w.findAll(".approval-modal").length).toBe(0);
+    expect(w.findAll(CARD).length).toBe(0);
 
     // One poll interval later, the safety-net GET fires and surfaces it.
     vi.advanceTimersByTime(2000);
     await flushPromises();
     await nextTick();
 
-    expect(w.findAll(".approval-modal").length).toBe(1);
+    expect(w.findAll(CARD).length).toBe(1);
     expect(w.text()).toContain(info1.toolId);
 
     // Continuous polling should now be running too (escalated by the one-shot).
@@ -329,7 +320,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     // The one-shot must have been cancelled on run end — no /approvals fetch,
     // no modal ever appears.
     expect(clientMod.get).not.toHaveBeenCalledWith("/approvals");
-    expect(w.findAll(".approval-modal").length).toBe(0);
+    expect(w.findAll(CARD).length).toBe(0);
 
     vi.useRealTimers();
   });
