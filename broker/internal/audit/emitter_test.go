@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
@@ -102,5 +104,73 @@ func TestObjectKey(t *testing.T) {
 	}
 	if got[:len("tenant-x/")] != "tenant-x/" {
 		t.Fatalf("key should start with tenant: %s", got)
+	}
+}
+
+// chainOf emits n events for tenant through a logging-only emitter, returning
+// them in chain order with their chain hashes.
+func chainOf(t *testing.T, tenant string, n int) ([]*auditv1.AuditEvent, []string) {
+	t.Helper()
+	e, _ := NewEmitter(context.Background(), Config{SigningKeySource: &fakeKeySource{currentKey: "k", currentVersion: 2}})
+	var evs []*auditv1.AuditEvent
+	var hashes []string
+	for i := 0; i < n; i++ {
+		x := ev(string(rune('a'+i)), tenant)
+		_ = e.Emit(context.Background(), x)
+		evs = append(evs, x)
+		hashes = append(hashes, e.lastHash[tenant])
+	}
+	return evs, hashes
+}
+
+// Uploads can land out of chain order (enqueue happens after the chain lock),
+// so LastModified order != chain order. Resume must pick the true tail, also
+// when the tail sits in the previous day's directory.
+func TestResumeTail_OutOfOrderUploads(t *testing.T) {
+	evs, hashes := chainOf(t, "t1", 4)
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeStore{objects: map[string][]byte{}, modTime: map[string]time.Time{}}
+	put := func(key string, ev *auditv1.AuditEvent, at time.Duration) {
+		store.objects[key] = mustMarshalEvent(ev)
+		store.modTime[key] = base.Add(at)
+	}
+	// Chain a→b→c→d. d (the tail) is in 2026/02/28 (month boundary) and was
+	// uploaded before c, which is the LastModified-newest object.
+	put("t1/2026/02/28/a.json", evs[0], -3*time.Second)
+	put("t1/2026/02/28/b.json", evs[1], -2*time.Second)
+	put("t1/2026/02/28/d.json", evs[3], 10*time.Millisecond)
+	put("t1/2026/03/01/c.json", evs[2], 20*time.Millisecond)
+	// Old history outside the window must not be read.
+	put("t1/2026/02/28/old.json", evs[0], -time.Hour)
+	store.getErrs = map[string]error{"t1/2026/02/28/old.json": errors.New("must not be read")}
+
+	got, ok := resumeTail(context.Background(), store, "t1/2026/03/01/c.json")
+	if !ok || got != hashes[3] {
+		t.Fatalf("resumeTail = %q,%v; want true tail %q (newest-by-LastModified is %q)", got, ok, hashes[3], hashes[2])
+	}
+}
+
+func TestResumeTail_SingleObject(t *testing.T) {
+	evs, hashes := chainOf(t, "t1", 1)
+	store := &fakeStore{objects: map[string][]byte{"t1/2026/03/01/a.json": mustMarshalEvent(evs[0])}}
+	got, ok := resumeTail(context.Background(), store, "t1/2026/03/01/a.json")
+	if !ok || got != hashes[0] {
+		t.Fatalf("resumeTail = %q,%v; want %q", got, ok, hashes[0])
+	}
+}
+
+func TestResumeTail_EmptyStore(t *testing.T) {
+	if _, ok := resumeTail(context.Background(), &fakeStore{objects: map[string][]byte{}}, "t1/2026/03/01/a.json"); ok {
+		t.Fatal("empty store must not resolve a tail")
+	}
+}
+
+// Two open ends (an already-forked history) is ambiguous → fall back.
+func TestChainTail_AmbiguousFallsBack(t *testing.T) {
+	evs, _ := chainOf(t, "t1", 2)
+	fork, _ := chainOf(t, "t1", 2)
+	fork[1].EventId = "fork" // same prior as evs[1], different hash
+	if _, ok := chainTail([]*auditv1.AuditEvent{evs[0], evs[1], fork[1]}); ok {
+		t.Fatal("forked candidates must be ambiguous")
 	}
 }

@@ -164,3 +164,72 @@ func TestVerifyChain_MixedOldAndOBOEvents(t *testing.T) {
 			report.OK, report.Total, report.Breaks, report.SignatureFailures)
 	}
 }
+
+// emitInOrder emits events through a real Emitter in the given order, so the
+// chain order is the emit order regardless of the events' ids.
+func emitInOrder(t *testing.T, key string, ids ...string) []*auditv1.AuditEvent {
+	t.Helper()
+	e, err := NewEmitter(context.Background(), Config{SigningKey: key})
+	if err != nil {
+		t.Fatalf("NewEmitter: %v", err)
+	}
+	out := make([]*auditv1.AuditEvent, len(ids))
+	for i, id := range ids {
+		out[i] = &auditv1.AuditEvent{EventId: id, TenantId: "tenant1", EventType: "test.event"}
+		if err := e.Emit(context.Background(), out[i]); err != nil {
+			t.Fatalf("Emit[%d]: %v", i, err)
+		}
+	}
+	return out
+}
+
+// TestVerifyChain_ChainOrderDiffersFromIDOrder is the live-testing regression:
+// concurrent callers mint UUIDv7 ids before the emitter chains them, so chain
+// order ≠ id order. A healthy chain must still verify, with head/tail taken
+// from the linkage, not from id order.
+func TestVerifyChain_ChainOrderDiffersFromIDOrder(t *testing.T) {
+	events := emitInOrder(t, "test-key", "evt-0000", "evt-0003", "evt-0001", "evt-0002", "evt-0005", "evt-0004")
+	report := VerifyChain(events, "test-key")
+	if !report.OK {
+		t.Fatalf("want ok=true; breaks=%v sig_failures=%v", report.Breaks, report.SignatureFailures)
+	}
+	if report.HeadID != "evt-0000" || report.TailID != "evt-0004" {
+		t.Errorf("want head=evt-0000 tail=evt-0004, got %s..%s", report.HeadID, report.TailID)
+	}
+}
+
+func TestVerifyChain_OutOfOrderTampering(t *testing.T) {
+	ids := []string{"evt-0000", "evt-0002", "evt-0001", "evt-0003"}
+	cases := map[string]func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent{
+		"modified payload": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			ev[1].EventType = "tampered.event"
+			return ev
+		},
+		"removed middle event": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			return []*auditv1.AuditEvent{ev[0], ev[1], ev[3]}
+		},
+		"removed genesis": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			return ev[1:]
+		},
+		"duplicate": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			return append(ev, ev[2])
+		},
+		"fork (relinked prior)": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			ev[3].PriorEventHash = ev[2].PriorEventHash
+			return ev
+		},
+		"second genesis": func(ev []*auditv1.AuditEvent) []*auditv1.AuditEvent {
+			ev[2].PriorEventHash = ""
+			return ev
+		},
+	}
+	for name, mutate := range cases {
+		for _, key := range []string{"test-key", ""} {
+			ev := mutate(emitInOrder(t, key, ids...))
+			report := VerifyChain(ev, key)
+			if report.OK || len(report.Breaks) == 0 {
+				t.Errorf("%s (key=%q): want continuity break, got ok=%v breaks=%v", name, key, report.OK, report.Breaks)
+			}
+		}
+	}
+}

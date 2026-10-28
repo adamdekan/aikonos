@@ -64,24 +64,105 @@ func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, key
 	}
 
 	// Work on a shallow copy of the slice so sorting doesn't affect the caller.
+	// event_id order is only used for deterministic iteration: the chain order
+	// is the prior_event_hash linkage, which the emitter assigns under its lock
+	// AFTER the caller minted the (UUIDv7) event_id — so under concurrency
+	// chain order and id order legitimately differ.
 	sorted := make([]*auditv1.AuditEvent, len(events))
 	copy(sorted, events)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].EventId < sorted[j].EventId
 	})
 
-	report := ChainReport{
-		Total:  len(sorted),
-		HeadID: sorted[0].EventId,
-		TailID: sorted[len(sorted)-1].EventId,
-	}
+	report := ChainReport{Total: len(sorted)}
 
-	// Pre-compute canonical bytes for every event once; index i is reused as
-	// the "prior" when checking event i+1, avoiding a double serialization per pair.
+	// Canonical bytes (for signatures) and chain hash of every event, once.
 	canonBytes := make([][]byte, len(sorted))
+	hashes := make([]string, len(sorted))
+	byHash := make(map[string]int, len(sorted))
+	children := map[string][]int{} // prior_event_hash → successors, event_id order
+	var roots []int                // events whose predecessor is absent
 	for i, e := range sorted {
 		canonBytes[i] = canonicalBytes(e)
+		h := eventHash(canonBytes[i])
+		hashes[i] = h
+		if j, dup := byHash[h]; dup {
+			report.Breaks = append(report.Breaks, ChainBreak{
+				EventID: e.EventId,
+				Detail:  fmt.Sprintf("duplicate event: identical to %s", sorted[j].EventId),
+			})
+			continue // keep duplicates out of the linkage so they don't also read as a fork
+		}
+		byHash[h] = i
 	}
+	for i, e := range sorted {
+		if byHash[hashes[i]] != i {
+			continue // duplicate, reported above
+		}
+		children[e.PriorEventHash] = append(children[e.PriorEventHash], i)
+	}
+	for i, e := range sorted {
+		if byHash[hashes[i]] != i {
+			continue
+		}
+		if _, ok := byHash[e.PriorEventHash]; !ok {
+			roots = append(roots, i)
+		}
+	}
+
+	// Walk the linkage from the head. A healthy chain has exactly one root
+	// (empty prior) and no event with more than one successor; every extra
+	// root is a gap (missing predecessor) or a restarted chain, every extra
+	// successor a fork.
+	head := 0
+	if len(roots) > 0 {
+		head = roots[0]
+	}
+	for _, r := range roots {
+		e := sorted[r]
+		switch {
+		case r == head && e.PriorEventHash != "":
+			report.Breaks = append(report.Breaks, ChainBreak{
+				EventID: e.EventId,
+				Detail:  fmt.Sprintf("head event has non-empty prior_event_hash: %s", e.PriorEventHash),
+			})
+		case r == head:
+		case e.PriorEventHash == "":
+			report.Breaks = append(report.Breaks, ChainBreak{
+				EventID: e.EventId,
+				Detail:  fmt.Sprintf("second chain head (empty prior_event_hash) besides %s", sorted[head].EventId),
+			})
+		default:
+			report.Breaks = append(report.Breaks, ChainBreak{
+				EventID: e.EventId,
+				Detail:  fmt.Sprintf("prior_event_hash mismatch: %s matches no event (missing predecessor)", e.PriorEventHash),
+			})
+		}
+	}
+	for prior, succ := range children {
+		if prior == "" {
+			continue // multiple empty-prior roots already reported above
+		}
+		for _, k := range succ[1:] {
+			report.Breaks = append(report.Breaks, ChainBreak{
+				EventID: sorted[k].EventId,
+				Detail:  fmt.Sprintf("fork: shares prior_event_hash %s with %s", prior, sorted[succ[0]].EventId),
+			})
+		}
+	}
+	// Map iteration above is random; keep the report deterministic.
+	sort.SliceStable(report.Breaks, func(i, j int) bool { return report.Breaks[i].EventID < report.Breaks[j].EventID })
+
+	tail := head
+	for {
+		next := children[hashes[tail]]
+		if len(next) == 0 {
+			break
+		}
+		tail = next[0]
+	}
+	report.HeadID = sorted[head].EventId
+	report.TailID = sorted[tail].EventId
 
 	keyCache := map[int32]string{}
 	keyErr := map[int32]error{}
@@ -124,26 +205,6 @@ func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, key
 
 	for i, e := range sorted {
 		canon := canonBytes[i]
-
-		// Continuity check.
-		if i == 0 {
-			if e.PriorEventHash != "" {
-				report.Breaks = append(report.Breaks, ChainBreak{
-					EventID: e.EventId,
-					Detail:  fmt.Sprintf("head event has non-empty prior_event_hash: %s", e.PriorEventHash),
-				})
-			}
-		} else {
-			wantPrior := eventHash(canonBytes[i-1])
-			if e.PriorEventHash != wantPrior {
-				report.Breaks = append(report.Breaks, ChainBreak{
-					EventID: e.EventId,
-					Detail: fmt.Sprintf("prior_event_hash mismatch: got %s want %s",
-						e.PriorEventHash, wantPrior),
-				})
-			}
-		}
-
 		// Signature check. An unresolvable version (e.g. a Vault historic
 		// read failing) is itself a signature failure — the chain can't be
 		// trusted end-to-end, not silently skipped.

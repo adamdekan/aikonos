@@ -199,7 +199,8 @@ func eventIDs(es []*auditv1.AuditEvent) []string {
 type fakeStore struct {
 	objects map[string][]byte // key → raw JSON
 	listErr error
-	getErrs map[string]error // key → forced get error
+	getErrs map[string]error     // key → forced get error
+	modTime map[string]time.Time // key → LastModified (optional)
 }
 
 func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {
@@ -209,7 +210,7 @@ func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {
 	var out []objMeta
 	for k := range f.objects {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-			out = append(out, objMeta{key: k})
+			out = append(out, objMeta{key: k, lastModified: f.modTime[k]})
 		}
 	}
 	return out, nil

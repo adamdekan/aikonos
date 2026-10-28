@@ -14,6 +14,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +76,7 @@ type Emitter struct {
 	bus    notify.Bus // optional: publishes audit events for live observability
 
 	client *minio.Client // nil → logging-only
+	store  objectStore   // list/get view over client, used for chain resume
 
 	keySource SigningKeySource // never nil after NewEmitter
 
@@ -131,6 +134,7 @@ func NewEmitter(ctx context.Context, cfg Config) (*Emitter, error) {
 	}
 
 	e.client = client
+	e.store = &minioStore{client: client, bucket: cfg.Bucket}
 	// Resume each tenant's hash chain from the newest persisted event so a
 	// restart continues the chain instead of starting a fresh one.
 	e.loadChainHeads(ctx, logger)
@@ -266,7 +270,7 @@ func objectKey(event *auditv1.AuditEvent) string {
 }
 
 // loadChainHeads seeds lastHash for every tenant with existing history, reading
-// the chain-hash metadata of each tenant's newest stored event. Best-effort: a
+// the chain hash of each tenant's chain tail (see resumeTail). Best-effort: a
 // failure just means that tenant's chain restarts (logged), never a hard error.
 func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 	for obj := range e.client.ListObjects(ctx, e.cfg.Bucket, minio.ListObjectsOptions{Recursive: false}) {
@@ -282,17 +286,107 @@ func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 		if !ok {
 			continue
 		}
-		info, err := e.client.StatObject(ctx, e.cfg.Bucket, key, minio.StatObjectOptions{})
-		if err != nil {
-			logger.Warn("audit: stat newest event for chain resume failed", zap.String("tenant", tenant), zap.Error(err))
-			continue
+		h, ok := resumeTail(ctx, e.store, key)
+		if !ok {
+			// Fall back to the newest object by LastModified (pre-tail-pick
+			// behaviour). May fork the chain if uploads landed out of order.
+			logger.Warn("audit: could not identify a unique chain tail among recent events; resuming from newest by LastModified",
+				zap.String("tenant", tenant), zap.String("key", key))
+			info, err := e.client.StatObject(ctx, e.cfg.Bucket, key, minio.StatObjectOptions{})
+			if err != nil {
+				logger.Warn("audit: stat newest event for chain resume failed", zap.String("tenant", tenant), zap.Error(err))
+				continue
+			}
+			h = info.Metadata.Get("X-Amz-Meta-" + chainHashMeta)
 		}
-		h := info.Metadata.Get("X-Amz-Meta-" + chainHashMeta)
 		if h != "" {
 			e.lastHash[tenant] = h
 			logger.Info("audit: resumed hash chain", zap.String("tenant", tenant), zap.String("head", h[:16]))
 		}
 	}
+}
+
+// Chain-resume candidate bounds. Emit chains under e.mu but enqueues after
+// releasing it, so two racing Emits can reach the (single, FIFO) upload worker
+// in the reverse of their chain order. The tail can therefore trail the newest
+// object by LastModified, but only by roughly how long a racing Emit waited to
+// enqueue (≤ DropTimeout, default 100ms, plus scheduling). A minute is orders
+// of magnitude above that; the count cap keeps startup to a bounded number of
+// GETs per tenant even after a heavy burst.
+// ponytail: if a single restart ever sees >resumeMaxCandidates events inside
+// the window AND a misorder deeper than that, the pick can be wrong; raise the
+// cap or enqueue under e.mu if that ever shows up.
+const (
+	resumeWindow        = time.Minute
+	resumeMaxCandidates = 256
+)
+
+// resumeTail returns the chain hash of the tenant's true chain tail. newestKey
+// is newestUnder's pick (<tenant>/YYYY/MM/DD/<id>.json). Candidates are the
+// recent objects of that date directory and the previous day's (occurred_at is
+// stamped before the chain lock, so a burst around midnight can put the tail in
+// the earlier directory). The tail is the one candidate whose hash no other
+// candidate names as prior_event_hash. ok=false when that is not exactly one
+// candidate, or on any read/parse failure — the caller then falls back.
+func resumeTail(ctx context.Context, store objectStore, newestKey string) (string, bool) {
+	dir := path.Dir(newestKey) // <tenant>/YYYY/MM/DD
+	dirs := []string{dir + "/"}
+	if parts := strings.Split(dir, "/"); len(parts) == 4 {
+		if d, err := time.Parse("2006/01/02", strings.Join(parts[1:], "/")); err == nil {
+			dirs = append(dirs, parts[0]+"/"+d.AddDate(0, 0, -1).Format("2006/01/02")+"/")
+		}
+	}
+	var metas []objMeta
+	for _, d := range dirs {
+		m, err := store.list(ctx, d)
+		if err != nil {
+			return "", false
+		}
+		metas = append(metas, m...)
+	}
+	if len(metas) == 0 {
+		return "", false
+	}
+	sort.Slice(metas, func(i, j int) bool { return metas[i].lastModified.After(metas[j].lastModified) })
+	var cands []*auditv1.AuditEvent
+	for i, m := range metas {
+		if i == resumeMaxCandidates || metas[0].lastModified.Sub(m.lastModified) > resumeWindow {
+			break
+		}
+		data, err := store.get(ctx, m.key)
+		if err != nil {
+			return "", false
+		}
+		ev, err := unmarshalAuditEvent(data)
+		if err != nil {
+			return "", false
+		}
+		cands = append(cands, ev)
+	}
+	return chainTail(cands)
+}
+
+// chainTail returns the hash of the only event not referenced as another's
+// prior_event_hash. The hash is computed exactly as the verifier does
+// (canonicalBytes covers signing_key_version and prior_event_hash, not the
+// signature), so it equals the chain-hash metadata written by put.
+func chainTail(events []*auditv1.AuditEvent) (string, bool) {
+	hashes := make([]string, len(events))
+	referenced := make(map[string]bool, len(events))
+	for i, ev := range events {
+		hashes[i] = eventHash(canonicalBytes(ev))
+		referenced[ev.PriorEventHash] = true
+	}
+	tail := ""
+	for _, h := range hashes {
+		if !referenced[h] {
+			if tail != "" && tail != h {
+				return "", false // two open ends, e.g. an already-forked history
+			}
+			tail = h
+		}
+	}
+	return tail, tail != ""
 }
 
 // newestUnder finds the most recently written object under prefix. It descends
