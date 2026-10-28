@@ -136,6 +136,13 @@ events (Admin → Settings → Identity); switch to enforce once grants are fixe
 External `svc-` runs and agents marked as service agents are exempt and flagged
 in their audit events.
 
+Let the identity provider drive users and groups with SCIM 2.0 (AG-16, setup in
+`docs/18-scim-provisioning.md`): a user deactivated in Entra is blocked in
+aikonOS, and group membership follows Entra. Set `provisioning.mode=scim`; it also
+turns off the email-rule grants, which trust an unverified email claim. SCIM
+tokens are shown once and stored as a peppered hash; rotate or revoke them under
+Admin → Access Control → Provisioning.
+
 Attaching an MCP connector to an agent grants none of its tools (AG-08): pick
 them under Admin → Agents → *Tools on <connector>*, or use the *Read-only
 preset*. The broker refuses any other tool of that connector at plan and at

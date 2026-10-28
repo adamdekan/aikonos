@@ -59,6 +59,12 @@ import type {
   ListAgentPublicKeysResponse,
   RetireAgentPublicKeyRequest,
   RetireAgentPublicKeyResponse,
+  ListScimTokensRequest,
+  ListScimTokensResponse,
+  CreateScimTokenRequest,
+  CreateScimTokenResponse,
+  RevokeScimTokenRequest,
+  RevokeScimTokenResponse,
   CreateScheduledRunRequest,
   CreateScheduledRunResponse,
   ListScheduledRunsRequest,
@@ -721,6 +727,19 @@ export class NorthClient {
 
   retireAgentPublicKey(req: RetireAgentPublicKeyRequest, token?: string): Promise<RetireAgentPublicKeyResponse> {
     return unary((r, m, o, cb) => this.client.retireAgentPublicKey(r, m, o, cb), req, bearer(token));
+  }
+
+  // AG-16: SCIM provisioning tokens.
+  listScimTokens(req: ListScimTokensRequest, token?: string): Promise<ListScimTokensResponse> {
+    return unary((r, m, o, cb) => this.client.listScimTokens(r, m, o, cb), req, bearer(token));
+  }
+
+  createScimToken(req: CreateScimTokenRequest, token?: string): Promise<CreateScimTokenResponse> {
+    return unary((r, m, o, cb) => this.client.createScimToken(r, m, o, cb), req, bearer(token));
+  }
+
+  revokeScimToken(req: RevokeScimTokenRequest, token?: string): Promise<RevokeScimTokenResponse> {
+    return unary((r, m, o, cb) => this.client.revokeScimToken(r, m, o, cb), req, bearer(token));
   }
 
   upsertAgentSkill(

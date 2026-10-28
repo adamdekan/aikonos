@@ -92,6 +92,16 @@ func (s *BrokerService) AddProvisioningRule(ctx context.Context, req *brokerv1.A
 		return nil, err
 	}
 
+	// AG-16: under provisioning.mode=scim the identity provider grants groups;
+	// a rule would never fire, so refuse it rather than keep a dead rule.
+	mode, err := s.configFor().GetString(ctx, tenant, "provisioning.mode")
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+	}
+	if mode != "jit" {
+		return nil, status.Error(codes.FailedPrecondition, "provisioning.mode is scim: groups come from the identity provider")
+	}
+
 	matcher, err := provisioning.NormalizeMatcher(req.Matcher)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid matcher: %v", err)

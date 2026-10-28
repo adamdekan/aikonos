@@ -6,6 +6,7 @@
 //     200 KiB history-content cap, leaving room for JSON framing + up to
 //     100 history turns)
 //   - POST /v1/agents/:id/invoke
+//   - /scim/v2/* (AG-16, SCIM 2.0 provisioning; token-authenticated by the broker)
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -14,6 +15,7 @@ import type { Logger } from "../log.js";
 import type { BrokerClients } from "../broker/clients.js";
 import type { ChildSupervisor } from "../ipc/supervisor.js";
 import { registerExternalRoutes } from "./rest.js";
+import { registerScimRoutes } from "./scim.js";
 
 // Body cap for the external surface. Sized to cover the 16 KiB prompt cap
 // plus up to 100 history turns totalling 200 KiB of content, with headroom
@@ -49,6 +51,7 @@ export function buildExternalApp(
   app.get("/healthz", async () => ({ ok: true, surface: "external" }));
 
   registerExternalRoutes(app, cfg, clients, log, supervisor);
+  registerScimRoutes(app, cfg, clients, log);
 
   return app;
 }

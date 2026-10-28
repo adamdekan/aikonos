@@ -67,6 +67,25 @@ A signed-in user with zero group memberships hits deny-by-default:
 - Effectively, revoking all of a user's groups in Access Control is a soft-disable for
   anything useful: they can open the UI and chat, but the agent cannot act.
 
+## Directory sync with SCIM (AG-16)
+
+A tenant can let the identity provider drive users and groups instead of email
+rules: set `provisioning.mode` to `scim` (Admin → Access Control → Provisioning →
+Directory sync) and connect Entra ID's provisioning service to the SCIM endpoint
+(`<external surface>/scim/v2`, bearer token created on the same page and shown once).
+Setup: [18-scim-provisioning.md](18-scim-provisioning.md).
+
+- A user deactivated, unassigned or deleted in Entra is **blocked** (the block below,
+  set by `scim`). Reactivation in Entra lifts only a block SCIM set; a block an admin
+  set stays.
+- Entra group membership becomes FGA `member` tuples on `group:<name>`, where the name
+  comes from the group's display name at creation (`Finance Team` → `finance-team`).
+  Grant the group roles in Access Control as usual.
+- Under `scim`, email rules grant nothing and new rules are refused (M-02). Under
+  `jit` (the default) the SCIM endpoint refuses every call.
+- A SCIM user's `externalId` must be its OIDC subject (Entra `objectId`); SCIM does not
+  create a `user_directory` row, the first sign-in does.
+
 ## Blocking a user and revoking sessions
 
 Disabling a user in the IdP stops new tokens, but issued tokens, owner grants and
@@ -211,7 +230,7 @@ extension.
 |---|---|---|
 | Remove a stale user from the Users list | `user_directory` rows persist forever | delete-from-directory action, paired with a bulk revoke of the user's tuples |
 | One-click "revoke everything" | revoke group-by-group in the Users tab; Block stops all use without touching grants | "Revoke all access" button = delete every tuple whose subject is the user |
-| Directory sync from the IdP | block by hand in Members | SCIM 2.0 provisioning (AG-16) maps IdP deactivation to a block |
+| Directory sync from the IdP | Done (AG-16): SCIM maps IdP deactivation to a block and IdP groups to FGA groups | — |
 
 Decision: Entra stays the front door and aikonOS the permission system behind it; the
 block and revoke-all are aikonOS-side kill switches for when IdP revocation lags.

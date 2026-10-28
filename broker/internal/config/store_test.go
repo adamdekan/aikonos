@@ -208,6 +208,7 @@ func TestSchema_ExactlyKnownConvenienceKeys(t *testing.T) {
 		"identity.enforce_user_bound": true, // audit|enforce: enforce only adds denials
 		"api_keys.max_ttl_days":       true, // [1, 90]: can only shorten key lifetime
 		"identity.orphan_grace_days":  true, // [1, 30]: delays an automatic suspension, grants nothing
+		"provisioning.mode":           true, // jit (the default) or scim: scim only turns email-rule grants off
 	}
 
 	for name := range config.Schema {
@@ -401,6 +402,24 @@ func TestIdentityOBO_Validate(t *testing.T) {
 			if err := s.Set(ctx, "t1", key, v, "admin"); err == nil {
 				t.Fatalf("%s %q: want validation error, got nil", key, v)
 			}
+		}
+	}
+}
+
+func TestProvisioningMode_Validate(t *testing.T) {
+	s := config.New(newFakeRepo())
+	ctx := context.Background()
+	if got, err := s.GetString(ctx, "t1", "provisioning.mode"); err != nil || got != "jit" {
+		t.Fatalf("default: want jit, got %q (err %v)", got, err)
+	}
+	for _, v := range []string{"jit", "scim"} {
+		if err := s.Set(ctx, "t1", "provisioning.mode", v, "admin"); err != nil {
+			t.Fatalf("%q: want nil, got %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "SCIM", "both"} {
+		if err := s.Set(ctx, "t1", "provisioning.mode", v, "admin"); err == nil {
+			t.Fatalf("%q: want validation error, got nil", v)
 		}
 	}
 }
