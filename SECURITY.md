@@ -135,3 +135,10 @@ audit mode (`identity.enforce_user_bound=audit`), which records would-deny
 events (Admin → Settings → Identity); switch to enforce once grants are fixed.
 External `svc-` runs and agents marked as service agents are exempt and flagged
 in their audit events.
+
+Attaching an MCP connector to an agent grants none of its tools (AG-08): pick
+them under Admin → Agents → *Tools on <connector>*, or use the *Read-only
+preset*. The broker refuses any other tool of that connector at plan and at
+call time. An MCP tool runs as `destructive` (approval plus step-up on every
+call) until a tenant admin confirms its effect class under Admin → MCP →
+*Tools*; the server's `readOnlyHint` and the tool's name are never trusted.

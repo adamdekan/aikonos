@@ -8,6 +8,8 @@ import {
   addMcpConnection,
   updateMcpConnection,
   deleteMcpConnection,
+  listMcpServerTools,
+  upsertSkill,
 } from "../../api/admin.js";
 import Icon from "../../components/Icon.vue";
 import DataTable from "../../components/ui/DataTable.vue";
@@ -171,12 +173,55 @@ function revokeGrant(t) {
   return mutateAccess(revokeRole, { user: t.user, relation: t.relation, object: t.object }, "Access revoked.");
 }
 
+// ── Tools (AG-08) ────────────────────────────────────────────────────────────
+// Discovered tools route at the strictest class until an admin confirms one;
+// the confirmed class is a tenant skill-overlay row (upsertSkill).
+const EFFECT_CLASSES = [
+  "read_only", "write_local", "write_external", "network_egress",
+  "credential_access", "destructive", "infrastructure",
+];
+const toolsConn    = ref(null);
+const tools        = ref([]);
+const toolsLoading = ref(false);
+const toolClass    = ref({}); // toolId → class chosen in the selector
+
+async function loadTools() {
+  toolsLoading.value = true;
+  try {
+    const data = await listMcpServerTools(toolsConn.value.id);
+    tools.value = data.tools ?? [];
+    toolClass.value = Object.fromEntries(tools.value.map((t) => [t.toolId, t.effectClass]));
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    toolsLoading.value = false;
+  }
+}
+
+async function openTools(conn) {
+  error.value = "";
+  toolsConn.value = toolsConn.value?.id === conn.id ? null : conn;
+  tools.value = [];
+  if (toolsConn.value) await loadTools();
+}
+
+async function confirmTool(t) {
+  error.value = "";
+  try {
+    await upsertSkill(t.toolId, { effectClass: toolClass.value[t.toolId], enabled: true });
+    toast("ok", `${t.name}: ${toolClass.value[t.toolId]} confirmed.`);
+    await loadTools();
+  } catch (e) {
+    error.value = e.message;
+  }
+}
+
 const TABLE_COLS = [
   { key: "name",      label: "Name" },
   { key: "url",       label: "URL" },
   { key: "transport", label: "Transport" },
   { key: "authType",  label: "Auth" },
-  { key: "_actions",  label: "",           width: "230px" },
+  { key: "_actions",  label: "",           width: "290px" },
 ];
 </script>
 
@@ -255,6 +300,13 @@ const TABLE_COLS = [
               Access
             </button>
             <button
+              :data-testid="`tools-${row.id}`"
+              class="btn-secondary-sm"
+              @click="openTools(row)"
+            >
+              Tools
+            </button>
+            <button
               :data-testid="`edit-${row.id}`"
               class="btn-secondary-sm"
               @click="startEdit(row)"
@@ -271,6 +323,36 @@ const TABLE_COLS = [
           </td>
         </template>
       </DataTable>
+
+      <section v-if="toolsConn" class="access" data-testid="conn-tools-panel">
+        <h2>Tools on {{ toolsConn.name }}</h2>
+        <p class="muted">
+          An unconfirmed tool runs as destructive: every call needs approval and step-up.
+          Confirm the class each tool really has. Agents get tools one by one on the agent.
+        </p>
+        <p v-if="toolsLoading" class="muted">Loading tools…</p>
+        <ul v-else class="grants">
+          <li v-for="t in tools" :key="t.toolId" data-testid="conn-tool-row">
+            <span class="mono">{{ t.name }}</span>
+            <span
+              class="badge"
+              :data-testid="`tool-status-${t.name}`"
+            >{{ t.effectClassConfirmed ? "confirmed" : "unconfirmed" }}</span>
+            <span v-if="t.readOnlyHint" class="muted">server says read-only</span>
+            <select v-model="toolClass[t.toolId]" :data-testid="`tool-class-${t.name}`">
+              <option v-for="c in EFFECT_CLASSES" :key="c" :value="c">{{ c }}</option>
+            </select>
+            <button
+              class="btn-primary"
+              :data-testid="`tool-confirm-${t.name}`"
+              @click="confirmTool(t)"
+            >
+              Confirm
+            </button>
+          </li>
+          <li v-if="!tools.length" class="muted">No tools discovered.</li>
+        </ul>
+      </section>
 
       <section v-if="accessConn" class="access" data-testid="conn-access-panel">
         <h2>Access to {{ accessConn.name }}</h2>

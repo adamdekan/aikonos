@@ -166,6 +166,7 @@ export function agentJson(a: Agent) {
     approvalMode: a.approvalMode,
     skills: a.skills ?? [],
     mcpServers: a.mcpServers ?? [],
+    mcpTools: a.mcpTools ?? [],
     usableBy: a.usableBy ?? [],
     createdBy: a.createdBy,
     createdAt: a.createdAt ? a.createdAt.toISOString() : null,
@@ -205,6 +206,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     approvalMode: b.approvalMode ?? "needs_approval",
     skills: b.skills ?? [],
     mcpServers: b.mcpServers ?? [],
+    mcpTools: b.mcpTools ?? [],
     allowedProviders: b.allowedProviders ?? [],
     preferredProvider: b.preferredProvider ?? "",
     // Soul is managed via the dedicated /agents/:id/soul endpoint; UpdateAgent does not write the soul column.
@@ -256,6 +258,7 @@ export interface AgentBody {
   approvalMode?: string;
   skills?: string[];
   mcpServers?: string[];
+  mcpTools?: string[];
   allowedProviders?: string[];
   preferredProvider?: string;
   gatewayEnabled?: boolean;
@@ -914,6 +917,35 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
         reply.send({ success: resp.success });
       } catch (err) {
         sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { success: false } });
+      }
+    },
+  );
+
+  // AG-08: discover a connection's tools with the broker's effect class for
+  // each (confirmed by an admin, or the unconfirmed floor). Confirming a class
+  // is POST /admin/skills with the mcp:<conn>:<tool> id.
+  app.get<{ Params: { id: string } }>(
+    "/admin/mcp/:id/tools",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.listMcpServerTools(
+          { tenantId: principal.tenant, userId: principal.sub, connectorId: req.params.id },
+          principal.token,
+        );
+        reply.send({
+          tools: (resp.tools ?? []).map((t) => ({
+            toolId: `mcp:${req.params.id}:${t.name}`,
+            name: t.name,
+            description: t.description,
+            readOnlyHint: t.readOnlyHint,
+            effectClass: t.effectClass,
+            effectClassConfirmed: t.effectClassConfirmed,
+          })),
+        });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { tools: [] } });
       }
     },
   );

@@ -63,15 +63,15 @@ func TestResolveOverlayClass_UnknownRego_Rejected(t *testing.T) {
 	}
 }
 
-func TestResolveOverlayClass_MCP_FloorApplied(t *testing.T) {
+func TestResolveOverlayClass_MCP_AdminConfirmedKept(t *testing.T) {
 	reg := NewRegistry()
-	// Declare read_only for an MCP tool; floor is write_external.
+	// AG-08: the admin confirms read_only for an MCP tool; it is stored as-is.
 	got, err := reg.ResolveOverlayClass("mcp:conn-abc:some-tool", "mcp", "read_only")
 	if err != nil {
 		t.Fatalf("ResolveOverlayClass(mcp, read_only): unexpected error %v", err)
 	}
-	if got != planv1.EffectClass_WRITE_EXTERNAL {
-		t.Errorf("ResolveOverlayClass(mcp, read_only) = %v, want WRITE_EXTERNAL", got)
+	if got != planv1.EffectClass_READ_ONLY {
+		t.Errorf("ResolveOverlayClass(mcp, read_only) = %v, want READ_ONLY", got)
 	}
 }
 
@@ -269,11 +269,18 @@ func TestEffectClassForTenant_OverlayBeforeGlobal(t *testing.T) {
 	}
 }
 
-func TestEffectClassForTenant_UnknownMCPNoOverlay_FalseGlobal(t *testing.T) {
+func TestEffectClassForTenant_UnconfirmedMCP_Floor(t *testing.T) {
 	reg := NewRegistry()
-	// MCP tools have no global authoritative class and no overlay — ok=false.
-	_, ok := reg.EffectClassForTenant("tenant-a", "mcp:conn-abc:some-tool")
-	if ok {
-		t.Error("EffectClassForTenant(mcp, no overlay): ok=true, want false")
+	// AG-08: no overlay row (unconfirmed) → the floor; a confirmed row wins.
+	got, ok := reg.EffectClassForTenant("tenant-a", "mcp:conn-abc:some-tool")
+	if !ok || got != McpUnconfirmedClass {
+		t.Errorf("EffectClassForTenant(mcp, no overlay) = (%v,%v), want (%v,true)", got, ok, McpUnconfirmedClass)
+	}
+	reg.SetTenantOverlay("tenant-a", []OverlayRow{{ToolID: "mcp:conn-abc:some-tool", Enabled: true, EffectClass: planv1.EffectClass_READ_ONLY}})
+	if got, ok := reg.EffectClassForTenant("tenant-a", "mcp:conn-abc:some-tool"); !ok || got != planv1.EffectClass_READ_ONLY {
+		t.Errorf("EffectClassForTenant(mcp, confirmed read_only) = (%v,%v), want (READ_ONLY,true)", got, ok)
+	}
+	if got, _ := reg.EffectClassForTenant("tenant-b", "mcp:conn-abc:some-tool"); got != McpUnconfirmedClass {
+		t.Errorf("other tenant = %v, want floor", got)
 	}
 }

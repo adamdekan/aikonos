@@ -83,6 +83,21 @@ func TestValidateAgent(t *testing.T) {
 			wantErr: codes.InvalidArgument,
 		},
 		{
+			name:    "AG-08 mcp_tools on an unattached connector",
+			agent:   &brokerv1.Agent{Name: "x", McpServers: []string{"c1"}, McpTools: []string{"mcp:c2:read"}},
+			wantErr: codes.InvalidArgument,
+		},
+		{
+			name:    "AG-08 malformed mcp_tools entry",
+			agent:   &brokerv1.Agent{Name: "x", McpServers: []string{"c1"}, McpTools: []string{"c1:read"}},
+			wantErr: codes.InvalidArgument,
+		},
+		{
+			name:    "AG-08 mcp_tools on an attached connector",
+			agent:   &brokerv1.Agent{Name: "x", McpServers: []string{"c1"}, McpTools: []string{"mcp:c1:read", "mcp:c1:read"}},
+			wantErr: codes.OK,
+		},
+		{
 			name: "approval_mode defaults to needs_approval when empty",
 			agent: &brokerv1.Agent{
 				Name:         "x",

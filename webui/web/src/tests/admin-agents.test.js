@@ -20,6 +20,7 @@ vi.mock("../api/admin.js", () => ({
   deleteNetworkRule:    vi.fn(),
   listAdminRuns:        vi.fn(),
   listMcpConnections:   vi.fn(),
+  listMcpServerTools:   vi.fn(),
   addMcpConnection:     vi.fn(),
   updateMcpConnection:  vi.fn(),
   deleteMcpConnection:  vi.fn(),
@@ -371,6 +372,34 @@ describe("Agents.vue", () => {
     await flushPromises();
     return w;
   }
+
+  // AG-08: per-connector tool checkboxes; the read-only preset picks exactly the
+  // tools an admin confirmed read_only, and save sends the allowlist.
+  it("offers per-connector MCP tools with a read-only preset", async () => {
+    adminApi.listMcpConnections.mockResolvedValue({ connections: [{ id: "c1", name: "crm" }] });
+    adminApi.listMcpServerTools.mockResolvedValue({ tools: [
+      { toolId: "mcp:c1:read_rows",  name: "read_rows",  effectClass: "read_only",      effectClassConfirmed: true },
+      { toolId: "mcp:c1:query_x",    name: "query_x",    effectClass: "destructive",    effectClassConfirmed: false },
+      { toolId: "mcp:c1:write_rows", name: "write_rows", effectClass: "write_external", effectClassConfirmed: true },
+    ] });
+    adminApi.listAgents.mockResolvedValue({ agents: [{ ...SAMPLE_AGENT, mcp_servers: ["c1"], mcpTools: ["mcp:c1:write_rows"] }] });
+    adminApi.updateAgent.mockResolvedValue({ agent: SAMPLE_AGENT });
+    const w = await openEditModal();
+
+    expect(adminApi.listMcpServerTools).toHaveBeenCalledWith("c1");
+    expect(document.querySelector("[data-testid='mcptool-mcp:c1:query_x']")).not.toBeNull();
+    expect(document.body.textContent).toContain("query_x (unconfirmed)");
+
+    document.querySelector("[data-testid='mcp-preset-readonly-c1']").click();
+    await flushPromises();
+    document.querySelector("[data-testid='agent-save-btn']").click();
+    await flushPromises();
+
+    const [, body] = adminApi.updateAgent.mock.calls[0];
+    expect(body.mcpServers).toEqual(["c1"]);
+    expect(body.mcpTools).toEqual(["mcp:c1:read_rows"]);
+    w.unmount();
+  });
 
   // AG-15: the key list shows expiry and last use, warns within 7 days, and the
   // mint form defaults the lifetime to the tenant maximum.

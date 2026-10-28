@@ -489,6 +489,12 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 			})
 			return nil, status.Errorf(codes.PermissionDenied, "agent %q does not have access to mcp_connector:%s", agentRef, connID)
 		}
+		// AG-08: the connector grant covers only the tools the admin picked
+		// for this agent. A lookup failure fails closed.
+		if !s.agentMcpToolAllowed(ctx, tenantID, agentID, req.ToolId) {
+			s.emitToolDenied(ctx, req, "", "mcp_tool_not_allowed", nil, map[string]any{"agent": agentRef})
+			return nil, status.Errorf(codes.PermissionDenied, "tool %q is not in agent %q's allowed MCP tools", req.ToolId, agentRef)
+		}
 		// AG-02: a human subject needs its own can_access on the connector
 		// too, so the agent cannot reach what its user cannot. svc- runs and
 		// service agents keep the agent grant alone; tool.invoked carries why.

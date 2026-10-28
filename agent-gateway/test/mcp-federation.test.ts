@@ -172,7 +172,7 @@ function makeMinimalSouth(
       })),
     }),
     listMcpServerToolsSouth: async (req: { connectorId: string }) => ({
-      tools: toolsByServer[req.connectorId] ?? [],
+      tools: (toolsByServer[req.connectorId] ?? []).map((t) => ({ effectClass: "", effectClassConfirmed: false, ...t })),
     }),
   };
 }

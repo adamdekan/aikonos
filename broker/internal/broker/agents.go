@@ -19,6 +19,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -112,6 +113,7 @@ func toProtoAgent(a *db.Agent) *brokerv1.Agent {
 		ApprovalMode:      a.ApprovalMode,
 		Skills:            a.Skills,
 		McpServers:        a.McpServers,
+		McpTools:          a.McpTools,
 		AllowedProviders:  a.AllowedProviders,
 		PreferredProvider: a.PreferredProvider,
 		Soul:              a.Soul,
@@ -165,6 +167,24 @@ func validateAgent(a *brokerv1.Agent) error {
 		}
 	}
 	a.McpServers = deduped
+	// AG-08: attaching a connector grants no tool; mcp_tools names each one,
+	// and only on a connector this agent attaches.
+	toolSeen := make(map[string]bool, len(a.McpTools))
+	tools := make([]string, 0, len(a.McpTools))
+	for _, t := range a.McpTools {
+		connID, _, ok := toolregistry.ParseMcpToolID(t)
+		if !ok {
+			return status.Errorf(codes.InvalidArgument, "mcp_tools entry %q must be mcp:<connector>:<tool>", t)
+		}
+		if !seen[connID] {
+			return status.Errorf(codes.InvalidArgument, "mcp_tools entry %q: connector %s is not in mcp_servers", t, connID)
+		}
+		if !toolSeen[t] {
+			toolSeen[t] = true
+			tools = append(tools, t)
+		}
+	}
+	a.McpTools = tools
 	return nil
 }
 
@@ -241,6 +261,7 @@ func (s *BrokerService) CreateAgent(ctx context.Context, req *brokerv1.CreateAge
 		ApprovalMode:      req.Agent.ApprovalMode,
 		Skills:            req.Agent.Skills,
 		McpServers:        req.Agent.McpServers,
+		McpTools:          req.Agent.McpTools,
 		AllowedProviders:  req.Agent.AllowedProviders,
 		PreferredProvider: req.Agent.PreferredProvider,
 		GatewayEnabled:    req.Agent.GatewayEnabled,
@@ -454,6 +475,7 @@ func (s *BrokerService) UpdateAgent(ctx context.Context, req *brokerv1.UpdateAge
 		ApprovalMode:      req.Agent.ApprovalMode,
 		Skills:            skills,
 		McpServers:        mcpServers,
+		McpTools:          req.Agent.McpTools,
 		AllowedProviders:  allowedProviders,
 		PreferredProvider: req.Agent.PreferredProvider,
 		GatewayEnabled:    req.Agent.GatewayEnabled,
@@ -688,9 +710,13 @@ func (s *BrokerService) emitAgentAudit(ctx context.Context, traceID, tenant, act
 	}
 	if a != nil {
 		ev.ResourceRef = "agent:" + a.ID.String()
+		mcpTools := make([]any, len(a.McpTools))
+		for i, t := range a.McpTools {
+			mcpTools[i] = t
+		}
 		if c, err := structpb.NewStruct(map[string]any{
 			"name": a.Name, "approval_mode": a.ApprovalMode, "llm_model": a.LLMModel,
-			"service_agent": a.ServiceAgent,
+			"service_agent": a.ServiceAgent, "mcp_tools": mcpTools,
 		}); err == nil {
 			ev.Context = c
 		}

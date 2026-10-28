@@ -17,6 +17,8 @@ vi.mock("../api/admin.js", () => ({
   addMcpConnection:     vi.fn(),
   updateMcpConnection:  vi.fn(),
   deleteMcpConnection:  vi.fn(),
+  listMcpServerTools:   vi.fn(),
+  upsertSkill:          vi.fn(),
 }));
 
 import Mcp from "../views/admin/Mcp.vue";
@@ -335,5 +337,28 @@ describe("Mcp.vue", () => {
     expect(adminApi.revokeRole).toHaveBeenCalledWith({
       user: "user:bob@example.com", relation: "permitted_user", object: "mcp_connector:c1",
     });
+  });
+  it("AG-08: Tools panel lists discovered tools and confirms an effect class", async () => {
+    adminApi.listMcpConnections.mockResolvedValue({ connections: [SAMPLE_CONN] });
+    adminApi.listMcpServerTools.mockResolvedValue({ tools: [
+      { toolId: "mcp:c1:query_rows", name: "query_rows", readOnlyHint: true, effectClass: "destructive", effectClassConfirmed: false },
+    ] });
+    adminApi.upsertSkill.mockResolvedValue({ skill: {} });
+    const router = makeRouter();
+    await router.push("/admin/mcp");
+    const w = mount(Mcp, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await w.find("[data-testid='tools-c1']").trigger("click");
+    await flushPromises();
+    expect(adminApi.listMcpServerTools).toHaveBeenCalledWith("c1");
+    expect(w.findAll("[data-testid='conn-tool-row']").length).toBe(1);
+    expect(w.find("[data-testid='tool-status-query_rows']").text()).toBe("unconfirmed");
+
+    await w.find("[data-testid='tool-class-query_rows']").setValue("read_only");
+    await w.find("[data-testid='tool-confirm-query_rows']").trigger("click");
+    await flushPromises();
+    expect(adminApi.upsertSkill).toHaveBeenCalledWith("mcp:c1:query_rows", { effectClass: "read_only", enabled: true });
+    expect(adminApi.listMcpServerTools).toHaveBeenCalledTimes(2);
   });
 });

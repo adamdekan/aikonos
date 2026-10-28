@@ -2,6 +2,7 @@ package toolregistry
 
 import (
 	"fmt"
+	"strings"
 
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
@@ -20,9 +21,9 @@ type effectClassEnum = planv1.EffectClass
 // added here; this table is the verified truth from FU2.
 //
 // Routing uses Stricter(plan-declared, authoritative), so a planner can never
-// route weaker than this table.  MCP and unknown tools return ok=false and fall
-// back to plan-declared (the broker has no independent ground truth for MCP
-// tool semantics).
+// route weaker than this table.  MCP tools without an admin-confirmed class
+// (tenant overlay) floor at McpUnconfirmedClass (AG-08); unknown tools return
+// ok=false and fall back to plan-declared.
 var staticBaselineEffectClass = map[string]planv1.EffectClass{
 	"siem.query":  planv1.EffectClass_READ_ONLY,
 	"siem.search": planv1.EffectClass_READ_ONLY,
@@ -51,10 +52,18 @@ func EffectClassFromRego(rego string) (planv1.EffectClass, bool) {
 	return ec, ok
 }
 
+// McpUnconfirmedClass is the class of an MCP tool no tenant admin has
+// confirmed (AG-08, H-11). The plan's class comes from the gateway, which
+// takes it from the MCP server's own readOnlyHint or the tool name, so the
+// broker floors it at the strictest class that still has a human path:
+// approval plus step-up on every call, until an admin confirms a class.
+const McpUnconfirmedClass = planv1.EffectClass_DESTRUCTIVE
+
 // AuthoritativeEffectClass returns the broker-authoritative effect class for
-// toolID.  Lookup order: baselineEffectClass → overlay (manifest effect_class).
-// Returns ok=false for MCP tools (mcp:<conn>:<tool>) and unknown tools — callers
-// must fall back to plan-declared for those.
+// toolID.  Lookup order: baselineEffectClass → overlay (manifest effect_class)
+// → McpUnconfirmedClass for mcp:<conn>:<tool> ids. Returns ok=false for
+// unknown tools — callers must fall back to plan-declared for those. An
+// admin-confirmed MCP class lives in the tenant overlay (EffectClassForTenant).
 func (reg *Registry) AuthoritativeEffectClass(toolID string) (planv1.EffectClass, bool) {
 	if ec, ok := reg.baselineEffectClass[toolID]; ok {
 		return ec, true
@@ -67,7 +76,12 @@ func (reg *Registry) AuthoritativeEffectClass(toolID string) (planv1.EffectClass
 			return ec, true
 		}
 	}
-	// MCP tools and unknowns: no broker-side ground truth.
+	// AG-08: an MCP tool no admin confirmed takes the floor, never the plan's
+	// (server-advertised) class.
+	if strings.HasPrefix(toolID, "mcp:") {
+		return McpUnconfirmedClass, true
+	}
+	// Unknowns: no broker-side ground truth.
 	return planv1.EffectClass_EFFECT_CLASS_UNSPECIFIED, false
 }
 

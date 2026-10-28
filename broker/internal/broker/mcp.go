@@ -13,6 +13,7 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/effectclass"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
@@ -373,13 +374,25 @@ func (s *BrokerService) ListMcpServerTools(ctx context.Context, req *brokerv1.Li
 		return nil, status.Errorf(codes.Unavailable, "mcp: list tools %q: %v", conn.URL, lerr)
 	}
 
+	// AG-08: annotate each discovered tool with the class the broker routes it
+	// at. An enabled tenant overlay row is the admin's confirmation; anything
+	// else reports the unconfirmed floor.
+	if s.deps.OverlayLoader != nil {
+		s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger)
+	}
+	reg := s.toolReg()
 	out := make([]*brokerv1.McpToolSchema, 0, len(tools))
 	for _, t := range tools {
+		toolID := "mcp:" + req.ConnectorId + ":" + t.Name
+		ec, _ := reg.EffectClassForTenant(tenant, toolID)
+		enabled, known := reg.IsEnabled(tenant, toolID)
 		out = append(out, &brokerv1.McpToolSchema{
-			Name:            t.Name,
-			Description:     t.Description,
-			InputSchemaJson: t.InputSchemaJSON,
-			ReadOnlyHint:    t.ReadOnlyHint,
+			Name:                 t.Name,
+			Description:          t.Description,
+			InputSchemaJson:      t.InputSchemaJSON,
+			ReadOnlyHint:         t.ReadOnlyHint,
+			EffectClass:          effectclass.RegoString(ec),
+			EffectClassConfirmed: known && enabled,
 		})
 	}
 

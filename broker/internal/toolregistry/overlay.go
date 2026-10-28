@@ -11,10 +11,10 @@ import (
 // OverlayRow is the unit callers pass to SetTenantOverlay. CP3 builds these
 // from DB rows; CP2 holds the data structures only (no db import).
 type OverlayRow struct {
-	ToolID      string
-	Enabled     bool
-	EffectClass planv1.EffectClass
-	Scope       string
+	ToolID       string
+	Enabled      bool
+	EffectClass  planv1.EffectClass
+	Scope        string
 	ExecutorKind string
 }
 
@@ -127,9 +127,10 @@ func (reg *Registry) DeriveScope(toolID string) (string, error) {
 //
 // Rules (in order):
 //  1. Validate declaredRego is a known effect class — unknown → error, fail-closed.
-//  2. executorKind == "mcp": floor is write_external (net-new MCP tools may do
-//     anything externally; the operator cannot attest they are read-only). Return
-//     Stricter(declared, write_external). This may raise the class but never lowers it.
+//  2. executorKind == "mcp": the declared class is the tenant admin's
+//     confirmation (AG-08) and is stored as-is; it replaces the
+//     McpUnconfirmedClass floor for that tool. Only UpsertSkill (tenant-admin,
+//     audited) reaches here.
 //  3. Built-in (toolID in staticBaselineEffectClass): the compiled class is ground
 //     truth. Storing a class weaker than the baseline would silently downgrade
 //     enforcement for existing callers (I4 "may never be weaker"). We detect this
@@ -146,9 +147,9 @@ func (reg *Registry) ResolveOverlayClass(toolID, executorKind, declaredRego stri
 			fmt.Errorf("toolregistry: unknown effect class %q: must be one of read_only, write_local, write_internal, write_external, network_egress, credential_access, destructive, infrastructure", declaredRego)
 	}
 
-	// Step 2: MCP floor.
+	// Step 2: MCP — the admin-confirmed class.
 	if executorKind == "mcp" {
-		return effectclass.Stricter(declared, planv1.EffectClass_WRITE_EXTERNAL), nil
+		return declared, nil
 	}
 
 	// Step 3: built-in immutability check.

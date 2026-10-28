@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -111,8 +112,10 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	// AG-01: the tenant default agent carries the user's own grants, so a task
 	// bound to it takes the personal (user skill) gate below instead.
 	agentBound := task.AgentID != nil && !isDefaultAgent(ctx, s.deps, tenantID, task.AgentID.String())
-	if agentBound {
-		if violation := s.checkAgentSkills(ctx, tenantID, task.AgentID.String(), plan); violation != "" {
+	// AG-08: the MCP tool allowlist binds every agent, the default one too
+	// (InvokeTool checks the bound agent's connector grant either way).
+	if task.AgentID != nil {
+		if violation := s.checkAgentSkills(ctx, tenantID, task.AgentID.String(), plan, !agentBound); violation != "" {
 			s.recordPlanDecision(ctx, traceID, tenantID, req, task, auditv1.PolicyDecision_DENY, decisionRecord{
 				Kind:    decisionKindAgentSkills,
 				Outcome: decisionOutcome{Decision: "deny", DecidedBy: "broker:agent_skills", Reason: violation},
@@ -181,8 +184,9 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		// Compute the routing class: take the stricter of what the planner
 		// declared and what the registry knows (tenant overlay if present, else
 		// global authoritative). This prevents a malicious or buggy planner from
-		// understating a tool's effect class to obtain auto-approval. MCP and
-		// unknown tools return ok=false and keep the plan-declared class.
+		// understating a tool's effect class to obtain auto-approval. An MCP
+		// tool floors at its admin-confirmed class, or McpUnconfirmedClass when
+		// none is confirmed (AG-08); unknown tools keep the plan-declared class.
 		routingClass := step.EffectClass
 		authEC, authKnown := s.toolReg().EffectClassForTenant(tenantID, step.ToolId)
 		if authKnown {
@@ -494,14 +498,16 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 
 // checkAgentSkills loads the agent identified by agentID and returns a non-empty
 // violation string if any step in the plan references a tool not in the agent's
-// Skills list.  Returns "" when all steps are within the skill boundary.
+// Skills list, or an mcp: tool not in its McpTools allowlist (AG-08).  Returns
+// "" when all steps are within the skill boundary. mcpOnly checks the mcp:
+// steps alone: the default agent carries its user's built-in grants.
 //
 // Tool ids are compared directly against agent.Skills — both use the same
 // namespace (e.g. "doc.read", "web.fetch").  The preAuthApprover in the gateway
 // uses agent.Skills as its allowlist in exactly the same way, so no mapping is
 // needed.  aikonos: sentinel / non-tool step ids (zero-length toolId or prefixed
 // "aikonos:") are exempt — they are internal control tokens, not real tools.
-func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID string, plan *planv1.Plan) string {
+func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID string, plan *planv1.Plan, mcpOnly bool) string {
 	if s.deps.Agents == nil {
 		// Agents store is nil but the task is bound to an agent — fail closed.
 		// A misconfigured deploy with no Agents store must not silently approve
@@ -523,9 +529,9 @@ func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID
 		allowed[sk] = true
 	}
 	// mcp: tools are never in agent.Skills — the webui agent editor filters mcp
-	// ids out of the skills picker. Attaching an MCP server IS the grant (it
-	// writes the permitted_agent FGA tuple), so mcp_servers membership is the
-	// correct plan-time boundary; InvokeTool re-checks can_access per call.
+	// ids out of the skills picker. AG-08: attaching an MCP server (the
+	// permitted_agent FGA tuple) grants no tool by itself; each one must be in
+	// agent.McpTools. InvokeTool re-checks both per call.
 	attachedConns := make(map[string]bool, len(agent.McpServers))
 	for _, c := range agent.McpServers {
 		attachedConns[c] = true
@@ -543,13 +549,26 @@ func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID
 			if !ok || !attachedConns[connID] {
 				return fmt.Sprintf("tool %q is not in agent %q's skill boundary", tid, agent.Name)
 			}
+			if !slices.Contains(agent.McpTools, tid) {
+				return fmt.Sprintf("tool %q is not in agent %q's allowed MCP tools", tid, agent.Name)
+			}
 			continue
 		}
-		if !allowed[tid] {
+		if !mcpOnly && !allowed[tid] {
 			return fmt.Sprintf("tool %q is not in agent %q's skill boundary", tid, agent.Name)
 		}
 	}
 	return ""
+}
+
+// agentMcpToolAllowed reports whether toolID is in the agent's McpTools
+// allowlist (AG-08). No Agents store or a failed lookup is false (fail closed).
+func (s *SandboxService) agentMcpToolAllowed(ctx context.Context, tenantID, agentID, toolID string) bool {
+	if s.deps.Agents == nil {
+		return false
+	}
+	agent, err := s.deps.Agents.Get(ctx, tenantID, strings.TrimPrefix(agentID, "agent:"))
+	return err == nil && slices.Contains(agent.McpTools, toolID)
 }
 
 // userSkillDecision checks whether the task's owner has can_invoke on the given

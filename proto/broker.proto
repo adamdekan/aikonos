@@ -1592,6 +1592,11 @@ message McpToolSchema {
   string description = 2;
   string input_schema_json = 3; // JSON-encoded inputSchema object
   bool read_only_hint = 4;      // from MCP tool annotations.readOnlyHint
+  // AG-08 (admin ListMcpServerTools only): the broker's effect class for this
+  // tool. Unconfirmed tools report the floor ("destructive") with confirmed=false;
+  // an admin confirms a class through UpsertSkill.
+  string effect_class = 5;
+  bool effect_class_confirmed = 6;
 }
 
 message ListMcpServerToolsRequest {
@@ -1777,6 +1782,7 @@ message Agent {
   bool   is_default = 18;          // AG-01: the tenant default agent (read-only; cannot be deleted)
   string status = 19;              // AG-03: staged | active | suspended | retired (read-only; SetAgentStatus)
   string status_reason = 20;       // AG-03: reason recorded with the last status change (read-only)
+  repeated string mcp_tools = 21;  // AG-08: allowed "mcp:<conn>:<tool>" ids; each conn must be in mcp_servers
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }

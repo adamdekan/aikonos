@@ -91,3 +91,18 @@ revoke a delegation but cannot extend one in another user's name.
 Under `identity.obo = enforce`, a schedule with no actor agent is parked at its
 next claim, and resuming it is refused with `FailedPrecondition`. The owner sets
 an agent ("Acts as") in the edit form first, then resumes.
+
+## Per-agent MCP tools and confirmed effect classes (AG-08)
+
+- Attaching an MCP connector to an agent no longer grants its tools. Each
+  agent lists the tools it may call (`agents.mcp_tools`, migration 058).
+  Existing agents start with none: after the upgrade, open each agent with
+  connectors under Admin → Agents and tick its tools (or *Read-only preset*).
+  Until then its MCP plan steps are denied ("not in agent ...'s allowed MCP
+  tools"); InvokeTool denies with `mcp_tool_not_allowed`. This applies to the
+  tenant default agent too.
+- An MCP tool routes as `destructive` (approval plus step-up) until an admin
+  confirms its class under Admin → MCP → *Tools* → *Confirm*. Confirm the
+  read-only tools first, or the read-only preset selects nothing. Existing
+  MCP rows in Admin → Skills keep their stored class; a class confirmed
+  there is no longer raised to `write_external`.

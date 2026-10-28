@@ -28,6 +28,7 @@ type Agent struct {
 	ApprovalMode      string
 	Skills            []string
 	McpServers        []string
+	McpTools          []string // AG-08: allowed "mcp:<conn>:<tool>" ids; attaching a connector grants none
 	AllowedProviders  []string
 	PreferredProvider string
 	Soul              string
@@ -59,16 +60,16 @@ func NewAgentRepo(pool *pgxpool.Pool, logger *zap.Logger) *AgentRepo {
 	return &AgentRepo{pool: pool, logger: logger}
 }
 
-const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at, revoked_before, is_default, status, status_reason`
+const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at, revoked_before, is_default, status, status_reason, mcp_tools`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
 }) (*Agent, error) {
 	var a Agent
-	var skillsJSON, mcpJSON, allowedProvidersJSON []byte
+	var skillsJSON, mcpJSON, mcpToolsJSON, allowedProvidersJSON []byte
 	if err := row.Scan(&a.ID, &a.TenantID, &a.Name, &a.LLMModel, &a.ApprovalMode,
 		&skillsJSON, &mcpJSON, &allowedProvidersJSON, &a.PreferredProvider,
-		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.RevokedBefore, &a.IsDefault, &a.Status, &a.StatusReason); err != nil {
+		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.RevokedBefore, &a.IsDefault, &a.Status, &a.StatusReason, &mcpToolsJSON); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(skillsJSON, &a.Skills); err != nil {
@@ -76,6 +77,9 @@ func scanAgent(row interface {
 	}
 	if err := json.Unmarshal(mcpJSON, &a.McpServers); err != nil {
 		return nil, fmt.Errorf("unmarshal mcp_servers: %w", err)
+	}
+	if err := json.Unmarshal(mcpToolsJSON, &a.McpTools); err != nil {
+		return nil, fmt.Errorf("unmarshal mcp_tools: %w", err)
 	}
 	if err := json.Unmarshal(allowedProvidersJSON, &a.AllowedProviders); err != nil {
 		return nil, fmt.Errorf("unmarshal allowed_providers: %w", err)
@@ -85,6 +89,9 @@ func scanAgent(row interface {
 	}
 	if a.McpServers == nil {
 		a.McpServers = []string{}
+	}
+	if a.McpTools == nil {
+		a.McpTools = []string{}
 	}
 	if a.AllowedProviders == nil {
 		a.AllowedProviders = []string{}
@@ -105,14 +112,21 @@ func (r *AgentRepo) Create(ctx context.Context, a *Agent) error {
 		if err != nil {
 			return fmt.Errorf("marshal mcp_servers: %w", err)
 		}
+		if a.McpTools == nil {
+			a.McpTools = []string{}
+		}
+		mcpToolsJSON, err := json.Marshal(a.McpTools)
+		if err != nil {
+			return fmt.Errorf("marshal mcp_tools: %w", err)
+		}
 		allowedProvidersJSON, err := json.Marshal(a.AllowedProviders)
 		if err != nil {
 			return fmt.Errorf("marshal allowed_providers: %w", err)
 		}
 		_, err = conn.Exec(ctx, `
-		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, service_agent, created_by, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13, ''), 'staged'))`,
-			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.CreatedBy, a.Status,
+		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, service_agent, created_by, status, mcp_tools)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13, ''), 'staged'), $14)`,
+			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.CreatedBy, a.Status, mcpToolsJSON,
 		)
 		if err != nil {
 			return fmt.Errorf("insert agent: %w", err)
@@ -167,15 +181,22 @@ func (r *AgentRepo) Update(ctx context.Context, a *Agent) error {
 		if err != nil {
 			return fmt.Errorf("marshal mcp_servers: %w", err)
 		}
+		if a.McpTools == nil {
+			a.McpTools = []string{}
+		}
+		mcpToolsJSON, err := json.Marshal(a.McpTools)
+		if err != nil {
+			return fmt.Errorf("marshal mcp_tools: %w", err)
+		}
 		allowedProvidersJSON, err := json.Marshal(a.AllowedProviders)
 		if err != nil {
 			return fmt.Errorf("marshal allowed_providers: %w", err)
 		}
 		tag, err := conn.Exec(ctx, `
 		UPDATE agents
-		SET name=$1, llm_model=$2, approval_mode=$3, skills=$4, mcp_servers=$5, allowed_providers=$6, preferred_provider=$7, gateway_enabled=$8, service_agent=$9, updated_at=NOW()
+		SET name=$1, llm_model=$2, approval_mode=$3, skills=$4, mcp_servers=$5, allowed_providers=$6, preferred_provider=$7, gateway_enabled=$8, service_agent=$9, mcp_tools=$12, updated_at=NOW()
 		WHERE id=$10 AND tenant_id=$11`,
-			a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.ID, a.TenantID,
+			a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.ID, a.TenantID, mcpToolsJSON,
 		)
 		if err != nil {
 			return fmt.Errorf("update agent: %w", err)

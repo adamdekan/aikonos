@@ -56,16 +56,18 @@ func TestAuthoritativeEffectClass_PluginBackedRequiresLoadFromPlugins(t *testing
 	}
 }
 
-// TestAuthoritativeEffectClass_MCP returns false (plan-declared fallback).
+// TestAuthoritativeEffectClass_MCP: an unconfirmed MCP tool takes the floor,
+// whatever its name suggests (AG-08, H-11).
 func TestAuthoritativeEffectClass_MCP(t *testing.T) {
 	mcpTools := []string{
 		"mcp:conn-abc:some-tool",
 		"mcp:uuid-123:search",
+		"mcp:malformed",
 	}
 	for _, id := range mcpTools {
-		_, ok := AuthoritativeEffectClass(id)
-		if ok {
-			t.Errorf("AuthoritativeEffectClass(%q): ok=true for MCP tool, want false", id)
+		got, ok := AuthoritativeEffectClass(id)
+		if !ok || got != McpUnconfirmedClass {
+			t.Errorf("AuthoritativeEffectClass(%q) = (%v,%v), want (%v,true)", id, got, ok, McpUnconfirmedClass)
 		}
 	}
 }
