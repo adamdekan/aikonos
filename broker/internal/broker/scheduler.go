@@ -28,7 +28,7 @@ const (
 	maxApprovedTools     = 32
 	defaultClaimLimit    = 20
 	// delegationTTL is how long a schedule's standing delegation lives (AG-17 S4).
-	// ponytail: fixed 90 days, no extend path; add one when admins ask for it.
+	// The owner can extend it by the same span (UpdateScheduledRun extend_delegation).
 	delegationTTL = 90 * 24 * time.Hour
 	// listAllSentinel is the owner_filter value the admin all-runs view sends;
 	// any other non-empty value is a filter by a specific username.
@@ -361,14 +361,8 @@ func (s *BrokerService) scheduleActor(ctx context.Context, tenant, user, agentID
 	if agentID == "" {
 		// AG-17 S8: enforce refuses an actorless schedule up front; ClaimDue
 		// would only park it.
-		if s.deps.Config != nil {
-			mode, err := s.deps.Config.GetString(ctx, tenant, "identity.obo")
-			if err != nil {
-				return nil, status.Errorf(codes.Unavailable, "tenant settings could not be read: %v", err)
-			}
-			if mode == "enforce" {
-				return nil, status.Error(codes.FailedPrecondition, "identity.obo=enforce: a schedule needs actor_agent_id")
-			}
+		if err := s.requireActorUnderEnforce(ctx, tenant, nil); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
@@ -386,6 +380,22 @@ func (s *BrokerService) scheduleActor(ctx context.Context, tenant, user, agentID
 		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
 	}
 	return &id, nil
+}
+
+// requireActorUnderEnforce refuses an actorless schedule (actor == nil) when
+// the tenant runs identity.obo=enforce: ClaimDue would only park it again.
+func (s *BrokerService) requireActorUnderEnforce(ctx context.Context, tenant string, actor *uuid.UUID) error {
+	if actor != nil || s.deps.Config == nil {
+		return nil
+	}
+	mode, err := s.deps.Config.GetString(ctx, tenant, "identity.obo")
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "tenant settings could not be read: %v", err)
+	}
+	if mode == "enforce" {
+		return status.Error(codes.FailedPrecondition, "identity.obo=enforce: a schedule needs actor_agent_id")
+	}
+	return nil
 }
 
 // mayOperateActor is MayOperateAgent (can_use, tenant-admin fallback) for a
@@ -465,6 +475,26 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 		}
 		return &brokerv1.UpdateScheduledRunResponse{Run: toProtoScheduledRun(revoked)}, nil
 	}
+	if req.ExtendDelegation {
+		// Only the owner can renew authority given in their name; an admin may
+		// revoke (above) but not re-grant. A revoked delegation stays final.
+		if run.OwnerUserID != user {
+			return nil, status.Error(codes.PermissionDenied, "only the schedule owner can extend its delegation")
+		}
+		if run.DelegationRevokedAt != nil {
+			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked; create a new schedule")
+		}
+		if err := s.deps.Scheduled.ExtendDelegation(ctx, tenant, req.Id, now.Add(delegationTTL)); err != nil {
+			return nil, status.Errorf(codes.Internal, "extend: %v", err)
+		}
+		schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
+			"aikonos.scheduler.run.delegation_extended", req.Id, auditv1.PolicyDecision_ALLOW, runOBO(run))
+		extended, err := s.deps.Scheduled.Get(ctx, tenant, req.Id)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load extended run: %v", err)
+		}
+		return &brokerv1.UpdateScheduledRunResponse{Run: toProtoScheduledRun(extended)}, nil
+	}
 	switch req.DesiredState {
 	case brokerv1.ScheduledRunState_SCHEDULED_RUN_PAUSED:
 		// Keep next_fire_at; ClaimDue ignores non-ACTIVE rows.
@@ -476,7 +506,12 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 		// pause doesn't fire a backlog; a one-off keeps its original time.
 		// A revoked or expired delegation stays down: resume would re-grant it.
 		if !delegationLive(run, now) {
-			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked or expired; create a new schedule")
+			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked or expired; extend it or create a new schedule")
+		}
+		// identity.obo=enforce parks an actorless row at every claim, so
+		// resuming one would only re-park it: refuse and say why.
+		if err := s.requireActorUnderEnforce(ctx, tenant, run.ActorAgentID); err != nil {
+			return nil, err
 		}
 		next := run.NextFireAt
 		if run.Kind == db.ScheduleKindCron {

@@ -74,3 +74,13 @@ test("PATCH /schedules/:id forwards actorAgentId only when present, rejects a ma
   assert.equal(updates.length, 3);
   await app.close();
 });
+
+test("PATCH /schedules/:id action=extend asks the broker to extend the delegation, nothing else", async () => {
+  const { app, updates, patch } = await setup();
+  assert.equal((await patch({ action: "extend" })).statusCode, 200);
+  assert.equal(updates[0].extendDelegation, true);
+  assert.equal(updates[0].revokeDelegation, false);
+  await patch({ action: "revoke" });
+  assert.equal(updates[1].extendDelegation, false);
+  await app.close();
+});

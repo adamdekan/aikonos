@@ -35,7 +35,7 @@ interface ScheduleBody {
   runAt?: string; // ISO datetime
   approvedTools?: string[];
   actorAgentId?: string; // bare agent UUID the run acts as; empty = no agent
-  action?: "pause" | "resume" | "revoke";
+  action?: "pause" | "resume" | "revoke" | "extend";
 }
 
 const AGENT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -121,6 +121,7 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
           workflowLineageId: "",
           workflowInputs: {},
           revokeDelegation: b.action === "revoke",
+          extendDelegation: b.action === "extend",
           actorAgentId,
         },
         principal.token,

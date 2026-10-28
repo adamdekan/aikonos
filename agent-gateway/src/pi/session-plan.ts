@@ -160,6 +160,10 @@ export async function personalSkillBundleEntries(
   }
 }
 
+// ponytail: local copy of the agent UUID shape (broker/governance.ts has one);
+// importing governance here would pull the broker clients into the Pi child.
+const BARE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Minimal south-client surface resolveSessionPlan needs. Keeps the dependency
 // narrow so tests stub only what is used.
 export interface ResolveSouth {
@@ -404,8 +408,10 @@ export async function resolveSessionPlan(
   let soul = "";
   if (agentSpec?.soul && agentSpec.soul.trim()) {
     soul = agentSpec.soul;
-  } else if (identity.agentId.startsWith("agent:")) {
-    const bareId = identity.agentId.slice("agent:".length);
+  } else if (identity.agentId.startsWith("agent:") || BARE_UUID_RE.test(identity.agentId)) {
+    // "agent:<uuid>" is interactive chat; a bare uuid is a scheduled run's
+    // actor (AG-17), which gets its agent's soul the same way.
+    const bareId = identity.agentId.replace(/^agent:/, "");
     try {
       const r = await south.getAgentSpec({ tenantId: identity.tenantId, agentId: bareId });
       if (r.found) soul = r.soul ?? "";

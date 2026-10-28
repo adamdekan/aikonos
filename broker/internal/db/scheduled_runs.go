@@ -360,6 +360,26 @@ func (r *ScheduledRunRepo) RevokeDelegation(ctx context.Context, tenantID, id, b
 	})
 }
 
+// ExtendDelegation moves a live (not revoked) delegation's expiry to until.
+// It does not change state: a row ClaimDue parked as delegation_expired is
+// resumed by its owner afterwards.
+func (r *ScheduledRunRepo) ExtendDelegation(ctx context.Context, tenantID, id string, until time.Time) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		tag, err := conn.Exec(ctx, `
+		UPDATE scheduled_runs SET delegation_expires_at = $1, updated_at = NOW()
+		WHERE scheduled_run_id = $2 AND delegation_revoked_at IS NULL`,
+			until, id,
+		)
+		if err != nil {
+			return fmt.Errorf("extend scheduled_run delegation: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("scheduled_run %s not found or revoked", id)
+		}
+		return nil
+	})
+}
+
 func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		tag, err := conn.Exec(ctx, `DELETE FROM scheduled_runs WHERE scheduled_run_id = $1`, id)

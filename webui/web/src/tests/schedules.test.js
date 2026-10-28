@@ -13,6 +13,7 @@ vi.mock("../api/schedules.js", () => ({
   pauseSchedule:  vi.fn(),
   resumeSchedule: vi.fn(),
   revokeSchedule: vi.fn(),
+  extendSchedule: vi.fn(),
   deleteSchedule: vi.fn(),
 }));
 
@@ -226,6 +227,25 @@ describe("Schedules.vue", () => {
     const w = mount(Schedules, { global: { plugins: [router] } });
     await flushPromises();
     expect(w.find("[data-testid='resume-s1']").exists()).toBe(false);
+  });
+
+  it("an expired delegation is flagged and extend renews it, then resume is offered", async () => {
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [
+      { ...SAMPLE_SCHED, state: "PAUSED", delegationExpiresAt: "2024-04-01T00:00:00Z" },
+    ] });
+    schedApiView.extendSchedule.mockResolvedValue({
+      schedule: { ...SAMPLE_SCHED, state: "PAUSED", delegationExpiresAt: "2999-01-01T00:00:00Z" },
+    });
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='delegation-expired-s1']").text()).toContain("Delegation expired");
+    await w.find("[data-testid='extend-s1']").trigger("click");
+    await flushPromises();
+    expect(schedApiView.extendSchedule).toHaveBeenCalledWith("s1");
+    expect(w.find("[data-testid='delegation-expired-s1']").exists()).toBe(false);
+    expect(w.find("[data-testid='resume-s1']").exists()).toBe(true);
   });
 
   it("resumeSchedule is called with id on resume click", async () => {

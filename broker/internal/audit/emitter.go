@@ -76,7 +76,7 @@ type Emitter struct {
 	bus    notify.Bus // optional: publishes audit events for live observability
 
 	client *minio.Client // nil → logging-only
-	store  objectStore   // list/get view over client, used for chain resume
+	store  chainStore    // list/get view over client, used for chain resume
 
 	keySource SigningKeySource // never nil after NewEmitter
 
@@ -273,16 +273,17 @@ func objectKey(event *auditv1.AuditEvent) string {
 // the chain hash of each tenant's chain tail (see resumeTail). Best-effort: a
 // failure just means that tenant's chain restarts (logged), never a hard error.
 func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
-	for obj := range e.client.ListObjects(ctx, e.cfg.Bucket, minio.ListObjectsOptions{Recursive: false}) {
-		if obj.Err != nil {
-			logger.Warn("audit: list tenants for chain resume failed", zap.Error(obj.Err))
-			return
+	tenants, _, err := e.store.listLevel(ctx, "")
+	if err != nil {
+		logger.Warn("audit: list tenants for chain resume failed", zap.Error(err))
+		return
+	}
+	for _, prefix := range tenants {
+		if strings.HasPrefix(prefix, "_") {
+			continue // "_policy/" etc. are not tenants
 		}
-		if !strings.HasSuffix(obj.Key, "/") || strings.HasPrefix(obj.Key, "_") {
-			continue // tenant prefixes are "directories"; "_policy/" etc. are not tenants
-		}
-		tenant := strings.TrimSuffix(obj.Key, "/")
-		key, ok := e.newestUnder(ctx, obj.Key)
+		tenant := strings.TrimSuffix(prefix, "/")
+		key, ok := newestUnder(ctx, e.store, prefix)
 		if !ok {
 			continue
 		}
@@ -292,16 +293,14 @@ func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 			// behaviour). May fork the chain if uploads landed out of order.
 			logger.Warn("audit: could not identify a unique chain tail among recent events; resuming from newest by LastModified",
 				zap.String("tenant", tenant), zap.String("key", key))
-			info, err := e.client.StatObject(ctx, e.cfg.Bucket, key, minio.StatObjectOptions{})
-			if err != nil {
+			if h, err = e.store.chainHash(ctx, key); err != nil {
 				logger.Warn("audit: stat newest event for chain resume failed", zap.String("tenant", tenant), zap.Error(err))
 				continue
 			}
-			h = info.Metadata.Get("X-Amz-Meta-" + chainHashMeta)
 		}
 		if h != "" {
 			e.lastHash[tenant] = h
-			logger.Info("audit: resumed hash chain", zap.String("tenant", tenant), zap.String("head", h[:16]))
+			logger.Info("audit: resumed hash chain", zap.String("tenant", tenant), zap.String("head", h[:min(16, len(h))]))
 		}
 	}
 }
@@ -395,33 +394,67 @@ func chainTail(events []*auditv1.AuditEvent) (string, bool) {
 // LastModified. (event_id is a time-sortable UUIDv7, so lexical order would also
 // work; LastModified keeps this robust regardless of the id scheme.) A handful
 // of bounded list calls regardless of trail size.
-func (e *Emitter) newestUnder(ctx context.Context, prefix string) (string, bool) {
+func newestUnder(ctx context.Context, store chainStore, prefix string) (string, bool) {
 	cur := prefix
 	for depth := 0; depth < 8; depth++ {
-		var maxDir, newestObj string
-		var newestT time.Time
-		for obj := range e.client.ListObjects(ctx, e.cfg.Bucket, minio.ListObjectsOptions{Prefix: cur, Recursive: false}) {
-			if obj.Err != nil {
-				return "", false
-			}
-			if strings.HasSuffix(obj.Key, "/") {
-				if obj.Key > maxDir {
-					maxDir = obj.Key
-				}
-			} else if newestObj == "" || obj.LastModified.After(newestT) {
-				newestObj, newestT = obj.Key, obj.LastModified
+		dirs, objs, err := store.listLevel(ctx, cur)
+		if err != nil {
+			return "", false
+		}
+		var maxDir string
+		for _, d := range dirs {
+			if d > maxDir {
+				maxDir = d
 			}
 		}
 		if maxDir != "" {
 			cur = maxDir // descend into the latest date directory
 			continue
 		}
-		if newestObj != "" {
-			return newestObj, true
+		var newest objMeta
+		for _, o := range objs {
+			if newest.key == "" || o.lastModified.After(newest.lastModified) {
+				newest = o
+			}
 		}
-		return "", false
+		return newest.key, newest.key != ""
 	}
 	return "", false
+}
+
+// chainStore is the object-store view chain resume needs (*minioStore in
+// production, a fake in tests).
+type chainStore interface {
+	objectStore
+	// listLevel lists one level under prefix: sub-"directories" (keys ending
+	// in "/") and objects.
+	listLevel(ctx context.Context, prefix string) (dirs []string, objs []objMeta, err error)
+	// chainHash reads the chain-hash metadata put wrote on key.
+	chainHash(ctx context.Context, key string) (string, error)
+}
+
+func (m *minioStore) listLevel(ctx context.Context, prefix string) ([]string, []objMeta, error) {
+	var dirs []string
+	var objs []objMeta
+	for obj := range m.client.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: false}) {
+		if obj.Err != nil {
+			return nil, nil, obj.Err
+		}
+		if strings.HasSuffix(obj.Key, "/") {
+			dirs = append(dirs, obj.Key)
+		} else {
+			objs = append(objs, objMeta{key: obj.Key, lastModified: obj.LastModified})
+		}
+	}
+	return dirs, objs, nil
+}
+
+func (m *minioStore) chainHash(ctx context.Context, key string) (string, error) {
+	info, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return "", err
+	}
+	return info.Metadata.Get("X-Amz-Meta-" + chainHashMeta), nil
 }
 
 // enqueue tries to hand the job to the worker, blocking up to dropTimeout

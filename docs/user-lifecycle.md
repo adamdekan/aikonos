@@ -196,7 +196,14 @@ therefore also removes that group's connectors from every agent run for the user
 Grant a single person a connector in **Admin → MCP → Access**.
 
 A schedule created without an actor fires as its owner's default agent, resolved at
-each fire. With `identity.obo=enforce` such a schedule stays parked, as before.
+each fire. With `identity.obo=enforce` such a schedule stays parked, as before, and
+resuming it is refused until the owner sets an agent in the edit form.
+
+A schedule's delegation lasts 90 days. Only its owner can extend it (by another 90
+days from today, **Schedules → extend**, audited as
+`aikonos.scheduler.run.delegation_extended`); an admin can revoke it but not extend
+it. An expired delegation is shown as "Delegation expired" and is resumed after the
+extension.
 
 ## Known gaps (accepted for now)
 

@@ -6,7 +6,8 @@
 //
 //   resolveSessionPlan must fetch the soul from south.getAgentSpec for named
 //   agents ("agent:<uuid>") and surface it in the systemPrompt, while leaving
-//   the prompt unchanged for default agents ("default:…") and ticker ids.
+//   the prompt unchanged for default agents ("default:…"); a scheduled run's
+//   bare actor uuid gets its soul too (AG-17).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -190,6 +191,17 @@ test("resolveSessionPlan: named agent (agent:<uuid>) — soul from getAgentSpec 
 
   assert.ok(plan.systemPrompt.includes("PIRATE"), "soul text must appear in systemPrompt");
   assert.ok(plan.systemPrompt.includes(SOUL_DELIMITER_START), "soul delimiter must appear when soul found");
+});
+
+test("resolveSessionPlan: scheduled run (bare actor uuid) gets the actor's soul", async () => {
+  const south = makeSouthClient({ getAgentSpecResult: { found: true, soul: "NIGHT SHIFT" } });
+  const identity: ResolveIdentity = {
+    tenantId: "t1",
+    userId: "user-a",
+    agentId: "11111111-2222-3333-4444-555555555555",
+  };
+  const plan = await resolveSessionPlan(identity, { south, cfg: BASE_CFG });
+  assert.ok(plan.systemPrompt.includes("NIGHT SHIFT"), "a scheduled actor's soul must appear like interactive chat");
 });
 
 test("resolveSessionPlan: named agent — found:false from getAgentSpec → no soul block", async () => {
