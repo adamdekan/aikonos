@@ -233,6 +233,10 @@ service BrokerService {
   // active agent runs. Audited as agent.activated / reactivated / suspended /
   // retired; a concurrent change is Aborted.
   rpc SetAgentStatus(SetAgentStatusRequest) returns (SetAgentStatusResponse);
+  // AG-14: every agent with its owners, credential counts, nearest credential
+  // expiry and last credential use, for identity-governance tools. Fails
+  // closed when owners cannot be read. Audited as agent.inventory.exported.
+  rpc ExportAgentInventory(ExportAgentInventoryRequest) returns (ExportAgentInventoryResponse);
 
   // List the agents the caller may use (via FGA can_use). No admin gate.
   // The tenant default agent is not listed: no agent picked means it.
@@ -1818,12 +1822,26 @@ message Agent {
   string status = 19;              // AG-03: staged | active | suspended | retired (read-only; SetAgentStatus)
   string status_reason = 20;       // AG-03: reason recorded with the last status change (read-only)
   repeated string mcp_tools = 21;  // AG-08: allowed "mcp:<conn>:<tool>" ids; each conn must be in mcp_servers
+  repeated string owners = 22;     // AG-14: FGA owner_user / owner_group subjects (read-only, ListAgents)
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
 message CreateAgentResponse { Agent agent = 1; }
 message ListAgentsRequest  { string tenant_id = 1; string user_id = 2; }
 message ListAgentsResponse { repeated Agent agents = 1; }
+
+// AG-14: agent is as ListAgents returns it, without soul. The counts and
+// nearest_key_expiry cover live keys only (unrevoked, unexpired);
+// last_used_at is the latest use of any unrevoked key, unset if never.
+message ExportAgentInventoryRequest { string tenant_id = 1; string user_id = 2; }
+message AgentInventoryEntry {
+  Agent agent = 1;
+  int32 api_keys = 2;
+  int32 public_keys = 3;
+  google.protobuf.Timestamp nearest_key_expiry = 4;
+  google.protobuf.Timestamp last_used_at = 5;
+}
+message ExportAgentInventoryResponse { repeated AgentInventoryEntry agents = 1; }
 message UpdateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
 message UpdateAgentResponse { Agent agent = 1; }
 message DeleteAgentRequest { string tenant_id = 1; string user_id = 2; string id = 3; }

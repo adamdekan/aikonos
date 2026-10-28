@@ -168,3 +168,18 @@ an agent ("Acts as") in the edit form first, then resumes.
 - The local Keycloak realm gets a step-up browser flow: `acr_values=mfa` asks
   for an OTP (TOTP enrolment at the first prompt). Re-import the realm to use it.
 - The gateway and the web UI must both be from this release.
+
+## Agent inventory export and other IdPs (AG-14)
+
+- New, admin-only: Admin → Agents → *Export inventory (JSON)* / *(CSV)*, or
+  `GET /api/admin/agents/inventory?format=json|csv`. Per agent: id, name,
+  status, owners, service agent flag, MCP connectors and allowed tools,
+  skills, live API key and public key counts, nearest key expiry and last key
+  use. No system prompt. Audited as
+  `aikonos.broker.agent.inventory.exported`.
+- New north RPC `ExportAgentInventory`; `Agent.owners` is now filled by
+  `ListAgents`. The gateway and broker must both be from this release for the
+  export.
+- Setup guide for an OIDC provider other than Entra or Keycloak:
+  `docs/19-oidc-idp-setup.md` (audience, tenant claim as a UUID, step-up
+  claims, switching IdPs).

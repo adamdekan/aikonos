@@ -77,6 +77,7 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     isDefault: false,
     status: "suspended",
     statusReason: "incident",
+    owners: [],
   };
 
   const json = agentJson(agent);
@@ -111,6 +112,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     isDefault: false,
     status: "",
     statusReason: "",
+    owners: [],
   };
 
   const json = agentJson(agent);

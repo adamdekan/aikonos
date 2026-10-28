@@ -134,6 +134,8 @@ import type {
   ListMyAgentsResponse,
   ListAgentsRequest,
   ListAgentsResponse,
+  ExportAgentInventoryRequest,
+  ExportAgentInventoryResponse,
   CreateAgentRequest,
   CreateAgentResponse,
   UpdateAgentRequest,
@@ -673,6 +675,10 @@ export class NorthClient {
 
   listAgents(req: ListAgentsRequest, token?: string): Promise<ListAgentsResponse> {
     return unary((r, m, o, cb) => this.client.listAgents(r, m, o, cb), req, bearer(token));
+  }
+
+  exportAgentInventory(req: ExportAgentInventoryRequest, token?: string): Promise<ExportAgentInventoryResponse> {
+    return unary((r, m, o, cb) => this.client.exportAgentInventory(r, m, o, cb), req, bearer(token));
   }
 
   createAgent(req: CreateAgentRequest, token?: string): Promise<CreateAgentResponse> {

@@ -17,6 +17,7 @@ import {
   retireAgentPublicKey,
   revokeAgentSessions,
   setAgentStatus,
+  exportAgentInventory,
   listLlmProviders,
   listSkills,
 } from "../../api/admin.js";
@@ -594,6 +595,23 @@ const TABLE_COLS = [
   { key: "_assigned",    label: "Assigned to" },
   { key: "_actions",     label: "",            width: "460px" },
 ];
+
+// AG-14: owners, status, connectors, tools and key state of every agent.
+async function exportInventory(format) {
+  error.value = "";
+  try {
+    const res = await exportAgentInventory(format);
+    if (res.forbidden) { error.value = "Only a tenant admin can export the agent inventory."; return; }
+    const url = URL.createObjectURL(new Blob([res.text], { type: format === "csv" ? "text/csv" : "application/json" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `aikonos-agent-inventory.${format}` });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    error.value = e.message;
+  }
+}
 </script>
 
 <template>
@@ -616,6 +634,12 @@ const TABLE_COLS = [
       <div class="toolbar">
         <button class="btn-primary" data-testid="agent-create-btn" @click="openCreate">
           <Icon name="plus" /> New Agent
+        </button>
+        <button class="btn-secondary-sm" data-testid="agent-inventory-export-json" title="Export agent inventory as JSON" @click="exportInventory('json')">
+          <Icon name="download" :size="14" /> Export inventory (JSON)
+        </button>
+        <button class="btn-secondary-sm" data-testid="agent-inventory-export-csv" title="Export agent inventory as CSV" @click="exportInventory('csv')">
+          <Icon name="download" :size="14" /> Export inventory (CSV)
         </button>
       </div>
 
@@ -1150,7 +1174,7 @@ const TABLE_COLS = [
 .view-header h1 { margin: 0; font-size: 20px; font-weight: 600; }
 .view-icon { color: var(--text-muted); width: 22px; height: 22px; }
 
-.toolbar { margin-bottom: 16px; }
+.toolbar { margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 .banner-err {
   background: var(--fill-danger); border: 1px solid var(--danger);

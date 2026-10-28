@@ -36,6 +36,7 @@ vi.mock("../api/admin.js", () => ({
   retireAgentPublicKey: vi.fn(),
   revokeAgentSessions:  vi.fn(),
   setAgentStatus:       vi.fn(),
+  exportAgentInventory: vi.fn(),
   listLlmProviders:     vi.fn(),
   listSkills:           vi.fn(),
 }));
@@ -96,6 +97,42 @@ describe("Agents.vue", () => {
     expect(w.findAll("[data-testid='agent-row']").length).toBe(1);
     expect(w.text()).toContain("my-agent");
     expect(w.find(".dt-table").exists()).toBe(true);
+  });
+
+  // AG-14: the inventory export downloads the gateway's file as is.
+  it("exports the agent inventory as CSV and JSON", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [SAMPLE_AGENT] });
+    adminApi.exportAgentInventory.mockResolvedValue({ text: "id,name\r\na1,my-agent\r\n" });
+    const created = [];
+    globalThis.URL.createObjectURL = vi.fn((blob) => { created.push(blob); return "blob:x"; });
+    globalThis.URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await w.find("[data-testid='agent-inventory-export-csv']").trigger("click");
+    await flushPromises();
+    expect(adminApi.exportAgentInventory).toHaveBeenCalledWith("csv");
+    expect(created[0].type).toBe("text/csv");
+    const saved = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(created[0]);
+    });
+    expect(saved).toBe("id,name\r\na1,my-agent\r\n");
+    expect(click).toHaveBeenCalledTimes(1);
+
+    await w.find("[data-testid='agent-inventory-export-json']").trigger("click");
+    await flushPromises();
+    expect(adminApi.exportAgentInventory).toHaveBeenLastCalledWith("json");
+
+    adminApi.exportAgentInventory.mockResolvedValue({ forbidden: true });
+    await w.find("[data-testid='agent-inventory-export-csv']").trigger("click");
+    await flushPromises();
+    expect(w.find("[data-testid='error-banner']").text()).toContain("tenant admin");
+    expect(click).toHaveBeenCalledTimes(2);
   });
 
   // AG-06: revoke all sessions of an agent needs a reason and shows the epoch.
