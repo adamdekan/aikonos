@@ -409,8 +409,9 @@ func TestCapability_MismatchDenied(t *testing.T) {
 	}
 }
 
-// A token minted before AG-17 carries no subject/actor facts and still passes.
-func TestCapability_LegacyTokenWithoutOBOFactsAccepted(t *testing.T) {
+// A token minted before AG-17 carries no subject/actor facts: otherwise valid,
+// so Authorize reports ErrOBOMismatch and identity.obo decides (AG-17 S8).
+func TestCapability_LegacyTokenWithoutOBOFactsIsMismatch(t *testing.T) {
 	m := newMinter(t)
 	b := biscuit.NewBuilder(m.priv)
 	exp := biscuit.Date(m.Now().Add(time.Minute))
@@ -428,7 +429,11 @@ func TestCapability_LegacyTokenWithoutOBOFactsAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := tok.Serialize()
-	if err := m.Authorize(raw, "web:read", "A", db.OnBehalfOf{Subject: "Y", Actor: "agent-9"}); err != nil {
-		t.Fatalf("legacy token: want nil, got %v", err)
+	if err := m.Authorize(raw, "web:read", "A", db.OnBehalfOf{Subject: "Y", Actor: "agent-9"}); !errors.Is(err, ErrOBOMismatch) {
+		t.Fatalf("legacy token: want ErrOBOMismatch, got %v", err)
+	}
+	// Absence never masks a real denial.
+	if err := m.Authorize(raw, "db:drop", "A", db.OnBehalfOf{}); err == nil || errors.Is(err, ErrOBOMismatch) {
+		t.Fatalf("legacy token, missing right: want a plain denial, got %v", err)
 	}
 }

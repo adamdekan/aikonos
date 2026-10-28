@@ -20,6 +20,7 @@
 | ReBAC | `AIKONOS_POLICY_OPENFGA_STORE_ID=""` → `CheckFGA` allow-all stub | store id set → real OpenFGA Check, fails closed |
 | Capability | always on — broker always builds a minter | set a persistent root key (else read-or-created in Vault, ephemeral on Vault restart) |
 | NATS | `AIKONOS_NATS_URL=""` → bus disabled, `StreamTaskEvents` Unimplemented | url set → events published, streaming works |
+| On-behalf-of (AG-17) | tenant setting `identity.obo=audit` (default) → mismatches logged/audited, allowed | `identity.obo=enforce` per tenant → token subject/actor mismatch or missing facts, v1 owner grants, non-service api keys without a user assertion and actorless schedules are denied; default flips after AG-01/AG-02 |
 
 The compose `.env.local.example` ships OIDC (`http://keycloak:8080/realms/aikonos`) and NATS
 (`nats://nats:4222`) **on**. The one knob you must flip yourself is OpenFGA: the store

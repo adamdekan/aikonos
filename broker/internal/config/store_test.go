@@ -204,7 +204,7 @@ func TestSchema_ExactlyKnownConvenienceKeys(t *testing.T) {
 		"disabled_tools":        true,
 		"effect_class_routing":  true,
 		"llm_model":             true,
-		"identity.obo":          true, // audit|enforce: enforce only tightens InvokeTool
+		"identity.obo":          true, // audit|enforce: enforce only adds denials
 	}
 
 	for name := range config.Schema {

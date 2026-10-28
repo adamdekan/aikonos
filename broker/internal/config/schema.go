@@ -221,14 +221,17 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
-	// identity.obo selects how InvokeTool treats a capability token whose
-	// subject/actor facts differ from the task (AG-17). Monotonic-stricter
-	// only: audit records the mismatch, enforce also denies.
+	// identity.obo switches the AG-17 on-behalf-of checks: capability tokens
+	// whose subject/actor facts differ from (or predate) the task, v1 owner
+	// grants, service-agent api keys and actorless scheduled runs.
+	// Monotonic-stricter only: audit records, enforce also denies.
+	// ponytail: flip the default to enforce once AG-01 binds north tasks to an
+	// agent and AG-02 makes connector checks user-bound.
 	"identity.obo": {
 		Name:    "identity.obo",
 		Kind:    KindString,
 		Default: "audit",
-		Doc:     "On-behalf-of check for capability tokens: audit (record a subject/actor mismatch, allow) or enforce (record and deny). Can only tighten.",
+		Doc:     "On-behalf-of checks: audit (record, allow) or enforce (deny capability tokens whose subject/actor differ from the task or are missing, v1 owner grants, api keys of non-service agents without a user assertion, and scheduled runs without an actor). Can only tighten.",
 		Validate: func(v string) error {
 			if v != "audit" && v != "enforce" {
 				return fmt.Errorf("identity.obo: must be audit or enforce, got %q", v)

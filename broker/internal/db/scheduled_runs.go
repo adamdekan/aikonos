@@ -377,8 +377,9 @@ func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) erro
 // goes NULL. FOR UPDATE SKIP LOCKED keeps concurrent ticks from double-claiming.
 // A row whose delegation is revoked or expired (AG-17 S4) is parked instead
 // (PAUSED, no next fire) and returned with SkipReason set, so the caller can
-// audit the skip; the caller must not fire it.
-func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int) ([]*ScheduledRun, error) {
+// audit the skip; the caller must not fire it. requireActor (identity.obo=
+// enforce, AG-17 S8) parks a row with no actor the same way ("actor_missing").
+func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int, requireActor bool) ([]*ScheduledRun, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*ScheduledRun, error) {
 		tx, err := conn.Begin(ctx)
 		if err != nil {
@@ -418,6 +419,8 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 				s.SkipReason = "delegation_revoked"
 			case !now.Before(s.DelegationExpiresAt):
 				s.SkipReason = "delegation_expired"
+			case requireActor && s.ActorAgentID == nil:
+				s.SkipReason = "actor_missing"
 			}
 			if s.SkipReason != "" {
 				if _, err := tx.Exec(ctx, `UPDATE scheduled_runs SET state='PAUSED', next_fire_at=NULL, last_status=$1, updated_at=NOW() WHERE scheduled_run_id=$2`, s.SkipReason, s.ScheduledRunID); err != nil {

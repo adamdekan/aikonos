@@ -210,8 +210,9 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 
 // verifyOwnerGrant requires an owner grant, verifies it with the configured key
 // and v1 policy, and checks it names tenantID. Every rejection is audited
-// (invalid_grant / grant_tenant_mismatch) and returned as PermissionDenied;
-// grant_v1_used is logged when a legacy grant is accepted.
+// (invalid_grant / grant_tenant_mismatch / grant_v1_refused /
+// grant_actor_missing) and returned as PermissionDenied; grant_v1_used is
+// logged when a legacy grant is accepted.
 // ponytail: plain log per v1 use; rate-limit per gateway SVID if it gets noisy.
 func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token string) (gatewaygrant.Grant, error) {
 	if token == "" {
@@ -227,8 +228,26 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 			map[string]any{"grant_tenant": g.TenantID})
 		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant tenant mismatch")
 	}
-	if g.Kind == gatewaygrant.KindLegacy {
-		s.deps.Logger.Info("grant_v1_used", zap.String("tenant_id", g.TenantID))
+	// AG-17 S8: identity.obo=enforce refuses a grant with no actor: a v1 grant
+	// (accept_v1 forced off) or a scheduled grant minted while in audit mode.
+	// Read only for those, off the hot path.
+	if g.Kind == gatewaygrant.KindLegacy || (g.Kind == gatewaygrant.KindScheduled && g.Actor == "") {
+		mode, cerr := s.cfg().GetString(ctx, g.TenantID, "identity.obo")
+		if cerr != nil {
+			s.emitGrantDenied(ctx, tenantID, g.Owner(), "", "settings_check_failed", map[string]any{"error": cerr.Error()})
+			return gatewaygrant.Grant{}, status.Error(codes.Unavailable, "tenant settings could not be read")
+		}
+		if mode == "enforce" {
+			reason := "grant_v1_refused"
+			if g.Kind == gatewaygrant.KindScheduled {
+				reason = "grant_actor_missing"
+			}
+			s.emitGrantDenied(ctx, tenantID, g.Owner(), "", reason, map[string]any{"mode": mode})
+			return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant refused: identity.obo=enforce requires a v2 grant naming an actor")
+		}
+		if g.Kind == gatewaygrant.KindLegacy {
+			s.deps.Logger.Info("grant_v1_used", zap.String("tenant_id", g.TenantID))
+		}
 	}
 	return g, nil
 }
