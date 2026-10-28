@@ -27,7 +27,6 @@ const baseCfg = {
   schedulerClaimLimit: 5,
   schedulerRunTimeoutMs: 2000,
   gatewaySpiffeId: "spiffe://aikonos.com/agent-gateway",
-  agentForUserOverrides: {},
 } as unknown as Config;
 
 const log: Logger = {

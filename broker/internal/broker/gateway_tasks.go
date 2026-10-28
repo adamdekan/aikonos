@@ -138,6 +138,13 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 	if req.Prompt == "" {
 		return nil, status.Error(codes.InvalidArgument, "prompt required")
 	}
+	// AG-01: agent_id is a bare agent UUID or empty. A non-UUID (the retired
+	// "<user>-agent" pseudo-id) is refused, never coerced to an unbound task.
+	if req.AgentId != "" {
+		if _, err := uuid.Parse(req.AgentId); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
+		}
+	}
 
 	// Require a broker-issued owner grant — without one the gateway could assert
 	// any owner and impersonate arbitrary users (the pre-CP2 attack vector).
@@ -169,21 +176,30 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 		budget = 1000
 	}
 
-	var agentID *uuid.UUID
-	agentRef := req.AgentId
-	if grant.Actor != "" {
-		agentRef = grant.Actor // bind to the grant's actor, never the asserted field
-	}
-	if agentRef != "" {
-		parsed, parseErr := uuid.Parse(agentRef)
-		if parseErr == nil {
-			agentID = &parsed
+	// AG-01: every gateway task binds a registered agent. The grant's actor
+	// fixes it; otherwise the requested agent (which the grant owner must be
+	// able to use) or the owner's default agent.
+	agentRef := grant.Actor
+	if agentRef == "" {
+		if s.deps.Agents == nil {
+			return nil, status.Error(codes.FailedPrecondition, "agents are not enabled")
 		}
-		// Invalid / non-UUID agent_id → treat as unbound (NULL). A malformed id
-		// cannot satisfy the skill-boundary check at SubmitPlan — the agent lookup
-		// will fail and the plan will be denied then. We do not error here so that
-		// callers with an empty-string agent_id (no agent) pass through cleanly.
+		a, reason, rerr := runAgent(ctx, s.deps, req.TenantId, grantOwner, req.AgentId)
+		if rerr != nil {
+			s.deps.Logger.Error("CreateGatewayTask: agent store failed", zap.Error(rerr))
+			return nil, status.Error(codes.Unavailable, "agent could not be resolved; retry")
+		}
+		if reason != "" {
+			s.emitGrantDenied(ctx, req.TenantId, grantOwner, req.AgentId, reason, nil)
+			return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", req.AgentId)
+		}
+		agentRef = a.ID.String()
 	}
+	parsedAgent, err := uuid.Parse(agentRef)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid grant actor: %v", err)
+	}
+	agentID := &parsedAgent
 
 	t := &db.Task{
 		TaskID:          uuid.New(),

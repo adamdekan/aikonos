@@ -2,7 +2,6 @@
 // process.loadEnvFile) when present, then reads from the environment.
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { agentOverridesFromEnv } from "./broker/agent-identity";
 
 // Node >=20.12 / 22 exposes process.loadEnvFile; older runtimes do not.
 type NodeWithLoadEnv = typeof process & { loadEnvFile?: (p: string) => void };
@@ -89,8 +88,6 @@ export interface Config {
   schedulerTickMs: number;
   schedulerClaimLimit: number;
   schedulerRunTimeoutMs: number;
-  // Optional user→agentId overrides (JSON object; default localpart-agent).
-  agentForUserOverrides: Record<string, string>;
   // External API surface (per-agent keys, `:8090`).
   externalPort: number;
   // Comma-separated list of allowed CORS origins for the external surface.
@@ -185,7 +182,6 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
     schedulerTickMs: parsePositiveInt(env, "AIKONOS_SCHEDULER_TICK_MS", "30000"),
     schedulerClaimLimit: parsePositiveInt(env, "AIKONOS_SCHEDULER_CLAIM_LIMIT", "10"),
     schedulerRunTimeoutMs: parsePositiveInt(env, "AIKONOS_SCHEDULER_RUN_TIMEOUT_MS", "180000"),
-    agentForUserOverrides: agentOverridesFromEnv(),
     externalPort: parsePositiveInt(env, "AIKONOS_EXTERNAL_PORT", "8090"),
     externalCorsOrigins: get(env, "AIKONOS_EXTERNAL_CORS_ORIGINS", "")
       .split(",")

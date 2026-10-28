@@ -162,7 +162,7 @@ task-row binding idiom and add the regression test pattern already used in
 ## 5. agent-gateway (TypeScript)
 
 ### H-05 `/agui` lets any tenant member run as any agent (no `can_use` check)
-- **Status:** open
+- **Status:** fixed — branch `feat/ag-identity` (AG-01, 2026-10-28). `/agui` resolves the agent through the south RPC `ResolveRunAgent`, which requires `can_use` (tenant-admin fallback) and answers 403 otherwise; north `CreateTask` re-checks it, `CreateGatewayTask` checks it for the grant owner when the grant names no actor, and scheduled runs re-check it at every fire. Regression tests: `default_agent_test.go`, `north_actor_test.go`, `agent-gateway/test/agui-history-validation.test.ts`
 - **Where:** `agent-gateway/src/routes/agui.ts:537-558,602-620`; broker `agent_spec.go:19-63` (gated only by `requireGatewayPeer`, no user); `service_invoke.go:372-402` (FGA subject is the agent); `service_plan.go:495-500` (agent-bound tasks skip the owner's skill gate)
 - **What:** `x-aikonos-agent` / `body.agentId` is used verbatim; `getAgentSpec` found=true is treated as sufficient. Nothing downstream ties the user to the agent. Agent UUIDs leak via the audit stream (`resource_ref`, H-07) and the UI.
 - **Exploit:** A user runs under a colleague's or a service agent's `approval_mode:auto`, skills, MCP connectors and agent-scope memory.
@@ -317,6 +317,7 @@ task-row binding idiom and add the regression test pattern already used in
 
 - **2026-10-27, branch `security/identity-binding` (uncommitted):** C-01, H-01, H-02, H-03, H-04 and M-07 fixed with regression tests; `go test ./broker/...` green (37 packages).
   - Follow-up surfaced by H-02: interactive tasks are never bound to an agent (north `CreateTaskRequest` has no agent field), so for an *unbound* task the MCP `can_access` subject is still the caller's `agent_id` (pre-existing; marked with a `ponytail:` comment in `service_invoke.go`). Closing it needs the agent bound at task creation (proto change).
+    Closed by AG-01 (2026-10-28): every task binds a registered agent (the tenant default agent when none is named), and `InvokeTool` checks the MCP connector for the bound agent only; a caller agent claim that differs is refused.
   - H-04: `spiffe.sandbox_path_prefix` left at `""` because the interceptor applies the prefix to every south caller including the gateway. `requireGatewayPeer` now fails closed when `scheduler.gateway_spiffe_id` is empty outside dev mode (viper default already set). SubmitPlan now refuses a `sandbox_spiffe_id` that differs from the verified peer; the gateway's default, the broker's default and the dev CA leaf all agree on `spiffe://aikonos.com/agent-gateway`.
   - H-03: tokens minted before this change carry no `expires` fact and are now refused (no migration needed; they were never persisted server-side).
   - Pre-existing: `gofmt -l broker/` lists ~40 files unformatted at HEAD; only files touched here were formatted.

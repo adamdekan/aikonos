@@ -50,7 +50,10 @@ async function localResolver(jwk: JWK): Promise<JwksResolver> {
 
 const VERIFY_OPTS = { issuer: "http://localhost:18080/realms/aikonos", audience: "aikonos-broker" };
 const TENANT_ID = "tenant-1";
-const USER_SUB = "alice@example.com"; // agentForUser default mapping → "alice-agent"
+const USER_SUB = "alice@example.com";
+// AG-01: resolveRunAgent returns the tenant default agent; the route keys the
+// child on "agent:<uuid>".
+const DEFAULT_AGENT = "agent:00000000-0000-4000-8000-0000000000de";
 
 async function mintToken(privateKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"]) {
   return new SignJWT({ sub: USER_SUB, email: USER_SUB, tenant_id: TENANT_ID })
@@ -69,7 +72,7 @@ function fakeConfig(): Config {
     port: 8080, defaultTenantId: TENANT_ID, oidcIssuer: "", oidcJwksUrl: "", oidcAudience: "",
     oidcSubjectClaim: "sub", oidcTenantClaim: "tenant_id", schedulerEnabled: false,
     schedulerTickMs: 30000, schedulerClaimLimit: 10, schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {}, externalPort: 8090, externalCorsOrigins: [],
+    externalPort: 8090, externalCorsOrigins: [],
     externalRateLimit: 60, threadTtlMs: 1800000, maxChildren: 32, childTtlMs: 1800000,
     natsUrl: "nats://nats:4222", auditSubject: "aikonos.audit.>", egressTimeoutMs: 120000, brokerTimeoutMs: 30000, rateLimitBreakerThreshold: 5, workflowReasonMaxTokens: 2048, maxLlmCallsPerRun: 100, approvalTimeoutMs: 900000, memorySemanticRecall: true, memoryEmbedTimeoutMs: 10000, subagentMaxWidth: 3, subagentBranchTimeoutMs: 180000,
   };
@@ -192,6 +195,7 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
   const south: SouthClient = Object.create(SouthClient.prototype);
   Object.assign(south, {
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
@@ -213,7 +217,7 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
   );
 
   const runId = "run-close-teardown";
-  const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: "alice-agent" };
+  const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: DEFAULT_AGENT };
   const childKey = supervisor.keyFor(identity);
   // Pre-spawn on the same key the route will derive, so the handle instance
   // the route uses below is the one we can instrument here.
@@ -315,6 +319,7 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
   const south: SouthClient = Object.create(SouthClient.prototype);
   Object.assign(south, {
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
@@ -329,7 +334,7 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
   );
 
   const runId = "run-close-teardown-branches";
-  const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: "alice-agent" };
+  const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: DEFAULT_AGENT };
   await supervisor.getOrSpawn(supervisor.keyFor(identity), identity);
 
   const evictBranchesForRunCalls: { runId: string; reason: string }[] = [];

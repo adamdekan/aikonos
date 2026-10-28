@@ -133,6 +133,29 @@ blocked user. A group owner counts as present without checking its members. Fix 
 adding an owner who is not blocked. Orphaned agents still run today; activation
 and automatic suspension of orphaned agents come with AG-03.
 
+## Default agents
+
+Every task runs as a registered agent (AG-01). When a chat or a schedule names no
+agent, the broker binds the user's default agent:
+
+- **The user's setting.** Each user may pick a default agent in **Settings → Chat →
+  Default agent**. Only agents the user can use (`can_use`) are offered, and the
+  broker re-checks `can_use` on save (audited as `aikonos.broker.agent.default.set`)
+  and on every run. If the user loses access, runs fall back to the tenant default
+  agent; the setting is removed when its agent is deleted.
+- **The tenant default agent.** One per tenant, created by the broker at startup and
+  on first use, marked *default* in **Admin → Agents** and not deletable. It acts with
+  the user's own skills (the personal skill check applies, not the agent's skill
+  list) and sees no agent memory, so personal chat keeps working with no agent
+  picked. Every user may use it through the FGA tuple `user:* usable_by`, written
+  when the agent is created (audited as `aikonos.broker.agent.usable_by.added`,
+  actor `system:default-agent`). To narrow it, grant `usable_by` to groups and then
+  remove `user:*`; the broker restores `user:*` at startup only when the agent has no
+  `usable_by` tuple at all. A user without `can_use` on it is refused (`403` in chat).
+
+A schedule created without an actor fires as its owner's default agent, resolved at
+each fire. With `identity.obo=enforce` such a schedule stays parked, as before.
+
 ## Known gaps (accepted for now)
 
 | Gap | Today | Possible future feature |

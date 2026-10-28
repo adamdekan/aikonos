@@ -92,7 +92,10 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	// in that agent's Skills.  The check runs before OPA so a compromised gateway
 	// cannot forge an approval for a tool the agent was never authorised to use.
 	// Tasks without an agent_id (normal human north tasks) are completely unaffected.
-	if task.AgentID != nil {
+	// AG-01: the tenant default agent carries the user's own grants, so a task
+	// bound to it takes the personal (user skill) gate below instead.
+	agentBound := task.AgentID != nil && !isDefaultAgent(ctx, s.deps, tenantID, task.AgentID.String())
+	if agentBound {
 		if violation := s.checkAgentSkills(ctx, tenantID, task.AgentID.String(), plan); violation != "" {
 			s.recordPlanDecision(ctx, traceID, tenantID, req, task, auditv1.PolicyDecision_DENY, decisionRecord{
 				Kind:    decisionKindAgentSkills,
@@ -180,7 +183,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		// closed, which would deny every MCP tool from an interactive session.
 		fgaDec := ""
 		var fgaRec *fgaRecord
-		if task.AgentID == nil && !strings.HasPrefix(step.ToolId, "mcp:") {
+		if !agentBound && !strings.HasPrefix(step.ToolId, "mcp:") {
 			fgaDec, fgaRec = s.userSkillDecision(ctx, task.OwnerUserID, step.ToolId)
 		}
 

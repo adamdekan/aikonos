@@ -61,7 +61,6 @@ const cfg = {
   schedulerTickMs: 30000,
   schedulerClaimLimit: 10,
   schedulerRunTimeoutMs: 180000,
-  agentForUserOverrides: {},
   openrouterApiKey: "",
   oidcIssuer: "",
   oidcJwksUrl: "",

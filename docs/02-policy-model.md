@@ -110,10 +110,14 @@ type agent
     define owner_user: [user]
     define owner_group: [group#member]
     define owner: owner_user or owner_group
-    define usable_by: [user, group#member]
+    define usable_by: [user, user:*, group#member]
     define can_delegate_to_user: owner_user
     define can_use: usable_by or owner
 ```
+
+`user:*` exists for the tenant default agent (AG-01): the broker writes
+`user:* usable_by agent:<default>` when it creates that agent, so every user may
+use it. An admin may replace the tuple with group grants to narrow it.
 
 **Example checks**:
 - `check(user:alice, can_invoke, skill:siem_query)` → yes/no

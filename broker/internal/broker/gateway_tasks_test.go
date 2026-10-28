@@ -132,6 +132,7 @@ func newSandboxSvcForGatewayTest(t *testing.T, store taskStore, minter *capabili
 	deps.GatewayGrantKey = testGrantKey
 	deps.GatewayGrantTTL = testGrantTTL
 	deps.Tasks = store
+	deps.Agents = &fakeAgentStore{} // AG-01: unnamed runs bind the tenant default agent
 	return NewSandboxService(deps)
 }
 
@@ -668,13 +669,13 @@ func TestCreateGatewayTask_ScheduledGrantSetsGrantID(t *testing.T) {
 	grant := mintV2Grant(t, gatewaygrant.Grant{TenantID: testTenantUUID, Subject: "alice@example.com",
 		Kind: gatewaygrant.KindScheduled, GrantID: runID.String()})
 	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
-		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: "alice-agent",
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant,
 	}); err != nil {
 		t.Fatalf("CreateGatewayTask: %v", err)
 	}
 	got := store.created[0]
-	if got.GrantID == nil || *got.GrantID != runID || got.OwnerUserID != "alice@example.com" || got.AgentID != nil {
-		t.Errorf("task = grant %v owner %q agent %v, want %s / alice / nil", got.GrantID, got.OwnerUserID, got.AgentID, runID)
+	if got.GrantID == nil || *got.GrantID != runID || got.OwnerUserID != "alice@example.com" || got.AgentID == nil {
+		t.Errorf("task = grant %v owner %q agent %v, want %s / alice / default agent", got.GrantID, got.OwnerUserID, got.AgentID, runID)
 	}
 
 	// AG-17 S8: the same actorless grant, minted in audit, is refused in enforce.
@@ -682,7 +683,7 @@ func TestCreateGatewayTask_ScheduledGrantSetsGrantID(t *testing.T) {
 	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
 	svc.deps.Config = cfg
 	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
-		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: "alice-agent",
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant,
 	}); status.Code(err) != codes.PermissionDenied || len(store.created) != 1 {
 		t.Fatalf("enforce: want PermissionDenied and no task, got %v (%d tasks)", err, len(store.created))
 	}

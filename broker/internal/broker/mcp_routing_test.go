@@ -63,6 +63,10 @@ func (f *fgaForMcpRouting) server() *httptest.Server {
 	}))
 }
 
+// mcpTestAgent is the agent the MCP routing tests' tasks are bound to and the
+// one the fake FGA grants can_access.
+const mcpTestAgent = "7e57a9e0-0000-4000-8000-000000000001"
+
 func buildMcpSandboxSvc(
 	t *testing.T,
 	connID string,
@@ -76,7 +80,8 @@ func buildMcpSandboxSvc(
 		t.Fatalf("GenerateMinter: %v", err)
 	}
 
-	agentRef := "agent:test-agent"
+	agentRef := "agent:" + mcpTestAgent
+	agentID := uuid.MustParse(mcpTestAgent)
 	object := "mcp_connector:" + connID
 
 	fgaSvc := &fgaForMcpRouting{
@@ -119,7 +124,7 @@ func buildMcpSandboxSvc(
 		Audit:      em,
 		Mcp:        McpDeps{Connections: repo},
 		TenantID:   "aikonos-dev",
-		Tasks:      executingTaskStore(""),
+		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, AgentID: &agentID, CostBudget: 100}},
 	})
 	return svc, m
 }
@@ -201,7 +206,7 @@ func TestInvokeTool_MCP_AllowedAgent_RoutesToHandler(t *testing.T) {
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
 	if err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -211,12 +216,14 @@ func TestInvokeTool_MCP_AllowedAgent_RoutesToHandler(t *testing.T) {
 	}
 }
 
-// Empty agent_id must be denied for mcp: tool calls.
+// AG-01: a task with no bound agent has no MCP principal; mcp: calls are
+// denied, never resolved from the caller.
 func TestInvokeTool_MCP_EmptyAgentID_Denied(t *testing.T) {
 	mcpSrv := fakeMCPSrvSimple(t)
 	connID := uuid.New().String()
 
 	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true)
+	svc.deps.Tasks = executingTaskStore("") // legacy unbound row
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-2")
 	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
@@ -238,7 +245,7 @@ func TestInvokeTool_MCP_EmptyAgentID_Denied(t *testing.T) {
 func TestInvokeTool_MCP_AgentIDMismatchWithBoundTask_Denied(t *testing.T) {
 	mcpSrv := fakeMCPSrvSimple(t)
 	connID := uuid.New().String()
-	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* "test-agent" is FGA-allowed */)
+	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* mcpTestAgent is FGA-allowed */)
 
 	boundAgent := uuid.New()
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, AgentID: &boundAgent, CostBudget: 100}}
@@ -249,7 +256,7 @@ func TestInvokeTool_MCP_AgentIDMismatchWithBoundTask_Denied(t *testing.T) {
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent", // does not match boundAgent
+		AgentId:         mcpTestAgent, // does not match boundAgent
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("agent_id mismatch with bound task: want PermissionDenied, got %v", err)
@@ -264,7 +271,7 @@ func TestInvokeTool_MCP_AgentIDMismatchWithBoundTask_Denied(t *testing.T) {
 func TestInvokeTool_MCP_TaskLoadTransportError_Denied(t *testing.T) {
 	mcpSrv := fakeMCPSrvSimple(t)
 	connID := uuid.New().String()
-	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* "test-agent" is FGA-allowed */)
+	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* mcpTestAgent is FGA-allowed */)
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{getErr: errors.New("connection reset by peer")}
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-transport-err")
@@ -273,7 +280,7 @@ func TestInvokeTool_MCP_TaskLoadTransportError_Denied(t *testing.T) {
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("task load transport error: want Unavailable, got %v", err)
@@ -285,35 +292,32 @@ func TestInvokeTool_MCP_TaskLoadTransportError_Denied(t *testing.T) {
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("task not found: want PermissionDenied, got %v", err)
 	}
 }
 
-// TestInvokeTool_MCP_TaskWithNoBoundAgent_Unaffected verifies a loadable task
-// that simply has no agent_id binding (personal task) skips the mismatch
-// check entirely — same as a task store that isn't wired at all.
-func TestInvokeTool_MCP_TaskWithNoBoundAgent_Unaffected(t *testing.T) {
+// TestInvokeTool_MCP_UnboundTaskRefusesCallerAgent (AG-01): the callerAgent
+// fallback is gone. A task with no agent binding refuses a caller agent claim,
+// even one the FGA would allow, instead of checking the claim.
+func TestInvokeTool_MCP_UnboundTaskRefusesCallerAgent(t *testing.T) {
 	mcpSrv := fakeMCPSrvSimple(t)
 	connID := uuid.New().String()
 	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true)
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100}} // no AgentID bound
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-nobinding")
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId:          "task-mcp-nobinding",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
-	if err != nil {
-		t.Fatalf("InvokeTool: %v", err)
-	}
-	if !resp.Success {
-		t.Fatalf("expected success, got error: %s", resp.Error)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("unbound task with caller agent: want PermissionDenied, got %v", err)
 	}
 }
 
@@ -333,7 +337,7 @@ func TestInvokeTool_MCP_NilPolicy_DeniesInsteadOfPanicking(t *testing.T) {
 		TaskId:          "task-mcp-nopolicy",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("nil Policy: want PermissionDenied (fail closed), got %v", err)
@@ -353,7 +357,7 @@ func TestInvokeTool_MCP_DeniedByFGA(t *testing.T) {
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         mcpTestAgent,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("FGA deny: want PermissionDenied, got %v", err)
@@ -457,7 +461,7 @@ func buildSouthSvcForMcp(
 ) *SandboxService {
 	t.Helper()
 
-	agentRef := "agent:test-agent"
+	agentRef := "agent:" + mcpTestAgent
 	object := "mcp_connector:" + connID
 
 	fgaSvc := &fgaForMcpRouting{
@@ -509,7 +513,7 @@ func TestListAccessibleMcpServersForAgent_GatewayAllowed(t *testing.T) {
 	ctx := gatewayCtx(testGatewaySpiffeID)
 	resp, err := svc.ListAccessibleMcpServersForAgent(ctx, &brokerv1.ListAccessibleMcpServersRequest{
 		TenantId: testTenantUUID,
-		AgentId:  "test-agent",
+		AgentId:  mcpTestAgent,
 	})
 	if err != nil {
 		t.Fatalf("ListAccessibleMcpServersForAgent: %v", err)
@@ -532,7 +536,7 @@ func TestListAccessibleMcpServersForAgent_FGADenied_EmptyList(t *testing.T) {
 	ctx := gatewayCtx(testGatewaySpiffeID)
 	resp, err := svc.ListAccessibleMcpServersForAgent(ctx, &brokerv1.ListAccessibleMcpServersRequest{
 		TenantId: testTenantUUID,
-		AgentId:  "test-agent",
+		AgentId:  mcpTestAgent,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -553,7 +557,7 @@ func TestListAccessibleMcpServersForAgent_NonGatewayPeer_Denied(t *testing.T) {
 	ctx := gatewayCtx("spiffe://aikonos.com/some-sandbox")
 	_, err := svc.ListAccessibleMcpServersForAgent(ctx, &brokerv1.ListAccessibleMcpServersRequest{
 		TenantId: testTenantUUID,
-		AgentId:  "test-agent",
+		AgentId:  mcpTestAgent,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("non-gateway peer: want PermissionDenied, got %v", err)
@@ -597,5 +601,27 @@ func TestListMcpServerToolsSouth_NonGatewayPeer_Denied(t *testing.T) {
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("non-gateway peer: want PermissionDenied, got %v", err)
+	}
+}
+
+// AG-01: the retired "<user>-agent" pseudo-principal is refused, and an
+// "agent:"-prefixed UUID is accepted like a bare one.
+func TestListAccessibleMcpServersForAgent_PseudoAgentRefused(t *testing.T) {
+	mcpSrv := fakeMCPSrvSimple(t)
+	connID := uuid.New().String()
+	svc := buildSouthSvcForMcp(t, mcpSrv.URL, connID, true, testGatewaySpiffeID)
+	ctx := gatewayCtx(testGatewaySpiffeID)
+
+	_, err := svc.ListAccessibleMcpServersForAgent(ctx, &brokerv1.ListAccessibleMcpServersRequest{
+		TenantId: testTenantUUID, AgentId: "alice-agent",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("pseudo agent: want InvalidArgument, got %v", err)
+	}
+	resp, err := svc.ListAccessibleMcpServersForAgent(ctx, &brokerv1.ListAccessibleMcpServersRequest{
+		TenantId: testTenantUUID, AgentId: "agent:" + mcpTestAgent,
+	})
+	if err != nil || len(resp.Connections) != 1 {
+		t.Fatalf("prefixed agent: want 1 connection, got %v %v", resp, err)
 	}
 }

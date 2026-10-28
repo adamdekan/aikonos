@@ -18,7 +18,6 @@ import { requireUser } from "../auth/require-user.js";
 import type { VerifyOptions, JwksResolver } from "../auth/verify.js";
 import { type Approver, noopRateLimitChecker } from "../broker/governance.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
-import { agentForUser } from "../broker/agent-identity.js";
 import { type AgentSpec } from "../pi/session.js";
 import { preAuthApprover } from "../scheduler/ticker.js";
 import { resolveAutoApproveAllowlist, type AllowlistSouth } from "../broker/auto-approve.js";
@@ -548,17 +547,34 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
 
     // Optional named agent: safe narrow — header is string | string[] | undefined.
     const h = req.headers["x-aikonos-agent"];
-    const namedAgentId = (typeof h === "string" && h) || body.agentId || null;
+    const requestedAgentId = (typeof h === "string" && h) || body.agentId || "";
 
-    // The session agent id is the value the Pi child uses for MCP resolution:
-    // agent:-prefixed for named agents, bare agentForUser id for the default.
-    // Factored once here so supervisor.keyFor, getOrSpawn, runIdentity, and
-    // selectRunApprover all reference the same value without drift.
-    // ponytail: agentForUser pseudo-id stays until AG-01 binds the actor to
-    // north tasks; then a default chat names the tenant default agent.
-    const sessionAgentId = namedAgentId
-      ? `agent:${namedAgentId}`
-      : agentForUser(user, cfg.agentForUserOverrides);
+    // AG-01 / H-05: the broker resolves the agent this run binds to. A named
+    // agent needs can_use (403 otherwise); none resolves the user's default
+    // agent (their setting, else the tenant default agent). Every chat binds a
+    // registered agent UUID.
+    let runAgent: { agentId: string; isDefault: boolean };
+    try {
+      const r = await clients.south.resolveRunAgent({
+        tenantId: cfg.defaultTenantId,
+        userId: user,
+        agentId: requestedAgentId,
+      });
+      runAgent = { agentId: r.agentId ?? "", isDefault: r.isDefault ?? false };
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      return null;
+    }
+    // namedAgentId is the agent whose own config shapes the session (spec,
+    // soul, agent memory). The tenant default agent carries the user's own
+    // grants instead, so a default chat stays a personal session.
+    const namedAgentId = runAgent.isDefault ? null : runAgent.agentId;
+
+    // The session agent id is the value the Pi child uses for MCP resolution
+    // and the task binding: always "agent:<uuid>". Factored once here so
+    // supervisor.keyFor, getOrSpawn, runIdentity, and selectRunApprover all
+    // reference the same value without drift.
+    const sessionAgentId = `agent:${runAgent.agentId}`;
 
     // Memory auto-recall: keyword-match the user's
     // recallable concept frontmatter against the prompt, same guard as auto
@@ -613,8 +629,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
 
     // Resolve the agent spec BEFORE committing the SSE response so we can still
     // send 4xx errors. Named agent: a miss is a caller error (400) because the
-    // caller explicitly requested this agent. Default agent: a miss is normal
-    // (no DB record) — fall through to manual HITL with spec undefined.
+    // caller explicitly requested this agent.
     let spec: AgentSpec | undefined;
     if (namedAgentId) {
       const agentSpec = await clients.south.getAgentSpec({
@@ -633,30 +648,9 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
         allowedProviders: agentSpec.allowedProviders ?? [],
         soul: agentSpec.soul ?? "",
       };
-    } else {
-      // Default agent: resolving the spec is best-effort — it only enables
-      // approval_mode:auto. A miss (no record) OR an error (the broker denies
-      // GetAgentSpec for a default id that isn't a real/permitted agent) must NOT
-      // break the chat: leave spec undefined and fall through to manual HITL.
-      try {
-        const agentSpec = await clients.south.getAgentSpec({
-          tenantId: cfg.defaultTenantId,
-          agentId: sessionAgentId,
-        });
-        if (agentSpec.found) {
-          spec = {
-            model: agentSpec.llmModel ?? "",
-            approvalMode: agentSpec.approvalMode ?? "needs_approval",
-            skills: agentSpec.skills ?? [],
-            preferredProvider: agentSpec.preferredProvider ?? "",
-            allowedProviders: agentSpec.allowedProviders ?? [],
-            soul: agentSpec.soul ?? "",
-          };
-        }
-      } catch (err) {
-        log.warn({ err: String(err), agentId: sessionAgentId }, "default-agent getAgentSpec failed — manual HITL");
-      }
     }
+    // Tenant default agent: no spec. Its own skills and approval mode do not
+    // apply; the session keeps the user's skills and manual HITL.
 
     // Resolve the child handle BEFORE SSE hijack so we can still send 503/500.
     const childKey = supervisor.keyFor({

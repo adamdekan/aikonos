@@ -20,7 +20,6 @@ import { log } from "../log";
 import { NorthClient } from "../broker/north";
 import { SouthClient } from "../broker/south";
 import { mapTool, type ToolMapping } from "../broker/mapping";
-import { agentForUser } from "../broker/agent-identity";
 import { oneStepPlan, GATEWAY_EXECUTION_HINT } from "../broker/planshim";
 import { ValidationOutcome, EffectClass, effectClassFromJSON } from "../../gen/ts/proto/plan";
 import { TaskStatus } from "../../gen/ts/proto/broker";
@@ -134,7 +133,7 @@ async function main(): Promise<void> {
     sandboxSpiffeId: cfg.gatewaySpiffeId,
     tenantId: cfg.defaultTenantId,
     userId: "alice@example.com",
-    agentId: agentForUser("alice@example.com", {}),
+    agentId: "", // AG-01: the task row binds the agent; no caller claim
   });
   log.info({ success: inv.success, error: inv.error, cost: inv.costUnitsConsumed, result: inv.result }, "InvokeTool returned");
   if (!inv.success) throw new Error(`InvokeTool failed: ${inv.error}`);

@@ -68,7 +68,7 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 		costBudget = 1000
 	}
 
-	agentID, err := s.northActor(ctx, traceID, tenant, owner, req.AgentId)
+	agentID, err := s.northActor(ctx, tenant, owner, req.AgentId)
 	if err != nil {
 		return nil, err
 	}
@@ -165,46 +165,37 @@ func envelopeUsable(env *db.Envelope) bool {
 	return false
 }
 
-// northActor resolves CreateTaskRequest.agent_id (AG-17): empty is unbound;
-// otherwise it must be the UUID of an agent in the tenant that the caller may
-// operate (can_use, tenant-admin fallback). A refusal (reason actor_not_found
-// or actor_not_permitted) is audited as aikonos.broker.task.denied and is
-// PermissionDenied either way, so the error does not reveal which agents exist.
-func (s *BrokerService) northActor(ctx context.Context, traceID, tenant, owner, agentID string) (*uuid.UUID, error) {
-	if agentID == "" {
-		return nil, nil
+// northActor resolves CreateTaskRequest.agent_id (AG-17, AG-01): a UUID of an
+// agent in the tenant that the caller may operate (can_use, tenant-admin
+// fallback); empty binds the caller's default agent. A refusal (reason
+// actor_not_found or actor_not_permitted) is audited as
+// aikonos.broker.task.denied and is PermissionDenied either way, so the error
+// does not reveal which agents exist. With agents disabled the task stays
+// unbound when none is named (there is no agent to bind).
+func (s *BrokerService) northActor(ctx context.Context, tenant, owner, agentID string) (*uuid.UUID, error) {
+	if agentID != "" {
+		if _, err := uuid.Parse(agentID); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
+		}
 	}
-	id, err := uuid.Parse(agentID)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
-	}
-	reason := ""
 	if s.deps.Agents == nil {
-		reason = "actor_not_found" // ponytail: agents disabled = no agent exists; fail closed
-	} else if _, err := s.deps.Agents.Get(ctx, tenant, id.String()); err != nil {
-		reason = "actor_not_found"
-	} else if !mayOperateActor(ctx, s.deps, owner, id.String()) {
-		reason = "actor_not_permitted"
+		if agentID == "" {
+			return nil, nil
+		}
+		// ponytail: agents disabled = no agent exists; fail closed
+		emitAgentEvent(ctx, s.deps, tenant, owner, agentID, "aikonos.broker.task.denied", "actor_not_found", nil)
+		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
+	}
+	a, reason, err := runAgent(ctx, s.deps, tenant, owner, agentID)
+	if err != nil {
+		s.deps.Logger.Error("CreateTask: agent store failed", zap.Error(err))
+		return nil, status.Error(codes.Unavailable, "agent could not be resolved; retry")
 	}
 	if reason != "" {
-		ctxStruct, _ := structpb.NewStruct(map[string]any{"reason": reason})
-		if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
-			EventId:      ids.EventID(),
-			TraceId:      traceID,
-			TenantId:     tenant,
-			OccurredAt:   timestampNow(),
-			ActorUserId:  owner,
-			ActorAgentId: id.String(),
-			EventType:    "aikonos.broker.task.denied",
-			ResourceRef:  "agent:" + id.String(),
-			Decision:     auditv1.PolicyDecision_DENY,
-			Context:      ctxStruct,
-		}); err != nil {
-			audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.task.denied")
-		}
-		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", id)
+		emitAgentEvent(ctx, s.deps, tenant, owner, agentID, "aikonos.broker.task.denied", reason, nil)
+		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
 	}
-	return &id, nil
+	return &a.ID, nil
 }
 
 // writeTaskRelations records the owner/approver relationships for a new task in

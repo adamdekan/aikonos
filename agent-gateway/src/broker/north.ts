@@ -114,6 +114,9 @@ import type {
   ListAlertsRequest,
   ListAlertsResponse,
   ListMyAgentsRequest,
+  GetMyDefaultAgentRequest,
+  SetMyDefaultAgentRequest,
+  MyDefaultAgent,
   ListMyAgentsResponse,
   ListAgentsRequest,
   ListAgentsResponse,
@@ -634,6 +637,15 @@ export class NorthClient {
 
   listMyAgents(req: ListMyAgentsRequest, token?: string): Promise<ListMyAgentsResponse> {
     return unary((r, m, o, cb) => this.client.listMyAgents(r, m, o, cb), req, bearer(token));
+  }
+
+  // AG-01: the caller's default-agent setting ("" = the tenant default agent).
+  getMyDefaultAgent(req: GetMyDefaultAgentRequest, token?: string): Promise<MyDefaultAgent> {
+    return unary((r, m, o, cb) => this.client.getMyDefaultAgent(r, m, o, cb), req, bearer(token));
+  }
+
+  setMyDefaultAgent(req: SetMyDefaultAgentRequest, token?: string): Promise<MyDefaultAgent> {
+    return unary((r, m, o, cb) => this.client.setMyDefaultAgent(r, m, o, cb), req, bearer(token));
   }
 
   listAgents(req: ListAgentsRequest, token?: string): Promise<ListAgentsResponse> {

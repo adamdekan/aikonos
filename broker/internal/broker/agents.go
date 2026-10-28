@@ -68,6 +68,10 @@ type AgentStore interface {
 	Update(ctx context.Context, a *db.Agent) error
 	Delete(ctx context.Context, tenantID, id string) error
 	SetSoul(ctx context.Context, tenantID, id, soul string) error
+	// AG-01: the tenant default agent and the per-user default-agent setting.
+	EnsureDefault(ctx context.Context, tenantID string) (*db.Agent, bool, error)
+	UserDefault(ctx context.Context, tenantID, userID string) (string, error)
+	SetUserDefault(ctx context.Context, tenantID, userID, agentID string) error
 }
 
 // validateAgentSkills rejects any skill the agent editor could not legitimately
@@ -113,6 +117,7 @@ func toProtoAgent(a *db.Agent) *brokerv1.Agent {
 		Soul:              a.Soul,
 		GatewayEnabled:    a.GatewayEnabled,
 		ServiceAgent:      a.ServiceAgent,
+		IsDefault:         a.IsDefault,
 		CreatedBy:         a.CreatedBy,
 		CreatedAt:         timestamppb.New(a.CreatedAt),
 		UpdatedAt:         timestamppb.New(a.UpdatedAt),
@@ -320,7 +325,9 @@ func (s *BrokerService) ListAgents(ctx context.Context, req *brokerv1.ListAgents
 					pa.UsableBy = append(pa.UsableBy, r.User)
 				}
 			}
-			pa.Orphaned = agentOrphaned(agentOwnerRefs(rels), blocks)
+			// AG-01: the tenant default agent has no owner by design; the
+			// tenant admins answer for it.
+			pa.Orphaned = !row.IsDefault && agentOrphaned(agentOwnerRefs(rels), blocks)
 		}
 		out = append(out, pa)
 	}
@@ -500,6 +507,10 @@ func (s *BrokerService) DeleteAgent(ctx context.Context, req *brokerv1.DeleteAge
 	var mcpServers []string
 	var createdBy string
 	if existing, gerr := s.deps.Agents.Get(ctx, tenant, req.Id); gerr == nil {
+		if existing.IsDefault {
+			// AG-01: chats and schedules that name no agent run as it.
+			return nil, status.Error(codes.FailedPrecondition, "the tenant default agent cannot be deleted")
+		}
 		mcpServers = existing.McpServers
 		createdBy = existing.CreatedBy
 	} else if !errors.Is(gerr, db.ErrAgentNotFound) {
@@ -555,7 +566,9 @@ func (s *BrokerService) ListMyAgents(ctx context.Context, req *brokerv1.ListMyAg
 		}
 		out := make([]*brokerv1.MyAgent, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, &brokerv1.MyAgent{Id: row.ID.String(), Name: row.Name})
+			if !row.IsDefault {
+				out = append(out, &brokerv1.MyAgent{Id: row.ID.String(), Name: row.Name})
+			}
 		}
 		return &brokerv1.ListMyAgentsResponse{Agents: out}, nil
 	}
@@ -581,7 +594,7 @@ func (s *BrokerService) ListMyAgents(ctx context.Context, req *brokerv1.ListMyAg
 	}
 	out := make([]*brokerv1.MyAgent, 0)
 	for _, row := range rows {
-		if canUse[row.ID.String()] {
+		if canUse[row.ID.String()] && !row.IsDefault {
 			out = append(out, &brokerv1.MyAgent{Id: row.ID.String(), Name: row.Name})
 		}
 	}

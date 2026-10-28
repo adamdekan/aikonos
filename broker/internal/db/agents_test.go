@@ -99,3 +99,53 @@ func TestAgentRepo_ServiceAgentRoundTrip(t *testing.T) {
 		t.Fatalf("Get after update: err=%v, want service_agent=false", err)
 	}
 }
+
+// TestAgentRepo_DefaultAgent pins AG-01: EnsureDefault creates one default
+// agent per tenant (idempotent), Delete refuses it, and the per-user setting
+// round-trips, clears, and cascades away with its agent.
+func TestAgentRepo_DefaultAgent(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAgentRepo(openTestPool(t), zap.NewNop())
+	tenant := uuid.New()
+
+	def, created, err := repo.EnsureDefault(ctx, tenant.String())
+	if err != nil || !created || !def.IsDefault || def.Name != DefaultAgentName {
+		t.Fatalf("EnsureDefault: %+v created=%v err=%v", def, created, err)
+	}
+	again, created, err := repo.EnsureDefault(ctx, tenant.String())
+	if err != nil || created || again.ID != def.ID {
+		t.Fatalf("EnsureDefault again: %+v created=%v err=%v, want the same agent", again, created, err)
+	}
+	if err := repo.Delete(ctx, tenant.String(), def.ID.String()); err != ErrAgentNotFound {
+		t.Fatalf("Delete default agent: err=%v, want ErrAgentNotFound", err)
+	}
+
+	named := &Agent{ID: uuid.New(), TenantID: tenant, Name: "named", ApprovalMode: "needs_approval"}
+	if err := repo.Create(ctx, named); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id, err := repo.UserDefault(ctx, tenant.String(), "alice"); err != nil || id != "" {
+		t.Fatalf("UserDefault unset: %q %v", id, err)
+	}
+	if err := repo.SetUserDefault(ctx, tenant.String(), "alice", named.ID.String()); err != nil {
+		t.Fatalf("SetUserDefault: %v", err)
+	}
+	if id, _ := repo.UserDefault(ctx, tenant.String(), "alice"); id != named.ID.String() {
+		t.Fatalf("UserDefault = %q, want %s", id, named.ID)
+	}
+	if err := repo.Delete(ctx, tenant.String(), named.ID.String()); err != nil {
+		t.Fatalf("Delete named: %v", err)
+	}
+	if id, _ := repo.UserDefault(ctx, tenant.String(), "alice"); id != "" {
+		t.Fatalf("UserDefault after agent delete = %q, want cleared", id)
+	}
+	if err := repo.SetUserDefault(ctx, tenant.String(), "alice", def.ID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetUserDefault(ctx, tenant.String(), "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := repo.UserDefault(ctx, tenant.String(), "alice"); id != "" {
+		t.Fatalf("UserDefault after clear = %q", id)
+	}
+}

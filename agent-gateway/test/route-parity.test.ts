@@ -111,6 +111,7 @@ const EXPECTED_ROUTES = [
   "GET /agents",
   "GET /agents/:id/mcp-servers",
   "GET /agents/:id/soul",
+  "GET /agents/default",
   "GET /api/audit",
   "GET /api/audit/stream",
   "GET /approvals",
@@ -198,6 +199,7 @@ const EXPECTED_ROUTES = [
   "PUT /admin/skill-bundles/:id",
   "PUT /admin/websearch",
   "PUT /agents/:id/soul",
+  "PUT /agents/default",
   "PUT /workspace/backend",
 ];
 
@@ -256,7 +258,6 @@ function fakeConfig(): Config {
     schedulerTickMs: 30000,
     schedulerClaimLimit: 10,
     schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {},
     externalPort: 8090,
     externalCorsOrigins: [],
     externalRateLimit: 60,

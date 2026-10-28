@@ -219,24 +219,10 @@
   relation: permitted_group
   object: skill:subagents
 
-# ── Delegation ───────────────────────────────────────────────────────────────
-# Each user owns their agent. agent#can_delegate_to_user follows from
-# owner_user (a computed relation, so it is never written here); user→user
-# delegation is the peer tuples further down.
-- user: user:alice@example.com
-  relation: owner_user
-  object: agent:alice-agent
-
-- user: user:bob@example.com
-  relation: owner_user
-  object: agent:bob-agent
-
 # ── MCP connector access ────────────────────────────────────────────────
-# alice-agent has direct access to the sample MCP connector.
-- user: agent:alice-agent
-  relation: permitted_agent
-  object: mcp_connector:sample
-
+# AG-01: the per-user pseudo agents (alice-agent, bob-agent) are gone; chats run
+# as a registered agent (the tenant default agent when none is picked), whose
+# connectors are attached in Admin → Agents.
 # security-team members can access the sample connector via group membership.
 - user: group:security-team#member
   relation: permitted_group

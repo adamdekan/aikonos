@@ -22,7 +22,6 @@ import type { RunResult, StepOutcome } from "../workflow/run.js";
 import type { WorkflowDef } from "../workflow/author.js";
 import type { RunIdentity } from "../ipc/bridge-server.js";
 import { ChildSupervisor } from "../ipc/supervisor.js";
-import { agentForUser } from "../broker/agent-identity.js";
 import { buildScheduledSessionRecord } from "./session-record.js";
 import type { SessionEvent } from "./session-record.js";
 
@@ -71,17 +70,10 @@ export type { ChildSupervisor as SupervisorDeps };
 
 // runViaChild executes one scheduled prompt via the supervisor. The child's
 // IPC events are drained into a RunOutcome (text_delta → summary, done → ok).
-// AG-17 S4: the acting agent is the schedule's delegated actor, supplied by the
+// AG-17 S4 / AG-01: the acting agent is the schedule's actor, supplied by the
 // broker and bound in the owner grant (bare UUID: CreateGatewayTask compares it
-// to the grant actor). A legacy row with no actor keeps the interactive path's
-// agentForUser id ("<user>-agent", deliberately not a UUID → unbound task, or the
-// AIKONOS_AGENT_FOR_USER override). Never the bare ownerUserId: a UUID there
-// FK-fails tasks_agent_id_fkey.
-// ponytail: drop the agentForUser fallback once AG-01 backfills an actor on every row.
-function scheduledAgentId(cfg: Config, run: { ownerUserId: string; actorAgentId: string }): string {
-  return run.actorAgentId || agentForUser(run.ownerUserId, cfg.agentForUserOverrides);
-}
-
+// to the grant actor). A schedule created without one gets its owner's
+// default agent at claim time, so every due run names a registered agent.
 async function runViaChild(
   cfg: Config,
   supervisor: ChildSupervisor,
@@ -89,7 +81,7 @@ async function runViaChild(
   run: { id: string; ownerUserId: string; prompt: string; approvedTools: string[]; ownerGrant: string; actorAgentId: string; runId: string; runAt: string },
   timeoutMs: number,
 ): Promise<RunOutcome> {
-  const sessionAgentId = scheduledAgentId(cfg, run);
+  const sessionAgentId = run.actorAgentId;
 
   const identity: Identity = {
     tenantId: cfg.defaultTenantId,
@@ -285,7 +277,7 @@ async function runViaWorkflow(
       const identity: Identity = {
         tenantId: cfg.defaultTenantId,
         userId: run.ownerUserId,
-        agentId: scheduledAgentId(cfg, run),
+        agentId: run.actorAgentId,
         ownerGrant: run.ownerGrant,
         runId: run.runId,
       };

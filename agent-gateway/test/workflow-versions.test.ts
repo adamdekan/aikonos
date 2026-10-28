@@ -71,7 +71,7 @@ function fakeConfig(): Config {
     port: 8080, defaultTenantId: "", oidcIssuer: "", oidcJwksUrl: "", oidcAudience: "",
     oidcSubjectClaim: "sub", oidcTenantClaim: "tenant_id", schedulerEnabled: false,
     schedulerTickMs: 30000, schedulerClaimLimit: 10, schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {}, externalPort: 8090, externalCorsOrigins: [],
+    externalPort: 8090, externalCorsOrigins: [],
     externalRateLimit: 60, threadTtlMs: 1800000, maxChildren: 32, childTtlMs: 1800000, natsUrl: "nats://nats:4222", auditSubject: "aikonos.audit.>", egressTimeoutMs: 120000, brokerTimeoutMs: 30000, rateLimitBreakerThreshold: 5, workflowReasonMaxTokens: 2048, maxLlmCallsPerRun: 100, approvalTimeoutMs: 900000, memorySemanticRecall: true, memoryEmbedTimeoutMs: 10000, subagentMaxWidth: 3, subagentBranchTimeoutMs: 180000,
   };
 }
