@@ -370,7 +370,7 @@ test("CP8 ticker pre-auth: NEEDS_HUMAN gate granted iff tool in approved_tools a
     effectClass: 0,
     reason: "requires approval",
     args: {},
-    stepUp: false, argsDigest: "",
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   });
   assert.equal(allowResult, true, "doc.read is in approved_tools → NEEDS_HUMAN granted");
 
@@ -381,7 +381,7 @@ test("CP8 ticker pre-auth: NEEDS_HUMAN gate granted iff tool in approved_tools a
     effectClass: 0,
     reason: "requires approval",
     args: {},
-    stepUp: false, argsDigest: "",
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   });
   assert.equal(denyResult, false, "web.fetch is NOT in approved_tools → NEEDS_HUMAN denied");
 
@@ -393,7 +393,7 @@ test("CP8 ticker pre-auth: NEEDS_HUMAN gate granted iff tool in approved_tools a
     effectClass: 0,
     reason: "requires approval",
     args: {},
-    stepUp: false, argsDigest: "",
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   });
   assert.equal(emptyDeny, false, "empty approved_tools → everything denied (safe default)");
 });

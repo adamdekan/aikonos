@@ -10,7 +10,10 @@
 // per-tenant catch-all "*" rule is what turns the list into default-deny.
 package netacl
 
-import "strings"
+import (
+	"net"
+	"strings"
+)
 
 type Action string
 
@@ -42,16 +45,18 @@ type Principal struct {
 	Groups []string
 }
 
+// normalizeHost lowercases host and drops a :port, IPv6 brackets and a
+// trailing dot. A bare IPv6 literal ("::1") stays whole (L-08).
 func normalizeHost(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
-	if i := strings.LastIndexByte(host, ':'); i >= 0 && !strings.Contains(host[i:], "]") {
-		host = host[:i] // strip :port
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
-	return strings.TrimSuffix(host, ".")
+	return strings.TrimSuffix(strings.Trim(host, "[]"), ".")
 }
 
 func matchHost(pattern, host string) bool {
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	pattern = strings.Trim(strings.ToLower(strings.TrimSpace(pattern)), "[]")
 	if pattern == "*" {
 		return true
 	}

@@ -14,7 +14,7 @@ function makeInfo(toolCallId: string): ApprovalInfo {
     effectClass: 0,
     reason: "test",
     args: {},
-    stepUp: false, argsDigest: "",
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   };
 }
 
@@ -157,4 +157,16 @@ test("a second approval under the same user and id denies the first instead of s
 
   assert.equal(registry.resolve("call_0", "user-a", true, ""), "resolved");
   assert.equal(await second, true);
+});
+
+// AG-07 slice 2: a decision the broker already holds (another approver, the
+// Inbox) withdraws the pending card.
+test("await_ withdraws the approval when `decided` aborts", async () => {
+  const registry = new ApprovalRegistry();
+  const decided = new AbortController();
+  const pending = registry.await_(makeInfo("call-d"), "user-d", "run-d", decided.signal);
+  assert.equal(registry.listForUser("user-d").length, 1);
+  decided.abort();
+  assert.equal(await pending, false);
+  assert.equal(registry.listForUser("user-d").length, 0);
 });

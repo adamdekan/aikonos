@@ -57,6 +57,7 @@ export function useAguiRun({
   currentAssistant,
   findTool,
   onApprovalRequest,
+  onApprovalResolved,
   scheduleOneShotPoll,
   stopPolling,
   resetApprovals,
@@ -130,6 +131,7 @@ export function useAguiRun({
       },
 
       onApprovalRequest,
+      onApprovalResolved,
 
       onToolError(info) {
         if (!assistantMsg) assistantMsg = currentAssistant();

@@ -221,6 +221,28 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     await flushPromises();
   });
 
+  // AG-07 slice 2: decided in the Inbox or by another approver → the gateway
+  // sends aikonos.approval.resolved and the dialog closes.
+  it("drops the dialog when the approval is resolved elsewhere", async () => {
+    let resolveStream;
+    let h;
+    mockRunAgui = vi.fn().mockImplementation(async (_opts, handlers) => {
+      h = handlers;
+      handlers.onRunStarted();
+      handlers.onApprovalRequest(info1);
+      await new Promise((res) => { resolveStream = res; });
+      handlers.onFinished();
+      return "thread-abc";
+    });
+    const w = await mountChat();
+    expect(w.findAll(".approval-modal").length).toBe(1);
+    h.onApprovalResolved({ toolCallId: info1.toolCallId });
+    await flushPromises();
+    expect(w.findAll(".approval-modal").length).toBe(0);
+    resolveStream();
+    await flushPromises();
+  });
+
   it("toasts once per polling session on poll failure, then stays quiet", async () => {
     let resolveStream;
     mockRunAgui = vi.fn().mockImplementation(async (_opts, handlers) => {

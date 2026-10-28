@@ -16,7 +16,7 @@ import { ephemeralKey, GatewayOverloadError } from "../ipc/supervisor.js";
 import type { ChildHandle } from "../ipc/supervisor.js";
 import type { Approver, Identity } from "../broker/governance.js";
 import { resolveAutoApproveAllowlist } from "../broker/auto-approve.js";
-import { preAuthApprover } from "../scheduler/ticker.js";
+import { preAuthApprover, unattendedAllowed } from "../scheduler/ticker.js";
 import type { AgentSpec } from "../pi/session.js";
 import type { ResolveSouth } from "../pi/session-plan.js";
 import { chatCandidates, type ChatProviderLike } from "../llm/provider-fallback.js";
@@ -226,6 +226,7 @@ export interface SubagentSouth
   extends Pick<ResolveSouth, "listAccessibleMcpServersForAgent" | "listMcpServerToolsSouth"> {
   getLlmProviders(req: { tenantId: string }): Promise<{ providers: SubagentProviderLike[] }>;
   getAgentSpec(req: { tenantId: string; agentId: string }): Promise<AgentSpecLike>;
+  getOrgSettings(req: { tenantId: string }): Promise<{ settings?: { unattendedAllowed?: boolean } }>;
 }
 
 export interface SubagentRunDeps {
@@ -326,12 +327,16 @@ export async function runSubagents(
   // auto-approve surface, so per-branch resolution would just repeat the same
   // 1+N south RPCs. resolveAutoApproveAllowlist fails OPEN to skills-only on an
   // MCP-listing error, which narrows the allowlist — never widens it.
-  const approverAllowlist = await resolveAutoApproveAllowlist(
-    deps.south,
-    deps.identity.tenantId,
-    deps.identity.agentId,
-    deps.callerSkills,
-  );
+  // H-06: with the org master off (or unreadable) branches pre-approve
+  // nothing, so a gated branch call is refused.
+  const approverAllowlist = (await unattendedAllowed(deps.south, deps.identity.tenantId, deps.log))
+    ? await resolveAutoApproveAllowlist(
+        deps.south,
+        deps.identity.tenantId,
+        deps.identity.agentId,
+        deps.callerSkills,
+      )
+    : [];
 
   // allSettled, not all: a rejecting branch must not leave its siblings running
   // unobserved (their withEphemeralChild finally still has to evict them).

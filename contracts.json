@@ -8,6 +8,12 @@
       "consumers": ["webui/web/src/api/agui.js"]
     },
     {
+      "value": "aikonos.approval.resolved",
+      "family": "agui-custom-event",
+      "producers": ["agent-gateway/src/agui/events.ts"],
+      "consumers": ["webui/web/src/api/agui.js"]
+    },
+    {
       "value": "aikonos.tool.error",
       "family": "agui-custom-event",
       "producers": ["agent-gateway/src/agui/events.ts"],

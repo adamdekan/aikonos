@@ -31,7 +31,8 @@ changes" indicator, and the page shows who last changed it and when.
 A single toggle: "Allow unattended (auto-approve) mode." This is an org-wide kill switch that
 sits above every individual agent's own approval-mode setting (see [Agents](/admin/agents/)): if
 this is off, no agent can run with `auto` approval mode, regardless of what that agent is
-configured to do. Turning it on means a tool call from an `auto`-mode agent can proceed with no
+configured to do. The switch covers scheduled runs, external API calls and subagents too: with
+it off, nothing is pre-approved and every gated action waits for a human in the Inbox. Turning it on means a tool call from an `auto`-mode agent can proceed with no
 human in the loop at all, which is also what makes an agent more exposed to prompt injection -
 there's no approval step to catch a malicious instruction hidden in content the agent read. The
 toggle is optimistic: it flips immediately and rolls back automatically if saving it fails. The

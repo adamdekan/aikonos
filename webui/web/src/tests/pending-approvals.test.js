@@ -46,3 +46,20 @@ describe("ArgsView.vue", () => {
     expect(w.find("details").attributes("open")).toBeDefined();
   });
 });
+
+// AG-07 slice 2: the notification's deep link (/inbox?approval=<taskId>)
+// marks that request.
+describe("PendingApprovals.vue deep link", () => {
+  it("marks the focused request", async () => {
+    listPendingApprovals.mockResolvedValue({
+      approvals: [
+        { taskId: "t1", requesterId: "a", requiresN: 1, approvals: 0, argsDigest: "d1", steps: [] },
+        { taskId: "t2", requesterId: "b", requiresN: 2, approvals: 1, argsDigest: "d2", steps: [] },
+      ],
+    });
+    const w = mount(PendingApprovals, { props: { focusTask: "t2" } });
+    await flushPromises();
+    expect(w.find("[data-testid='approval-t2']").classes()).toContain("pa-focus");
+    expect(w.find("[data-testid='approval-t1']").classes()).not.toContain("pa-focus");
+  });
+});

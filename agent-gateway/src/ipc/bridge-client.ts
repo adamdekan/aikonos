@@ -115,6 +115,7 @@ export interface BridgeClientLike {
 }
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const GATE_TIMEOUT_MS = 2 ** 31 - 1; // setTimeout's maximum (~24.8 days)
 
 /** Child-side IPC drop-in for GovernanceBridge: forwards gate/execute/delegate requests to the parent over a ChildLink, tagging each with the active runId so the parent routes to the correct per-run bridge. */
 export class RemoteBridgeClient implements BridgeClientLike {
@@ -154,8 +155,9 @@ export class RemoteBridgeClient implements BridgeClientLike {
   private async recv<R extends IpcMessage & { seq: number }>(
     msg: IpcMessage & { seq: number },
     replyKind: R["kind"],
+    timeoutMs = REQUEST_TIMEOUT_MS,
   ): Promise<Omit<R, "kind" | "seq">> {
-    const result = await this.link.request<R>(msg, replyKind, REQUEST_TIMEOUT_MS);
+    const result = await this.link.request<R>(msg, replyKind, timeoutMs);
     const { kind: _k, seq: _s, ...rest } = result;
     return rest;
   }
@@ -170,6 +172,9 @@ export class RemoteBridgeClient implements BridgeClientLike {
     return this.recv<GateResult>(
       { kind: "gate", seq: this.seq(), runId, toolCallId, toolName, input, opts },
       "gate-result",
+      // A gate may wait on a human (AG-07): the parent bounds it (approval
+      // timeout, run end closes the bridge), so the child adds no 120 s cap.
+      GATE_TIMEOUT_MS,
     );
   }
 

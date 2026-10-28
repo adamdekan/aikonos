@@ -61,8 +61,7 @@ export function registerApprovalRoutes(app: FastifyInstance, ctx: ApprovalRoutes
 
   // Decide one of them as the caller (broker ApproveTask). Any capability
   // tokens an approval mints stay here; the browser only learns the new status.
-  // ponytail: a run waiting in this gateway is not woken by this decision; the
-  // gateway resuming from broker state is AG-07 slice 2.
+  // A run waiting on this approval wakes through its broker poll (AG-07 slice 2).
   app.post<{ Params: { taskId: string }; Body: { approved?: boolean; argsDigest?: string } }>(
     "/pending-approvals/:taskId",
     async (req, reply) => {

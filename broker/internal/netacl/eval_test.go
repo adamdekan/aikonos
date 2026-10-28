@@ -150,3 +150,20 @@ func TestDecideAnyGroups_UserRuleStillWins(t *testing.T) {
 		t.Errorf("without a USER rule the group DENY applies, got %s", got)
 	}
 }
+
+// TestNormalizeHost_IPv6 (L-08): an IPv6 literal keeps every group, with or
+// without brackets and port, so a deny rule for it still matches.
+func TestNormalizeHost_IPv6(t *testing.T) {
+	for in, want := range map[string]string{
+		"::1": "::1", "[::1]": "::1", "[::1]:443": "::1", "fe80::1": "fe80::1",
+		"Example.COM:8443": "example.com", "example.com.": "example.com",
+	} {
+		if got := normalizeHost(in); got != want {
+			t.Errorf("normalizeHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+	rules := []Rule{{ScopeKind: ScopeTenant, Action: Deny, HostPattern: "[::1]"}}
+	if got := Decide(rules, Principal{User: "u"}, "::1"); got != Deny {
+		t.Errorf("Decide(::1) = %v, want Deny", got)
+	}
+}

@@ -4,9 +4,12 @@
 // the gateway executes and reports the outcome.
 //
 // Unattended approvals: a run carries an approved_tools allowlist (standing
-// human-consent). The pre-auth approver grants a NEEDS_HUMAN tool iff its aikonOS
-// tool id is in that list, else denies. It never overrides an OPA DENY or a
-// capability-scope failure — those still come back as a blocked tool call.
+// human-consent). The unattended approver grants a NEEDS_HUMAN tool iff its
+// aikonOS tool id is in that list; any other gated call pauses the run until a
+// human decides it in the Inbox (AG-07 slice 2). With the org master
+// unattendedAllowed off (H-06) nothing is pre-approved. It never overrides an
+// OPA DENY or a capability-scope failure — those still come back as a blocked
+// tool call.
 //
 // CP8: both the scheduler ticker and the external :8090 surface route through
 // the ChildSupervisor rather than building a GovernanceBridge directly. Owner
@@ -37,12 +40,6 @@ const MAX_SUMMARY = 1200;
 // scheduler's own fan-out per tick.
 const SCHEDULER_MAX_CONCURRENT_RUNS = 4;
 
-// Tools always pre-approved for unattended scheduler runs. Without a baseline
-// a run with no explicit approvedTools list cannot use any tools, making
-// scheduled tasks useless in practice. These three are the minimum viable set;
-// all still pass FGA + OPA at plan time — pre-auth only substitutes for HITL.
-const SCHEDULER_BASELINE_TOOLS = ["web.fetch", "doc.read", "doc.write"];
-
 interface RunOutcome {
   ok: boolean;
   summary: string;
@@ -50,10 +47,9 @@ interface RunOutcome {
   runId: string;
 }
 
-// preAuthApprover is the unattended-run approval policy: a tool requiring human
-// approval is granted iff its aikonOS tool id is in the schedule's standing
-// allowlist. Exposed for testing — the governance semantics are the crux of the
-// feature.
+// preAuthApprover is the deny-fast allowlist policy (auto-approve chat agents,
+// subagent branches): a tool requiring human approval is granted iff its
+// aikonOS tool id is in the allowlist, else denied at once.
 export function preAuthApprover(approvedTools: string[], log?: Logger): Approver {
   const allow = new Set(approvedTools);
   return async (info) => {
@@ -61,6 +57,39 @@ export function preAuthApprover(approvedTools: string[], log?: Logger): Approver
     log?.info({ tool: info.toolId, allowed: ok }, "scheduled run: pre-authorized approval decision");
     return ok;
   };
+}
+
+// unattendedApprover is the scheduled- and external-run policy (AG-07 slice
+// 2, L-25): a gated tool on the standing allowlist is approved; any other
+// waits, unanswered, for a human — GovernanceBridge's broker poll ends the
+// wait when someone decides in the Inbox, and `decided` then releases this.
+export function unattendedApprover(approvedTools: string[], log?: Logger): Approver {
+  const allow = new Set(approvedTools);
+  return (info, decided) => {
+    if (allow.has(info.toolId)) return Promise.resolve(true);
+    log?.info({ tool: info.toolId }, "unattended run: waiting for a human approval");
+    return new Promise<boolean>((resolve) => {
+      if (decided?.aborted) resolve(false);
+      else decided?.addEventListener("abort", () => resolve(false), { once: true });
+    });
+  };
+}
+
+// unattendedAllowed reads the org master for unattended auto-approval (A8,
+// H-06), once per run. Fails closed: an unreadable setting pre-approves
+// nothing, so gated calls wait for a human instead.
+export async function unattendedAllowed(
+  south: { getOrgSettings(req: { tenantId: string }): Promise<{ settings?: { unattendedAllowed?: boolean } }> },
+  tenantId: string,
+  log?: Logger,
+): Promise<boolean> {
+  try {
+    const org = await south.getOrgSettings({ tenantId });
+    return org.settings?.unattendedAllowed ?? true;
+  } catch (err) {
+    log?.warn({ err: String(err) }, "getOrgSettings failed — no unattended pre-approval for this run");
+    return false;
+  }
 }
 
 // SupervisorDeps is the injection seam for the supervisor used by tick().
@@ -80,6 +109,7 @@ async function runViaChild(
   log: Logger,
   run: { id: string; ownerUserId: string; prompt: string; approvedTools: string[]; ownerGrant: string; actorAgentId: string; runId: string; runAt: string },
   timeoutMs: number,
+  unattended: boolean,
 ): Promise<RunOutcome> {
   const sessionAgentId = run.actorAgentId;
 
@@ -112,7 +142,8 @@ async function runViaChild(
     runId,
   };
 
-  handle.setRunContext(runId, runIdentity, preAuthApprover([...SCHEDULER_BASELINE_TOOLS, ...run.approvedTools], log), runId);
+  // L-25: no baseline — only the schedule's own explicit list is pre-approved.
+  handle.setRunContext(runId, runIdentity, unattendedApprover(unattended ? run.approvedTools : [], log), runId);
 
   let text = "";
   const summaryTools: string[] = [];
@@ -261,6 +292,7 @@ async function runViaWorkflow(
     runAt: string;
   },
   timeoutMs: number,
+  unattended: boolean,
   // Spend-caps CP3 finding 1: threaded through so a scheduled workflow's
   // reason steps run the same pre-gate check as every other GovernanceBridge
   // construction site (server.ts's ChildSupervisor factory, routes/workflows.ts).
@@ -272,6 +304,9 @@ async function runViaWorkflow(
   // approver, not just bridge.runWorkflow() — is bounded by timeoutMs. A hang
   // anywhere in this chain (e.g. a wedged getWorkflow call) must still free
   // the pool slot, the same guarantee the prompt path gets from its own timer.
+  // Closed on every exit, so an approval this run still waits for ends with
+  // it (a timeout otherwise leaves the bridge polling the broker).
+  let bridge: GovernanceBridge | undefined;
   const { def, outcome } = await raceTimeout(
     (async () => {
       const identity: Identity = {
@@ -298,17 +333,15 @@ async function runViaWorkflow(
       const toolStepSkills = (def.steps ?? [])
         .filter((s) => s.kind !== "reason")
         .map((s) => s.skill);
-      // Scheduling the workflow IS the standing approval
-      //: no SCHEDULER_BASELINE_TOOLS
-      // here — only this version's own tool steps are pre-authorized, derived
-      // live every fire, never a stored list. OPA DENY and FGA denials still
-      // halt the run; the approver only ever answers the NEEDS_HUMAN/
-      // NEEDS_STEP_UP question for those exact steps.
-      const approver = preAuthApprover(toolStepSkills, log);
+      // Scheduling the workflow IS the standing approval: only this version's
+      // own tool steps are pre-authorized (none when the org master is off),
+      // derived live every fire, never a stored list. OPA DENY and FGA
+      // denials still halt the run; any other gated call waits for a human.
+      const approver = unattendedApprover(unattended ? toolStepSkills : [], log);
       // run.runId doubles as the session id (reportScheduledRunResult files the
       // session record under it), so the reason steps that make up a workflow
       // run's entire LLM cost are billed to the session the user can open.
-      const bridge = new GovernanceBridge(
+      bridge = new GovernanceBridge(
         cfg, clients, identity, approver, log, rateLimitChecker, undefined, run.runId, run.runId,
       );
 
@@ -316,7 +349,7 @@ async function runViaWorkflow(
       return { def, outcome };
     })(),
     timeoutMs,
-  );
+  ).finally(() => bridge?.close());
   if (!outcome.ok) throw new Error(outcome.error);
 
   const finishedAt = new Date().toISOString();
@@ -413,6 +446,7 @@ async function runOneScheduledRun(
   const runAt = new Date().toISOString();
   let outcome: RunOutcome;
   try {
+    const unattended = await unattendedAllowed(clients.south, cfg.defaultTenantId, log);
     outcome = run.workflowLineageId
       ? await runViaWorkflow(
           cfg,
@@ -429,6 +463,7 @@ async function runOneScheduledRun(
             runAt,
           },
           cfg.schedulerRunTimeoutMs,
+          unattended,
           rateLimitChecker,
         )
       : await runViaChild(cfg, supervisor, log, {
@@ -440,7 +475,7 @@ async function runOneScheduledRun(
           actorAgentId: run.actorAgentId ?? "",
           runId,
           runAt,
-        }, cfg.schedulerRunTimeoutMs);
+        }, cfg.schedulerRunTimeoutMs, unattended);
   } catch (err) {
     const summary = String(err).slice(0, MAX_SUMMARY);
     const finishedAt = new Date().toISOString();

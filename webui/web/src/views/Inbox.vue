@@ -172,7 +172,7 @@ onMounted(async () => {
     </div>
 
     <template v-else>
-      <PendingApprovals />
+      <PendingApprovals :focus-task="String($route.query.approval ?? '')" />
 
       <section class="section">
         <h3 class="section-title">Pending delegations</h3>

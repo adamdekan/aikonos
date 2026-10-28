@@ -779,3 +779,52 @@ func TestCreateGatewayTask_GrantActorCaseInsensitive(t *testing.T) {
 
 // webFetchDigest is the args digest of the fake store's plan steps (AG-07).
 var webFetchDigest = approvalsvc.ArgsDigest([]db.ExecutableStep{{Seq: 0, ToolID: "web.fetch"}})
+
+// TestGetGatewayApproval_StateVotesAndTokens (AG-07 slice 2): a 2-of-n gate
+// reports the votes so far and that its requester may not vote (separation
+// of duty); once APPROVED by others the waiting run gets its tokens; a
+// non-gateway peer is refused.
+func TestGetGatewayApproval_StateVotesAndTokens(t *testing.T) {
+	minter, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	taskID := uuid.New()
+	task := &db.Task{
+		TaskID: taskID, TenantID: uuid.MustParse(testTenantUUID), OwnerUserID: "alice@example.com",
+		GatewayManaged: true, State: db.TaskStateAwaitingApproval,
+	}
+	store := &fakeGatewayApproveStore{
+		created: []*db.Task{task},
+		approval: &db.ApprovalRequest{
+			ApprovalID: uuid.New(), TaskID: taskID, RequesterID: "alice@example.com",
+			ApproverSet: []string{"bob@example.com", "carol@example.com"}, RequiresN: 2,
+			ApprovedBy: []string{"bob@example.com"}, State: db.ApprovalPending,
+			Summary: map[string]any{"step_up": true},
+		},
+	}
+	svc := newSandboxSvcForGatewayTest(t, store, minter)
+	req := &brokerv1.GetGatewayApprovalRequest{TenantId: testTenantUUID, TaskId: taskID.String()}
+
+	got, err := svc.GetGatewayApproval(gatewaySpiffeCtx(), req)
+	if err != nil {
+		t.Fatalf("GetGatewayApproval: %v", err)
+	}
+	if got.Status != brokerv1.TaskStatus_AWAITING_APPROVAL || got.RequiresN != 2 || got.Approvals != 1 ||
+		!got.StepUp || got.OwnerMayApprove || len(got.CapabilityTokenIds) != 0 {
+		t.Fatalf("pending gate = %+v", got)
+	}
+
+	task.State = db.TaskStateApproved
+	got, err = svc.GetGatewayApproval(gatewaySpiffeCtx(), req)
+	if err != nil {
+		t.Fatalf("GetGatewayApproval (approved): %v", err)
+	}
+	if got.Status != brokerv1.TaskStatus_APPROVED || got.CapabilityTokenIds[0] == "" {
+		t.Fatalf("approved gate = %+v, want APPROVED with a step-0 token", got)
+	}
+
+	if _, err := svc.GetGatewayApproval(nonGatewayCtx(), req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-gateway peer: err = %v, want PermissionDenied", err)
+	}
+}

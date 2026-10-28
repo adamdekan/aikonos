@@ -55,6 +55,29 @@ waiting. A denial needs no digest. As a result:
 - External clients that call the approve RPC directly must send the digest
   they received from the approval request.
 
+## Approvals resume from the broker (AG-07 slice 2)
+
+- A waiting tool call polls the broker (`GetGatewayApproval`, south) every
+  2 s, so a decision made anywhere ends the wait: the chat dialog, the Inbox,
+  another session. The dialog closes on `aikonos.approval.resolved`.
+- Separation of duty: on an n >= 2 gate the requester cannot vote, even when
+  the approver set is empty. The chat shows "Waiting for N more approvers"
+  with only Withdraw; the others decide from their Inbox.
+- Scheduled and external runs no longer deny an unlisted gated call; they
+  wait for a human until the run's timeout (`AIKONOS_SCHEDULER_RUN_TIMEOUT_MS`,
+  180 s for external calls). The scheduler baseline (web.fetch, doc.read,
+  doc.write) is gone: add those tools to a schedule's approved tools if it
+  needs them unattended.
+- The org switch "Allow unattended (auto-approve) mode" now covers scheduled,
+  external and subagent runs, and an unreadable setting counts as off.
+- New approval requests are sent through the alerting webhook and SMTP sinks
+  with a link to `<alerting.inbox_url>?approval=<task id>`
+  (`AIKONOS_ALERTING_INBOX_URL`; unset = no approval notifications). SMTP
+  mails the approvers whose email the user directory knows. SMTP now requires
+  STARTTLS unless the relay is on loopback.
+- Not yet: a run that was waiting when the gateway restarted is gone; its
+  approval stays in the Inbox until it expires, and approving it runs nothing.
+
 ## Scheduled runs
 
 Each schedule is a standing delegation from its owner to an agent. The

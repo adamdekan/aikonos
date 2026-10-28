@@ -39,6 +39,17 @@ describe("ApprovalModal.vue", () => {
     mockPost.mockClear();
   });
 
+  // AG-07 slice 2: separation of duty — the requester cannot approve; the
+  // dialog waits for the others and can only withdraw.
+  it("waits for other approvers when the owner may not vote", async () => {
+    const w = makeModal({ request: { ...baseInfo, stepUp: true, ownerMayApprove: false, requiresN: 2, approvals: 0 } });
+    expect(w.find("[data-testid='approval-waiting']").text()).toContain("Waiting for 2 more approvers");
+    expect(w.find("[data-action='approve']").exists()).toBe(false);
+    await w.find("[data-testid='approval-withdraw']").trigger("click");
+    await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith("/approve/tc-99", { body: { approved: false, argsDigest: "digest-99" } });
+  });
+
   it("renders when visible=true", () => {
     const w = makeModal();
     expect(w.find(".approval-modal").exists()).toBe(true);

@@ -39,6 +39,12 @@ is deliberate: if you are not sure, the safe path is to say no rather than appro
 accident. Approving lets the specific action through; denying stops it without ending your
 conversation.
 
+Some requests need more than one approver, and you can never approve your own: the prompt then
+says how many approvers it is still waiting for, and offers only Withdraw. The other approvers
+get a notification with a link and decide from their Inbox; once they do, the prompt closes and
+the action runs (or is refused) on its own. A decision made from the Inbox or another session
+reaches a waiting chat the same way.
+
 ## Unattended mode
 
 Some agents can run in an unattended, or auto-approve, mode, where actions that would
@@ -46,6 +52,9 @@ normally need your sign-off proceed on their own. This is a per-agent setting yo
 administrator configures, and it trades convenience for exposure: an agent acting unattended
 cannot pause and ask you when it is unsure. Your organization can also switch unattended mode
 off everywhere at once, which overrides any individual agent's setting.
+
+Scheduled and API-triggered runs pre-approve only the tools explicitly listed for them. Any
+other action that needs approval pauses the run and waits in the Inbox for a human.
 
 ## Related pages
 

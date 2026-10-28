@@ -7,6 +7,9 @@
 // so it keeps its own literals, pinned instead by the repo-root
 // contracts.json grep-contract test (agent-gateway/test/contracts.test.ts).
 export const AIKONOS_APPROVAL_REQUEST = "aikonos.approval.request";
+// AG-07 slice 2: the approval was decided elsewhere (Inbox, another session)
+// or withdrawn; the dialog for this toolCallId closes.
+export const AIKONOS_APPROVAL_RESOLVED = "aikonos.approval.resolved";
 export const AIKONOS_TOOL_ERROR = "aikonos.tool.error";
 export const AIKONOS_USER = "aikonos.user";
 export const AIKONOS_SKILLS_LOADED = "aikonos.skills.loaded";

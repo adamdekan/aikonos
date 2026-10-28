@@ -249,6 +249,9 @@ func main() {
 	viper.SetDefault("alerting.smtp_to", "")
 	viper.SetDefault("alerting.smtp_username", "")
 	viper.SetDefault("alerting.smtp_password", "")
+	// Webui Inbox URL for approval-request deep links (AG-07); empty ⇒ approval
+	// requests are not notified.
+	viper.SetDefault("alerting.inbox_url", "")
 	// Dev-mode guard. When false (the default), the broker refuses to start if
 	// any of OIDC / OpenFGA / capability-key are unconfigured/ephemeral.
 	// Set AIKONOS_DEV_MODE=true to allow degraded startup (local dev only).
@@ -670,6 +673,7 @@ func main() {
 	// Alerting engine — subscribes to the audit bus and fires alerts to all
 	// configured sinks (webhook and/or SMTP). Enabled when at least one sink is
 	// configured and the bus is up. Observe-only: never affects any gate or decision.
+	var alertNotifier alerting.Notifier // nil when no sink is configured
 	{
 		var alertSinks []alerting.Notifier
 		if webhookURL := viper.GetString("alerting.webhook_url"); webhookURL != "" {
@@ -691,6 +695,9 @@ func main() {
 			})
 			log.Info("alerting: SMTP sink configured", zap.String("host", smtpHost))
 		}
+		if len(alertSinks) > 0 {
+			alertNotifier = alerting.NewMultiNotifier(log, alertSinks...)
+		}
 		if len(alertSinks) > 0 && eventBus.Enabled() {
 			alertEv := alerting.NewEvaluator(alerting.Config{
 				DenyRateThreshold:           viper.GetInt("alerting.deny_rate_threshold"),
@@ -704,8 +711,7 @@ func main() {
 				MaxBaselineEntries:          viper.GetInt("alerting.unusual_max_baseline_entries"),
 				OffHoursDestructiveCooldown: time.Duration(viper.GetInt("alerting.off_hours_destructive_cooldown_seconds")) * time.Second,
 			})
-			multi := alerting.NewMultiNotifier(log, alertSinks...)
-			alertEngine, err := alerting.NewEngineWithRepo(eventBus, notify.AuditWildcardSubject(), alertEv, multi, alertRepo, log)
+			alertEngine, err := alerting.NewEngineWithRepo(eventBus, notify.AuditWildcardSubject(), alertEv, alertNotifier, alertRepo, log)
 			if err != nil {
 				log.Warn("alerting engine subscribe failed — alerting degraded, broker continues", zap.Error(err))
 			} else {
@@ -850,7 +856,12 @@ func main() {
 
 	// Enrich audit events with a human-readable actor_email (oid stays the stable
 	// actor_user_id). Cached per-tenant so the audit hot path doesn't query per event.
-	auditEmitter.AttachEmailResolver(brokersvc.NewCachedEmailResolver(userDirRepo, 60*time.Second))
+	emailResolver := brokersvc.NewCachedEmailResolver(userDirRepo, 60*time.Second)
+	auditEmitter.AttachEmailResolver(emailResolver)
+	var approvalNotify brokersvc.ApprovalNotifyFunc
+	if inboxURL := viper.GetString("alerting.inbox_url"); alertNotifier != nil && inboxURL != "" {
+		approvalNotify = brokersvc.NewApprovalNotify(alertNotifier, emailResolver, inboxURL)
+	}
 
 	// MCP bearer-token store: reuse the Vault client (which satisfies
 	// secrets.McpBearerStore — write, read, delete) when Vault is configured.
@@ -1103,6 +1114,7 @@ func main() {
 		Workflows:            workflowRepo,
 		UserAssertions:       oidcValidator, // never nil; disabled ⇒ assertions refused
 		Revocation:           revocationChecker,
+		ApprovalNotify:       approvalNotify, // SubmitPlan builds approval gates (AG-07)
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)
 	reflection.Register(southServer) // dev convenience; south is mTLS+SPIFFE-gated

@@ -107,6 +107,12 @@ export function useApprovals() {
     queue.value.shift();
   }
 
+  // AG-07: the broker decided it elsewhere (the Inbox, another approver) or the
+  // run gave up on it — drop its dialog.
+  function onApprovalResolved(ev) {
+    queue.value = queue.value.filter((a) => a.toolCallId !== ev?.toolCallId);
+  }
+
   // Called on run end (finish/error/stop) alongside stopPolling — the handled
   // set and any stale queue entries must not leak into the next run.
   function resetApprovals() {
@@ -123,6 +129,7 @@ export function useApprovals() {
     approval,
     pendingCount,
     onApprovalRequest,
+    onApprovalResolved,
     startPolling,
     scheduleOneShotPoll,
     stopPolling,

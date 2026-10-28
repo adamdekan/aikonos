@@ -120,6 +120,8 @@ export interface BridgeLike {
   // Optional so that test stubs that don't need per-run state can omit them.
   setToken?(token?: string): void;
   setApprover?(approver: Approver): void;
+  // Ends the run's waits (a pending approval, AG-07). Optional for stubs.
+  close?(): void;
 }
 
 // Factory type injected via constructor so tests can supply spy bridges without
@@ -312,6 +314,7 @@ export class RemoteBridgeServer {
   // connection closes. The bridge GC's; any pending IPC requests for this runId
   // will fail closed (reply not-found path in handlers below).
   clearRunContext(runId: string): void {
+    this.runBridges.get(runId)?.close?.();
     this.runBridges.delete(runId);
   }
 
@@ -325,6 +328,7 @@ export class RemoteBridgeServer {
       reject(err);
     }
     this.pending.clear();
+    for (const bridge of this.runBridges.values()) bridge.close?.();
     this.runBridges.clear();
   }
 

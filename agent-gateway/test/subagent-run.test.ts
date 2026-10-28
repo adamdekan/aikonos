@@ -363,6 +363,7 @@ function makeSouth(
   const specCalls: SouthSpecCall[] = [];
   const south: SubagentSouth = {
     getLlmProviders: async () => ({ providers }),
+    getOrgSettings: async () => ({ settings: { unattendedAllowed: true } }),
     listAccessibleMcpServersForAgent: async () => ({
       connections: mcp.map((m) => ({ id: m.id, name: m.id })),
     }),
@@ -429,7 +430,7 @@ function approverBridgeFactory(): {
         effectClass: 2,
         reason: "human approval required",
         args: input,
-        stepUp: false, argsDigest: "",
+        stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
       });
       const decision = ok ? { allow: true } : { allow: false, reason: "approval declined" };
       gated.push({ toolId, ...decision });

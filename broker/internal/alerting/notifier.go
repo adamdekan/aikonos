@@ -3,6 +3,7 @@ package alerting
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -132,6 +133,17 @@ func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
 	}
 	defer c.Close()
 
+	// L-08: credentials and approval links never cross the wire in clear.
+	// Upgrade whenever the server offers STARTTLS; refuse one that does not,
+	// unless it is a loopback relay (a local mail catcher).
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: n.Host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("alerting: smtp STARTTLS: %w", err)
+		}
+	} else if !isLoopbackHost(n.Host) {
+		return fmt.Errorf("alerting: smtp server %s does not offer STARTTLS", n.Host)
+	}
+
 	if n.Username != "" {
 		if err := c.Auth(smtp.PlainAuth("", n.Username, n.Password, n.Host)); err != nil {
 			return fmt.Errorf("alerting: smtp auth: %w", err)
@@ -141,8 +153,14 @@ func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
 	if err := c.Mail(n.From); err != nil {
 		return fmt.Errorf("alerting: smtp MAIL FROM: %w", err)
 	}
-	if err := c.Rcpt(n.To); err != nil {
-		return fmt.Errorf("alerting: smtp RCPT TO: %w", err)
+	to := a.To
+	if len(to) == 0 {
+		to = []string{n.To}
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("alerting: smtp RCPT TO: %w", err)
+		}
 	}
 
 	wc, err := c.Data()
@@ -151,7 +169,10 @@ func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
 	}
 
 	subject := fmt.Sprintf("[aikonOS alert] %s — %s (%s)", a.Rule, a.Severity, a.TenantID)
-	body := n.composeMessage(a, subject)
+	if a.Link != "" {
+		subject = fmt.Sprintf("[aikonOS] %s", a.Title)
+	}
+	body := n.composeMessage(a, subject, strings.Join(to, ", "))
 	if _, err := fmt.Fprint(wc, body); err != nil {
 		wc.Close()
 		return fmt.Errorf("alerting: smtp write body: %w", err)
@@ -169,10 +190,10 @@ func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
 }
 
 // composeMessage builds an RFC 822 email body.
-func (n *SMTPNotifier) composeMessage(a Alert, subject string) string {
+func (n *SMTPNotifier) composeMessage(a Alert, subject, to string) string {
 	var b strings.Builder
 	b.WriteString("From: " + n.From + "\r\n")
-	b.WriteString("To: " + n.To + "\r\n")
+	b.WriteString("To: " + to + "\r\n")
 	b.WriteString("Subject: " + subject + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
@@ -185,7 +206,20 @@ func (n *SMTPNotifier) composeMessage(a Alert, subject string) string {
 	b.WriteString(fmt.Sprintf("Detail:    %s\r\n", a.Detail))
 	b.WriteString(fmt.Sprintf("Event ID:  %s\r\n", a.EventID))
 	b.WriteString(fmt.Sprintf("Fired at:  %s\r\n", a.FiredAt.UTC().Format(time.RFC3339)))
+	if a.Link != "" {
+		b.WriteString(fmt.Sprintf("Open:      %s\r\n", a.Link))
+	}
 	return b.String()
+}
+
+// isLoopbackHost reports whether host names this machine: "localhost" or a
+// loopback IP literal.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // multiNotifier fans out an Alert to all configured sinks. A failing sink is

@@ -29,7 +29,9 @@ export class ApprovalRegistry {
   // the process's lifetime (Config.approvalTimeoutMs).
   constructor(private readonly timeoutMs = 0) {}
 
-  await_(info: ApprovalInfo, user: string, runId: string): Promise<boolean> {
+  // decided (AG-07 slice 2) aborts when the broker already holds the decision
+  // (another approver voted) or the run ended: the entry is then withdrawn.
+  await_(info: ApprovalInfo, user: string, runId: string, decided?: AbortSignal): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const key = approvalKey(user, info.toolCallId);
       // Another of this user's runs already waits under the same id. Deny it
@@ -46,6 +48,8 @@ export class ApprovalRegistry {
         // A pending approval must never be the reason the process stays alive.
         entry.timer.unref();
       }
+      if (decided?.aborted) this.settle(key, entry, false);
+      else decided?.addEventListener("abort", () => this.settle(key, entry, false), { once: true });
     });
   }
 
