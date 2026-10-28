@@ -23,6 +23,12 @@ service BrokerService {
   // Approve or deny a task awaiting human approval
   rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
 
+  // Pending, unexpired approval requests the caller may decide (AG-07):
+  // caller in approver_set (or the set is empty) and FGA can_approve on the
+  // task — the same rule ApproveTask enforces. Rows the caller already
+  // approved are left out.
+  rpc ListPendingApprovals(ListPendingApprovalsRequest) returns (ListPendingApprovalsResponse);
+
   // Cancel a running or pending task
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 
@@ -685,6 +691,37 @@ message ApproveTaskRequest {
   bool approved = 3;
   string reason = 4;
   string approver_user_id = 5;
+  // AG-07 (M-28): PlanValidationResult.args_digest of the arguments the
+  // approver was shown. Required when approved=true; the broker recomputes it
+  // from the stored plan-step args and refuses a mismatch.
+  string args_digest = 6;
+}
+
+message ListPendingApprovalsRequest {
+  string tenant_id = 1;
+  string user_id   = 2;  // echoed; the OIDC identity is authoritative
+}
+
+message PendingApprovalStep {
+  int32 seq = 1;
+  string tool_id = 2;
+  google.protobuf.Struct args = 3;
+}
+
+message PendingApproval {
+  string approval_id  = 1;
+  string task_id      = 2;
+  string requester_id = 3;
+  int32  requires_n   = 4;
+  int32  approvals    = 5;  // votes so far
+  bool   step_up      = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  repeated PendingApprovalStep steps = 8;
+  string args_digest  = 9;  // echo as ApproveTaskRequest.args_digest
+}
+
+message ListPendingApprovalsResponse {
+  repeated PendingApproval approvals = 1;
 }
 
 message ApproveTaskResponse {
@@ -1770,6 +1807,7 @@ message ApproveGatewayTaskRequest {
   string owner_user_id  = 3;  // DEPRECATED (CP2): ignored for authz; broker derives approver from stored task
   bool   approved       = 4;
   string reason         = 5;
+  string args_digest    = 6;  // AG-07: as ApproveTaskRequest.args_digest
 }
 
 // ── Agent API key types ───────────────────────────────────────────────────────

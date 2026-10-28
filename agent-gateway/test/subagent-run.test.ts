@@ -428,7 +428,7 @@ function approverBridgeFactory(): {
         effectClass: 2,
         reason: "human approval required",
         args: input,
-        stepUp: false,
+        stepUp: false, argsDigest: "",
       });
       const decision = ok ? { allow: true } : { allow: false, reason: "approval declined" };
       gated.push({ toolId, ...decision });

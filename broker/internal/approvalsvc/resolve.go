@@ -35,6 +35,7 @@ func Resolve(
 	tenantID, taskID, approverUserID string,
 	approved bool,
 	reason string,
+	argsDigest string,
 ) (respStatus brokerv1.TaskStatus, capTokens map[int32]string, eventType string, decision auditv1.PolicyDecision, err error) {
 	ar, err := store.GetPendingApprovalByTask(ctx, tenantID, taskID)
 	if err != nil {
@@ -50,8 +51,23 @@ func Resolve(
 		return 0, nil, "", 0, status.Errorf(codes.PermissionDenied, "approver not authorized for task %s", taskID)
 	}
 
+	// AG-07 (M-28): an approval counts only for the arguments the approver
+	// was shown. Re-read the stored args and refuse a digest that does not
+	// match them; a denial needs no digest.
+	steps, serr := store.ListMintableSteps(ctx, tenantID, taskID)
+	if serr != nil {
+		logger.Error("approvalsvc.Resolve: list steps failed", zap.Error(serr))
+		return 0, nil, "", 0, status.Errorf(codes.Internal, "failed to load plan steps")
+	}
+	if approved && argsDigest != ArgsDigest(steps) {
+		return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "arguments for task %s do not match the approved digest", taskID)
+	}
+
 	newState, resolved, err := store.ResolveApproval(ctx, tenantID, ar.ApprovalID.String(), approverUserID, approved, reason)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) { // expired between the load and the vote (M-09)
+			return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "no pending approval for task %s", taskID)
+		}
 		if errors.Is(err, db.ErrVoterNotInApproverSet) {
 			return 0, nil, "", 0, status.Errorf(codes.PermissionDenied, "approver not in the approver set for task %s", taskID)
 		}
@@ -81,11 +97,6 @@ func Resolve(
 			if terr != nil {
 				logger.Error("approvalsvc.Resolve: load task failed", zap.Error(terr))
 				return 0, nil, "", 0, status.Errorf(codes.Internal, "failed to load task")
-			}
-			steps, serr := store.ListMintableSteps(ctx, tenantID, taskID)
-			if serr != nil {
-				logger.Error("approvalsvc.Resolve: list steps failed", zap.Error(serr))
-				return 0, nil, "", 0, status.Errorf(codes.Internal, "failed to load plan steps")
 			}
 			scopes := make([]StepScope, 0, len(steps))
 			for _, st := range steps {

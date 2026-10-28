@@ -354,7 +354,7 @@ func (r *TaskRepo) GetPendingApprovalByTask(ctx context.Context, tenantID, taskI
 		SELECT approval_id, task_id, tenant_id, requester_id, summary,
 		       approver_set, requires_n, approved_by, denied_by, state, expires_at
 		FROM approval_requests
-		WHERE task_id = $1 AND state = 'PENDING'
+		WHERE task_id = $1 AND state = 'PENDING' AND expires_at > NOW()
 		ORDER BY created_at DESC
 		LIMIT 1`, taskID,
 		).Scan(&ar.ApprovalID, &ar.TaskID, &ar.TenantID, &ar.RequesterID, &summary,
@@ -371,10 +371,95 @@ func (r *TaskRepo) GetPendingApprovalByTask(ctx context.Context, tenantID, taskI
 	})
 }
 
+// ListPendingApprovalsFor returns the tenant's PENDING, unexpired approval
+// requests userID may vote on: a member of approver_set (or the set is empty,
+// same rule as voterAllowed) and not already among approved_by. The FGA
+// can_approve check is the caller's job. Oldest first, capped at 100.
+func (r *TaskRepo) ListPendingApprovalsFor(ctx context.Context, tenantID, userID string) ([]ApprovalRequest, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]ApprovalRequest, error) {
+		rows, err := conn.Query(ctx, `
+		SELECT approval_id, task_id, tenant_id, requester_id, summary,
+		       approver_set, requires_n, approved_by, denied_by, state, expires_at
+		FROM approval_requests
+		WHERE state = 'PENDING' AND expires_at > NOW()
+		  AND (cardinality(approver_set) = 0 OR $1 = ANY(approver_set))
+		  AND NOT ($1 = ANY(COALESCE(approved_by, '{}')))
+		ORDER BY created_at ASC
+		LIMIT 100`, userID)
+		if err != nil {
+			return nil, fmt.Errorf("query pending approvals: %w", err)
+		}
+		defer rows.Close()
+		var out []ApprovalRequest
+		for rows.Next() {
+			var ar ApprovalRequest
+			var summary []byte
+			if err := rows.Scan(&ar.ApprovalID, &ar.TaskID, &ar.TenantID, &ar.RequesterID, &summary,
+				&ar.ApproverSet, &ar.RequiresN, &ar.ApprovedBy, &ar.DeniedBy, &ar.State, &ar.ExpiresAt); err != nil {
+				return nil, fmt.Errorf("scan pending approval: %w", err)
+			}
+			if len(summary) > 0 {
+				if err := json.Unmarshal(summary, &ar.Summary); err != nil {
+					return nil, fmt.Errorf("unmarshal summary: %w", err)
+				}
+			}
+			out = append(out, ar)
+		}
+		return out, rows.Err()
+	})
+}
+
+// ExpiredApproval identifies a PENDING approval past its expires_at.
+type ExpiredApproval struct {
+	TenantID   string
+	ApprovalID string
+	TaskID     string
+}
+
+// ListExpiredApprovals returns up to 500 PENDING approvals past expires_at
+// across all tenants, for the expiry sweep (AG-07, M-09). Cross-tenant like
+// PruneBefore, so it reads through the SECURITY DEFINER function
+// approval_requests_expired (migration 053); the writes stay tenant-scoped
+// (ExpireApproval, Transition).
+func (r *TaskRepo) ListExpiredApprovals(ctx context.Context) ([]ExpiredApproval, error) {
+	return withConnUnscoped(ctx, r.pool, func(conn *pgxpool.Conn) ([]ExpiredApproval, error) {
+		rows, err := conn.Query(ctx, `SELECT tenant_id::text, approval_id::text, task_id::text FROM approval_requests_expired()`)
+		if err != nil {
+			return nil, fmt.Errorf("query expired approvals: %w", err)
+		}
+		defer rows.Close()
+		var out []ExpiredApproval
+		for rows.Next() {
+			var e ExpiredApproval
+			if err := rows.Scan(&e.TenantID, &e.ApprovalID, &e.TaskID); err != nil {
+				return nil, fmt.Errorf("scan expired approval: %w", err)
+			}
+			out = append(out, e)
+		}
+		return out, rows.Err()
+	})
+}
+
+// ExpireApproval moves one PENDING, past-expiry approval to EXPIRED. Reports
+// false when the row was already resolved (or not yet expired), so two
+// sweepers never both act on it.
+func (r *TaskRepo) ExpireApproval(ctx context.Context, tenantID, approvalID string) (bool, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (bool, error) {
+		tag, err := conn.Exec(ctx, `
+		UPDATE approval_requests SET state = 'EXPIRED', resolved_at = NOW()
+		WHERE approval_id = $1 AND state = 'PENDING' AND expires_at <= NOW()`, approvalID)
+		if err != nil {
+			return false, fmt.Errorf("expire approval: %w", err)
+		}
+		return tag.RowsAffected() == 1, nil
+	})
+}
+
 // ResolveApproval records one approver's vote and, once the n-of-m threshold
 // is met (or any denial), resolves the gate. Returns the resulting state and
 // whether the gate is now resolved. Idempotent per approver — a repeated vote
-// from the same user does not double-count.
+// from the same user does not double-count. A row past expires_at reads as
+// missing (pgx.ErrNoRows), so an expired gate cannot be voted on (M-09).
 func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, approver string, approved bool, reason string) (ApprovalState, bool, error) {
 	return withConn2(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (ApprovalState, bool, error) {
 		tx, err := conn.Begin(ctx)
@@ -393,7 +478,7 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 		err = tx.QueryRow(ctx, `
 		SELECT requires_n, approver_set, approved_by, denied_by, state
 		FROM approval_requests
-		WHERE approval_id = $1
+		WHERE approval_id = $1 AND expires_at > NOW()
 		FOR UPDATE`, approvalID,
 		).Scan(&requiresN, &approverSet, &approvedBy, &deniedBy, &state)
 		if err != nil {

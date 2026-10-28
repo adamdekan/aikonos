@@ -124,8 +124,10 @@ async function respond(approved) {
   pendingAction.value = approved ? "approve" : "deny";
   error.value = null;
   try {
+    // AG-07 (M-28): echo the digest of the arguments shown; the gateway and the
+    // broker refuse an approval whose digest no longer matches them.
     await post(`/approve/${encodeURIComponent(props.request.toolCallId)}`, {
-      body: { approved },
+      body: { approved, argsDigest: props.request.argsDigest ?? "" },
     });
     emit("close");
   } catch (err) {

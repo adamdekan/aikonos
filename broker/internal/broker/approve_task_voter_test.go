@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
@@ -112,6 +113,7 @@ func TestApproveTask_VoterNotInSet_ReturnsPermissionDenied(t *testing.T) {
 		TaskId:         store.ar.TaskID.String(),
 		ApproverUserId: "eve@example.com",
 		Approved:       true,
+		ArgsDigest:     noStepsDigest,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -146,6 +148,7 @@ func TestApproveTask_InternalError_ReturnsInternal(t *testing.T) {
 		TaskId:         store.ar.TaskID.String(),
 		ApproverUserId: "alice@example.com",
 		Approved:       true,
+		ArgsDigest:     noStepsDigest,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -194,6 +197,7 @@ func TestApproveTask_ForgedApprover_PermissionDenied(t *testing.T) {
 		TaskId:         store.ar.TaskID.String(),
 		ApproverUserId: "alice@example.com", // forged: the task owner
 		Approved:       true,
+		ArgsDigest:     noStepsDigest,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("want PermissionDenied for forged approver_user_id, got %v", err)
@@ -213,6 +217,7 @@ func TestApproveTask_ForgedTenant_PermissionDenied(t *testing.T) {
 		TaskId:         store.ar.TaskID.String(),
 		ApproverUserId: "alice@example.com",
 		Approved:       true,
+		ArgsDigest:     noStepsDigest,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("want PermissionDenied for forged tenant_id, got %v", err)
@@ -229,8 +234,9 @@ func TestApproveTask_UsesAuthenticatedIdentity(t *testing.T) {
 
 	// Request fields omitted: tenant and approver come from the verified identity.
 	if _, err := svc.ApproveTask(ctx, &brokerv1.ApproveTaskRequest{
-		TaskId:   store.ar.TaskID.String(),
-		Approved: true,
+		TaskId:     store.ar.TaskID.String(),
+		Approved:   true,
+		ArgsDigest: noStepsDigest,
 	}); err != nil {
 		t.Fatalf("matching identity: unexpected error: %v", err)
 	}
@@ -249,6 +255,7 @@ func TestApproveTask_DevModeUsesRequestApprover(t *testing.T) {
 		TaskId:         store.ar.TaskID.String(),
 		ApproverUserId: "alice@example.com",
 		Approved:       true,
+		ArgsDigest:     noStepsDigest,
 	}); err != nil {
 		t.Fatalf("dev mode: unexpected error: %v", err)
 	}
@@ -256,3 +263,6 @@ func TestApproveTask_DevModeUsesRequestApprover(t *testing.T) {
 		t.Fatalf("ResolveApproval approver = %q, want alice@example.com", store.gotApprover)
 	}
 }
+
+// noStepsDigest is the args digest of the fake store's plan steps (AG-07).
+var noStepsDigest = approvalsvc.ArgsDigest(nil)

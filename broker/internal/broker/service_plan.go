@@ -363,6 +363,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 
 	var capTokens map[int32]string
 	var gate *approvalsvc.Gate
+	var argsDigest string
 	switch outcome {
 	case planv1.ValidationOutcome_APPROVED:
 		if err := taskStore.Transition(ctx, tenantID, req.TaskId, db.TaskStateValidating, db.TaskStateApproved); err != nil {
@@ -412,6 +413,15 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			return nil, err
 		}
 		gate = &g
+
+		// AG-07: the digest the approve call must carry back, computed from the
+		// stored rows exactly as approvalsvc.Resolve recomputes it.
+		steps, err := taskStore.ListMintableSteps(ctx, tenantID, req.TaskId)
+		if err != nil {
+			s.deps.Logger.Error("SubmitPlan: list steps for digest failed", zap.Error(err))
+			return nil, status.Errorf(codes.Internal, "failed to load plan steps")
+		}
+		argsDigest = approvalsvc.ArgsDigest(steps)
 	}
 
 	auditDecision := auditv1.PolicyDecision_ALLOW
@@ -442,6 +452,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		StepDecisions:      stepDecisions,
 		Violations:         planDec.Violations,
 		CapabilityTokenIds: capTokens,
+		ArgsDigest:         argsDigest,
 	}, nil
 }
 

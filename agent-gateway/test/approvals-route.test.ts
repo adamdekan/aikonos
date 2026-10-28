@@ -55,31 +55,52 @@ function makeInfo(toolCallId: string): ApprovalInfo {
     effectClass: 0,
     reason: "test",
     args: {},
-    stepUp: true,
+    stepUp: true, argsDigest: `digest-${toolCallId}`,
   };
+}
+
+// Records broker calls; the decide route must forward the caller's own token.
+class FakeNorth {
+  calls: { method: string; req: Record<string, unknown>; token?: string }[] = [];
+  listPendingApprovals(req: object, token?: string) {
+    this.calls.push({ method: "list", req: { ...req }, token });
+    return Promise.resolve({ approvals: [{ taskId: "task-1", argsDigest: "d1", steps: [] }] } as never);
+  }
+  approveTask(req: object, token?: string) {
+    this.calls.push({ method: "approve", req: { ...req }, token });
+    return Promise.resolve({ success: true, newStatus: 4, capabilityTokenIds: { 1: "secret-cap" } } as never);
+  }
 }
 
 async function buildApp() {
   const { privateKey, jwk } = await makeKey();
   const jwksResolver = await localResolver(jwk);
   const approvals = new ApprovalRegistry();
+  const north = new FakeNorth();
   const app = Fastify({ logger: false });
-  registerApprovalRoutes(app, { approvals, jwksResolver, verifyOpts: VERIFY_OPTS });
+  registerApprovalRoutes(app, { approvals, clients: { north }, jwksResolver, verifyOpts: VERIFY_OPTS });
   await app.ready();
   return {
     app,
     approvals,
+    north,
     alice: await mintToken(privateKey, "alice@example.com"),
     bob: await mintToken(privateKey, "bob@example.com"),
   };
 }
 
-function answer(app: Awaited<ReturnType<typeof buildApp>>["app"], id: string, approved: boolean, token?: string) {
+function answer(
+  app: Awaited<ReturnType<typeof buildApp>>["app"],
+  id: string,
+  approved: boolean,
+  token?: string,
+  argsDigest = `digest-${id}`,
+) {
   return app.inject({
     method: "POST",
     url: `/approve/${encodeURIComponent(id)}`,
     headers: token ? { authorization: `Bearer ${token}` } : {},
-    payload: { approved },
+    payload: { approved, argsDigest },
   });
 }
 
@@ -135,5 +156,54 @@ test("GET /approvals lists only the caller's own approvals", async () => {
   assert.deepEqual((await list(bob)).approvals, []);
   assert.equal((await app.inject({ method: "GET", url: "/approvals" })).statusCode, 401);
   approvals.drain();
+  await app.close();
+});
+
+// AG-07 (M-28): an approval must echo the digest of the arguments it was shown.
+test("POST /approve/:id with a missing or different args digest is refused and keeps waiting", async () => {
+  const { app, approvals, alice } = await buildApp();
+  const decision = approvals.await_(makeInfo("call-1"), "alice@example.com", "run-a");
+
+  const wrong = await answer(app, "call-1", true, alice, "digest-of-other-args");
+  const missing = await app.inject({
+    method: "POST",
+    url: "/approve/call-1",
+    headers: { authorization: `Bearer ${alice}` },
+    payload: { approved: true },
+  });
+
+  assert.equal(wrong.statusCode, 409);
+  assert.equal(missing.statusCode, 409);
+  assert.equal(approvals.listForUser("alice@example.com").length, 1, "the approval must still wait");
+  assert.deepEqual((await answer(app, "call-1", false, alice, "")).json(), { resolved: true }, "a denial needs no digest");
+  assert.equal(await decision, false);
+  await app.close();
+});
+
+test("GET /pending-approvals and POST /pending-approvals/:taskId act as the caller and keep tokens server-side", async () => {
+  const { app, north, bob } = await buildApp();
+  const auth = { authorization: `Bearer ${bob}` };
+
+  const list = await app.inject({ method: "GET", url: "/pending-approvals", headers: auth });
+  assert.equal(list.statusCode, 200);
+  assert.equal(list.json().approvals[0].taskId, "task-1");
+
+  const decide = await app.inject({
+    method: "POST",
+    url: "/pending-approvals/task-1",
+    headers: auth,
+    payload: { approved: true, argsDigest: "d1" },
+  });
+  assert.equal(decide.statusCode, 200);
+  assert.deepEqual(decide.json(), { newStatus: 4 }, "minted capability tokens must not reach the browser");
+
+  const approve = north.calls.find((c) => c.method === "approve")!;
+  assert.equal(approve.token, bob);
+  assert.equal(approve.req.approverUserId, "bob@example.com");
+  assert.equal(approve.req.argsDigest, "d1");
+  assert.equal(approve.req.taskId, "task-1");
+  assert.equal(north.calls.find((c) => c.method === "list")!.token, bob);
+
+  assert.equal((await app.inject({ method: "GET", url: "/pending-approvals" })).statusCode, 401);
   await app.close();
 });

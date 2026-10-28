@@ -97,7 +97,7 @@ test("selectRunApprover: auto agent + MCP tool granted only via mcp_servers → 
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
   assert.equal(grantedMcp, true, "MCP tool granted via mcp_servers must be auto-approved");
 
@@ -109,7 +109,7 @@ test("selectRunApprover: auto agent + MCP tool granted only via mcp_servers → 
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
   assert.equal(blockedTool, false, "tool not in skills/MCP must NOT be auto-approved");
 });
@@ -140,7 +140,7 @@ test("selectRunApprover: non-auto spec (approvalMode needs_approval) → returns
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
 
   assert.deepEqual(calls, ["web.fetch"], "non-auto spec must invoke the hitl approver");
@@ -165,7 +165,7 @@ test("selectRunApprover: spec undefined (default agent, no DB record) → return
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
 
   assert.deepEqual(calls, ["web.fetch"], "undefined spec must delegate to hitl approver");
@@ -198,7 +198,7 @@ test("selectRunApprover: A8 org master off → auto agent downgraded to hitl", a
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
 
   assert.deepEqual(calls, ["web.fetch"], "org-disabled unattended mode must route auto agents to hitl");
@@ -227,7 +227,7 @@ test("selectRunApprover: A8 unattendedAllowed defaults true (omitted arg) → au
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
   assert.equal(granted, true, "omitted A8 flag must default to allowed (auto-approve preserved)");
 });
@@ -266,7 +266,7 @@ test("selectRunApprover: south RPC error during auto-approve → allowlist degra
     effectClass: 0,
     reason: "needs_human",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   });
   assert.equal(skillApproved, true, "skill in spec.skills must be auto-approved even when south fails");
 });

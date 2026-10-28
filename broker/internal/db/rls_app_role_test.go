@@ -159,3 +159,38 @@ func TestRLS_ResolveAgentApiKey_TenantAgnostic(t *testing.T) {
 		t.Fatalf("expired-key Resolve: got err=%v, want ErrApiKeyNotFound", err)
 	}
 }
+
+// AG-07 (M-09): under the RLS-enforced app role the expiry sweep still finds
+// another tenant's expired approval (through approval_requests_expired, the
+// migration 053 carve-out) and expires it with tenant-scoped writes.
+func TestRLS_ApprovalExpirySweep_CrossTenant(t *testing.T) {
+	pool := openAppTestPool(t)
+	ctx := context.Background()
+	repo := NewTaskRepo(pool, zap.NewNop())
+
+	tenant, task := uuid.New(), uuid.New()
+	if err := repo.Create(ctx, &Task{TaskID: task, TenantID: tenant, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 10}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	id, err := repo.CreateApprovalRequest(ctx, &ApprovalRequest{
+		TaskID: task, TenantID: tenant, RequesterID: "alice@example.com",
+		Summary: map[string]any{}, ApproverSet: []string{"bob@example.com"}, RequiresN: 1, ExpiresAt: time.Now().Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	expired, err := repo.ListExpiredApprovals(ctx)
+	if err != nil {
+		t.Fatalf("ListExpiredApprovals: %v", err)
+	}
+	found := false
+	for _, e := range expired {
+		found = found || e.ApprovalID == id.String()
+	}
+	if !found {
+		t.Fatal("the app role must see expired approvals of every tenant")
+	}
+	if ok, err := repo.ExpireApproval(ctx, tenant.String(), id.String()); err != nil || !ok {
+		t.Fatalf("ExpireApproval: ok=%v err=%v", ok, err)
+	}
+}

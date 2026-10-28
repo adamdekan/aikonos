@@ -1115,6 +1115,9 @@ func main() {
 		go runBaselineLearnLoop(ctx, baselineCfg, baselineLearner, log)
 	}
 
+	// AG-07 (M-09): expire approvals past expires_at.
+	go runApprovalExpiryLoop(ctx, taskRepo, auditEmitter, log)
+
 	// Per-call LLM usage event retention.
 	if days := viper.GetInt("llm_usage.retention_days"); days > 0 {
 		go runLlmUsagePruneLoop(ctx, usageEventRepo, days, log)
@@ -1237,6 +1240,25 @@ func runLlmUsagePruneLoop(ctx context.Context, repo *db.UsageEventRepo, retentio
 			if removed > 0 {
 				log.Info("llm usage retention: pruned events",
 					zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
+			}
+		}
+	}
+}
+
+// runApprovalExpiryLoop sweeps expired approvals every minute: approval rows to
+// EXPIRED, their tasks to TIMEOUT, audited (brokersvc.SweepExpiredApprovals).
+// Approve calls refuse expired rows on their own, so the minute of lag only
+// delays when the timeout becomes visible.
+func runApprovalExpiryLoop(ctx context.Context, repo *db.TaskRepo, em *audit.Emitter, log *zap.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := brokersvc.SweepExpiredApprovals(ctx, repo, em, log); n > 0 {
+				log.Info("approval expiry: expired approvals", zap.Int("count", n))
 			}
 		}
 	}

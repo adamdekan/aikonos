@@ -10,6 +10,7 @@ import EmptyState from "../components/ui/EmptyState.vue";
 import Toast from "../components/ui/Toast.vue";
 import { useToast } from "../components/ui/useToast.js";
 import EnvelopeRow from "./inbox/EnvelopeRow.vue";
+import PendingApprovals from "./inbox/PendingApprovals.vue";
 import SkillTransferModal from "../components/SkillTransferModal.vue";
 import { listInbox, delegate, dismiss } from "../api/inbox.js";
 
@@ -171,6 +172,8 @@ onMounted(async () => {
     </div>
 
     <template v-else>
+      <PendingApprovals />
+
       <section class="section">
         <h3 class="section-title">Pending delegations</h3>
 

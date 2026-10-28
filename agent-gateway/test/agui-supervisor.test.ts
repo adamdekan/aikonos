@@ -300,7 +300,7 @@ test("CP7 HITL suspend-resume: gate IPC request suspended until approver resolve
       gate: async (toolCallId, _toolName, _input) => {
         const allow = await approver({
           toolCallId, toolName: _toolName, toolId: _toolName,
-          effectClass: 0, reason: "", args: _input, stepUp: false,
+          effectClass: 0, reason: "", args: _input, stepUp: false, argsDigest: "",
         });
         return { allow, reason: allow ? undefined : "approval declined" };
       },
@@ -426,7 +426,7 @@ test("CP7 HITL suspend-resume: gate IPC request suspended until approver resolve
       gate: async (toolCallId, toolName, input) => {
         const allow = await approver({
           toolCallId, toolName, toolId: toolName,
-          effectClass: 0, reason: "", args: input, stepUp: false,
+          effectClass: 0, reason: "", args: input, stepUp: false, argsDigest: "",
         });
         return { allow, reason: allow ? undefined : "approval declined" };
       },
@@ -534,7 +534,7 @@ test("CP7 concurrent-clobber: two runs on ONE shared child use their own approve
       gate: async (toolCallId, toolName, input) => {
         const allow = await approver({
           toolCallId, toolName, toolId: toolName,
-          effectClass: 0, reason: "", args: input, stepUp: false,
+          effectClass: 0, reason: "", args: input, stepUp: false, argsDigest: "",
         });
         return { allow };
       },

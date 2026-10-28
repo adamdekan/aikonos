@@ -42,9 +42,10 @@ function stringify(val) {
         <dd class="arg-val arg-val--pre">{{ JSON.stringify(val) }}</dd>
       </div>
 
-      <!-- Nested object/array — collapsible via native <details> -->
+      <!-- Nested object/array — native <details>, open so nothing an approver
+           signs off on is hidden by default (M-28) -->
       <div v-else class="arg-row arg-row--nested">
-        <details class="arg-details">
+        <details class="arg-details" open>
           <summary class="arg-summary">
             <span class="arg-key">{{ key }}</span>
             <span class="arg-count">{{ countLabel(val) }}</span>
@@ -99,6 +100,8 @@ function stringify(val) {
   color: var(--text);
   overflow-wrap: anywhere;
   word-break: break-word;
+  /* keep newlines and runs of spaces visible (M-28) */
+  white-space: pre-wrap;
   /* dd reset */
   margin: 0;
   padding: 0;

@@ -19,6 +19,7 @@ const baseInfo = {
   stepUp: false,
   reason: "requires approval",
   args: { url: "https://example.com" },
+  argsDigest: "digest-99",
 };
 
 function makeModal(props = {}) {
@@ -75,7 +76,7 @@ describe("ApprovalModal.vue", () => {
     await flushPromises();
     expect(mockPost).toHaveBeenCalledWith(
       `/approve/${encodeURIComponent(baseInfo.toolCallId)}`,
-      expect.objectContaining({ body: { approved: true } })
+      expect.objectContaining({ body: { approved: true, argsDigest: "digest-99" } })
     );
     expect(w.emitted("close")).toBeTruthy();
   });
@@ -88,7 +89,7 @@ describe("ApprovalModal.vue", () => {
     await flushPromises();
     expect(mockPost).toHaveBeenCalledWith(
       `/approve/${encodeURIComponent(baseInfo.toolCallId)}`,
-      expect.objectContaining({ body: { approved: false } })
+      expect.objectContaining({ body: { approved: false, argsDigest: "digest-99" } })
     );
     expect(w.emitted("close")).toBeTruthy();
   });

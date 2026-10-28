@@ -8,6 +8,11 @@ import { useUserStore } from "../store/user.js";
 import { useInboxStore } from "../store/inbox.js";
 import { usePromptStore } from "../store/prompt.js";
 
+vi.mock("../api/approvals.js", () => ({
+  listPendingApprovals: vi.fn().mockResolvedValue({ approvals: [] }),
+  decideApproval: vi.fn(),
+}));
+
 vi.mock("../api/inbox.js", () => ({
   listInbox: vi.fn(),
   dismiss:   vi.fn(),
