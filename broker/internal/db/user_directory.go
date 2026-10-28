@@ -62,6 +62,7 @@ type MemberEntry struct {
 	Name          string
 	LastSeen      time.Time
 	ProvisionedAt *time.Time
+	RevokedBefore *time.Time // AG-06 revocation epoch; nil when never revoked
 }
 
 // ListMembers returns every directory row for the tenant with provisioning
@@ -69,7 +70,7 @@ type MemberEntry struct {
 func (r *UserDirectoryRepo) ListMembers(ctx context.Context, tenantID string) ([]MemberEntry, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]MemberEntry, error) {
 		rows, err := conn.Query(ctx, `
-		SELECT subject, email, name, last_seen, provisioned_at
+		SELECT subject, email, name, last_seen, provisioned_at, revoked_before
 		  FROM user_directory
 		 ORDER BY NULLIF(email, '') NULLS LAST, subject`)
 		if err != nil {
@@ -79,7 +80,7 @@ func (r *UserDirectoryRepo) ListMembers(ctx context.Context, tenantID string) ([
 		var out []MemberEntry
 		for rows.Next() {
 			var e MemberEntry
-			if err := rows.Scan(&e.Subject, &e.Email, &e.Name, &e.LastSeen, &e.ProvisionedAt); err != nil {
+			if err := rows.Scan(&e.Subject, &e.Email, &e.Name, &e.LastSeen, &e.ProvisionedAt, &e.RevokedBefore); err != nil {
 				return nil, err
 			}
 			out = append(out, e)

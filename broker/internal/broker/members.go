@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -33,6 +34,14 @@ func (s *BrokerService) ListMembers(ctx context.Context, req *brokerv1.ListMembe
 	}
 
 	admins := s.adminSubjects(ctx)
+	// AG-06: blocked status. Unlike the admin flags this is a security state,
+	// so a read failure fails the listing rather than showing "not blocked".
+	var blocks map[string]db.UserBlock
+	if s.deps.Revocation != nil {
+		if blocks, err = s.deps.Revocation.UserBlocks(ctx, tenant); err != nil {
+			return nil, status.Errorf(codes.Internal, "list user blocks: %v", err)
+		}
+	}
 
 	out := make([]*brokerv1.MemberInfo, 0, len(entries))
 	for _, e := range entries {
@@ -48,6 +57,13 @@ func (s *BrokerService) ListMembers(ctx context.Context, req *brokerv1.ListMembe
 		if e.ProvisionedAt != nil {
 			m.Provisioned = true
 			m.ProvisionedAt = e.ProvisionedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		if e.RevokedBefore != nil {
+			m.SessionsRevokedAt = e.RevokedBefore.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		if b, ok := blocks[e.Subject]; ok {
+			m.Blocked, m.BlockReason, m.BlockedBy = true, b.Reason, b.By
+			m.BlockedAt = b.At.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
 		out = append(out, m)
 	}

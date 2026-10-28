@@ -62,6 +62,8 @@ type Grant struct {
 	Actor    string
 	Kind     string
 	GrantID  string
+	// Expires is set by Verify from the token; Mint ignores it.
+	Expires time.Time
 }
 
 // Owner is the task owner_user_id this grant binds: Subject, or svc-<actor>
@@ -143,6 +145,7 @@ func Verify(key []byte, token string, acceptV1 bool) (Grant, error) {
 	if expiresUnix <= nowFn().Unix() {
 		return Grant{}, ErrExpired
 	}
+	g.Expires = time.Unix(expiresUnix, 0)
 
 	return g, nil
 }

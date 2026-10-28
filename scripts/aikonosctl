@@ -293,11 +293,16 @@ def cmd_kill_switch(args: argparse.Namespace) -> None:
         fail(f"Subject required for kill-switch {args.scope}")
         sys.exit(1)
 
-    warn(f"Activating kill switch: scope={args.scope} subject={subject}")
+    # The broker reads kill_switches per tenant (AG-06): a user block lives in
+    # the user's tenant (AIKONOS_TENANT_ID, the dev UUID by default) with the
+    # user's principal id as subject; a tenant block names the tenant itself.
+    tenant = subject if args.scope == "tenant" else os.environ.get(
+        "AIKONOS_TENANT_ID", "11111111-1111-1111-1111-111111111111")
+    warn(f"Activating kill switch: scope={args.scope} subject={subject} tenant={tenant}")
     compose_exec(
         "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
         f"INSERT INTO kill_switches (tenant_id, scope, subject, activated_by, reason) "
-        f"VALUES ('00000000-0000-0000-0000-000000000001', '{args.scope}', '{subject}', 'aikonosctl', 'manual') "
+        f"VALUES ('{tenant}', '{args.scope}', '{subject}', 'aikonosctl', 'manual') "
         f"ON CONFLICT DO NOTHING;"
     )
     ok(f"Kill switch activated: {args.scope}/{subject}")

@@ -30,6 +30,7 @@ vi.mock("../api/admin.js", () => ({
   mintAgentApiKey:      vi.fn(),
   listAgentApiKeys:     vi.fn(),
   revokeAgentApiKey:    vi.fn(),
+  revokeAgentSessions:  vi.fn(),
   listLlmProviders:     vi.fn(),
   listSkills:           vi.fn(),
 }));
@@ -89,6 +90,31 @@ describe("Agents.vue", () => {
     expect(w.findAll("[data-testid='agent-row']").length).toBe(1);
     expect(w.text()).toContain("my-agent");
     expect(w.find(".dt-table").exists()).toBe(true);
+  });
+
+  // AG-06: revoke all sessions of an agent needs a reason and shows the epoch.
+  it("revokes agent sessions with a reason and shows when", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [{ ...SAMPLE_AGENT, sessionsRevokedAt: "2026-10-28T12:00:00Z" }] });
+    adminApi.revokeAgentSessions.mockResolvedValue({ notBefore: "2026-10-28T12:05:00Z" });
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] }, attachTo: document.body });
+    await flushPromises();
+    expect(w.find("[data-testid='agent-sessions-revoked-a1']").exists()).toBe(true);
+
+    await w.find("[data-testid='agent-revoke-sessions-a1']").trigger("click");
+    await flushPromises();
+    const confirm = document.querySelector("[data-testid='agent-revoke-confirm']");
+    expect(confirm.disabled).toBe(true); // no reason yet
+    const reason = document.querySelector("[data-testid='agent-revoke-reason']");
+    reason.value = "key leaked";
+    reason.dispatchEvent(new Event("input"));
+    await flushPromises();
+    document.querySelector("[data-testid='agent-revoke-confirm']").click();
+    await flushPromises();
+    expect(adminApi.revokeAgentSessions).toHaveBeenCalledWith("a1", "key leaked");
+    expect(document.querySelector("[data-testid='agent-revoke-confirm']")).toBeNull();
+    w.unmount();
   });
 
   it("opens create modal when New Agent button is clicked", async () => {

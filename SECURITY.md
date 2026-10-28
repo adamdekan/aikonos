@@ -95,3 +95,8 @@ the result.
 External agent API keys (`tk_…`) always expire. Lower the tenant setting
 `api_keys.max_ttl_days` (default and ceiling 90) to force faster rotation, and
 watch the key list for keys about to expire or unused for a long time.
+
+To cut a person or an agent off before their tokens expire, block the user or
+revoke all sessions of the user or agent in the admin UI (Access Control →
+Members, Agents). Both take effect within 30 seconds on every broker replica;
+see `docs/user-lifecycle.md`.

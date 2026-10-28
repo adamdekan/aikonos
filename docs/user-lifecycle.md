@@ -1,8 +1,9 @@
 # User lifecycle: sign-in, access, and disablement
 
-> Review note (2026-06-12). Records the current — intentional — design: aikonOS has no
-> user disable/delete. Identity lifecycle belongs to the IdP; aikonOS governs only
-> authorization after sign-in.
+> Review note (2026-06-12, updated 2026-10-28 for AG-06). Identity lifecycle belongs to
+> the IdP; aikonOS governs authorization after sign-in. Since AG-06 aikonOS can also
+> block a user and revoke all sessions of a user or an agent, so access ends at once
+> instead of at token expiry. There is still no user delete.
 
 ## How a user gets the ability to sign in
 
@@ -66,14 +67,59 @@ A signed-in user with zero group memberships hits deny-by-default:
 - Effectively, revoking all of a user's groups in Access Control is a soft-disable for
   anything useful: they can open the UI and chat, but the agent cannot act.
 
+## Blocking a user and revoking sessions
+
+Disabling a user in the IdP stops new tokens, but issued tokens, owner grants and
+capability tokens stay valid until they expire (up to an hour). AG-06 closes that
+window with two admin actions, both in **Admin → Access Control → Members** (one row
+per user; each needs a reason):
+
+- **Block** stops everything the user does: their next north RPC is refused
+  (`PermissionDenied`, audit `auth.subject.blocked`), the gateway's owner grant for
+  them is refused (`aikonos.broker.task.denied`, reason `subject_blocked`), their
+  running tasks stop at the next tool call (`aikonos.broker.tool.denied`, reason
+  `subject_blocked`), and their schedules are parked at the next claim
+  (`last_status = subject_blocked`, audit `aikonos.scheduler.run.skipped.subject_blocked`).
+  **Unblock** lifts it; the user resumes parked schedules themselves. The Members
+  list shows each user as *active* or *blocked* (hover for who blocked them, when and
+  why). An admin cannot block themself.
+- **Revoke sessions** moves the user's revocation epoch ("not before") to now:
+  every IdP token (`iat`), owner grant and capability token issued before it is void,
+  so the user must sign in again (`Unauthenticated`, audit `auth.token.revoked`). The
+  user is not blocked; a new sign-in works at once.
+
+**Admin → Agents → Revoke sessions** does the same for an agent: its outstanding
+capability tokens (refused as `capability_revoked`) and owner grants (`grant_revoked`)
+die at their next use, its API keys (`tk_`) minted before the revoke stop resolving
+(mint new ones), and its schedules created before the revoke are parked at the next
+claim (`actor_revoked`); recreate them to resume.
+
+Every action is audited with the acting admin and the reason:
+`aikonos.broker.user.blocked`, `aikonos.broker.user.unblocked`,
+`aikonos.broker.user.sessions_revoked`, `aikonos.broker.agent.sessions_revoked`.
+
+How it works:
+
+- A user block is an active row in `kill_switches` (scope `user`, subject = the
+  user's principal id). A row with scope `tenant` blocks the whole tenant; it has no
+  UI because it would lock out the admins too: set and lift it with `aikonosctl` /
+  SQL (see `OPS-RUNBOOK.md`, Kill switch procedures).
+- The epoch lives on `user_directory.revoked_before` and `agents.revoked_before`
+  (migration 054). Capability tokens carry an `issued_at` fact; a task's token is
+  checked against the later epoch of its subject and its actor. A token, grant or IdP
+  token issued in the same second as a revoke is refused too (second precision; this
+  errs on the side of refusal).
+- The broker caches block and epoch reads for 30 s. A change is visible at once on
+  the broker replica that made it and within 30 s on any other. A failed read refuses
+  the call (`Unavailable`) instead of letting it through.
+
 ## Known gaps (accepted for now)
 
 | Gap | Today | Possible future feature |
 |---|---|---|
-| Platform-level block (defense-in-depth if IdP revocation lags) | none — any valid token passes | `blocked` flag in `user_directory`, checked in the OIDC interceptor → all RPCs 403 instantly, no waiting for token expiry |
 | Remove a stale user from the Users list | `user_directory` rows persist forever | delete-from-directory action, paired with a bulk revoke of the user's tuples |
-| One-click "revoke everything" | revoke group-by-group in the Users tab | "Revoke all access" button = delete every tuple whose subject is the user |
+| One-click "revoke everything" | revoke group-by-group in the Users tab; Block stops all use without touching grants | "Revoke all access" button = delete every tuple whose subject is the user |
+| Directory sync from the IdP | block by hand in Members | SCIM 2.0 provisioning (AG-16) maps IdP deactivation to a block |
 
-Decision: the current design stands. Entra is the front door; aikonOS is the permission
-system behind it. Revisit this note if an aikonOS-side kill switch or directory cleanup
-becomes necessary.
+Decision: Entra stays the front door and aikonOS the permission system behind it; the
+block and revoke-all are aikonOS-side kill switches for when IdP revocation lags.

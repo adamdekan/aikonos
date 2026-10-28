@@ -11,6 +11,7 @@ import {
   mintAgentApiKey,
   listAgentApiKeys,
   revokeAgentApiKey,
+  revokeAgentSessions,
   listLlmProviders,
   listSkills,
 } from "../../api/admin.js";
@@ -401,6 +402,40 @@ async function revoke(tuple) {
   }
 }
 
+// ── AG-06: revoke all sessions of an agent ───────────────────────────────────
+// Voids every capability token and owner grant issued to the agent so far and
+// parks its existing schedules. Reason required (audited).
+const revokeTarget = ref(null);
+const revokeReason = ref("");
+const revokeError  = ref("");
+const revoking     = ref(false);
+
+function askRevokeSessions(agent) {
+  revokeTarget.value = agent;
+  revokeReason.value = "";
+  revokeError.value  = "";
+}
+
+async function confirmRevokeSessions() {
+  if (!revokeReason.value.trim()) { revokeError.value = "A reason is required."; return; }
+  revoking.value = true;
+  try {
+    await revokeAgentSessions(revokeTarget.value.id, revokeReason.value.trim());
+    toast("ok", "Agent sessions revoked.");
+    revokeTarget.value = null;
+    await load();
+  } catch (e) {
+    revokeError.value = e.message;
+  } finally {
+    revoking.value = false;
+  }
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
 function assignedTo(agent) {
   return agent.usable_by ?? agent.usableBy ?? [];
 }
@@ -412,7 +447,7 @@ const TABLE_COLS = [
   { key: "_skills",      label: "Skills" },
   { key: "_mcp",         label: "MCP" },
   { key: "_assigned",    label: "Assigned to" },
-  { key: "_actions",     label: "",            width: "160px" },
+  { key: "_actions",     label: "",            width: "300px" },
 ];
 </script>
 
@@ -452,6 +487,11 @@ const TABLE_COLS = [
           <td>
             <span class="badge">{{ row.approval_mode || row.approvalMode || "needs_approval" }}</span>
             <span v-if="row.gatewayEnabled || row.gateway_enabled" class="badge badge-ext" data-testid="gateway-enabled-badge">ext</span>
+            <div
+              v-if="row.sessionsRevokedAt"
+              class="muted small"
+              :data-testid="`agent-sessions-revoked-${row.id}`"
+            >sessions revoked {{ fmtDate(row.sessionsRevokedAt) }}</div>
           </td>
           <td>{{ (row.skills ?? []).length }}</td>
           <td>{{ (row.mcp_servers ?? row.mcpServers ?? []).length }}</td>
@@ -465,6 +505,13 @@ const TABLE_COLS = [
               Edit
             </button>
             <button
+              :data-testid="`agent-revoke-sessions-${row.id}`"
+              class="btn-secondary-sm"
+              @click="askRevokeSessions(row)"
+            >
+              Revoke sessions
+            </button>
+            <button
               :data-testid="`agent-delete-${row.id}`"
               class="btn-danger-sm"
               data-testid-base="agent-delete-btn"
@@ -476,6 +523,35 @@ const TABLE_COLS = [
         </template>
       </DataTable>
     </template>
+
+    <!-- AG-06: revoke-all reason dialog -->
+    <Modal :open="!!revokeTarget" title="Revoke all agent sessions" @close="revokeTarget = null">
+      <template v-if="revokeTarget">
+        <p class="muted">
+          {{ revokeTarget.name }}: running tasks stop at their next tool call, existing API
+          keys stop working (mint new ones) and existing schedules are parked (recreate
+          them to resume).
+        </p>
+        <FormField label="Reason (recorded in the audit log)">
+          <textarea
+            v-model="revokeReason"
+            rows="3"
+            maxlength="500"
+            data-testid="agent-revoke-reason"
+          ></textarea>
+        </FormField>
+        <div v-if="revokeError" class="banner-err" data-testid="agent-revoke-error">{{ revokeError }}</div>
+      </template>
+      <template #footer>
+        <button class="btn-ghost" data-testid="agent-revoke-cancel" @click="revokeTarget = null">Cancel</button>
+        <button
+          class="btn-danger-sm"
+          data-testid="agent-revoke-confirm"
+          :disabled="revoking || !revokeReason.trim()"
+          @click="confirmRevokeSessions"
+        >Revoke sessions</button>
+      </template>
+    </Modal>
 
     <!-- Create / Edit modal -->
     <Modal
@@ -764,6 +840,7 @@ const TABLE_COLS = [
 }
 
 .muted { color: var(--text-muted); font-size: 13px; }
+.muted.small { font-size: 11px; margin-top: 2px; }
 
 .btn-primary {
   display: inline-flex; align-items: center; gap: var(--space-1);

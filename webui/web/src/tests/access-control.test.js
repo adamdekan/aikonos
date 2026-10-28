@@ -17,6 +17,8 @@ vi.mock("../api/admin.js", () => ({
   listSkillBundles:       vi.fn(),
   // Members.vue (embedded as the default tab) imports this
   listMembers:            vi.fn(),
+  setUserBlocked:         vi.fn(),
+  revokeUserSessions:     vi.fn(),
   // Provisioning.vue and AdvancedTuples.vue also import these
   listNetworkRules:       vi.fn(),
   addNetworkRule:         vi.fn(),

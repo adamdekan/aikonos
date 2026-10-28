@@ -71,6 +71,7 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     soul: "",
     gatewayEnabled: false,
     serviceAgent: false,
+    sessionsRevokedAt: "",
   };
 
   const json = agentJson(agent);
@@ -96,6 +97,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     soul: "",
     gatewayEnabled: false,
     serviceAgent: false,
+    sessionsRevokedAt: "",
   };
 
   const json = agentJson(agent);

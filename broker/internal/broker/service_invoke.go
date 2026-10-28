@@ -354,6 +354,20 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 	}
 
+	// AG-06: a blocked subject (or tenant) stops at its next tool call; the
+	// later revocation epoch of subject and actor is applied to the token
+	// below. A state read failure fails closed and writes no decision.
+	obo := task.OnBehalfOf()
+	revState, rerr := s.deps.Revocation.OnBehalfOf(ctx, tenantID, obo.Subject, obo.Actor)
+	if rerr != nil {
+		s.deps.Logger.Error("InvokeTool: revocation state read failed", zap.String("task_id", req.TaskId), zap.Error(rerr))
+		return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+	}
+	if revState.Blocked {
+		s.emitToolDenied(ctx, req, scope, "subject_blocked", nil, nil)
+		return nil, status.Error(codes.PermissionDenied, "user is blocked")
+	}
+
 	// Capability gate: the step's Biscuit token must be signed by the broker
 	// root and must grant the scope this tool requires. This is enforced before
 	// any routing — a forged or over-broad token never reaches a tool.
@@ -367,7 +381,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 		// The token is bound to req.TaskId (H-03): a token for another task, a
 		// task-less delegation record, or an expired token is denied here.
-		err = s.deps.Capability.Authorize(raw, scope, req.TaskId, task.OnBehalfOf())
+		err = s.deps.Capability.Authorize(raw, scope, req.TaskId, obo, revState.NotBefore)
 		// AG-17: the token is otherwise valid but names another subject/actor.
 		// identity.obo=audit records it and proceeds; enforce denies. The
 		// setting is read only here, off the hot path.
@@ -406,6 +420,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 			case errors.Is(err, capability.ErrExpired):
 				s.emitToolDenied(ctx, req, scope, "capability_expired", err, nil)
 				return nil, status.Error(codes.PermissionDenied, "capability token expired")
+			case errors.Is(err, capability.ErrRevoked):
+				s.emitToolDenied(ctx, req, scope, "capability_revoked", err, nil)
+				return nil, status.Error(codes.PermissionDenied, "capability token revoked")
 			case errors.Is(err, capability.ErrTaskMismatch):
 				s.emitToolDenied(ctx, req, scope, "capability_task_mismatch", err, nil)
 				return nil, status.Errorf(codes.PermissionDenied, "capability token is not bound to task %s", req.TaskId)

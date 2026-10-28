@@ -194,3 +194,28 @@ func TestRLS_ApprovalExpirySweep_CrossTenant(t *testing.T) {
 		t.Fatalf("ExpireApproval: ok=%v err=%v", ok, err)
 	}
 }
+
+// TestRLS_KillSwitches_TenantIsolated (AG-06): kill_switches is RLS-scoped
+// now that the broker reads it as the app role. A block written in tenant A
+// passes the policy's WITH CHECK and is invisible from tenant B even to a
+// query without a tenant predicate.
+func TestRLS_KillSwitches_TenantIsolated(t *testing.T) {
+	pool := openAppTestPool(t)
+	ctx := context.Background()
+	repo := NewRevocationRepo(pool, zap.NewNop())
+	a, b := uuid.NewString(), uuid.NewString()
+	if _, err := repo.BlockUser(ctx, a, "bob", "r", "admin"); err != nil {
+		t.Fatalf("BlockUser under RLS: %v", err)
+	}
+	n, err := withConn(ctx, pool, b, func(conn *pgxpool.Conn) (int, error) {
+		var n int
+		err := conn.QueryRow(ctx, `SELECT count(*) FROM kill_switches WHERE subject = 'bob'`).Scan(&n)
+		return n, err
+	})
+	if err != nil || n != 0 {
+		t.Fatalf("tenant B sees %d of tenant A's blocks (err %v)", n, err)
+	}
+	if blocked, _, err := repo.UserState(ctx, a, "bob"); err != nil || !blocked {
+		t.Fatalf("tenant A: blocked=%v err=%v", blocked, err)
+	}
+}

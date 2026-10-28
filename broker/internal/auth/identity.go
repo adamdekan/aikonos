@@ -7,7 +7,10 @@
 // the audit interceptor read it back with IdentityFromContext.
 package auth
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Identity is the authenticated principal behind a gRPC call. For north-bound
 // calls it is populated from validated OIDC claims; for south-bound calls only
@@ -25,6 +28,9 @@ type Identity struct {
 	TenantID string   // tenant claim (north-bound)
 	Scopes   []string // OIDC scopes/roles, if present
 	SpiffeID string   // peer SPIFFE ID (south-bound; also set on north when mTLS peer is a known workload)
+	// IssuedAt is the token's `iat` (zero when absent), checked against the
+	// user's revocation epoch (AG-06).
+	IssuedAt time.Time
 }
 
 // PrincipalID returns the verified principal used for authorization decisions

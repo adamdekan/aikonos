@@ -217,7 +217,8 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 // verifyOwnerGrant requires an owner grant, verifies it with the configured key
 // and v1 policy, and checks it names tenantID. Every rejection is audited
 // (invalid_grant / grant_tenant_mismatch / grant_v1_refused /
-// grant_actor_missing) and returned as PermissionDenied; grant_v1_used is
+// grant_actor_missing / subject_blocked / grant_revoked) and returned as
+// PermissionDenied; grant_v1_used is
 // logged when a legacy grant is accepted.
 // ponytail: plain log per v1 use; rate-limit per gateway SVID if it gets noisy.
 func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token string) (gatewaygrant.Grant, error) {
@@ -254,6 +255,24 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 		if g.Kind == gatewaygrant.KindLegacy {
 			s.deps.Logger.Info("grant_v1_used", zap.String("tenant_id", g.TenantID))
 		}
+	}
+	// AG-06: a blocked subject (or tenant) loses every outstanding grant, and
+	// a revoke-all on the subject or actor voids grants issued before it. The
+	// token carries only its expiry; every mint site uses GatewayGrantTTL.
+	// ponytail: issued = expiry - TTL; a TTL change across a restart skews it
+	// by the difference until old grants expire.
+	st, rerr := s.deps.Revocation.OnBehalfOf(ctx, tenantID, g.Subject, g.Actor)
+	if rerr != nil {
+		s.deps.Logger.Error("verifyOwnerGrant: revocation state read failed", zap.Error(rerr))
+		return gatewaygrant.Grant{}, status.Error(codes.Unavailable, "access state could not be read; retry")
+	}
+	if st.Blocked {
+		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "subject_blocked", nil)
+		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant refused: user is blocked")
+	}
+	if st.Revoked(g.Expires.Add(-s.deps.GatewayGrantTTL)) {
+		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "grant_revoked", nil)
+		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant revoked")
 	}
 	return g, nil
 }

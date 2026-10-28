@@ -299,6 +299,21 @@ export function listMembers() {
   return get("/admin/members");
 }
 
+// ── Revocation (AG-06) ───────────────────────────────────────────────────────
+// Every action needs a reason; the broker audits it with the acting admin.
+
+export function setUserBlocked(subject, blocked, reason) {
+  return post(`/admin/members/${encodeURIComponent(subject)}/block`, { body: { blocked, reason } });
+}
+
+export function revokeUserSessions(subject, reason) {
+  return post(`/admin/members/${encodeURIComponent(subject)}/revoke-sessions`, { body: { reason } });
+}
+
+export function revokeAgentSessions(agentId, reason) {
+  return post(`/admin/agents/${encodeURIComponent(agentId)}/revoke-sessions`, { body: { reason } });
+}
+
 // ── Observability info (A9) ──────────────────────────────────────────────────
 
 // getObservability returns read-only telemetry-export state. The OTLP endpoint

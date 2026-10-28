@@ -29,13 +29,13 @@ func TestMintAndAuthorize(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("granted scope siem:read should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "slack:write", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(tok, "slack:write", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("granted scope slack:write should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{}); err == nil {
+	if err := m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 		t.Error("ungranted scope db:drop must be denied")
 	}
 }
@@ -69,7 +69,7 @@ func TestAuthorizeUnderConcurrencyDoesNotTimeOut(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // release together, so the calls genuinely contend
-			errs[i] = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
+			errs[i] = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}, time.Time{})
 		}(i)
 	}
 	close(start)
@@ -98,7 +98,7 @@ func TestAuthorizeTimeoutIsNotADenial(t *testing.T) {
 	authorizeMaxDuration = time.Nanosecond // no evaluation can finish in 1ns
 	t.Cleanup(func() { authorizeMaxDuration = orig })
 
-	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
+	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}, time.Time{})
 	if err == nil {
 		t.Fatal("expected a failure when the datalog budget is exhausted")
 	}
@@ -117,7 +117,7 @@ func TestAuthorizeDenialIsNotATimeout(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	err = m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{})
+	err = m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{}, time.Time{})
 	if err == nil {
 		t.Fatal("ungranted scope must be denied")
 	}
@@ -146,11 +146,11 @@ func TestAttenuationNarrows(t *testing.T) {
 		t.Fatalf("Attenuate: %v", err)
 	}
 
-	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("attenuated scope siem:read should still be allowed: %v", err)
 	}
 	// slack:write was in the root but dropped by attenuation.
-	if err := m.Authorize(child, "slack:write", "task-1", db.OnBehalfOf{}); err == nil {
+	if err := m.Authorize(child, "slack:write", "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 		t.Error("attenuated-away scope slack:write must be denied on the child")
 	}
 }
@@ -169,10 +169,10 @@ func TestAttenuationCannotWiden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attenuate: %v", err)
 	}
-	if err := m.Authorize(child, "db:drop", "task-1", db.OnBehalfOf{}); err == nil {
+	if err := m.Authorize(child, "db:drop", "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 		t.Error("attenuation must never grant a scope absent from the root token")
 	}
-	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("siem:read should remain allowed: %v", err)
 	}
 }
@@ -190,11 +190,11 @@ func TestChainedAttenuationIntersects(t *testing.T) {
 	}
 
 	// Effective = {a,b,c} ∩ {a,b} ∩ {b,c} = {b}.
-	if err := m.Authorize(step2, "b", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(step2, "b", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("b survives both attenuations: %v", err)
 	}
 	for _, s := range []string{"a", "c"} {
-		if err := m.Authorize(step2, s, "task-1", db.OnBehalfOf{}); err == nil {
+		if err := m.Authorize(step2, s, "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 			t.Errorf("scope %q dropped by an attenuation must be denied", s)
 		}
 	}
@@ -205,7 +205,7 @@ func TestForeignRootKeyRejected(t *testing.T) {
 	tok, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 
 	other := newMinter(t)
-	if err := other.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err == nil {
+	if err := other.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 		t.Error("a token must not verify under a different root key")
 	}
 }
@@ -214,7 +214,7 @@ func TestTamperedTokenRejected(t *testing.T) {
 	m := newMinter(t)
 	tok, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 	tok[len(tok)-1] ^= 0xFF // flip bits in the signature region
-	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err == nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err == nil {
 		t.Error("a tampered token must be rejected")
 	}
 }
@@ -229,7 +229,7 @@ func TestRoundTripMinterFromKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Errorf("Authorize: %v", err)
 	}
 }
@@ -252,11 +252,11 @@ func TestAuthorizeExpiredTokenDenied(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 	set(start.Add(59 * time.Second))
-	if err := m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Fatalf("token inside its TTL must authorize: %v", err)
 	}
 	set(start.Add(time.Minute))
-	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
+	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}, time.Time{})
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired at exp, got %v", err)
 	}
@@ -272,7 +272,7 @@ func TestAttenuatedTokenKeepsExpiry(t *testing.T) {
 		t.Fatalf("Attenuate: %v", err)
 	}
 	set(m.Now().Add(DefaultTTL + time.Second))
-	if err := m.Authorize(child, "a", "task-1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(child, "a", "task-1", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired, got %v", err)
 	}
 }
@@ -282,18 +282,18 @@ func TestAttenuatedTokenKeepsExpiry(t *testing.T) {
 func TestAuthorizeTaskBinding(t *testing.T) {
 	m := newMinter(t)
 	tok, _ := m.Mint("alice", "T1", db.OnBehalfOf{}, []string{"web:read"})
-	if err := m.Authorize(tok, "web:read", "T1", db.OnBehalfOf{}); err != nil {
+	if err := m.Authorize(tok, "web:read", "T1", db.OnBehalfOf{}, time.Time{}); err != nil {
 		t.Fatalf("matching task must authorize: %v", err)
 	}
-	if err := m.Authorize(tok, "web:read", "T2", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(tok, "web:read", "T2", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want ErrTaskMismatch for T2, got %v", err)
 	}
-	if err := m.Authorize(tok, "web:read", "", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(tok, "web:read", "", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want ErrTaskMismatch for empty task id, got %v", err)
 	}
 
 	deleg, _ := m.MintTTL("bob", "", db.OnBehalfOf{}, []string{"web:read"}, 72*time.Hour)
-	if err := m.Authorize(deleg, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(deleg, "web:read", "T1", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("task-less delegation token must be denied, got %v", err)
 	}
 }
@@ -321,11 +321,11 @@ func TestAppendedBlockCannotForgeTaskOrExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := forged.Serialize()
-	if err := m.Authorize(raw, "web:read", "T2", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(raw, "web:read", "T2", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("forged task fact must not bind, got %v", err)
 	}
 	set(m.Now().Add(DefaultTTL + time.Second))
-	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("forged expires fact must not extend, got %v", err)
 	}
 }
@@ -345,7 +345,7 @@ func TestLegacyTokenWithoutExpiryDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := tok.Serialize()
-	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}, time.Time{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired for a token with no lifetime, got %v", err)
 	}
 }
@@ -355,7 +355,7 @@ func TestLegacyTokenWithoutExpiryDenied(t *testing.T) {
 func TestScopeDenialNotMislabelled(t *testing.T) {
 	m := newMinter(t)
 	tok, _ := m.Mint("alice", "T1", db.OnBehalfOf{}, []string{"web:read"})
-	err := m.Authorize(tok, "db:drop", "T1", db.OnBehalfOf{})
+	err := m.Authorize(tok, "db:drop", "T1", db.OnBehalfOf{}, time.Time{})
 	if err == nil || errors.Is(err, ErrExpired) || errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want a plain denial, got %v", err)
 	}
@@ -370,7 +370,7 @@ func TestCapability_SubjectActorFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Authorize(tok, "web:read", "A", x); err != nil {
+	if err := m.Authorize(tok, "web:read", "A", x, time.Time{}); err != nil {
 		t.Fatalf("matching subject/actor: %v", err)
 	}
 	for name, obo := range map[string]db.OnBehalfOf{
@@ -378,7 +378,7 @@ func TestCapability_SubjectActorFacts(t *testing.T) {
 		"actor":       {Subject: "X", Actor: "agent-2"},
 		"service run": {Actor: "agent-1"},
 	} {
-		if err := m.Authorize(tok, "web:read", "A", obo); !errors.Is(err, ErrOBOMismatch) {
+		if err := m.Authorize(tok, "web:read", "A", obo, time.Time{}); !errors.Is(err, ErrOBOMismatch) {
 			t.Errorf("%s mismatch: want ErrOBOMismatch, got %v", name, err)
 		}
 	}
@@ -400,11 +400,11 @@ func TestCapability_MismatchDenied(t *testing.T) {
 	}
 	forged, _ := parsed.Append(rand.Reader, bb.Build())
 	raw, _ := forged.Serialize()
-	if err := m.Authorize(raw, "web:read", "A", y); !errors.Is(err, ErrOBOMismatch) {
+	if err := m.Authorize(raw, "web:read", "A", y, time.Time{}); !errors.Is(err, ErrOBOMismatch) {
 		t.Fatalf("forged block subject: want ErrOBOMismatch, got %v", err)
 	}
 	// Another failure is never relabelled as a (softer) OBO mismatch.
-	if err := m.Authorize(tok, "db:drop", "A", y); err == nil || errors.Is(err, ErrOBOMismatch) {
+	if err := m.Authorize(tok, "db:drop", "A", y, time.Time{}); err == nil || errors.Is(err, ErrOBOMismatch) {
 		t.Fatalf("scope denial must win over OBO mismatch, got %v", err)
 	}
 }
@@ -429,11 +429,61 @@ func TestCapability_LegacyTokenWithoutOBOFactsIsMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := tok.Serialize()
-	if err := m.Authorize(raw, "web:read", "A", db.OnBehalfOf{Subject: "Y", Actor: "agent-9"}); !errors.Is(err, ErrOBOMismatch) {
+	if err := m.Authorize(raw, "web:read", "A", db.OnBehalfOf{Subject: "Y", Actor: "agent-9"}, time.Time{}); !errors.Is(err, ErrOBOMismatch) {
 		t.Fatalf("legacy token: want ErrOBOMismatch, got %v", err)
 	}
 	// Absence never masks a real denial.
-	if err := m.Authorize(raw, "db:drop", "A", db.OnBehalfOf{}); err == nil || errors.Is(err, ErrOBOMismatch) {
+	if err := m.Authorize(raw, "db:drop", "A", db.OnBehalfOf{}, time.Time{}); err == nil || errors.Is(err, ErrOBOMismatch) {
 		t.Fatalf("legacy token, missing right: want a plain denial, got %v", err)
+	}
+}
+
+// AG-06: revoke-all on an agent moves its epoch; Authorize refuses every token
+// issued before it and accepts one issued at or after it. issued_at has second
+// precision, so the boundary is the epoch's second.
+func TestCapability_RevocationEpochBoundary(t *testing.T) {
+	m := newMinter(t)
+	issued := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	m.Now = func() time.Time { return issued }
+	obo := db.OnBehalfOf{Subject: "alice", Actor: "agent-1"}
+	tok, err := m.Mint("h", "T1", obo, []string{"web:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return issued.Add(time.Minute) }
+
+	for _, tc := range []struct {
+		name      string
+		notBefore time.Time
+		revoked   bool
+	}{
+		{"no epoch", time.Time{}, false},
+		{"epoch before issue", issued.Add(-time.Second), false},
+		{"epoch at issue", issued, false},
+		{"epoch just after issue", issued.Add(time.Nanosecond), true},
+		{"epoch a second after issue", issued.Add(time.Second), true},
+	} {
+		err := m.Authorize(tok, "web:read", "T1", obo, tc.notBefore)
+		if tc.revoked != errors.Is(err, ErrRevoked) || (!tc.revoked && err != nil) {
+			t.Errorf("%s: got %v, revoked want %v", tc.name, err, tc.revoked)
+		}
+	}
+
+	// A token without issued_at (minted before AG-06) is refused once any
+	// epoch applies, and a revoked token is never relabelled as an OBO
+	// mismatch that audit mode would let through.
+	b := biscuit.NewBuilder(m.priv)
+	for _, f := range []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: "expires", IDs: []biscuit.Term{biscuit.Date(issued.Add(time.Hour))}}},
+		stringFact("task", "T1"), stringFact("right", "web:read"),
+	} {
+		if err := b.AddAuthorityFact(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy, _ := b.Build()
+	raw, _ := legacy.Serialize()
+	if err := m.Authorize(raw, "web:read", "T1", obo, issued); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("legacy token under an epoch: want ErrRevoked, got %v", err)
 	}
 }

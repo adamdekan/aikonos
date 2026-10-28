@@ -62,6 +62,11 @@ var ErrTaskMismatch = errors.New("capability token not bound to this task")
 // is otherwise valid, so a caller in audit mode may record it and proceed.
 var ErrOBOMismatch = errors.New("capability token subject/actor does not match task")
 
+// ErrRevoked reports a token issued before the revocation epoch of its
+// subject or actor (AG-06), or one with no issued_at fact once an epoch
+// applies (minted before AG-06). A denial.
+var ErrRevoked = errors.New("capability token revoked")
+
 // DefaultTTL is the lifetime Mint gives a token when the Minter's TTL is unset.
 const DefaultTTL = 30 * time.Minute
 
@@ -126,8 +131,17 @@ func (m *Minter) MintTTL(holder, taskID string, obo db.OnBehalfOf, scopes []stri
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
-	exp := biscuit.Date(m.now().Add(ttl))
+	now := m.now()
+	exp := biscuit.Date(now.Add(ttl))
 	b := biscuit.NewBuilder(m.priv)
+
+	// issued_at (AG-06) has second precision, so a token minted in the same
+	// second as a later revoke-all is refused too: fail closed by < 1 s.
+	if err := b.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: "issued_at", IDs: []biscuit.Term{biscuit.Date(now)},
+	}}); err != nil {
+		return nil, fmt.Errorf("add issued_at fact: %w", err)
+	}
 
 	if err := b.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
 		Name: "expires", IDs: []biscuit.Term{exp},
@@ -209,10 +223,15 @@ func Attenuate(parent []byte, subset []string) ([]byte, error) {
 // differ from obo or are missing (a pre-AG-17 token); the caller decides audit
 // vs enforce.
 //
+// notBefore is the later revocation epoch of the task's subject and actor
+// (AG-06; zero when neither revoked): a token whose issued_at is before it,
+// or that has no issued_at, is ErrRevoked. It is checked before the
+// subject/actor facts so audit mode never lets a revoked token through.
+//
 // Only authority and authorizer facts are visible to the checks below (block
 // facts live in per-block worlds), so an appended block cannot forge task()
 // or expires().
-func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.OnBehalfOf) error {
+func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.OnBehalfOf, notBefore time.Time) error {
 	if requestedScope == "" {
 		return errors.New("empty requested scope")
 	}
@@ -258,6 +277,23 @@ func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.O
 			return fmt.Errorf("%w: scope %q: %v", ErrAuthorizeTimeout, requestedScope, err)
 		}
 		return fmt.Errorf("scope %q denied: %w", requestedScope, denialReason(authz, now, taskID, err))
+	}
+	if !notBefore.IsZero() {
+		issued, err := queryFacts(authz, "issued_at")
+		if err != nil {
+			if isRunLimit(err) {
+				return fmt.Errorf("%w: read issued_at fact: %v", ErrAuthorizeTimeout, err)
+			}
+			return fmt.Errorf("read issued_at fact: %w", err)
+		}
+		if len(issued) == 0 {
+			return fmt.Errorf("%w: token has no issued_at", ErrRevoked)
+		}
+		for _, t := range issued {
+			if d, ok := t.(biscuit.Date); !ok || time.Time(d).Before(notBefore) {
+				return fmt.Errorf("%w: issued %v, not before %s", ErrRevoked, t, notBefore.UTC().Format(time.RFC3339Nano))
+			}
+		}
 	}
 	// Read back rather than `check if subject(...)`: a token minted before
 	// AG-17 has no fact, and that absence is reported as ErrOBOMismatch too,

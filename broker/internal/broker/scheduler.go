@@ -654,9 +654,10 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	traceID := span.SpanContext().TraceID().String()
 	for _, r := range due {
 		obo := runOBO(r)
-		// ClaimDue parked a revoked/expired delegation instead of advancing it.
-		// ponytail: the subject-block (AG-06) and suspended-actor (AG-03) checks
-		// belong here; neither a user block nor an agent status exists yet.
+		// ClaimDue parked a revoked/expired delegation, a blocked subject or a
+		// revoked-all actor (AG-06) instead of advancing it.
+		// ponytail: the suspended-actor (AG-03) check belongs here; no agent
+		// status exists yet.
 		if r.SkipReason != "" {
 			schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 				"aikonos.scheduler.run.skipped."+r.SkipReason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)

@@ -68,6 +68,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/provisioning"
 	"github.com/adamdekan/aikonos/broker/internal/provisioningseed"
 	"github.com/adamdekan/aikonos/broker/internal/ratelimit"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
@@ -910,6 +911,10 @@ func main() {
 	// (ReadWorkspaceFile/UploadWorkspaceFile carry the file bytes) fits the
 	// 10 MiB per-file limit with headroom.
 	const maxMsgBytes = 16 << 20
+	// AG-06: one cached revocation view shared by the north interceptor and
+	// both services, so an admin write resets the interceptor's cache too.
+	revocationChecker := revocation.New(db.NewRevocationRepo(pool, log))
+
 	northServer := grpc.NewServer(
 		grpc.Creds(northCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
@@ -919,6 +924,7 @@ func main() {
 			auth.OIDCInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
 			provisioner.Interceptor(),
 			auth.TenantInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
+			auth.RevocationInterceptor(revocationChecker, auditEmitter, log),
 			auth.AuditInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
 		),
 	)
@@ -993,6 +999,7 @@ func main() {
 		OrgSettings:              orgSettingsRepo,
 		OtelEndpoint:             otelEndpoint,
 		UserDirectory:            userDirRepo,
+		Revocation:               revocationChecker,
 		Provisioning:             provisioningRepo,
 		GatewayGrantKey:          gatewayGrantKey,
 		GatewayGrantTTL:          gatewayGrantTTL,
@@ -1078,6 +1085,7 @@ func main() {
 		OrgSettings:          orgSettingsRepo,
 		Workflows:            workflowRepo,
 		UserAssertions:       oidcValidator, // never nil; disabled ⇒ assertions refused
+		Revocation:           revocationChecker,
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)
 	reflection.Register(southServer) // dev convenience; south is mTLS+SPIFFE-gated

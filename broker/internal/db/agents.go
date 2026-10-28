@@ -36,6 +36,7 @@ type Agent struct {
 	CreatedBy         string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	RevokedBefore     *time.Time // AG-06 revocation epoch: credentials issued before it are void
 }
 
 type AgentRepo struct {
@@ -47,7 +48,7 @@ func NewAgentRepo(pool *pgxpool.Pool, logger *zap.Logger) *AgentRepo {
 	return &AgentRepo{pool: pool, logger: logger}
 }
 
-const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at`
+const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at, revoked_before`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -56,7 +57,7 @@ func scanAgent(row interface {
 	var skillsJSON, mcpJSON, allowedProvidersJSON []byte
 	if err := row.Scan(&a.ID, &a.TenantID, &a.Name, &a.LLMModel, &a.ApprovalMode,
 		&skillsJSON, &mcpJSON, &allowedProvidersJSON, &a.PreferredProvider,
-		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.RevokedBefore); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(skillsJSON, &a.Skills); err != nil {

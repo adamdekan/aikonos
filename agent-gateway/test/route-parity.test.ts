@@ -55,6 +55,9 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // POST /skills/:name/share + GET /skills/transfers/:envelopeId +
 // POST /skills/transfers/:envelopeId/accept — the Skills view's management
 // and transfer surface (broker-enforced, gateway forwards only).
+// AG-06 authorized addition: POST /admin/members/:subject/block +
+// POST /admin/members/:subject/revoke-sessions +
+// POST /admin/agents/:id/revoke-sessions — user block and revoke-all.
 // CP2 authorized
 // addition: POST /admin/providers/:id/default-for — per-capability provider
 // default (supersedes the three single-capability routes, which stay).
@@ -139,10 +142,13 @@ const EXPECTED_ROUTES = [
   "PATCH /schedules/:id",
   "POST /admin/agents",
   "POST /admin/agents/:id/keys",
+  "POST /admin/agents/:id/revoke-sessions",
   "POST /admin/assignments",
   "POST /admin/assignments/revoke",
   "POST /admin/m365/test",
   "POST /admin/mcp",
+  "POST /admin/members/:subject/block",
+  "POST /admin/members/:subject/revoke-sessions",
   "POST /admin/network",
   "POST /admin/network/delete",
   "POST /admin/policy/simulate",
