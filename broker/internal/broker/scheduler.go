@@ -569,7 +569,8 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 		}
 		out = append(out, due)
 		schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
-			"aikonos.scheduler.run.fired", r.ScheduledRunID.String(), auditv1.PolicyDecision_ALLOW)
+			"aikonos.scheduler.run.fired", r.ScheduledRunID.String(), auditv1.PolicyDecision_ALLOW,
+			&db.Task{OwnerUserID: r.OwnerUserID, GrantID: &r.ScheduledRunID})
 	}
 	return &brokerv1.ClaimDueScheduledRunsResponse{Runs: out}, nil
 }
@@ -639,8 +640,9 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 }
 
 // schedulerAudit emits a scheduler audit event (shared by the north and south
-// surfaces). The run id, when present, is the resource ref.
-func schedulerAudit(deps Deps, ctx context.Context, traceID, tenant, actor, eventType, runID string, decision auditv1.PolicyDecision) {
+// surfaces). The run id, when present, is the resource ref. obo, when non-nil,
+// stamps the on-behalf-of chain (AG-17).
+func schedulerAudit(deps Deps, ctx context.Context, traceID, tenant, actor, eventType, runID string, decision auditv1.PolicyDecision, obo ...*db.Task) {
 	ev := &auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
@@ -655,6 +657,9 @@ func schedulerAudit(deps Deps, ctx context.Context, traceID, tenant, actor, even
 		if c, err := structpb.NewStruct(map[string]any{"scheduled_run_id": runID}); err == nil {
 			ev.Context = c
 		}
+	}
+	if len(obo) > 0 {
+		withOBO(ev, obo[0])
 	}
 	if err := deps.Audit.Emit(ctx, ev); err != nil {
 		deps.Logger.Warn("scheduler audit emit failed", zap.Error(err))

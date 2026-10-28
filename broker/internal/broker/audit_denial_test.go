@@ -102,6 +102,10 @@ func TestInvokeTool_UnknownTool_EmitsDenyAndReturnsPermissionDenied(t *testing.T
 	if reason := ev.Context.Fields["reason"].GetStringValue(); reason != "unknown_tool" {
 		t.Errorf("context.reason = %q, want %q", reason, "unknown_tool")
 	}
+	// No task row in scope yet: no on-behalf-of chain (AG-17).
+	if ev.ActorAgentId != "" || ev.Context.Fields["obo"] != nil {
+		t.Errorf("unknown_tool: want no obo chain, got actor_agent_id=%q obo=%v", ev.ActorAgentId, ev.Context.Fields["obo"])
+	}
 }
 
 // ── Test 2: InvokeTool MCP FGA-denied → mcp_access_denied + PermissionDenied ─
@@ -152,6 +156,10 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		AllowMcpPrivate: true,
 	}, zap.NewNop())
 
+	// Agent-bound task: the denial must carry the row's on-behalf-of chain (AG-17).
+	agentID := uuid.New()
+	tasks := executingTaskStore("alice@example.com")
+	tasks.task.AgentID = &agentID
 	svc := NewSandboxService(Deps{
 		Logger:     zap.NewNop(),
 		Capability: m,
@@ -160,7 +168,7 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		Audit:      em,
 		Mcp:        McpDeps{Connections: repo},
 		TenantID:   "aikonos-dev",
-		Tasks:      executingTaskStore("alice@example.com"),
+		Tasks:      tasks,
 	})
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-deny-1")
@@ -169,7 +177,7 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
 		TenantId:        testTenantUUID,
-		AgentId:         "test-agent",
+		AgentId:         agentID.String(),
 		UserId:          "alice@example.com",
 	})
 	if status.Code(err) != codes.PermissionDenied {
@@ -185,6 +193,14 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 	}
 	if reason := ev.Context.Fields["reason"].GetStringValue(); reason != "mcp_access_denied" {
 		t.Errorf("context.reason = %q, want %q", reason, "mcp_access_denied")
+	}
+	if ev.ActorAgentId != agentID.String() {
+		t.Errorf("actor_agent_id = %q, want %q", ev.ActorAgentId, agentID)
+	}
+	obo := ev.Context.Fields["obo"].GetStructValue().GetFields()
+	if obo["subject"].GetStringValue() != "alice@example.com" || obo["actor"].GetStringValue() != agentID.String() ||
+		obo["service_run"].GetBoolValue() {
+		t.Errorf("context.obo = %v, want subject=alice@example.com actor=%s service_run=false", obo, agentID)
 	}
 }
 

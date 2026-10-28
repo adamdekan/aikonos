@@ -24,6 +24,49 @@ import (
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
+type oboTaskKey struct{}
+
+// withOBOTask carries the task row in ctx so every task-scoped audit event
+// emitted below it can record the on-behalf-of chain (AG-17).
+func withOBOTask(ctx context.Context, t *db.Task) context.Context {
+	return context.WithValue(ctx, oboTaskKey{}, t)
+}
+
+// oboTask returns the task carried by withOBOTask, or nil.
+func oboTask(ctx context.Context) *db.Task {
+	t, _ := ctx.Value(oboTaskKey{}).(*db.Task)
+	return t
+}
+
+// withOBO stamps ev with t's on-behalf-of chain: actor_agent_id and
+// context.obo. Audit-only; a nil task leaves ev untouched (no row in scope).
+// kind is "" until grant v2 (AG-17 S2) knows it.
+func withOBO(ev *auditv1.AuditEvent, t *db.Task) *auditv1.AuditEvent {
+	if t == nil {
+		return ev
+	}
+	o := t.OnBehalfOf()
+	ev.ActorAgentId = o.Actor
+	if ev.Context == nil {
+		ev.Context = &structpb.Struct{}
+	}
+	if ev.Context.Fields == nil {
+		ev.Context.Fields = map[string]*structpb.Value{}
+	}
+	obo, _ := structpb.NewStruct(map[string]any{
+		"subject":            o.Subject,
+		"actor":              o.Actor,
+		"service_run":        o.ServiceRun,
+		"delegated_by":       o.DelegatedBy,
+		"envelope_id":        o.EnvelopeID,
+		"external_client_id": o.ExternalClientID,
+		"grant_id":           o.GrantID,
+		"kind":               "",
+	})
+	ev.Context.Fields["obo"] = structpb.NewStructValue(obo)
+	return ev
+}
+
 // emitToolDenied fires a DENY audit event for an InvokeTool denial. It is
 // fire-and-forget and nil-guards deps.Audit — it never changes the return value
 // or adds latency to the RPC. extras is merged into the context struct after the
@@ -44,7 +87,7 @@ func (s *SandboxService) emitToolDenied(ctx context.Context, req *brokerv1.Invok
 		ctxFields[k] = v
 	}
 	ctxStruct, _ := structpb.NewStruct(ctxFields)
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TenantId:    s.resolveTenant(ctx, req.TenantId),
 		OccurredAt:  timestampNow(),
@@ -53,7 +96,7 @@ func (s *SandboxService) emitToolDenied(ctx context.Context, req *brokerv1.Invok
 		ResourceRef: "aikonos:tool:" + req.ToolId,
 		Decision:    auditv1.PolicyDecision_DENY,
 		Context:     ctxStruct,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.tool.denied")
 	}
 }
@@ -72,7 +115,7 @@ func (s *SandboxService) emitBudgetExceeded(ctx context.Context, tenantID string
 		"budget":   budget,
 		"error":    incErr.Error(),
 	})
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TenantId:    tenantID,
 		OccurredAt:  timestampNow(),
@@ -81,7 +124,7 @@ func (s *SandboxService) emitBudgetExceeded(ctx context.Context, tenantID string
 		ResourceRef: "aikonos:task:" + req.TaskId,
 		Decision:    auditv1.PolicyDecision_DENY,
 		Context:     ctxStruct,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.task.budget_exceeded")
 	}
 }
@@ -94,7 +137,7 @@ func (s *SandboxService) emitResultFlagged(ctx context.Context, req *brokerv1.In
 		return
 	}
 	ctxStruct, _ := structpb.NewStruct(map[string]any{"injection_flags": flags})
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TenantId:    tenantID,
 		OccurredAt:  timestampNow(),
@@ -103,7 +146,7 @@ func (s *SandboxService) emitResultFlagged(ctx context.Context, req *brokerv1.In
 		ResourceRef: "aikonos:tool:" + req.ToolId,
 		Decision:    auditv1.PolicyDecision_ALLOW,
 		Context:     ctxStruct,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.tool.result_flagged")
 	}
 }
@@ -216,6 +259,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		s.emitToolDenied(ctx, req, scope, "task_unbound", terr, nil)
 		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
 	}
+	ctx = withOBOTask(ctx, task)
 	// boundAgentID is the row's agent binding ("" for a personal task). It keys
 	// the rate limit and baseline, and is the only agent memory scope=agent and
 	// the mcp: FGA check may resolve for a bound task.
@@ -512,7 +556,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	}
 	if s.deps.Audit != nil {
 		auditStruct, _ := structpb.NewStruct(auditCtx)
-		if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+		if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 			EventId:     ids.EventID(),
 			TenantId:    tenantID,
 			OccurredAt:  timestampNow(),
@@ -521,7 +565,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 			ResourceRef: "aikonos:tool:" + req.ToolId,
 			Decision:    auditDecision,
 			Context:     auditStruct,
-		}); err != nil {
+		}, oboTask(ctx))); err != nil {
 			audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.tool.invoked")
 		}
 	}

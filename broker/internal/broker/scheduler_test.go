@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
@@ -205,10 +204,10 @@ func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
 		},
 	}
 
-	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
+	aud := &fakeInvokeAudit{}
 	deps := Deps{
 		Logger:          zap.NewNop(),
-		Audit:           em,
+		Audit:           aud,
 		GatewaySpiffeID: testGWSpiffeID,
 		GatewayGrantKey: testGrantKey,
 		GatewayGrantTTL: testGrantTTL,
@@ -225,6 +224,14 @@ func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
 	}
 	if len(resp.Runs) != 1 {
 		t.Fatalf("expected 1 run, got %d", len(resp.Runs))
+	}
+	// run.fired carries the chain: subject = owner, grant_id = schedule id (AG-17).
+	if len(aud.events) != 1 {
+		t.Fatalf("expected 1 run.fired event, got %d", len(aud.events))
+	}
+	obo := aud.events[0].Context.Fields["obo"].GetStructValue().GetFields()
+	if obo["subject"].GetStringValue() != "alice@example.com" || obo["grant_id"].GetStringValue() != runID.String() {
+		t.Errorf("run.fired obo = %v, want subject=alice@example.com grant_id=%s", obo, runID)
 	}
 	run := resp.Runs[0]
 	if run.OwnerGrant == "" {

@@ -474,7 +474,9 @@ func TestInvokeTool_EmitsResultFlaggedWhenInjectionFlagsPresent(t *testing.T) {
 			"injection_flags": []any{"instruction_tag", "role_override"},
 		}, 1, nil
 	})
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
+	// Agent-bound row: both the success-path events must carry its chain (AG-17).
+	agentID := uuid.New()
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0, AgentID: &agentID}}
 	aud := &fakeInvokeAudit{}
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
@@ -497,6 +499,20 @@ func TestInvokeTool_EmitsResultFlaggedWhenInjectionFlagsPresent(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected aikonos.tool.result_flagged audit event, got %+v", aud.events)
+	}
+	var stamped int
+	for _, ev := range aud.events {
+		if ev.EventType != "aikonos.tool.result_flagged" && ev.EventType != "aikonos.broker.tool.invoked" {
+			continue
+		}
+		stamped++
+		obo := ev.Context.Fields["obo"].GetStructValue().GetFields()
+		if ev.ActorAgentId != agentID.String() || obo["actor"].GetStringValue() != agentID.String() {
+			t.Errorf("%s: actor_agent_id=%q obo=%v, want actor %s", ev.EventType, ev.ActorAgentId, obo, agentID)
+		}
+	}
+	if stamped != 2 {
+		t.Errorf("expected tool.invoked and result_flagged events, got %d of them", stamped)
 	}
 	if found.TenantId != "tenant-x" || found.ActorUserId != "" || found.ResourceRef != "aikonos:tool:web.fetch" {
 		t.Fatalf("unexpected event fields: %+v", found)

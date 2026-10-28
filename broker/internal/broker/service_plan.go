@@ -80,6 +80,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		}
 		return nil, status.Errorf(codes.Internal, "failed to load task")
 	}
+	ctx = withOBOTask(ctx, task)
 
 	// Move the task into VALIDATING (CREATED→PLANNING→VALIDATING as needed).
 	if err := s.advanceToValidating(ctx, tenantID, task, taskStore); err != nil {
@@ -593,7 +594,7 @@ func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID st
 			s.deps.Logger.Error("plan audit context could not be encoded", zap.Error(err))
 		}
 	}
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:       ids.EventID(),
 		TraceId:       traceID,
 		TenantId:      tenantID,
@@ -603,7 +604,7 @@ func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID st
 		ResourceRef:   "aikonos:task:" + req.TaskId,
 		Decision:      decision,
 		Context:       ctxStruct,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.plan.validated")
 	}
 }
