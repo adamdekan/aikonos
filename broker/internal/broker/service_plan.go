@@ -158,6 +158,9 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger)
 	}
 
+	// AG-02: "" for a human subject, else why the user bound does not apply.
+	userBoundExempt := s.userBoundExemption(ctx, tenantID, task)
+
 	for _, step := range plan.Steps {
 		// Compute the routing class: take the stricter of what the planner
 		// declared and what the registry knows (tenant overlay if present, else
@@ -171,20 +174,31 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		}
 
 		// User skill gate: deny-by-default FGA check for personal tasks.
-		// Skipped for agent-bound tasks — those are governed by the CP2
-		// agent.Skills list (checkAgentSkills); their owners may be svc-
-		// service principals with no group membership.
+		// AG-02: an agent-bound task with a human subject needs the subject's
+		// own grant too (identity.enforce_user_bound: audit records a
+		// would-deny, enforce denies); svc- runs and service agents keep the
+		// agent.Skills boundary alone (checkAgentSkills) and are flagged in
+		// the step record.
 		//
-		// mcp: tools are also skipped: their authorization is the connector
-		// permitted_agent/permitted_group grant, enforced at InvokeTool (and the
-		// tool is only offered when the agent can_access the connector). The
-		// per-user skill object "skill:mcp:<conn>:<tool>" is not even a valid
+		// mcp: tools check the subject's can_access on the connector instead:
+		// the per-user skill object "skill:mcp:<conn>:<tool>" is not a valid
 		// OpenFGA object (the id carries colons) — checking it 400s and fails
-		// closed, which would deny every MCP tool from an interactive session.
+		// closed. InvokeTool re-checks per call.
 		fgaDec := ""
 		var fgaRec *fgaRecord
-		if !agentBound && !strings.HasPrefix(step.ToolId, "mcp:") {
+		var userBound map[string]any
+		isMcp := strings.HasPrefix(step.ToolId, "mcp:")
+		switch {
+		case !agentBound && !isMcp:
 			fgaDec, fgaRec = s.userSkillDecision(ctx, task.OwnerUserID, step.ToolId)
+		case userBoundExempt != "":
+			userBound = map[string]any{"exempt": userBoundExempt}
+		case isMcp:
+			fgaDec, fgaRec = s.userConnectorDecision(ctx, task.OwnerUserID, step.ToolId)
+			fgaDec, userBound = s.planUserBound(ctx, tenantID, task, step.ToolId, fgaDec, fgaRec)
+		default:
+			fgaDec, fgaRec = s.userSkillDecision(ctx, task.OwnerUserID, step.ToolId)
+			fgaDec, userBound = s.planUserBound(ctx, tenantID, task, step.ToolId, fgaDec, fgaRec)
 		}
 
 		// Network access-list (web egress): governed plan-time decision so the
@@ -260,7 +274,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			Step:     &stepRef{TaskID: req.TaskId, PlanID: plan.PlanId, Seq: step.Seq, ToolID: step.ToolId},
 			OPA:      dec.Evidence,
 			Layers:   layers,
-			Settings: map[string]any{"effect_class": ecSettings},
+			Settings: stepSettings(ecSettings, userBound),
 			FGA:      fgaRec,
 		})
 
@@ -522,28 +536,32 @@ func (s *SandboxService) checkAgentSkills(ctx context.Context, tenantID, agentID
 // userSkillDecision checks whether the task's owner has can_invoke on the given
 // tool in OpenFGA and returns the FGADecision string for ToolQuery.
 //
-// Only called for personal (non-agent-bound) tasks when FGA is enabled.
-// Agent-bound tasks are already governed by the CP2 server-side agent.Skills
-// list (checkAgentSkills above); their owners may be svc- service principals
-// with no group membership, so this group-based gate must not apply to them.
+// Called for personal tasks, and (AG-02) for agent-bound tasks whose subject
+// is a human: the agent's skill boundary (checkAgentSkills above) and the
+// user's own grant must both hold. svc- runs and service agents skip it.
 //
 // Returns "allow" on grant, "deny" on no-grant or error.  On error it fails
 // closed — this is a security gate; consistent with the platform principle.
 // The check itself is returned for the decision record; nil when FGA is off.
 func (s *SandboxService) userSkillDecision(ctx context.Context, ownerUserID, toolID string) (string, *fgaRecord) {
+	return s.userFGADecision(ctx, &fgaRecord{User: "user:" + ownerUserID, Relation: "can_invoke", Object: "skill:" + toolID})
+}
+
+// userFGADecision runs one plan-time user check (rec's user, relation and
+// object) and fills in its outcome. "allow" when FGA is off.
+func (s *SandboxService) userFGADecision(ctx context.Context, rec *fgaRecord) (string, *fgaRecord) {
 	sp := s.skillPolicyFor()
 	if sp == nil || !sp.FGAEnabled() {
 		return "allow", nil
 	}
-	rec := &fgaRecord{User: "user:" + ownerUserID, Relation: "can_invoke", Object: "skill:" + toolID}
 	if m, ok := sp.(interface{ FGAModelID() string }); ok {
 		rec.ModelID = m.FGAModelID()
 	}
 	granted, err := sp.CheckFGA(ctx, rec.User, rec.Relation, rec.Object)
 	if err != nil {
-		s.deps.Logger.Warn("userSkillDecision: CheckFGA error — failing closed",
-			zap.String("user", ownerUserID),
-			zap.String("tool", toolID),
+		s.deps.Logger.Warn("userFGADecision: CheckFGA error — failing closed",
+			zap.String("user", rec.User),
+			zap.String("object", rec.Object),
 			zap.Error(err))
 		rec.Error = err.Error()
 		return "deny", rec
@@ -553,6 +571,16 @@ func (s *SandboxService) userSkillDecision(ctx context.Context, ownerUserID, too
 		return "allow", rec
 	}
 	return "deny", rec
+}
+
+// stepSettings is a step record's settings: the effect-class routing and,
+// when it applied, the AG-02 user-bound note.
+func stepSettings(ec, userBound map[string]any) map[string]any {
+	out := map[string]any{"effect_class": ec}
+	if userBound != nil {
+		out["user_bound"] = userBound
+	}
+	return out
 }
 
 // recordPlanDecision emits a plan-level decision record for the task.

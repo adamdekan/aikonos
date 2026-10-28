@@ -14,6 +14,7 @@ import WebSearchConfig from "./WebSearchConfig.vue";
 import Network from "./Network.vue";
 import RateLimits from "./RateLimits.vue";
 import SpendCaps from "./SpendCaps.vue";
+import IdentitySettings from "./IdentitySettings.vue";
 
 // Settings is a category-tabbed shell. "General" holds the raw config table;
 // the org-governance pages (previously top-level Admin nav items) are folded in
@@ -25,6 +26,7 @@ const TABS = Object.freeze([
   { key: "automation",          label: "Automation Controls", comp: markRaw(Automation) },
   { key: "workflow-governance", label: "Workflow Governance", comp: markRaw(WorkflowGovernance) },
   { key: "capabilities",        label: "Capabilities",        comp: markRaw(Capabilities) },
+  { key: "identity",            label: "Identity",            comp: markRaw(IdentitySettings) },
   { key: "network",             label: "Network Access",      comp: markRaw(Network) },
   { key: "rate-limits",         label: "Rate Limits",         comp: markRaw(RateLimits) },
   { key: "spend-caps",          label: "Spend Caps",          comp: markRaw(SpendCaps) },

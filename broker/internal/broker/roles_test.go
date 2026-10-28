@@ -860,3 +860,29 @@ func TestListAssignments_AgentSkillBucketsToSkillAccess(t *testing.T) {
 		t.Error("agentskill:research-assistant tuple not present in ListAssignments response")
 	}
 }
+
+// AG-02: an admin grants a connector to one user (permitted_user) or a group
+// (permitted_group); a group on permitted_user is still rejected.
+func TestAssignRole_McpConnectorUserAndGroupGrants(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	svc := NewBrokerService(testAdminDeps(t, srv.URL))
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	for _, tp := range []*brokerv1.RoleTuple{
+		tuple("user:alice@example.com", "permitted_user", "mcp_connector:c1"),
+		tuple("group:ops#member", "permitted_group", "mcp_connector:c1"),
+	} {
+		if resp, err := svc.AssignRole(ctx, &brokerv1.AssignRoleRequest{UserId: "admin@example.com", Tuple: tp}); err != nil || !resp.Success {
+			t.Fatalf("assign %v: resp=%v err=%v", tp, resp, err)
+		}
+	}
+	_, err := svc.AssignRole(ctx, &brokerv1.AssignRoleRequest{
+		UserId: "admin@example.com",
+		Tuple:  tuple("group:ops#member", "permitted_user", "mcp_connector:c1"),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("group on permitted_user: want InvalidArgument, got %v", err)
+	}
+}

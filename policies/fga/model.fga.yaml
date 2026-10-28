@@ -17,6 +17,15 @@ tuples:
   - user: user:*
     relation: usable_by
     object: agent:default
+  - user: agent:a1
+    relation: permitted_agent
+    object: mcp_connector:c1
+  - user: group:ops#member
+    relation: permitted_group
+    object: mcp_connector:c1
+  - user: user:carol
+    relation: permitted_user
+    object: mcp_connector:c1
 tests:
   # AG-04: user and group owners both own and may use the agent; only a named
   # user owner may delegate; a plain user of the agent owns nothing.
@@ -53,3 +62,23 @@ tests:
         assertions:
           can_use: true
           owner: false
+  # AG-02: a user reaches a connector through a group or a direct
+  # permitted_user grant; an agent grant gives the agent's users nothing.
+  - name: mcp connector access
+    check:
+      - user: user:carol
+        object: mcp_connector:c1
+        assertions:
+          can_access: true
+      - user: user:bob
+        object: mcp_connector:c1
+        assertions:
+          can_access: true
+      - user: user:dave
+        object: mcp_connector:c1
+        assertions:
+          can_access: false
+      - user: agent:a1
+        object: mcp_connector:c1
+        assertions:
+          can_access: true

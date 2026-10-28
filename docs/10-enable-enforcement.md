@@ -21,6 +21,15 @@
 | Capability | always on — broker always builds a minter | set a persistent root key (else read-or-created in Vault, ephemeral on Vault restart) |
 | NATS | `AIKONOS_NATS_URL=""` → bus disabled, `StreamTaskEvents` Unimplemented | url set → events published, streaming works |
 | On-behalf-of (AG-17) | tenant setting `identity.obo=audit` (default) → mismatches logged/audited, allowed | `identity.obo=enforce` per tenant → token subject/actor mismatch or missing facts, v1 owner grants, non-service api keys without a user assertion and actorless schedules are denied; default flips after AG-01/AG-02 |
+| User bound (AG-02) | tenant setting `identity.enforce_user_bound=audit` (default) → a human whose agent uses a skill or MCP connector the human may not use is recorded as `aikonos.broker.user_bound.would_deny`, allowed | `identity.enforce_user_bound=enforce` per tenant → the plan step is denied, an MCP call is denied with `mcp_user_access_denied`; `svc-` runs and service agents are exempt (flagged `user_bound_exempt` in the audit) |
+
+Rolling out the user bound: leave the tenant in audit mode and watch
+**Admin → Settings → Identity**, which lists recent would-deny events (user,
+agent, connector or tool). Fix each one by granting the user the connector
+(**Admin → MCP → Access**: a group or the user directly) or the skill, or by
+marking the agent as a service agent when it is meant as a controlled door to a
+connector its users cannot reach. Then switch *Bound agents by their user* to
+enforce on the same page.
 
 The compose `.env.local.example` ships OIDC (`http://keycloak:8080/realms/aikonos`) and NATS
 (`nats://nats:4222`) **on**. The one knob you must flip yourself is OpenFGA: the store

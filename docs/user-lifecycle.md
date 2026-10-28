@@ -153,6 +153,12 @@ agent, the broker binds the user's default agent:
   remove `user:*`; the broker restores `user:*` at startup only when the agent has no
   `usable_by` tuple at all. A user without `can_use` on it is refused (`403` in chat).
 
+An agent acts within its user's rights (AG-02). A skill or MCP connector the
+user may not use is recorded as a would-deny in audit mode and refused once the
+tenant sets `identity.enforce_user_bound=enforce`. Removing a user from a group
+therefore also removes that group's connectors from every agent run for the user.
+Grant a single person a connector in **Admin → MCP → Access**.
+
 A schedule created without an actor fires as its owner's default agent, resolved at
 each fire. With `identity.obo=enforce` such a schedule stays parked, as before.
 

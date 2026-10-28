@@ -54,8 +54,12 @@ export const SECTIONS = [
     key: "mcp",
     label: "MCP access",
     objectType: "mcp_connector",
-    blurb: "Which agents may access which MCP servers (permitted_agent).",
-    relations: [{ name: "permitted_agent", subjects: ["agent"] }],
+    blurb: "Which agents, groups and users may access which MCP servers. A user acting through an agent needs both grants.",
+    relations: [
+      { name: "permitted_agent", subjects: ["agent"] },
+      { name: "permitted_group", subjects: ["group"] },
+      { name: "permitted_user", subjects: ["user"] },
+    ],
   },
 ];
 

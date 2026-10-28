@@ -30,4 +30,9 @@ describe("sections.js — MCP access section", () => {
   it("principalKind recognises agent: prefix", () => {
     expect(principalKind("agent:bot-123")).toBe("agent");
   });
+
+  it("has the AG-02 user-side grants: permitted_group and permitted_user", () => {
+    expect(mcpSection.relations.find((r) => r.name === "permitted_group").subjects).toEqual(["group"]);
+    expect(mcpSection.relations.find((r) => r.name === "permitted_user").subjects).toEqual(["user"]);
+  });
 });

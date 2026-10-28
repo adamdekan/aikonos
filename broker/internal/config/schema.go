@@ -257,6 +257,24 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// identity.enforce_user_bound switches the AG-02 user bound: a human
+	// subject needs its own skill / connector grant next to the agent's.
+	// audit emits aikonos.broker.user_bound.would_deny and allows; enforce
+	// denies. Monotonic-stricter only, like identity.obo.
+	// ponytail: make enforce the default and drop the key one release after
+	// tenants have fixed their grants (AG-02 rollout step 4).
+	"identity.enforce_user_bound": {
+		Name:    "identity.enforce_user_bound",
+		Kind:    KindString,
+		Default: "audit",
+		Doc:     "User bound on agents (AG-02): audit (record would-deny events, allow) or enforce (deny a plan step or MCP call when the human the agent acts for lacks the skill or connector grant). svc- runs and service agents are exempt. Can only tighten.",
+		Validate: func(v string) error {
+			if v != "audit" && v != "enforce" {
+				return fmt.Errorf("identity.enforce_user_bound: must be audit or enforce, got %q", v)
+			}
+			return nil
+		},
+	},
 }
 
 // ParseList splits a comma-separated config string into trimmed, non-empty
