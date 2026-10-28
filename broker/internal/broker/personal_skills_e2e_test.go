@@ -283,8 +283,9 @@ func TestPersonalSkillsE2E_NoNewMigrations(t *testing.T) {
 	// Bumped as unrelated features land migrations on main: 045 is
 	// llm_usage_events, 046 is
 	// llm_provider_catalog, 047 is
-	// llm_usage_events_units, 048 is tasks_obo.
-	const knownMaxMigration = 48
+	// llm_usage_events_units, 048 is tasks_obo, 049 is
+	// scheduled_runs_delegation.
+	const knownMaxMigration = 49
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

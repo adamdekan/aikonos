@@ -682,16 +682,15 @@ test("CP8 agent provider selection: fallback to tenant default when preferred pr
   );
 });
 
-// ── Regression: scheduled run agent id must be agentForUser-derived, not the bare UUID ──
+// ── Regression: scheduled run agent id is never the bare owner UUID ──
 //
 // A UUID ownerUserId passed verbatim as agentId parses as a valid UUID on the
 // broker and is inserted into tasks.agent_id — which references no agents row, so
 // CreateGatewayTask fails tasks_agent_id_fkey (SQLSTATE 23503) and EVERY tool call
-// in the run is blocked with "13 INTERNAL: failed to create task". The ticker must
-// derive agentId via agentForUser ("<uuid>-agent", deliberately not a UUID), which
-// the broker treats as an unbound personal task (NULL agent_id) — the same shape
-// the interactive /agui path produces.
-test("ticker: scheduled run agent id is agentForUser-derived, never the bare ownerUserId (FK fix)", async () => {
+// in the run is blocked with "13 INTERNAL: failed to create task". AG-17 S4: a
+// run with a delegation actor uses it; a legacy run with no actor keeps the
+// agentForUser id ("<uuid>-agent", non-UUID → unbound, NULL agent_id).
+test("ticker: scheduled run without an actor is agentForUser-derived, never the bare ownerUserId (FK fix)", async () => {
   const ownerUuid = "cccccccc-0000-4000-8000-000000000001";
   const capturedIdentities: RunIdentity[] = [];
 
@@ -759,11 +758,7 @@ test("ticker: scheduled run agent id is agentForUser-derived, never the bare own
     ownerUuid,
     "agentId must NOT be the bare ownerUserId — a valid UUID would FK-fail as a non-existent agent",
   );
-  assert.equal(
-    id.agentId,
-    `${ownerUuid}-agent`,
-    "agentId is agentForUser-derived (non-UUID → broker stores NULL agent_id)",
-  );
+  assert.equal(id.agentId, `${ownerUuid}-agent`, "no actor → agentForUser-derived (non-UUID → broker stores NULL agent_id)");
 
   captureSupervisor.dispose();
 });

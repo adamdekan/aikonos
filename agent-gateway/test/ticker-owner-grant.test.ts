@@ -159,6 +159,7 @@ test("CP8 ticker: ownerGrant from DueRun flows into supervisor run identity (not
             prompt: "list files",
             approvedTools: ["doc.read"],
             ownerGrant: grant,
+            actorAgentId: "11111111-2222-3333-4444-555555555555",
           },
         ],
       }),
@@ -174,6 +175,8 @@ test("CP8 ticker: ownerGrant from DueRun flows into supervisor run identity (not
     grant,
     "ticker must thread DueRun.ownerGrant into the child's spawn identity",
   );
+  // AG-17 S4: a delegation actor wins over the agentForUser "<user>-agent" id.
+  assert.equal(capturedIdentities[0].agentId, "11111111-2222-3333-4444-555555555555");
 
   supervisor.dispose();
 });

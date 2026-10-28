@@ -16,6 +16,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -192,7 +193,7 @@ func (f *fakeClaimDueStore) ClaimDue(_ context.Context, _ string, _ time.Time, _
 // that Verify→the run's stored owner.  This is the transport-level proof that
 // the scheduler path satisfies the CP2 mint contract.
 func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
-	runID := uuid.New()
+	runID, actorID := uuid.New(), uuid.New()
 	claimStore := &fakeClaimDueStore{
 		runs: []*db.ScheduledRun{
 			{
@@ -200,6 +201,7 @@ func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
 				OwnerUserID:    "alice@example.com",
 				Prompt:         "summarize",
 				ApprovedTools:  []string{"doc.read"},
+				ActorAgentID:   &actorID,
 			},
 		},
 	}
@@ -244,10 +246,97 @@ func TestClaimDueScheduledRuns_GrantVerifiesToRunOwner(t *testing.T) {
 	if g.TenantID != testTenantUUID {
 		t.Errorf("grant tenant = %q, want %q", g.TenantID, testTenantUUID)
 	}
-	if g.Owner() != "alice@example.com" || g.Kind != gatewaygrant.KindScheduled || g.GrantID != runID.String() || g.Actor != "" {
-		t.Errorf("grant = %+v, want owner alice@example.com, kind scheduled, grant_id %s, no actor", g, runID)
+	if g.Owner() != "alice@example.com" || g.Kind != gatewaygrant.KindScheduled || g.GrantID != runID.String() || g.Actor != actorID.String() {
+		t.Errorf("grant = %+v, want owner alice@example.com, kind scheduled, grant_id %s, actor %s", g, runID, actorID)
+	}
+	if run.ActorAgentId != actorID.String() || aud.events[0].ActorAgentId != actorID.String() {
+		t.Errorf("DueRun actor = %q, run.fired actor = %q, want %s", run.ActorAgentId, aud.events[0].ActorAgentId, actorID)
 	}
 	if obo["kind"].GetStringValue() != "scheduled" {
 		t.Errorf("run.fired obo kind = %q, want scheduled", obo["kind"].GetStringValue())
 	}
+}
+
+// TestClaimDue_SkipsExpiredRevoked: a run ClaimDue parked for a dead delegation
+// (AG-17 S4) is never returned to the gateway and leaves a DENY skip event.
+// ponytail: blocked-subject (AG-06) and suspended-actor (AG-03) cases join
+// this table when those checks exist.
+func TestClaimDue_SkipsExpiredRevoked(t *testing.T) {
+	live := uuid.New()
+	claimStore := &fakeClaimDueStore{runs: []*db.ScheduledRun{
+		{ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", SkipReason: "delegation_expired"},
+		{ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", SkipReason: "delegation_revoked"},
+		{ScheduledRunID: live, OwnerUserID: "alice@example.com"},
+	}}
+	aud := &fakeInvokeAudit{}
+	svc := NewSandboxService(Deps{
+		Logger: zap.NewNop(), Audit: aud, GatewaySpiffeID: testGWSpiffeID,
+		GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL, Scheduled: claimStore,
+	})
+	resp, err := svc.ClaimDueScheduledRuns(
+		auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+		&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID},
+	)
+	if err != nil {
+		t.Fatalf("ClaimDueScheduledRuns: %v", err)
+	}
+	if len(resp.Runs) != 1 || resp.Runs[0].Id != live.String() {
+		t.Fatalf("runs = %v, want only %s", resp.Runs, live)
+	}
+	want := []string{"aikonos.scheduler.run.skipped.delegation_expired", "aikonos.scheduler.run.skipped.delegation_revoked", "aikonos.scheduler.run.fired"}
+	if len(aud.events) != len(want) {
+		t.Fatalf("got %d audit events, want %d", len(aud.events), len(want))
+	}
+	for i, w := range want {
+		if aud.events[i].EventType != w {
+			t.Errorf("event %d = %q, want %q", i, aud.events[i].EventType, w)
+		}
+	}
+	if aud.events[0].Decision != auditv1.PolicyDecision_DENY {
+		t.Errorf("skip decision = %v, want DENY", aud.events[0].Decision)
+	}
+}
+
+// TestUpdateScheduledRun_RevokeThenResumeRefused: revoke goes through the
+// store; resuming a revoked or expired delegation is FailedPrecondition.
+func TestUpdateScheduledRun_RevokeThenResumeRefused(t *testing.T) {
+	deps := testAdminDeps(t, "")
+	runID := uuid.New()
+	revokedAt := time.Now()
+	for name, row := range map[string]*db.ScheduledRun{
+		"revoked": {ScheduledRunID: runID, OwnerUserID: "alice@example.com", Kind: db.ScheduleKindCron, CronExpr: "0 9 * * *",
+			DelegationExpiresAt: time.Now().Add(time.Hour), DelegationRevokedAt: &revokedAt},
+		"expired": {ScheduledRunID: runID, OwnerUserID: "alice@example.com", Kind: db.ScheduleKindCron, CronExpr: "0 9 * * *",
+			DelegationExpiresAt: time.Now().Add(-time.Hour)},
+	} {
+		deps.Scheduled = &revokeScheduledStore{captureScheduledStore: captureScheduledStore{get: row}}
+		svc := NewBrokerService(deps)
+		ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+		_, err := svc.UpdateScheduledRun(ctx, &brokerv1.UpdateScheduledRunRequest{
+			UserId: "alice@example.com", Id: runID.String(), DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_ACTIVE,
+		})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("%s: resume = %v, want FailedPrecondition", name, err)
+		}
+	}
+
+	store := &revokeScheduledStore{captureScheduledStore: captureScheduledStore{get: &db.ScheduledRun{ScheduledRunID: runID, OwnerUserID: "alice@example.com"}}}
+	deps.Scheduled = store
+	if _, err := NewBrokerService(deps).UpdateScheduledRun(ctxWithIdentity(testTenantUUID, "alice@example.com"),
+		&brokerv1.UpdateScheduledRunRequest{UserId: "alice@example.com", Id: runID.String(), RevokeDelegation: true}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if store.revokedBy != "alice@example.com" {
+		t.Errorf("RevokeDelegation by = %q, want alice@example.com", store.revokedBy)
+	}
+}
+
+type revokeScheduledStore struct {
+	captureScheduledStore
+	revokedBy string
+}
+
+func (f *revokeScheduledStore) RevokeDelegation(_ context.Context, _, _, by string) error {
+	f.revokedBy = by
+	return nil
 }

@@ -34,7 +34,7 @@ interface ScheduleBody {
   cronExpr?: string;
   runAt?: string; // ISO datetime
   approvedTools?: string[];
-  action?: "pause" | "resume";
+  action?: "pause" | "resume" | "revoke";
 }
 
 export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): void {
@@ -70,6 +70,7 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
           // webui-facing route — always prompt-mode.
           workflowLineageId: "",
           workflowInputs: {},
+          actorAgentId: "",
         },
         principal.token,
       );
@@ -104,6 +105,7 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
           // the no-op value rather than omitting fields the wire type requires.
           workflowLineageId: "",
           workflowInputs: {},
+          revokeDelegation: b.action === "revoke",
         },
         principal.token,
       );

@@ -71,6 +71,8 @@ test("GET /schedules — workflow-mode row surfaces workflowLineageId + workflow
             workflowLineageId: "wf-lineage-1",
             workflowInputs: {},
             workflowDisplayName: "Weekly digest",
+            actorAgentId: "",
+            delegationRevokedBy: "",
           },
         ],
         fgaEnabled: true,

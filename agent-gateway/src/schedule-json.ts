@@ -39,5 +39,10 @@ export function scheduleJson(r: ScheduledRun) {
     runCount: r.runCount,
     createdBy: r.createdBy,
     createdAt: r.createdAt?.toISOString() ?? null,
+    // AG-17 S4 standing delegation: owner → actor agent until expiry/revocation.
+    actorAgentId: r.actorAgentId ?? "",
+    delegationExpiresAt: r.delegationExpiresAt?.toISOString() ?? null,
+    delegationRevokedAt: r.delegationRevokedAt?.toISOString() ?? null,
+    delegationRevokedBy: r.delegationRevokedBy ?? "",
   };
 }

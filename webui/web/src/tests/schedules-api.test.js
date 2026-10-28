@@ -9,7 +9,7 @@ vi.mock("../api/client.js", () => ({
 }));
 
 import * as clientMod from "../api/client.js";
-import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, deleteSchedule } from "../api/schedules.js";
+import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, revokeSchedule, deleteSchedule } from "../api/schedules.js";
 
 describe("api/schedules.js", () => {
   beforeEach(() => {
@@ -74,6 +74,12 @@ describe("api/schedules.js", () => {
     clientMod.patch.mockResolvedValue({ schedule: null });
     await resumeSchedule("s1");
     expect(clientMod.patch).toHaveBeenCalledWith("/schedules/s1", { body: { action: "resume" } });
+  });
+
+  it("revokeSchedule patches with action:revoke", async () => {
+    clientMod.patch.mockResolvedValue({ schedule: null });
+    await revokeSchedule("s1");
+    expect(clientMod.patch).toHaveBeenCalledWith("/schedules/s1", { body: { action: "revoke" } });
   });
 
   it("deleteSchedule calls DELETE /schedules/:id", async () => {

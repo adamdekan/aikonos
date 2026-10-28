@@ -12,6 +12,7 @@ vi.mock("../api/schedules.js", () => ({
   updateSchedule: vi.fn(),
   pauseSchedule:  vi.fn(),
   resumeSchedule: vi.fn(),
+  revokeSchedule: vi.fn(),
   deleteSchedule: vi.fn(),
 }));
 
@@ -52,6 +53,10 @@ const SAMPLE_SCHED = {
   runCount: 0,
   createdBy: "alice@example.com",
   createdAt: "2024-01-01T00:00:00Z",
+  actorAgentId: "agent-1",
+  delegationExpiresAt: "2099-04-01T00:00:00Z",
+  delegationRevokedAt: null,
+  delegationRevokedBy: "",
 };
 
 // Stored workflow-mode rows always have empty prompt + empty approvedTools
@@ -182,6 +187,39 @@ describe("Schedules.vue", () => {
     await w.find("[data-testid='pause-s1']").trigger("click");
     await flushPromises();
     expect(schedApiView.pauseSchedule).toHaveBeenCalledWith("s1");
+  });
+
+  it("revoke click calls revokeSchedule and the row shows the revocation (AG-17 S4)", async () => {
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [SAMPLE_SCHED] });
+    schedApiView.revokeSchedule.mockResolvedValue({
+      schedule: { ...SAMPLE_SCHED, state: "PAUSED", nextFireAt: null,
+        delegationRevokedAt: "2024-01-03T00:00:00Z", delegationRevokedBy: "alice@example.com" },
+    });
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(w.find("[data-testid='delegation-s1']").text()).toContain("agent-1");
+    expect(w.find("[data-testid='delegation-s1']").text()).toContain("Delegation until");
+    await w.find("[data-testid='revoke-s1']").trigger("click");
+    await flushPromises();
+    expect(schedApiView.revokeSchedule).toHaveBeenCalledWith("s1");
+    expect(w.find("[data-testid='delegation-s1']").text()).toContain("by alice@example.com");
+    // Revoked is final: no revoke and no resume button.
+    expect(w.find("[data-testid='revoke-s1']").exists()).toBe(false);
+    expect(w.find("[data-testid='resume-s1']").exists()).toBe(false);
+  });
+
+  it("an expired delegation parked as PAUSED offers no resume (AG-17 S4)", async () => {
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [
+      { ...SAMPLE_SCHED, state: "PAUSED", delegationExpiresAt: "2024-04-01T00:00:00Z" },
+    ] });
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='resume-s1']").exists()).toBe(false);
   });
 
   it("resumeSchedule is called with id on resume click", async () => {

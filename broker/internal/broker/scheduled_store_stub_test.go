@@ -37,6 +37,10 @@ func (stubScheduledStore) SetState(_ context.Context, _, _ string, _ db.Schedule
 	return nil
 }
 
+func (stubScheduledStore) RevokeDelegation(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (stubScheduledStore) Delete(_ context.Context, _, _ string) error {
 	return nil
 }

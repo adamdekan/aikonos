@@ -654,6 +654,9 @@ export class GovernanceBridge {
           approvedTools: [],
           workflowLineageId: lineageId,
           workflowInputs: inputs,
+          // AG-17 S4: a named-agent session delegates to that agent; a personal
+          // session's synthetic id resolves to "" (no actor yet, AG-01).
+          actorAgentId: boundAgentUuid(this.identity.agentId),
         },
         this.identity.token,
       );
