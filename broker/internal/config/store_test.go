@@ -205,6 +205,7 @@ func TestSchema_ExactlyKnownConvenienceKeys(t *testing.T) {
 		"effect_class_routing":  true,
 		"llm_model":             true,
 		"identity.obo":          true, // audit|enforce: enforce only adds denials
+		"api_keys.max_ttl_days": true, // [1, 90]: can only shorten key lifetime
 	}
 
 	for name := range config.Schema {
@@ -395,6 +396,24 @@ func TestIdentityOBO_Validate(t *testing.T) {
 	}
 	for _, v := range []string{"", "off", "Enforce"} {
 		if err := s.Set(ctx, "t1", "identity.obo", v, "admin"); err == nil {
+			t.Fatalf("%q: want validation error, got nil", v)
+		}
+	}
+}
+
+func TestApiKeysMaxTTLDays_Validate(t *testing.T) {
+	s := config.New(newFakeRepo())
+	ctx := context.Background()
+	if got, err := s.GetInt(ctx, "t1", "api_keys.max_ttl_days"); err != nil || got != 90 {
+		t.Fatalf("default: want 90, got %d (err %v)", got, err)
+	}
+	for _, v := range []string{"1", "30", "90"} {
+		if err := s.Set(ctx, "t1", "api_keys.max_ttl_days", v, "admin"); err != nil {
+			t.Fatalf("%q: want nil, got %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "0", "91", "365", "x"} {
+		if err := s.Set(ctx, "t1", "api_keys.max_ttl_days", v, "admin"); err == nil {
 			t.Fatalf("%q: want validation error, got nil", v)
 		}
 	}

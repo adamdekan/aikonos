@@ -201,6 +201,7 @@ func TestMintAgentApiKey_HappyPath(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 		Label:    "my key",
 	})
 	if err != nil {
@@ -237,6 +238,7 @@ func TestMintAgentApiKey_WritesUsableByTuple(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -271,6 +273,7 @@ func TestMintAgentApiKey_TenantAdminGated(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "nonadmin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err == nil {
 		t.Fatal("want PermissionDenied for non-admin, got nil")
@@ -305,6 +308,7 @@ func TestMintAgentApiKey_EmptyPepper(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err == nil {
 		t.Fatal("want FailedPrecondition when pepper empty, got nil")
@@ -327,6 +331,7 @@ func TestMintAgentApiKey_NonUUIDAgentID(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  "alice-agent",
+		TtlDays:  30,
 	})
 	if err == nil {
 		t.Fatal("want InvalidArgument, got nil")
@@ -415,6 +420,7 @@ func TestResolveAgentApiKey_HappyPath(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -479,6 +485,7 @@ func TestResolveAgentApiKey_RevokedKey(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -523,6 +530,7 @@ func TestResolveAgentApiKey_CrossTenant(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -605,6 +613,7 @@ func TestMintAgentApiKey_RawKeyNotLogged(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -678,6 +687,7 @@ func TestResolveAgentApiKey_GrantVerifiesToSvcPrincipal(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -729,6 +739,7 @@ func TestMintAgentApiKey_FGAWriteErr(t *testing.T) {
 		TenantId: apiKeyTestTenantUUID,
 		UserId:   "admin@example.com",
 		AgentId:  apiKeyTestAgentUUID,
+		TtlDays:  30,
 		Label:    "should not persist",
 	})
 	if err == nil {
@@ -775,7 +786,7 @@ func resolveForAgent(t *testing.T, serviceAgent bool, mode string) (*brokerv1.Re
 		deps.Config = cfg
 	}
 	mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
-		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID,
+		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: 30,
 	})
 	if err != nil {
 		t.Fatalf("MintAgentApiKey: %v", err)
@@ -867,7 +878,7 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 				deps.UserAssertions = tc.validator
 			}
 			mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
-				TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID,
+				TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: 30,
 			})
 			if err != nil {
 				t.Fatalf("MintAgentApiKey: %v", err)
@@ -917,5 +928,130 @@ func TestNewSandboxService_WarnsWithoutConfig(t *testing.T) {
 	NewSandboxService(Deps{Logger: zap.New(core), Config: newFakeConfigStore()})
 	if recorded.Len() != 1 {
 		t.Fatalf("wired Config must not warn, got %v", recorded.All())
+	}
+}
+
+// ── AG-15: mandatory key expiry ──────────────────────────────────────────────
+
+// TestMintAgentApiKey_TTLBounds: a missing ttl or one above the tenant maximum
+// is InvalidArgument; the default maximum is 90 days, a tenant can lower it.
+func TestMintAgentApiKey_TTLBounds(t *testing.T) {
+	cases := []struct {
+		name   string
+		maxTTL string // "" = schema default (90)
+		ttl    int32
+		want   codes.Code
+	}{
+		{"missing", "", 0, codes.InvalidArgument},
+		{"negative", "", -1, codes.InvalidArgument},
+		{"above default max", "", 91, codes.InvalidArgument},
+		{"at default max", "", 90, codes.OK},
+		{"above tenant max", "7", 8, codes.InvalidArgument},
+		{"at tenant max", "7", 7, codes.OK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+			keyStore := &fakeApiKeyStore{}
+			deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, keyStore, agentStoreWithAgent(t))
+			if tc.maxTTL != "" {
+				cfg := newFakeConfigStore()
+				cfg.values[apiKeyTestTenantUUID+":api_keys.max_ttl_days"] = tc.maxTTL
+				deps.Config = cfg
+			}
+			resp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+				TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: tc.ttl,
+			})
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("code = %v, want %v (err %v)", got, tc.want, err)
+			}
+			if tc.want != codes.OK {
+				if len(keyStore.keys) != 0 {
+					t.Fatal("a refused mint must not store a key")
+				}
+				return
+			}
+			want := time.Now().AddDate(0, 0, int(tc.ttl))
+			if d := resp.Key.ExpiresAt.AsTime().Sub(want); d > time.Minute || d < -time.Minute {
+				t.Fatalf("expires_at = %v, want ~%v", resp.Key.ExpiresAt.AsTime(), want)
+			}
+		})
+	}
+}
+
+// TestMintAgentApiKey_AuditsExpiry: the minted event carries the expiry.
+func TestMintAgentApiKey_AuditsExpiry(t *testing.T) {
+	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, &fakeApiKeyStore{}, agentStoreWithAgent(t))
+	aud := &fakeInvokeAudit{}
+	deps.Audit = aud
+	resp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("MintAgentApiKey: %v", err)
+	}
+	for _, e := range aud.events {
+		if e.EventType == "aikonos.broker.apikey.minted" {
+			got := e.GetContext().GetFields()["expires_at"].GetStringValue()
+			if want := resp.Key.ExpiresAt.AsTime().Format(time.RFC3339); got != want {
+				t.Fatalf("audit expires_at = %q, want %q", got, want)
+			}
+			return
+		}
+	}
+	t.Fatal("no aikonos.broker.apikey.minted event")
+}
+
+// TestListAgentApiKeys_ShowsExpiryAndLastUsed: the list carries expires_at,
+// last_used_at and the tenant maximum for the mint form.
+func TestListAgentApiKeys_ShowsExpiryAndLastUsed(t *testing.T) {
+	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	used := time.Now().Add(-time.Hour)
+	exp := time.Now().Add(48 * time.Hour)
+	keyStore := &fakeApiKeyStore{keys: []*db.StoredApiKey{{
+		ID: uuid.New(), TenantID: uuid.MustParse(apiKeyTestTenantUUID), AgentID: uuid.MustParse(apiKeyTestAgentUUID),
+		KeyPrefix: "tk_abcde", CreatedAt: time.Now(), LastUsedAt: &used, ExpiresAt: exp,
+	}}}
+	deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, keyStore, agentStoreWithAgent(t))
+	resp, err := NewBrokerService(deps).ListAgentApiKeys(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.ListAgentApiKeysRequest{
+		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID,
+	})
+	if err != nil {
+		t.Fatalf("ListAgentApiKeys: %v", err)
+	}
+	if resp.MaxTtlDays != 90 {
+		t.Errorf("max_ttl_days = %d, want 90", resp.MaxTtlDays)
+	}
+	if len(resp.Keys) != 1 {
+		t.Fatalf("keys = %d, want 1", len(resp.Keys))
+	}
+	k := resp.Keys[0]
+	if !k.ExpiresAt.AsTime().Equal(exp) || !k.LastUsedAt.AsTime().Equal(used) {
+		t.Errorf("expires_at=%v last_used_at=%v, want %v / %v", k.ExpiresAt.AsTime(), k.LastUsedAt.AsTime(), exp, used)
+	}
+}
+
+// TestResolveAgentApiKey_ExpiredKey: an expired key resolves exactly like a
+// revoked one (Valid:false, no error), which the REST path maps to 401.
+func TestResolveAgentApiKey_ExpiredKey(t *testing.T) {
+	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	keyStore := &fakeApiKeyStore{}
+	deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, keyStore, agentStoreWithAgent(t))
+	mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+		TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: 1,
+	})
+	if err != nil {
+		t.Fatalf("MintAgentApiKey: %v", err)
+	}
+	keyStore.keys[0].ExpiresAt = time.Now().Add(-time.Second)
+	resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
+		KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for expired key: %v", err)
+	}
+	if resp.Valid || resp.OwnerGrant != "" {
+		t.Errorf("expired key: want Valid=false and no grant, got %+v", resp)
 	}
 }

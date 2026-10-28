@@ -28,6 +28,7 @@ type StoredApiKey struct {
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
+	ExpiresAt  time.Time // mandatory (AG-15); expired keys resolve like revoked ones
 }
 
 // Revoked returns true when the key has been explicitly revoked.
@@ -50,9 +51,9 @@ func (r *AgentApiKeyRepo) Create(ctx context.Context, k *StoredApiKey) error {
 	return withConnErr(ctx, r.pool, k.TenantID.String(), func(conn *pgxpool.Conn) error {
 		_, err := conn.Exec(ctx, `
 		INSERT INTO agent_api_keys
-			(id, tenant_id, agent_id, key_hash, key_prefix, label, created_by, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			k.ID, k.TenantID, k.AgentID, k.KeyHash, k.KeyPrefix, k.Label, k.CreatedBy, k.CreatedAt,
+			(id, tenant_id, agent_id, key_hash, key_prefix, label, created_by, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			k.ID, k.TenantID, k.AgentID, k.KeyHash, k.KeyPrefix, k.Label, k.CreatedBy, k.CreatedAt, k.ExpiresAt,
 		)
 		return err
 	})
@@ -66,7 +67,7 @@ func (r *AgentApiKeyRepo) ListByAgent(ctx context.Context, tenantID, agentID str
 		}
 		rows, err := conn.Query(ctx, `
 		SELECT id, tenant_id, agent_id, key_hash, key_prefix, label,
-		       created_by, created_at, last_used_at, revoked_at
+		       created_by, created_at, last_used_at, revoked_at, expires_at
 		FROM agent_api_keys
 		WHERE agent_id = $1 AND revoked_at IS NULL
 		ORDER BY created_at DESC`, aid)
@@ -79,7 +80,7 @@ func (r *AgentApiKeyRepo) ListByAgent(ctx context.Context, tenantID, agentID str
 			k := &StoredApiKey{}
 			if err := rows.Scan(
 				&k.ID, &k.TenantID, &k.AgentID, &k.KeyHash, &k.KeyPrefix, &k.Label,
-				&k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt,
+				&k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt, &k.ExpiresAt,
 			); err != nil {
 				return nil, err
 			}
@@ -130,11 +131,11 @@ func (r *AgentApiKeyRepo) Resolve(ctx context.Context, keyHash string) (*StoredA
 		k := &StoredApiKey{}
 		err := conn.QueryRow(ctx,
 			`SELECT id, tenant_id, agent_id, key_hash, key_prefix, label,
-			        created_by, created_at, last_used_at, revoked_at
+			        created_by, created_at, last_used_at, revoked_at, expires_at
 			 FROM resolve_agent_api_key($1)`, keyHash,
 		).Scan(
 			&k.ID, &k.TenantID, &k.AgentID, &k.KeyHash, &k.KeyPrefix, &k.Label,
-			&k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt,
+			&k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt, &k.ExpiresAt,
 		)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

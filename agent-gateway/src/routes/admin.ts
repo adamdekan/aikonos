@@ -11,6 +11,7 @@ import {
   type OrgSettings,
   type M365Connection,
   type WebSearchConfig,
+  type AgentApiKey,
 } from "../../gen/ts/proto/broker";
 import { PolicyDecision } from "../../gen/ts/proto/audit";
 import { EffectClass } from "../../gen/ts/proto/plan";
@@ -29,6 +30,17 @@ export interface AdminCtx {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// apiKeyView is the webui shape of an agent API key (AG-15: expiry and last use).
+export function apiKeyView(k: AgentApiKey) {
+  return {
+    id: k.id,
+    keyPrefix: k.keyPrefix,
+    label: k.label,
+    expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
+    lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+  };
+}
 
 // orgSettingsJson maps the proto OrgSettings message to the plain JSON the webui
 // consumes. Optional scalar fields default to their documented empty value so the
@@ -1625,7 +1637,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
     }
   });
 
-  app.post<{ Params: { id: string }; Body: { label?: string } }>(
+  app.post<{ Params: { id: string }; Body: { label?: string; ttlDays?: number } }>(
     "/admin/agents/:id/keys",
     async (req, reply) => {
       const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
@@ -1637,14 +1649,13 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
             userId: principal.sub,
             agentId: req.params.id,
             label: req.body?.label ?? "",
+            ttlDays: Number(req.body?.ttlDays) || 0, // 0 → broker InvalidArgument (AG-15)
           },
           principal.token,
         );
         reply.send({
           rawKey: resp.rawKey,
-          key: resp.key
-            ? { id: resp.key.id, keyPrefix: resp.key.keyPrefix, label: resp.key.label }
-            : null,
+          key: resp.key ? apiKeyView(resp.key) : null,
         });
       } catch (err) {
         sendError(reply, log, err, { route: `${req.method} ${req.url}` });
@@ -1662,13 +1673,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
           { tenantId: principal.tenant, userId: principal.sub, agentId: req.params.id },
           principal.token,
         );
-        reply.send({
-          keys: (resp.keys ?? []).map((k) => ({
-            id: k.id,
-            keyPrefix: k.keyPrefix,
-            label: k.label,
-          })),
-        });
+        reply.send({ keys: (resp.keys ?? []).map(apiKeyView), maxTtlDays: resp.maxTtlDays });
       } catch (err) {
         sendError(reply, log, err, { route: `${req.method} ${req.url}` });
       }

@@ -7,7 +7,7 @@
 //
 // South-bound (SandboxService): ResolveAgentApiKey
 //
-//	— SPIFFE gateway-peer gated; returns valid=false on miss/revoke/cross-tenant.
+//	— SPIFFE gateway-peer gated; returns valid=false on miss/revoke/expiry/cross-tenant.
 //
 // Pepper invariant: both mint and resolve return FailedPrecondition when the
 // pepper is empty — there is no unpeppered fallback.
@@ -79,6 +79,15 @@ func (s *BrokerService) MintAgentApiKey(ctx context.Context, req *brokerv1.MintA
 		return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
 	}
 
+	// AG-15: every key expires, at most api_keys.max_ttl_days after minting.
+	maxTTL, err := s.configFor().GetInt(ctx, tenant, "api_keys.max_ttl_days")
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+	}
+	if req.TtlDays < 1 || int(req.TtlDays) > maxTTL {
+		return nil, status.Errorf(codes.InvalidArgument, "ttl_days must be between 1 and %d", maxTTL)
+	}
+
 	// Verify the agent exists in the tenant.
 	if _, err := s.deps.Agents.Get(ctx, tenant, req.AgentId); err != nil {
 		if errors.Is(err, db.ErrAgentNotFound) {
@@ -101,6 +110,7 @@ func (s *BrokerService) MintAgentApiKey(ctx context.Context, req *brokerv1.MintA
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tenant_id: %v", err)
 	}
 
+	now := time.Now().UTC()
 	k := &db.StoredApiKey{
 		ID:        uuid.New(),
 		TenantID:  tenantUUID,
@@ -109,7 +119,8 @@ func (s *BrokerService) MintAgentApiKey(ctx context.Context, req *brokerv1.MintA
 		KeyPrefix: apikey.Prefix(raw),
 		Label:     strings.TrimSpace(req.Label),
 		CreatedBy: user,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now,
+		ExpiresAt: now.AddDate(0, 0, int(req.TtlDays)),
 	}
 	// Provision agent:<id> usable_by user:svc-<id> in FGA BEFORE persisting the
 	// key: the key lookup is DB-side and FGA-independent, so a missing tuple on a
@@ -137,6 +148,9 @@ func (s *BrokerService) MintAgentApiKey(ctx context.Context, req *brokerv1.MintA
 		zap.String("actor", user),
 		// raw key deliberately not logged
 	)
+	mintedCtx, _ := structpb.NewStruct(map[string]any{
+		"key_id": k.ID.String(), "expires_at": k.ExpiresAt.Format(time.RFC3339),
+	})
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     span.SpanContext().TraceID().String(),
@@ -146,6 +160,7 @@ func (s *BrokerService) MintAgentApiKey(ctx context.Context, req *brokerv1.MintA
 		EventType:   "aikonos.broker.apikey.minted",
 		ResourceRef: "agent:" + req.AgentId,
 		Decision:    auditv1.PolicyDecision_ALLOW,
+		Context:     mintedCtx,
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.apikey.minted")
 	}
@@ -189,7 +204,11 @@ func (s *BrokerService) ListAgentApiKeys(ctx context.Context, req *brokerv1.List
 	for _, k := range rows {
 		out = append(out, toProtoApiKey(k))
 	}
-	return &brokerv1.ListAgentApiKeysResponse{Keys: out}, nil
+	maxTTL, err := s.configFor().GetInt(ctx, tenant, "api_keys.max_ttl_days")
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+	}
+	return &brokerv1.ListAgentApiKeysResponse{Keys: out, MaxTtlDays: int32(maxTTL)}, nil
 }
 
 func (s *BrokerService) RevokeAgentApiKey(ctx context.Context, req *brokerv1.RevokeAgentApiKeyRequest) (*brokerv1.RevokeAgentApiKeyResponse, error) {
@@ -275,6 +294,12 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 			return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "resolve key: %v", err)
+	}
+
+	// AG-15: an expired key is refused exactly like a revoked one. The DB
+	// lookup already skips expired rows; this guards a store that does not.
+	if !time.Now().Before(k.ExpiresAt) {
+		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
 	// Cross-tenant guard: the resolved key's tenant must match the request.
@@ -410,6 +435,7 @@ func toProtoApiKey(k *db.StoredApiKey) *brokerv1.AgentApiKey {
 		Label:     k.Label,
 		CreatedBy: k.CreatedBy,
 		CreatedAt: timestamppb.New(k.CreatedAt),
+		ExpiresAt: timestamppb.New(k.ExpiresAt),
 	}
 	if k.LastUsedAt != nil {
 		pk.LastUsedAt = timestamppb.New(*k.LastUsedAt)

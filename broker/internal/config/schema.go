@@ -221,6 +221,24 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// api_keys.max_ttl_days caps the lifetime of a tk_ API key (AG-15). The
+	// platform ceiling is 90 days, so a tenant can only shorten it.
+	"api_keys.max_ttl_days": {
+		Name:    "api_keys.max_ttl_days",
+		Kind:    KindInt,
+		Default: "90",
+		Doc:     "Maximum lifetime in days of an agent API key (tk_). Every key must expire within this many days of minting. Range [1, 90]; can only tighten.",
+		Validate: func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("api_keys.max_ttl_days: must be an integer, got %q", v)
+			}
+			if n < 1 || n > 90 {
+				return fmt.Errorf("api_keys.max_ttl_days: must be in [1, 90], got %d", n)
+			}
+			return nil
+		},
+	},
 	// identity.obo switches the AG-17 on-behalf-of checks: capability tokens
 	// whose subject/actor facts differ from (or predate) the task, v1 owner
 	// grants, service-agent api keys and actorless scheduled runs.

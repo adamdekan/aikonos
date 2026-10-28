@@ -247,6 +247,34 @@ describe("Agents.vue", () => {
     return w;
   }
 
+  // AG-15: the key list shows expiry and last use, warns within 7 days, and the
+  // mint form defaults the lifetime to the tenant maximum.
+  it("shows key expiry and last use, warns for keys expiring within 7 days", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [SAMPLE_AGENT] });
+    const day = 86400000;
+    adminApi.listAgentApiKeys.mockResolvedValue({
+      maxTtlDays: 30,
+      keys: [
+        { id: "k1", keyPrefix: "tk_soon", label: "", expiresAt: new Date(Date.now() + 2 * day).toISOString(), lastUsedAt: null },
+        { id: "k2", keyPrefix: "tk_late", label: "", expiresAt: new Date(Date.now() + 20 * day).toISOString(), lastUsedAt: new Date().toISOString() },
+      ],
+    });
+    adminApi.mintAgentApiKey.mockResolvedValue({ rawKey: "tk_new" });
+    const w = await openEditModal();
+
+    const expiry = [...document.querySelectorAll("[data-testid='api-key-expiry']")];
+    expect(expiry.map(e => e.classList.contains("key-expiring"))).toEqual([true, false]);
+    const used = [...document.querySelectorAll("[data-testid='api-key-last-used']")].map(e => e.textContent);
+    expect(used[0]).toBe("Never used");
+    expect(used[1]).toMatch(/^Last used /);
+
+    expect(document.querySelector("[data-testid='mint-key-ttl']").value).toBe("30");
+    document.querySelector("[data-testid='mint-key-btn']").click();
+    await flushPromises();
+    expect(adminApi.mintAgentApiKey).toHaveBeenCalledWith("a1", "", 30);
+    w.unmount();
+  });
+
   it("replaces the separate provider select with one model choice", async () => {
     adminApi.listAgents.mockResolvedValue({ agents: [SAMPLE_AGENT] });
     const w = await openEditModal();

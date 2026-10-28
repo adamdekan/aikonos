@@ -146,7 +146,7 @@ else
   if [ -z "$AGENT_ID" ]; then
     skip "could not create agent for live check"
   else
-    KEY_JSON=$(curl -s --max-time 8 -X POST "${GATEWAY}/admin/agents/${AGENT_ID}/keys" "${auth[@]}" "${json[@]}" -d '{"label":"llm-verify"}' 2>/dev/null)
+    KEY_JSON=$(curl -s --max-time 8 -X POST "${GATEWAY}/admin/agents/${AGENT_ID}/keys" "${auth[@]}" "${json[@]}" -d '{"label":"llm-verify","ttlDays":1}' 2>/dev/null)
     RAW_KEY=$(echo "$KEY_JSON" | sed -n 's/.*"rawKey":"\([^"]*\)".*/\1/p')
     if echo "$KEY_JSON" | grep -q 'pepper not configured'; then
       skip "AIKONOS_API_KEY_PEPPER not set on the broker — cannot drive a live run"
