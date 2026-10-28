@@ -113,6 +113,26 @@ How it works:
   the broker replica that made it and within 30 s on any other. A failed read refuses
   the call (`Unavailable`) instead of letting it through.
 
+## Agent owners and orphaned agents
+
+Every agent has one or more owners: users (`owner_user`) or groups (`owner_group`,
+every member of the group is an owner). Owners may use the agent and edit its SOUL;
+only user owners may delegate. Admins add and remove owners in **Admin → Access
+Control → Agents** (select the agent, then *Owners*). The broker refuses to remove
+the last owner (`FailedPrecondition`): add the new owner first. Each change is
+audited as `aikonos.broker.agent.owner.added` or `aikonos.broker.agent.owner.removed`
+(a refused removal as `owner.removed` with decision `DENY`).
+
+The creator becomes the first owner. Agents created before that rule may have no
+owner tuple: at startup the broker grants `owner_user` to the creator
+(`agents.created_by`) of every agent without one, audited as `owner.added` with actor
+`system:owner-backfill`. The sweep is idempotent.
+
+**Admin → Agents** marks an agent *orphaned* when it has no owner or every owner is a
+blocked user. A group owner counts as present without checking its members. Fix it by
+adding an owner who is not blocked. Orphaned agents still run today; activation
+and automatic suspension of orphaned agents come with AG-03.
+
 ## Known gaps (accepted for now)
 
 | Gap | Today | Possible future feature |

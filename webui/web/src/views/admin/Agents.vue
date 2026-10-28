@@ -487,6 +487,12 @@ const TABLE_COLS = [
           <td>
             <span class="badge">{{ row.approval_mode || row.approvalMode || "needs_approval" }}</span>
             <span v-if="row.gatewayEnabled || row.gateway_enabled" class="badge badge-ext" data-testid="gateway-enabled-badge">ext</span>
+            <span
+              v-if="row.orphaned"
+              class="badge badge-orphan"
+              :data-testid="`agent-orphaned-${row.id}`"
+              title="No owner, or every owner is blocked. Add an owner under Access control → Agents."
+            >orphaned</span>
             <div
               v-if="row.sessionsRevokedAt"
               class="muted small"
@@ -879,6 +885,10 @@ const TABLE_COLS = [
   border-radius: var(--radius-sm); padding: 1px 7px;
   font-size: 12px; background: var(--fill-muted);
   color: var(--text-muted); border: 1px solid var(--border);
+}
+.badge-orphan {
+  background: var(--fill-danger); color: var(--danger);
+  border-color: var(--danger); margin-left: 4px;
 }
 .badge-ext {
   background: var(--fill-accent, var(--fill-muted));

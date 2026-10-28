@@ -164,7 +164,7 @@ func TestRequireAgentOwnerOrAdmin_AdminAllows(t *testing.T) {
 
 func TestRequireAgentOwnerOrAdmin_OwnerAllows(t *testing.T) {
 	// admin check → false, owner_user check → true via checks map.
-	ownerKey := "user:owner@example.com|owner_user|agent:" + soulTestAgentID
+	ownerKey := "user:owner@example.com|owner|agent:" + soulTestAgentID
 	fga := &fakeFGA{
 		admins: map[string]bool{},
 		checks: map[string]bool{ownerKey: true},
@@ -234,7 +234,7 @@ func TestGetAgentSoul_OwnerAllowed(t *testing.T) {
 	a.Soul = "owner soul"
 	store.agents = []*db.Agent{a}
 
-	ownerKey := "user:owner@example.com|owner_user|agent:" + soulTestAgentID
+	ownerKey := "user:owner@example.com|owner|agent:" + soulTestAgentID
 	fga := &fakeFGA{
 		admins: map[string]bool{},
 		checks: map[string]bool{ownerKey: true},
@@ -376,7 +376,7 @@ func TestSetAgentSoul_OwnerCanSet(t *testing.T) {
 	a := makeSoulAgent(t)
 	store.agents = []*db.Agent{a}
 
-	ownerKey := "user:owner@example.com|owner_user|agent:" + soulTestAgentID
+	ownerKey := "user:owner@example.com|owner|agent:" + soulTestAgentID
 	fga := &fakeFGA{
 		admins: map[string]bool{},
 		checks: map[string]bool{ownerKey: true},

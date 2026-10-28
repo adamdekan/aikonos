@@ -319,17 +319,23 @@ export function effectiveSkillBundles(userRef, tuples) {
 /**
  * Derive relationships for one agent from the tuple set.
  *
- * Returns {owner, usableBy, mcpConnectors}
- *   owner: userRef string (owner_user relation) or null
+ * Returns {owners, usableBy, mcpConnectors}
+ *   owners: sorted array of owner subjects — userRefs (owner_user) and
+ *     group member-sets (owner_group) (AG-04)
  *   usableBy: sorted array of user/group subjects that have usable_by on this agent
  *   mcpConnectors: sorted array of connector id strings from mcp_connector tuples
  *     where the subject is "agent:<id>"
  */
 export function deriveAgent(agentRef, tuples) {
-  const ownerTuple = tuples.find(
-    (t) => t.object === agentRef && t.relation === "owner_user" && isUserRef(t.user),
-  );
-  const owner = ownerTuple ? ownerTuple.user : null;
+  const owners = sorted(uniq(
+    tuples
+      .filter(
+        (t) =>
+          t.object === agentRef &&
+          ((t.relation === "owner_user" && isUserRef(t.user)) || t.relation === "owner_group"),
+      )
+      .map((t) => t.user),
+  ));
 
   const usableBy = sorted(uniq(
     tuples
@@ -349,7 +355,7 @@ export function deriveAgent(agentRef, tuples) {
       .map((t) => afterColon(t.object)),
   ));
 
-  return { owner, usableBy, mcpConnectors };
+  return { owners, usableBy, mcpConnectors };
 }
 
 // ── tenantRef ────────────────────────────────────────────────────────────────

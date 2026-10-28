@@ -37,6 +37,7 @@ type fakeFGA struct {
 	errOnObject       string   // when set, /check returns HTTP 500 only for this object (per-object transport error)
 	writeErr          bool     // when true, /write returns HTTP 500 (simulates FGA write failure)
 	deleteOnlyErr     bool     // when true, /write returns HTTP 500 only when the body contains Deletes
+	readErr           bool     // when true, /read returns HTTP 500
 	listObjectsResult       []string            // objects returned by /list-objects (fallback when listObjectsResultByUser has no entry)
 	listObjectsResultByUser map[string][]string // per-user objects returned by /list-objects (takes priority over listObjectsResult)
 	listObjectsByRelation   map[string][]string // per-relation objects returned by /list-objects (highest priority; for callers that query several relations)
@@ -76,6 +77,10 @@ func (f *fakeFGA) server(t *testing.T) *httptest.Server {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]bool{"allowed": f.admins[req.TupleKey.User]})
 		case strings.HasSuffix(r.URL.Path, "/read"):
+			if f.readErr {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
 			// Faithful to OpenFGA: an absent/empty tuple_key reads every tuple;
 			// an exact object filter returns just that object's tuples.
 			var req struct {
