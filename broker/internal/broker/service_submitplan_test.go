@@ -561,7 +561,7 @@ func TestSubmitPlan_DevModeIgnoresClaimedPeer(t *testing.T) {
 
 // TestInvokeTool_SubmitPlanTokenRoundTrip: the token SubmitPlan mints for a
 // step is accepted by InvokeTool on the same task — mintStepTokens and
-// InvokeTool's Authorize agree on the task id end to end.
+// InvokeTool's Authorize agree on the task id and on-behalf-of end to end.
 func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 	m, err := capability.GenerateMinter()
 	if err != nil {
@@ -579,6 +579,11 @@ func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 	pol := &fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}
 	svc := newSandboxSvcForPlan(taskStore, pol, nil)
 	svc.deps.Capability, svc.deps.ToolProxy = m, proxy
+	// AG-17: under identity.obo=enforce the step token's subject/actor facts
+	// must match the task row, or the round-trip below is denied.
+	cfg := newFakeConfigStore()
+	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
+	svc.deps.Config = cfg
 
 	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),

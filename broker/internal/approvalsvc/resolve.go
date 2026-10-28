@@ -91,7 +91,7 @@ func Resolve(
 			for _, st := range steps {
 				scopes = append(scopes, StepScope{Seq: st.Seq, ToolID: st.ToolID})
 			}
-			if capTokens, err = mint(task.OwnerUserID, taskID, scopes); err != nil {
+			if capTokens, err = mint(task.OwnerUserID, taskID, task.OnBehalfOf(), scopes); err != nil {
 				return 0, nil, "", 0, status.Errorf(codes.Internal, "failed to mint capability tokens: %v", err)
 			}
 

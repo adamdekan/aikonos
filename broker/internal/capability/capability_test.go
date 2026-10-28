@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adamdekan/aikonos/broker/internal/db"
+
 	biscuit "github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
 )
@@ -22,18 +24,18 @@ func newMinter(t *testing.T) *Minter {
 
 func TestMintAndAuthorize(t *testing.T) {
 	m := newMinter(t)
-	tok, err := m.Mint("alice@example.com", "task-1", []string{"siem:read", "slack:write"})
+	tok, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"siem:read", "slack:write"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	if err := m.Authorize(tok, "siem:read", "task-1"); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("granted scope siem:read should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "slack:write", "task-1"); err != nil {
+	if err := m.Authorize(tok, "slack:write", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("granted scope slack:write should be allowed: %v", err)
 	}
-	if err := m.Authorize(tok, "db:drop", "task-1"); err == nil {
+	if err := m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{}); err == nil {
 		t.Error("ungranted scope db:drop must be denied")
 	}
 }
@@ -53,7 +55,7 @@ func TestMintAndAuthorize(t *testing.T) {
 // must reach a real decision.
 func TestAuthorizeUnderConcurrencyDoesNotTimeOut(t *testing.T) {
 	m := newMinter(t)
-	tok, err := m.Mint("alice@example.com", "task-1", []string{"web:read"})
+	tok, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"web:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -67,7 +69,7 @@ func TestAuthorizeUnderConcurrencyDoesNotTimeOut(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // release together, so the calls genuinely contend
-			errs[i] = m.Authorize(tok, "web:read", "task-1")
+			errs[i] = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
 		}(i)
 	}
 	close(start)
@@ -87,7 +89,7 @@ func TestAuthorizeUnderConcurrencyDoesNotTimeOut(t *testing.T) {
 // was never computed into the hash-chained WORM trail.
 func TestAuthorizeTimeoutIsNotADenial(t *testing.T) {
 	m := newMinter(t)
-	tok, err := m.Mint("alice@example.com", "task-1", []string{"web:read"})
+	tok, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"web:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -96,7 +98,7 @@ func TestAuthorizeTimeoutIsNotADenial(t *testing.T) {
 	authorizeMaxDuration = time.Nanosecond // no evaluation can finish in 1ns
 	t.Cleanup(func() { authorizeMaxDuration = orig })
 
-	err = m.Authorize(tok, "web:read", "task-1")
+	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
 	if err == nil {
 		t.Fatal("expected a failure when the datalog budget is exhausted")
 	}
@@ -110,12 +112,12 @@ func TestAuthorizeTimeoutIsNotADenial(t *testing.T) {
 // be reported to the caller as retryable and skip its audit event.
 func TestAuthorizeDenialIsNotATimeout(t *testing.T) {
 	m := newMinter(t)
-	tok, err := m.Mint("alice@example.com", "task-1", []string{"web:read"})
+	tok, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"web:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	err = m.Authorize(tok, "db:drop", "task-1")
+	err = m.Authorize(tok, "db:drop", "task-1", db.OnBehalfOf{})
 	if err == nil {
 		t.Fatal("ungranted scope must be denied")
 	}
@@ -126,14 +128,14 @@ func TestAuthorizeDenialIsNotATimeout(t *testing.T) {
 
 func TestMintRejectsEmptyScopes(t *testing.T) {
 	m := newMinter(t)
-	if _, err := m.Mint("alice", "task-1", nil); err == nil {
+	if _, err := m.Mint("alice", "task-1", db.OnBehalfOf{}, nil); err == nil {
 		t.Error("minting with no scopes must fail")
 	}
 }
 
 func TestAttenuationNarrows(t *testing.T) {
 	m := newMinter(t)
-	root, err := m.Mint("alice@example.com", "task-1", []string{"siem:read", "slack:write", "doc:write"})
+	root, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"siem:read", "slack:write", "doc:write"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -144,18 +146,18 @@ func TestAttenuationNarrows(t *testing.T) {
 		t.Fatalf("Attenuate: %v", err)
 	}
 
-	if err := m.Authorize(child, "siem:read", "task-1"); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("attenuated scope siem:read should still be allowed: %v", err)
 	}
 	// slack:write was in the root but dropped by attenuation.
-	if err := m.Authorize(child, "slack:write", "task-1"); err == nil {
+	if err := m.Authorize(child, "slack:write", "task-1", db.OnBehalfOf{}); err == nil {
 		t.Error("attenuated-away scope slack:write must be denied on the child")
 	}
 }
 
 func TestAttenuationCannotWiden(t *testing.T) {
 	m := newMinter(t)
-	root, err := m.Mint("alice@example.com", "task-1", []string{"siem:read"})
+	root, err := m.Mint("alice@example.com", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -167,17 +169,17 @@ func TestAttenuationCannotWiden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Attenuate: %v", err)
 	}
-	if err := m.Authorize(child, "db:drop", "task-1"); err == nil {
+	if err := m.Authorize(child, "db:drop", "task-1", db.OnBehalfOf{}); err == nil {
 		t.Error("attenuation must never grant a scope absent from the root token")
 	}
-	if err := m.Authorize(child, "siem:read", "task-1"); err != nil {
+	if err := m.Authorize(child, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("siem:read should remain allowed: %v", err)
 	}
 }
 
 func TestChainedAttenuationIntersects(t *testing.T) {
 	m := newMinter(t)
-	root, _ := m.Mint("alice", "task-1", []string{"a", "b", "c"})
+	root, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"a", "b", "c"})
 	step1, err := Attenuate(root, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("attenuate 1: %v", err)
@@ -188,11 +190,11 @@ func TestChainedAttenuationIntersects(t *testing.T) {
 	}
 
 	// Effective = {a,b,c} ∩ {a,b} ∩ {b,c} = {b}.
-	if err := m.Authorize(step2, "b", "task-1"); err != nil {
+	if err := m.Authorize(step2, "b", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("b survives both attenuations: %v", err)
 	}
 	for _, s := range []string{"a", "c"} {
-		if err := m.Authorize(step2, s, "task-1"); err == nil {
+		if err := m.Authorize(step2, s, "task-1", db.OnBehalfOf{}); err == nil {
 			t.Errorf("scope %q dropped by an attenuation must be denied", s)
 		}
 	}
@@ -200,19 +202,19 @@ func TestChainedAttenuationIntersects(t *testing.T) {
 
 func TestForeignRootKeyRejected(t *testing.T) {
 	m := newMinter(t)
-	tok, _ := m.Mint("alice", "task-1", []string{"siem:read"})
+	tok, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 
 	other := newMinter(t)
-	if err := other.Authorize(tok, "siem:read", "task-1"); err == nil {
+	if err := other.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err == nil {
 		t.Error("a token must not verify under a different root key")
 	}
 }
 
 func TestTamperedTokenRejected(t *testing.T) {
 	m := newMinter(t)
-	tok, _ := m.Mint("alice", "task-1", []string{"siem:read"})
+	tok, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 	tok[len(tok)-1] ^= 0xFF // flip bits in the signature region
-	if err := m.Authorize(tok, "siem:read", "task-1"); err == nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err == nil {
 		t.Error("a tampered token must be rejected")
 	}
 }
@@ -223,11 +225,11 @@ func TestRoundTripMinterFromKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMinter: %v", err)
 	}
-	tok, err := m.Mint("alice", "task-1", []string{"siem:read"})
+	tok, err := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"siem:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if err := m.Authorize(tok, "siem:read", "task-1"); err != nil {
+	if err := m.Authorize(tok, "siem:read", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Errorf("Authorize: %v", err)
 	}
 }
@@ -245,16 +247,16 @@ func TestAuthorizeExpiredTokenDenied(t *testing.T) {
 	m.TTL = time.Minute
 	set := fixedClock(m)
 	start := m.Now()
-	tok, err := m.Mint("alice", "task-1", []string{"web:read"})
+	tok, err := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"web:read"})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
 	set(start.Add(59 * time.Second))
-	if err := m.Authorize(tok, "web:read", "task-1"); err != nil {
+	if err := m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{}); err != nil {
 		t.Fatalf("token inside its TTL must authorize: %v", err)
 	}
 	set(start.Add(time.Minute))
-	err = m.Authorize(tok, "web:read", "task-1")
+	err = m.Authorize(tok, "web:read", "task-1", db.OnBehalfOf{})
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired at exp, got %v", err)
 	}
@@ -264,13 +266,13 @@ func TestAuthorizeExpiredTokenDenied(t *testing.T) {
 func TestAttenuatedTokenKeepsExpiry(t *testing.T) {
 	m := newMinter(t)
 	set := fixedClock(m)
-	root, _ := m.Mint("alice", "task-1", []string{"a", "b"})
+	root, _ := m.Mint("alice", "task-1", db.OnBehalfOf{}, []string{"a", "b"})
 	child, err := Attenuate(root, []string{"a"})
 	if err != nil {
 		t.Fatalf("Attenuate: %v", err)
 	}
 	set(m.Now().Add(DefaultTTL + time.Second))
-	if err := m.Authorize(child, "a", "task-1"); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(child, "a", "task-1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired, got %v", err)
 	}
 }
@@ -279,19 +281,19 @@ func TestAttenuatedTokenKeepsExpiry(t *testing.T) {
 // (delegation) token is never accepted.
 func TestAuthorizeTaskBinding(t *testing.T) {
 	m := newMinter(t)
-	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
-	if err := m.Authorize(tok, "web:read", "T1"); err != nil {
+	tok, _ := m.Mint("alice", "T1", db.OnBehalfOf{}, []string{"web:read"})
+	if err := m.Authorize(tok, "web:read", "T1", db.OnBehalfOf{}); err != nil {
 		t.Fatalf("matching task must authorize: %v", err)
 	}
-	if err := m.Authorize(tok, "web:read", "T2"); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(tok, "web:read", "T2", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want ErrTaskMismatch for T2, got %v", err)
 	}
-	if err := m.Authorize(tok, "web:read", ""); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(tok, "web:read", "", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want ErrTaskMismatch for empty task id, got %v", err)
 	}
 
-	deleg, _ := m.MintTTL("bob", "", []string{"web:read"}, 72*time.Hour)
-	if err := m.Authorize(deleg, "web:read", "T1"); !errors.Is(err, ErrTaskMismatch) {
+	deleg, _ := m.MintTTL("bob", "", db.OnBehalfOf{}, []string{"web:read"}, 72*time.Hour)
+	if err := m.Authorize(deleg, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("task-less delegation token must be denied, got %v", err)
 	}
 }
@@ -301,7 +303,7 @@ func TestAuthorizeTaskBinding(t *testing.T) {
 func TestAppendedBlockCannotForgeTaskOrExpiry(t *testing.T) {
 	m := newMinter(t)
 	set := fixedClock(m)
-	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
+	tok, _ := m.Mint("alice", "T1", db.OnBehalfOf{}, []string{"web:read"})
 	parsed, err := biscuit.Unmarshal(tok)
 	if err != nil {
 		t.Fatal(err)
@@ -319,11 +321,11 @@ func TestAppendedBlockCannotForgeTaskOrExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := forged.Serialize()
-	if err := m.Authorize(raw, "web:read", "T2"); !errors.Is(err, ErrTaskMismatch) {
+	if err := m.Authorize(raw, "web:read", "T2", db.OnBehalfOf{}); !errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("forged task fact must not bind, got %v", err)
 	}
 	set(m.Now().Add(DefaultTTL + time.Second))
-	if err := m.Authorize(raw, "web:read", "T1"); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("forged expires fact must not extend, got %v", err)
 	}
 }
@@ -343,7 +345,7 @@ func TestLegacyTokenWithoutExpiryDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := tok.Serialize()
-	if err := m.Authorize(raw, "web:read", "T1"); !errors.Is(err, ErrExpired) {
+	if err := m.Authorize(raw, "web:read", "T1", db.OnBehalfOf{}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("want ErrExpired for a token with no lifetime, got %v", err)
 	}
 }
@@ -352,9 +354,81 @@ func TestLegacyTokenWithoutExpiryDenied(t *testing.T) {
 // classification — not expired, not task mismatch.
 func TestScopeDenialNotMislabelled(t *testing.T) {
 	m := newMinter(t)
-	tok, _ := m.Mint("alice", "T1", []string{"web:read"})
-	err := m.Authorize(tok, "db:drop", "T1")
+	tok, _ := m.Mint("alice", "T1", db.OnBehalfOf{}, []string{"web:read"})
+	err := m.Authorize(tok, "db:drop", "T1", db.OnBehalfOf{})
 	if err == nil || errors.Is(err, ErrExpired) || errors.Is(err, ErrTaskMismatch) {
 		t.Fatalf("want a plain denial, got %v", err)
+	}
+}
+
+// AG-17: subject/actor facts are minted and Authorize reports a mismatch with
+// the task's on-behalf-of chain as ErrOBOMismatch.
+func TestCapability_SubjectActorFacts(t *testing.T) {
+	m := newMinter(t)
+	x := db.OnBehalfOf{Subject: "X", Actor: "agent-1"}
+	tok, err := m.Mint("sb", "A", x, []string{"web:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Authorize(tok, "web:read", "A", x); err != nil {
+		t.Fatalf("matching subject/actor: %v", err)
+	}
+	for name, obo := range map[string]db.OnBehalfOf{
+		"subject":     {Subject: "Y", Actor: "agent-1"},
+		"actor":       {Subject: "X", Actor: "agent-2"},
+		"service run": {Actor: "agent-1"},
+	} {
+		if err := m.Authorize(tok, "web:read", "A", obo); !errors.Is(err, ErrOBOMismatch) {
+			t.Errorf("%s mismatch: want ErrOBOMismatch, got %v", name, err)
+		}
+	}
+}
+
+func TestCapability_MismatchDenied(t *testing.T) {
+	m := newMinter(t)
+	tok, _ := m.Mint("sb", "A", db.OnBehalfOf{Subject: "X"}, []string{"web:read"})
+	y := db.OnBehalfOf{Subject: "Y"}
+	// An appended block cannot add a subject fact the authority check sees.
+	parsed, _ := biscuit.Unmarshal(tok)
+	bb := parsed.CreateBlock()
+	blk, err := parser.FromStringBlock(`subject("Y");`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bb.AddBlock(blk); err != nil {
+		t.Fatal(err)
+	}
+	forged, _ := parsed.Append(rand.Reader, bb.Build())
+	raw, _ := forged.Serialize()
+	if err := m.Authorize(raw, "web:read", "A", y); !errors.Is(err, ErrOBOMismatch) {
+		t.Fatalf("forged block subject: want ErrOBOMismatch, got %v", err)
+	}
+	// Another failure is never relabelled as a (softer) OBO mismatch.
+	if err := m.Authorize(tok, "db:drop", "A", y); err == nil || errors.Is(err, ErrOBOMismatch) {
+		t.Fatalf("scope denial must win over OBO mismatch, got %v", err)
+	}
+}
+
+// A token minted before AG-17 carries no subject/actor facts and still passes.
+func TestCapability_LegacyTokenWithoutOBOFactsAccepted(t *testing.T) {
+	m := newMinter(t)
+	b := biscuit.NewBuilder(m.priv)
+	exp := biscuit.Date(m.Now().Add(time.Minute))
+	facts := []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: "expires", IDs: []biscuit.Term{exp}}},
+		stringFact("task", "A"), stringFact("right", "web:read"),
+	}
+	for _, f := range facts {
+		if err := b.AddAuthorityFact(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tok, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := tok.Serialize()
+	if err := m.Authorize(raw, "web:read", "A", db.OnBehalfOf{Subject: "Y", Actor: "agent-9"}); err != nil {
+		t.Fatalf("legacy token: want nil, got %v", err)
 	}
 }

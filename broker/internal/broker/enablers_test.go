@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/capability"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -37,7 +38,7 @@ func TestMintStepTokens_RoundTripAndTenant(t *testing.T) {
 	})
 	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: executingTaskStore("")})
 
-	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "spiffe://aikonos.com/agent-gateway", "task-1",
+	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "spiffe://aikonos.com/agent-gateway", "task-1", db.OnBehalfOf{},
 		[]stepScope{{Seq: 1, ToolID: "web.fetch"}})
 	if err != nil {
 		t.Fatalf("mintStepTokens: %v", err)
@@ -71,7 +72,7 @@ func TestMintStepTokens_ScopeIsLeastPrivilege(t *testing.T) {
 	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")})
 
 	// Mint for doc.write (scope doc:write) but try to invoke siem.query (siem:read).
-	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "holder", "task-1", []stepScope{{Seq: 1, ToolID: "doc.write"}})
+	tokens, err := mintStepTokens(m, toolregistry.PkgDefault(), "holder", "task-1", db.OnBehalfOf{}, []stepScope{{Seq: 1, ToolID: "doc.write"}})
 	if err != nil {
 		t.Fatalf("mintStepTokens: %v", err)
 	}
@@ -84,14 +85,14 @@ func TestMintStepTokens_ScopeIsLeastPrivilege(t *testing.T) {
 }
 
 func TestMintStepTokens_NilMinterAndUnknownTool(t *testing.T) {
-	if out, err := mintStepTokens(nil, toolregistry.PkgDefault(), "h", "t", []stepScope{{Seq: 1, ToolID: "web.fetch"}}); err != nil || out != nil {
+	if out, err := mintStepTokens(nil, toolregistry.PkgDefault(), "h", "t", db.OnBehalfOf{}, []stepScope{{Seq: 1, ToolID: "web.fetch"}}); err != nil || out != nil {
 		t.Fatalf("nil minter → nil map, got out=%v err=%v", out, err)
 	}
 	m, err := capability.GenerateMinter()
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	out, err := mintStepTokens(m, toolregistry.PkgDefault(), "h", "t", []stepScope{{Seq: 1, ToolID: "totally.unregistered"}})
+	out, err := mintStepTokens(m, toolregistry.PkgDefault(), "h", "t", db.OnBehalfOf{}, []stepScope{{Seq: 1, ToolID: "totally.unregistered"}})
 	if err != nil {
 		t.Fatalf("mintStepTokens: %v", err)
 	}

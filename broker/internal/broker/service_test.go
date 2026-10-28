@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/capability"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -28,7 +29,7 @@ func newSandboxSvc(t *testing.T) (*SandboxService, *capability.Minter) {
 
 func mintFor(t *testing.T, m *capability.Minter, scopes ...string) string {
 	t.Helper()
-	raw, err := m.Mint("agent@example.com", "task-1", scopes)
+	raw, err := m.Mint("agent@example.com", "task-1", db.OnBehalfOf{}, scopes)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
