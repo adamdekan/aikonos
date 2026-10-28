@@ -507,15 +507,18 @@ fi
 # (and every other office tool id) — no new tuple required here.
 if [ -n "${ALICE_TOK:-}" ]; then
   DOCX_CREATE_ARGS='{"script":"const { Document, Packer, Paragraph } = require(\"docx\"); const fs = require(\"fs\"); const doc = new Document({ sections: [{ children: [new Paragraph(\"compose-verify smoke (south InvokeTool)\")] }] }); Packer.toBuffer(doc).then(buf => fs.writeFileSync(\"output.docx\", buf));","output_path":"compose-verify/docx-create-smoke.docx"}'
-  # Passed via env, not argv: argv forwarded through npm's `--` doesn't reliably
+  # Passed via env, not argv: argv forwarded through npm's `--` didn't reliably
   # survive the `docker compose exec` hop (confirmed live — the tool silently
   # ran the workspace_read default instead of docx.create).
+  # The runtime image has no npm (stripped in its Dockerfile) and no dist/ —
+  # tsx runs the TS source directly, so call it the way package.json's `smoke`
+  # script does.
   DOCX_SMOKE_OUT=$(docker compose exec -T \
     -e AIKONOS_OIDC_TOKEN="$ALICE_TOK" \
     -e SMOKE_TOOL_ID=docx.create \
     -e SMOKE_ARGS="$DOCX_CREATE_ARGS" \
     -e SMOKE_EFFECT_CLASS=WRITE_LOCAL \
-    agent-gateway npm run --silent smoke 2>&1)
+    agent-gateway node_modules/.bin/tsx src/cli/smoke-south.ts 2>&1)
   DOCX_SMOKE_STATUS=$?
   if [ "$DOCX_SMOKE_STATUS" -eq 0 ]; then
     ok "docx.create round-trip (south InvokeTool → broker → office-worker, alice@example.com)"
