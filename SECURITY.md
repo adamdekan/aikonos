@@ -143,6 +143,14 @@ turns off the email-rule grants, which trust an unverified email claim. SCIM
 tokens are shown once and stored as a peppered hash; rotate or revoke them under
 Admin → Access Control → Provisioning.
 
+A yes on a step-up approval (OPA `require_step_up`) needs the approver's
+recent multi-factor sign-in (AG-13): the token's `amr` names a second factor or
+its `acr`/`acrs` matches `approvals.step_up_acr`, and `auth_time` is at most
+`approvals.step_up_max_age_minutes` old. Otherwise the broker refuses with
+`step_up_required` and records `aikonos.broker.task.step_up_required`. The web
+UI then asks for a fresh sign-in and retries. Entra setup:
+`docs/12-entra-login.md` → *Step-up for risky approvals*.
+
 Attaching an MCP connector to an agent grants none of its tools (AG-08): pick
 them under Admin → Agents → *Tools on <connector>*, or use the *Read-only
 preset*. The broker refuses any other tool of that connector at plan and at

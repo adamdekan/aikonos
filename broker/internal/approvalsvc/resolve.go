@@ -36,6 +36,7 @@ func Resolve(
 	approved bool,
 	reason string,
 	argsDigest string,
+	stepUp StepUp,
 ) (respStatus brokerv1.TaskStatus, capTokens map[int32]string, eventType string, decision auditv1.PolicyDecision, err error) {
 	ar, err := store.GetPendingApprovalByTask(ctx, tenantID, taskID)
 	if err != nil {
@@ -61,6 +62,14 @@ func Resolve(
 	}
 	if approved && argsDigest != ArgsDigest(steps) {
 		return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "arguments for task %s do not match the approved digest", taskID)
+	}
+
+	// AG-13: a yes on a step-up approval needs the approver's recent MFA
+	// sign-in; a no lowers risk and needs none.
+	if isStepUp, _ := ar.Summary["step_up"].(bool); approved && isStepUp {
+		if err := stepUp.requireStepUp(ctx); err != nil {
+			return 0, nil, "", 0, err
+		}
 	}
 
 	newState, resolved, err := store.ResolveApproval(ctx, tenantID, ar.ApprovalID.String(), approverUserID, approved, reason)

@@ -334,3 +334,32 @@ test("grep gate: no tokenForUser references in agent-gateway/src", async () => {
     `Found forbidden references in src:\n${result}`,
   );
 });
+
+// AG-13: the run's own vote on a step-up approval is refused for want of a
+// fresh MFA sign-in; the run keeps waiting and resumes on the vote the
+// approver casts with one (dialog or Inbox, north ApproveTask).
+test("step-up approval: refused run vote keeps waiting, then runs on the MFA vote", async () => {
+  const south = makeSouth(needsHumanPlan(), [
+    gatewayApproval({ stepUp: true } as never),
+    gatewayApproval(),
+    gatewayApproval({ status: TaskStatus.APPROVED, capabilityTokenIds: { 1: "tok-mfa" } }),
+  ]);
+  const { status, Metadata } = await import("@grpc/grpc-js");
+  south.approveGatewayTask = (...args: unknown[]) => {
+    south.calls.push({ method: "approveGatewayTask", args });
+    return Promise.reject(Object.assign(new Error("step_up_required"), {
+      code: status.PERMISSION_DENIED, details: "step_up_required", metadata: new Metadata(),
+    }));
+  };
+  let shown: { taskId?: string; stepUp: boolean } | undefined;
+  const yes = async (info: { taskId?: string; stepUp: boolean }) => { shown = info; return true; };
+  const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, yes, log);
+  bridge.approvalPollMs = 1;
+
+  const decision = await bridge.gate("call-stepup", "web_fetch", { url: "https://example.com" });
+
+  assert.equal(decision.allow, true);
+  assert.equal(shown?.taskId, "task-1", "dialog gets the task id to decide with a fresh sign-in");
+  assert.equal(shown?.stepUp, true);
+  assert.equal(south.calls.filter((c) => c.method === "approveGatewayTask").length, 1);
+});

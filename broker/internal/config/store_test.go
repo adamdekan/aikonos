@@ -199,16 +199,18 @@ func TestSchema_ExactlyKnownConvenienceKeys(t *testing.T) {
 	// "convenience-only" means the key cannot widen a capability scope, grant
 	// access, or lower an authorization bar.
 	knownConvenienceKeys := map[string]bool{
-		"approval_expiry_hours":       true,
-		"approval_required_n":         true,
-		"disabled_tools":              true,
-		"effect_class_routing":        true,
-		"llm_model":                   true,
-		"identity.obo":                true, // audit|enforce: enforce only adds denials
-		"identity.enforce_user_bound": true, // audit|enforce: enforce only adds denials
-		"api_keys.max_ttl_days":       true, // [1, 90]: can only shorten key lifetime
-		"identity.orphan_grace_days":  true, // [1, 30]: delays an automatic suspension, grants nothing
-		"provisioning.mode":           true, // jit (the default) or scim: scim only turns email-rule grants off
+		"approval_expiry_hours":             true,
+		"approval_required_n":               true,
+		"disabled_tools":                    true,
+		"effect_class_routing":              true,
+		"llm_model":                         true,
+		"identity.obo":                      true, // audit|enforce: enforce only adds denials
+		"identity.enforce_user_bound":       true, // audit|enforce: enforce only adds denials
+		"api_keys.max_ttl_days":             true, // [1, 90]: can only shorten key lifetime
+		"identity.orphan_grace_days":        true, // [1, 30]: delays an automatic suspension, grants nothing
+		"provisioning.mode":                 true, // jit (the default) or scim: scim only turns email-rule grants off
+		"approvals.step_up_acr":             true, // names the IdP's MFA acr; only adds a check on step-up approvals
+		"approvals.step_up_max_age_minutes": true, // [1, 60]: freshness bound on that check
 	}
 
 	for name := range config.Schema {

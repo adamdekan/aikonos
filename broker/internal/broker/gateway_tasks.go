@@ -369,12 +369,22 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 	}
 	approverUserID := task.OwnerUserID
 
+	// AG-13: the gateway SVID carries no sign-in, so a yes on a step-up
+	// approval is always refused here; the approver decides with a fresh
+	// MFA token through north ApproveTask.
+	stepUp, err := stepUpRule(ctx, s.cfg(), req.TenantId)
+	if err != nil {
+		return nil, err
+	}
 	respStatus, capTokens, eventType, decision, err := approvalsvc.Resolve(
 		ctx, store, s.deps.Policy, approvalMinter(s.deps.Capability, s.toolReg()), s.deps.Logger,
 		req.TenantId, req.TaskId, approverUserID,
-		req.Approved, req.Reason, req.ArgsDigest,
+		req.Approved, req.Reason, req.ArgsDigest, stepUp,
 	)
 	if err != nil {
+		if approvalsvc.IsStepUpRequired(err) {
+			emitStepUpRefused(ctx, s.deps, traceID, req.TenantId, req.TaskId, approverUserID, task)
+		}
 		return nil, err
 	}
 

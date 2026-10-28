@@ -43,7 +43,7 @@ func TestResolve_MintsWithTaskOnBehalfOf(t *testing.T) {
 		return map[int32]string{}, nil
 	}
 	if _, _, _, _, err := Resolve(context.Background(), &resolvingStore{task: task}, &fakeAccessPolicy{}, mint, zap.NewNop(),
-		"tenant", "task", "bob@example.com", true, "", ArgsDigest(nil)); err != nil {
+		"tenant", "task", "bob@example.com", true, "", ArgsDigest(nil), StepUp{}); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if got != task.OnBehalfOf() || got.Subject != "alice@example.com" || got.Actor != agent.String() {
@@ -77,7 +77,7 @@ func TestResolve_ArgsDigestBinding(t *testing.T) {
 	run := func(approved bool, digest string) (*stepsStore, error) {
 		st := &stepsStore{resolvingStore: resolvingStore{task: &db.Task{OwnerUserID: "alice@example.com"}}, steps: stored}
 		_, _, _, _, err := Resolve(context.Background(), st, &fakeAccessPolicy{}, mint, zap.NewNop(),
-			"tenant", "task", "bob@example.com", approved, "", digest)
+			"tenant", "task", "bob@example.com", approved, "", digest, StepUp{})
 		return st, err
 	}
 

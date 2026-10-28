@@ -355,6 +355,40 @@ func TestApproveGatewayTask_GatewayPeer_MintsTokens(t *testing.T) {
 	}
 }
 
+// AG-13: the gateway SVID carries no sign-in, so a yes on a step-up approval
+// is refused with step_up_required and nothing is minted; a no still passes.
+func TestApproveGatewayTask_StepUp_Refused(t *testing.T) {
+	minter, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	taskID := uuid.New()
+	store := func() *fakeGatewayApproveStore {
+		return &fakeGatewayApproveStore{
+			created: []*db.Task{{
+				TaskID: taskID, TenantID: uuid.MustParse(testTenantUUID), OwnerUserID: "alice@example.com",
+				GatewayManaged: true, State: db.TaskStateAwaitingApproval,
+			}},
+			approval: &db.ApprovalRequest{
+				ApprovalID: uuid.New(), TaskID: taskID, TenantID: uuid.MustParse(testTenantUUID),
+				RequesterID: "alice@example.com", ApproverSet: []string{"alice@example.com"}, RequiresN: 1,
+				State: db.ApprovalPending, Summary: map[string]any{"step_up": true},
+			},
+		}
+	}
+	req := &brokerv1.ApproveGatewayTaskRequest{
+		TenantId: testTenantUUID, TaskId: taskID.String(), Approved: true, ArgsDigest: webFetchDigest,
+	}
+	resp, err := newSandboxSvcForGatewayTest(t, store(), minter).ApproveGatewayTask(gatewaySpiffeCtx(), req)
+	if !approvalsvc.IsStepUpRequired(err) || resp != nil {
+		t.Fatalf("step-up via gateway: resp=%v err=%v, want step_up_required", resp, err)
+	}
+	req.Approved = false
+	if _, err := newSandboxSvcForGatewayTest(t, store(), minter).ApproveGatewayTask(gatewaySpiffeCtx(), req); err != nil {
+		t.Fatalf("denial via gateway: %v", err)
+	}
+}
+
 // TestApproveGatewayTask_NonGatewayPeer_PermissionDenied proves that the RPC
 // fails closed for non-gateway SPIFFE peers.
 func TestApproveGatewayTask_NonGatewayPeer_PermissionDenied(t *testing.T) {

@@ -291,6 +291,40 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// approvals.step_up_acr names the identity provider's acr (or Entra
+	// authentication-context id, matched against acrs) that proves MFA for a
+	// step-up approval (AG-13). Empty: only an MFA amr counts. The freshness
+	// bound below applies either way.
+	"approvals.step_up_acr": {
+		Name:    "approvals.step_up_acr",
+		Kind:    KindString,
+		Default: "",
+		Doc:     "acr value (or Entra authentication-context id such as c1) that proves a multi-factor sign-in for step-up approvals. Empty: only an amr naming a second factor (mfa, otp, hwk, ...) counts. The web UI asks the identity provider for this value when it re-authenticates.",
+		Validate: func(v string) error {
+			if len(v) > 128 || strings.ContainsAny(v, " ,\t\n") {
+				return fmt.Errorf("approvals.step_up_acr: one acr value of at most 128 characters, no spaces or commas")
+			}
+			return nil
+		},
+	},
+	// approvals.step_up_max_age_minutes bounds how old the approver's sign-in
+	// (auth_time) may be for a step-up approval (AG-13).
+	"approvals.step_up_max_age_minutes": {
+		Name:    "approvals.step_up_max_age_minutes",
+		Kind:    KindInt,
+		Default: "10",
+		Doc:     "Maximum age in minutes of the approver's multi-factor sign-in (auth_time) for a step-up approval. A token without auth_time never qualifies. Range [1, 60].",
+		Validate: func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("approvals.step_up_max_age_minutes: must be an integer, got %q", v)
+			}
+			if n < 1 || n > 60 {
+				return fmt.Errorf("approvals.step_up_max_age_minutes: must be in [1, 60], got %d", n)
+			}
+			return nil
+		},
+	},
 	// identity.orphan_grace_days is how long an active agent may stay
 	// orphaned (no owner, or every owner blocked) before the orphan sweep
 	// suspends it (AG-03/AG-04). It grants nothing: an admin can suspend at

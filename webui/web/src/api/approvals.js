@@ -11,3 +11,10 @@ export function listPendingApprovals() {
 export function decideApproval(taskId, approved, argsDigest) {
   return post(`/pending-approvals/${encodeURIComponent(taskId)}`, { body: { approved, argsDigest } });
 }
+
+// AG-13: the broker refused a yes on a step-up approval for want of a recent
+// multi-factor sign-in (gateway 401). err.data.acr is the tenant's acr; sign in
+// again with stepUpSignin and retry.
+export function isStepUpRequired(err) {
+  return err?.status === 401 && err?.data?.error === "step_up_required";
+}

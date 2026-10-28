@@ -2,10 +2,12 @@
 // Pending approvals held by the broker (AG-07): every approval the signed-in
 // user may decide, including the second vote of a 2-of-n gate requested in
 // someone else's session. Approve/Deny call the broker's ApproveTask through
-// the gateway.
+// the gateway. A step-up approval refused for want of a recent MFA sign-in
+// (AG-13) offers a fresh sign-in, then retries the approval.
 import { ref, onMounted, nextTick } from "vue";
 import ArgsView from "../../components/ArgsView.vue";
-import { listPendingApprovals, decideApproval } from "../../api/approvals.js";
+import { listPendingApprovals, decideApproval, isStepUpRequired } from "../../api/approvals.js";
+import { stepUpSignin } from "../../auth/oidc.js";
 
 // AG-07: the deep link in an approval notification (/inbox?approval=<taskId>)
 // marks and scrolls to that request.
@@ -14,6 +16,7 @@ const props = defineProps({ focusTask: { type: String, default: "" } });
 const approvals = ref([]);
 const error = ref("");
 const busy = ref("");
+const stepUp = ref(null); // { taskId, acr } while a fresh MFA sign-in is due
 
 async function load() {
   try {
@@ -30,14 +33,30 @@ async function load() {
 async function decide(a, approved) {
   busy.value = a.taskId;
   error.value = "";
+  stepUp.value = null;
   try {
     await decideApproval(a.taskId, approved, a.argsDigest);
     approvals.value = approvals.value.filter((x) => x.taskId !== a.taskId);
   } catch (e) {
-    error.value = e.message || "Decision failed";
+    if (isStepUpRequired(e)) {
+      stepUp.value = { taskId: a.taskId, acr: e.data.acr ?? "" };
+      error.value = "This approval needs a recent multi-factor sign-in.";
+    } else {
+      error.value = e.message || "Decision failed";
+    }
   } finally {
     busy.value = "";
   }
+}
+
+async function verifyAndApprove(a) {
+  try {
+    await stepUpSignin(stepUp.value?.acr);
+  } catch (e) {
+    error.value = e.message || "Sign-in failed";
+    return;
+  }
+  await decide(a, true);
 }
 
 onMounted(load);
@@ -66,6 +85,13 @@ onMounted(load);
           <ArgsView :args="s.args ?? null" />
         </div>
         <div class="pa-actions">
+          <button
+            v-if="stepUp?.taskId === a.taskId"
+            class="pa-btn pa-approve"
+            :disabled="busy === a.taskId"
+            :data-testid="`approval-step-up-${a.taskId}`"
+            @click="verifyAndApprove(a)"
+          >Verify sign-in and approve</button>
           <button class="pa-btn" :disabled="busy === a.taskId" data-action="deny" @click="decide(a, false)">Deny</button>
           <button class="pa-btn pa-approve" :disabled="busy === a.taskId" data-action="approve" @click="decide(a, true)">Approve</button>
         </div>

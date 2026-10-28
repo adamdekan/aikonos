@@ -96,6 +96,19 @@ export function trimmedErrorMessage(err: unknown): string {
       : "internal error";
 }
 
+// AG-13: the broker refuses a yes on a step-up approval without a recent
+// multi-factor sign-in with PERMISSION_DENIED "step_up_required", and names the
+// tenant's acr (if any) in a trailer for the web UI's re-authentication.
+export function isStepUpRequired(err: unknown): boolean {
+  return grpcCode(err) === status.PERMISSION_DENIED && callerDetail(err) === "step_up_required";
+}
+
+export function stepUpAcr(err: unknown): string {
+  const md = (err as { metadata?: { get(key: string): unknown[] } })?.metadata;
+  const v = md?.get?.("aikonos-step-up-acr")?.[0];
+  return typeof v === "string" ? v : "";
+}
+
 // sendError logs the full error server-side and replies with the mapped HTTP
 // status and a trimmed body (see trimmedErrorMessage).
 export function sendError(reply: ErrorReply, log: Logger, err: unknown, opts: SendErrorOptions = {}): void {
