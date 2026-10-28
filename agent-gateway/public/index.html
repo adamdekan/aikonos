@@ -168,7 +168,7 @@ async function run(){
        <div class="btns"><button class="act b-approve">Approve</button><button class="act b-deny">Deny</button></div>`);
     const done=(ok)=>{ d.querySelectorAll("button").forEach(b=>b.disabled=true);
       d.querySelector(".btns").innerHTML = ok?'<span class="muted">✔ approved</span>':'<span class="muted">✖ denied</span>';
-      fetch("/approve/"+encodeURIComponent(info.toolCallId),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({approved:ok})}); };
+      fetch("/approve/"+encodeURIComponent(info.toolCallId),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({approved:ok,argsDigest:info.argsDigest})}); };
     d.querySelector(".b-approve").onclick=()=>done(true); d.querySelector(".b-deny").onclick=()=>done(false); };
 
   const handle=(ev)=>{ switch(ev.type){

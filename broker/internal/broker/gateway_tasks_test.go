@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/capability"
@@ -340,6 +341,7 @@ func TestApproveGatewayTask_GatewayPeer_MintsTokens(t *testing.T) {
 		TaskId:      taskID.String(),
 		OwnerUserId: "alice@example.com",
 		Approved:    true,
+		ArgsDigest:  webFetchDigest,
 	})
 	if err != nil {
 		t.Fatalf("gateway ApproveGatewayTask: %v", err)
@@ -362,6 +364,7 @@ func TestApproveGatewayTask_NonGatewayPeer_PermissionDenied(t *testing.T) {
 		TaskId:      uuid.New().String(),
 		OwnerUserId: "alice@example.com",
 		Approved:    true,
+		ArgsDigest:  webFetchDigest,
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("non-gateway peer: want PermissionDenied, got %v", err)
@@ -554,6 +557,7 @@ func TestApproveGatewayTask_UsesStoredOwner_NotAssertedField(t *testing.T) {
 		TaskId:      taskID.String(),
 		OwnerUserId: "bob@example.com", // gateway asserts wrong approver
 		Approved:    true,
+		ArgsDigest:  webFetchDigest,
 	})
 	if err != nil {
 		t.Fatalf("ApproveGatewayTask with wrong asserted owner: %v", err)
@@ -771,3 +775,6 @@ func TestCreateGatewayTask_GrantActorCaseInsensitive(t *testing.T) {
 		t.Errorf("agent = %v, want %s", got, agent)
 	}
 }
+
+// webFetchDigest is the args digest of the fake store's plan steps (AG-07).
+var webFetchDigest = approvalsvc.ArgsDigest([]db.ExecutableStep{{Seq: 0, ToolID: "web.fetch"}})

@@ -11,6 +11,8 @@ import type {
   TaskHandle,
   ApproveTaskRequest,
   ApproveTaskResponse,
+  ListPendingApprovalsRequest,
+  ListPendingApprovalsResponse,
   SendEnvelopeRequest,
   EnvelopeHandle,
   ListInboxEnvelopesRequest,
@@ -272,6 +274,10 @@ export class NorthClient {
 
   sendEnvelope(req: SendEnvelopeRequest, token?: string): Promise<EnvelopeHandle> {
     return unary((r, m, o, cb) => this.client.sendEnvelope(r, m, o, cb), req, bearer(token));
+  }
+
+  listPendingApprovals(req: ListPendingApprovalsRequest, token?: string): Promise<ListPendingApprovalsResponse> {
+    return unary((r, m, o, cb) => this.client.listPendingApprovals(r, m, o, cb), req, bearer(token));
   }
 
   listInboxEnvelopes(

@@ -89,6 +89,7 @@ GRANT EXECUTE ON FUNCTION baseline_distinct_agents(timestamptz), baseline_prune_
 GRANT EXECUTE ON FUNCTION resolve_agent_api_key(text) TO aikonos_app;
 GRANT EXECUTE ON FUNCTION rate_limit_policies_all() TO aikonos_app;
 GRANT EXECUTE ON FUNCTION llm_usage_prune_events(timestamptz) TO aikonos_app;
+GRANT EXECUTE ON FUNCTION approval_requests_expired() TO aikonos_app;
 -- Future tables/sequences created by the owner auto-grant to the app role.
 ALTER DEFAULT PRIVILEGES FOR ROLE "${PGUSER}" IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aikonos_app;

@@ -94,6 +94,12 @@ message PlanValidationResult {
 
   // Capability token IDs minted for approved steps (matched by step seq)
   map<int32, string> capability_token_ids = 5;
+
+  // AG-07 (M-28): set on NEEDS_HUMAN / NEEDS_STEP_UP. sha256 (hex) of the
+  // canonical JSON array of the gated steps' args in seq order. The approve
+  // call must carry it back; the broker re-reads the stored args and refuses
+  // a mismatch.
+  string args_digest = 6;
 }
 
 enum ValidationOutcome {

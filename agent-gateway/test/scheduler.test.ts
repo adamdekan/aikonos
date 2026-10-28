@@ -11,7 +11,7 @@ function info(toolId: string): ApprovalInfo {
     effectClass: 0,
     reason: "human approval required",
     args: {},
-    stepUp: false,
+    stepUp: false, argsDigest: "",
   };
 }
 

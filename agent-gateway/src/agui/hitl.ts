@@ -49,13 +49,17 @@ export class ApprovalRegistry {
     });
   }
 
-  /** Answers one of the user's own pending approvals. False when the user has none under this id: answered already, timed out, its run ended, or it belongs to someone else. */
-  resolve(toolCallId: string, user: string, ok: boolean): boolean {
+  /**
+   * Answers one of the user's own pending approvals. "unknown" when the user has none under this id: answered already, timed out, its run ended, or it belongs to someone else.
+   * An approval must echo the argsDigest the dialog was shown (AG-07, M-28); a missing or different digest is "mismatch" and the approval keeps waiting. A denial needs no digest.
+   */
+  resolve(toolCallId: string, user: string, ok: boolean, argsDigest?: string): "resolved" | "unknown" | "mismatch" {
     const key = approvalKey(user, toolCallId);
     const p = this.pending.get(key);
-    if (!p) return false;
+    if (!p) return "unknown";
+    if (ok && argsDigest !== p.info.argsDigest) return "mismatch";
     this.settle(key, p, ok);
-    return true;
+    return "resolved";
   }
 
   listForUser(user: string): ApprovalInfo[] {

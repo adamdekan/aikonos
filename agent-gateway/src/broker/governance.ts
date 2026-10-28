@@ -86,6 +86,10 @@ export interface ApprovalInfo {
   reason: string;
   args: Record<string, unknown>;
   stepUp: boolean;
+  // AG-07 (M-28): the broker's digest of the stored args (SubmitPlan). The
+  // approval dialog echoes it back; the approve call carries it to the broker,
+  // which refuses it if the stored args no longer match.
+  argsDigest: string;
 }
 
 // Injected decision for NEEDS_HUMAN/STEP_UP. CLI auto-approves; the AG-UI server
@@ -292,6 +296,7 @@ export class GovernanceBridge {
           reason: stepUp ? "elevated (step-up) approval required" : "human approval required",
           args: input,
           stepUp,
+          argsDigest: result.argsDigest,
         });
         if (!ok) return { allow: false, reason: "approval declined" };
 
@@ -303,6 +308,7 @@ export class GovernanceBridge {
                 approved: true,
                 reason: "approved via agent-gateway",
                 approverUserId: this.identity.userId,
+                argsDigest: result.argsDigest,
               },
               this.identity.token,
             )
@@ -312,6 +318,7 @@ export class GovernanceBridge {
               ownerUserId: this.identity.userId,
               approved: true,
               reason: "approved via agent-gateway",
+              argsDigest: result.argsDigest,
             });
         if (decisionOnly) return { allow: true };
         const tok = approval.capabilityTokenIds[1];

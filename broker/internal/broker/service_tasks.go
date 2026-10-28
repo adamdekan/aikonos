@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
@@ -270,7 +271,7 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 	respStatus, capTokens, eventType, decision, err := approvalsvc.Resolve(
 		ctx, s.deps.Tasks, s.deps.Policy, approvalMinter(s.deps.Capability, s.toolReg()), s.deps.Logger,
 		tenant, req.TaskId, approver,
-		req.Approved, req.Reason,
+		req.Approved, req.Reason, req.ArgsDigest,
 	)
 	if err != nil {
 		return nil, err
@@ -310,6 +311,56 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		NewStatus:          respStatus,
 		CapabilityTokenIds: capTokens,
 	}, nil
+}
+
+// ListPendingApprovals returns the pending, unexpired approval requests the
+// caller may decide (AG-07): the same approver_set and FGA can_approve rule
+// ApproveTask applies, so every row listed can be approved by this caller with
+// the args_digest it carries.
+func (s *BrokerService) ListPendingApprovals(ctx context.Context, req *brokerv1.ListPendingApprovalsRequest) (*brokerv1.ListPendingApprovalsResponse, error) {
+	ctx, span := tracer.Start(ctx, "broker.approval.list_pending")
+	defer span.End()
+
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.deps.Tasks.ListPendingApprovalsFor(ctx, tenant, user)
+	if err != nil {
+		s.deps.Logger.Error("ListPendingApprovals: query failed", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to list approvals")
+	}
+
+	// ponytail: one FGA check and one steps read per row (rows capped at 100);
+	// batch them if approvers routinely see long queues.
+	out := make([]*brokerv1.PendingApproval, 0, len(rows))
+	for _, ar := range rows {
+		taskID := ar.TaskID.String()
+		if ok, ferr := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_approve", "task:"+taskID); ferr != nil || !ok {
+			continue
+		}
+		steps, serr := s.deps.Tasks.ListMintableSteps(ctx, tenant, taskID)
+		if serr != nil {
+			s.deps.Logger.Error("ListPendingApprovals: list steps failed", zap.Error(serr))
+			return nil, status.Errorf(codes.Internal, "failed to load plan steps")
+		}
+		pa := &brokerv1.PendingApproval{
+			ApprovalId:  ar.ApprovalID.String(),
+			TaskId:      taskID,
+			RequesterId: ar.RequesterID,
+			RequiresN:   int32(ar.RequiresN),
+			Approvals:   int32(len(ar.ApprovedBy)),
+			ExpiresAt:   timestamppb.New(ar.ExpiresAt),
+			ArgsDigest:  approvalsvc.ArgsDigest(steps),
+		}
+		pa.StepUp, _ = ar.Summary["step_up"].(bool)
+		for _, st := range steps {
+			args, _ := structpb.NewStruct(st.Args) // decoded from JSON, so always convertible
+			pa.Steps = append(pa.Steps, &brokerv1.PendingApprovalStep{Seq: st.Seq, ToolId: st.ToolID, Args: args})
+		}
+		out = append(out, pa)
+	}
+	return &brokerv1.ListPendingApprovalsResponse{Approvals: out}, nil
 }
 
 // CancelTask transitions a task to CANCELLED and tears down its sandbox;

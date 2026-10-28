@@ -324,7 +324,7 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 	respStatus, capTokens, eventType, decision, err := approvalsvc.Resolve(
 		ctx, store, s.deps.Policy, approvalMinter(s.deps.Capability, s.toolReg()), s.deps.Logger,
 		req.TenantId, req.TaskId, approverUserID,
-		req.Approved, req.Reason,
+		req.Approved, req.Reason, req.ArgsDigest,
 	)
 	if err != nil {
 		return nil, err

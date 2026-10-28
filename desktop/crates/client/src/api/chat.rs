@@ -197,8 +197,10 @@ struct Soul {
 }
 
 #[derive(Serialize)]
-struct Decision {
+struct Decision<'a> {
     approved: bool,
+    #[serde(rename = "argsDigest")]
+    args_digest: &'a str,
 }
 
 impl Connection {
@@ -271,9 +273,14 @@ impl Connection {
 
     /// Approve or deny a paused tool call. `false` when it was no longer
     /// waiting (decided elsewhere, timed out, or its run ended).
-    pub async fn decide_approval(&self, tool_call_id: &str, approved: bool) -> ApiResult<bool> {
+    /// `args_digest` is the request's `argsDigest`; an approval without the
+    /// matching one is refused (AG-07).
+    pub async fn decide_approval(&self, tool_call_id: &str, approved: bool, args_digest: &str) -> ApiResult<bool> {
         let reply: Resolved = self
-            .post(&format!("/approve/{}", encode(tool_call_id)), &Decision { approved })
+            .post(
+                &format!("/approve/{}", encode(tool_call_id)),
+                &Decision { approved, args_digest },
+            )
             .await?;
         Ok(reply.resolved)
     }

@@ -60,6 +60,10 @@ pub struct ApprovalRequest {
     pub reason: Option<String>,
     #[serde(default)]
     pub args: Option<Value>,
+    /// The broker's digest of the arguments shown (AG-07); an approval must
+    /// echo it or the gateway refuses it.
+    #[serde(rename = "argsDigest", default)]
+    pub args_digest: String,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -288,6 +292,7 @@ mod tests {
             panic!("expected an approval request");
         };
         assert_eq!(request.tool_call_id, "t9");
+        assert_eq!(request.args_digest, "");
         assert!(request.is_high_risk());
         assert_eq!(request.extra.get("newField"), Some(&Value::from(7)));
     }

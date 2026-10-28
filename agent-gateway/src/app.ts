@@ -79,7 +79,13 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
   });
 
   // POST /approve/:id + GET /approvals: the caller's own pending approvals.
-  registerApprovalRoutes(app, { approvals: ctx.approvals, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
+  // GET /pending-approvals + POST /pending-approvals/:taskId: broker-held ones.
+  registerApprovalRoutes(app, {
+    approvals: ctx.approvals,
+    clients: ctx.clients,
+    jwksResolver: ctx.jwksResolver,
+    verifyOpts: ctx.verifyOpts,
+  });
 
   registerDelegationRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
   registerConnectorRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });

@@ -60,6 +60,10 @@ func (stubTaskStore) ResolveApproval(_ context.Context, _, _, _ string, _ bool, 
 	return "", false, nil
 }
 
+func (stubTaskStore) ListPendingApprovalsFor(_ context.Context, _, _ string) ([]db.ApprovalRequest, error) {
+	return nil, nil
+}
+
 func (stubTaskStore) ListInbox(_ context.Context, _, _ string, _ bool) ([]*db.Envelope, error) {
 	return nil, nil
 }

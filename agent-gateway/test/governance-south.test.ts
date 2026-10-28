@@ -32,6 +32,7 @@ function needsHumanPlan() {
     capabilityTokenIds: {},
     violations: [],
     steps: [],
+    argsDigest: "digest-1",
   };
 }
 
@@ -168,9 +169,9 @@ test("GovernanceBridge south-mode: NEEDS_HUMAN + approver yes → approveGateway
     agentId: "alice-agent",
   };
 
-  let approverCalled = false;
-  const alwaysApprove = async () => {
-    approverCalled = true;
+  let shownDigest = "";
+  const alwaysApprove = async (info: { argsDigest: string }) => {
+    shownDigest = info.argsDigest;
     return true;
   };
 
@@ -178,7 +179,10 @@ test("GovernanceBridge south-mode: NEEDS_HUMAN + approver yes → approveGateway
   const decision = await bridge.gate("call-2", "web_fetch", { url: "https://example.com" });
 
   assert.equal(decision.allow, true);
-  assert.ok(approverCalled, "approver should have been called for NEEDS_HUMAN");
+  // AG-07: the approver is shown the broker's digest and the approve call carries it back.
+  assert.equal(shownDigest, "digest-1", "approver should have been called with the plan's args digest");
+  const approveCall = south.calls.find((c: CallLog) => c.method === "approveGatewayTask")!;
+  assert.equal((approveCall.args[0] as { argsDigest: string }).argsDigest, "digest-1");
 
   // south.approveGatewayTask was called
   assert.ok(

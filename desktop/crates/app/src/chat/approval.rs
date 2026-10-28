@@ -106,10 +106,12 @@ impl ApprovalPanel {
         cx.notify();
         let connection = self.connection.clone();
         let id = self.request.tool_call_id.clone();
+        let digest = self.request.args_digest.clone();
         cx.spawn(async move |this, cx| {
             // Detached: a decision must reach the server even if the dialog
             // is torn down while it is in flight.
-            let result = runtime::spawn(async move { connection.decide_approval(&id, approved).await }).await;
+            let result =
+                runtime::spawn(async move { connection.decide_approval(&id, approved, &digest).await }).await;
             let _ = this.update(cx, |this, cx| {
                 this.pending = None;
                 match result {
@@ -138,7 +140,7 @@ impl ApprovalPanel {
         let connection = self.connection.clone();
         let id = self.request.tool_call_id.clone();
         runtime::detach(async move {
-            let _ = connection.decide_approval(&id, false).await;
+            let _ = connection.decide_approval(&id, false, "").await;
         });
     }
 
