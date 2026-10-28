@@ -913,6 +913,8 @@ func main() {
 		fgaWriter = policyTupleWriter{eng: policyEngine}
 	}
 	provisioner := provisioning.NewProvisioner(provisioningRepo, fgaWriter, auditEmitter, log)
+	provisioner.Config = configStore // AG-16: no email-rule grants under provisioning.mode=scim
+	scimRepo := db.NewScimRepo(pool, log)
 
 	// ── gRPC server — North bound (frontend → Broker) ────────────────────────
 	// mTLS using SPIFFE SVID; also validates OIDC token in metadata interceptor
@@ -1014,6 +1016,7 @@ func main() {
 		UserDirectory:            userDirRepo,
 		Revocation:               revocationChecker,
 		Provisioning:             provisioningRepo,
+		Scim:                     scimRepo,
 		GatewayGrantKey:          gatewayGrantKey,
 		GatewayGrantTTL:          gatewayGrantTTL,
 		GatewayGrantAcceptV1:     viper.GetBool("gateway_grant.accept_v1"),
@@ -1114,6 +1117,7 @@ func main() {
 		Workflows:            workflowRepo,
 		UserAssertions:       oidcValidator, // never nil; disabled ⇒ assertions refused
 		Revocation:           revocationChecker,
+		Scim:                 scimRepo,
 		ApprovalNotify:       approvalNotify, // SubmitPlan builds approval gates (AG-07)
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)

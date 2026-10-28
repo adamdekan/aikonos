@@ -109,7 +109,13 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
 
   // ── Admin routes ─────────────────────────────────────────────────────────────
   // All /admin/* endpoints + /agents/:id/mcp-servers.
-  registerAdminRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts, supervisor: ctx.supervisor });
+  registerAdminRoutes(app, {
+    clients: ctx.clients,
+    jwksResolver: ctx.jwksResolver,
+    verifyOpts: ctx.verifyOpts,
+    supervisor: ctx.supervisor,
+    scimBaseUrl: ctx.cfg.externalBaseUrl ? `${ctx.cfg.externalBaseUrl}/scim/v2` : "",
+  });
 
   // ── AG-UI SSE run endpoint ────────────────────────────────────────────────────
   registerAgUiRoutes(app, {

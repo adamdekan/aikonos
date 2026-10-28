@@ -266,6 +266,14 @@ service BrokerService {
   rpc ListAgentPublicKeys(ListAgentPublicKeysRequest) returns (ListAgentPublicKeysResponse);
   rpc RetireAgentPublicKey(RetireAgentPublicKeyRequest) returns (RetireAgentPublicKeyResponse);
 
+  // ── SCIM provisioning tokens (AG-16, tenant-admin gated) ─────────────────
+  // List the active SCIM bearer tokens (prefix and timestamps; never the token).
+  rpc ListScimTokens(ListScimTokensRequest) returns (ListScimTokensResponse);
+  // Create a SCIM token; returns the raw token exactly once. With replaces_id
+  // it is a rotation: the replaced token is revoked in the same transaction.
+  rpc CreateScimToken(CreateScimTokenRequest) returns (CreateScimTokenResponse);
+  rpc RevokeScimToken(RevokeScimTokenRequest) returns (RevokeScimTokenResponse);
+
   // ── Agent skill bundles (tenant-admin gated) ──────────────────────────────
 
   // Create or update an agent skill bundle (SKILL.md upload). Requires tenant-admin.
@@ -558,6 +566,12 @@ service SandboxService {
   // Gateway resolves a raw API key sha256 hash to the agent + service principal.
   // SPIFFE-gated to the agent-gateway identity. Returns valid=false on miss/revoke.
   rpc ResolveAgentApiKey(ResolveAgentApiKeyRequest) returns (ResolveAgentApiKeyResponse);
+
+  // AG-16: one SCIM 2.0 request from the external surface. The broker resolves
+  // the bearer token (its sha256) within tenant_id, refuses unless the tenant
+  // runs provisioning.mode=scim, and returns the HTTP status and SCIM body.
+  // SPIFFE-gated to the agent-gateway identity.
+  rpc ScimCall(ScimCallRequest) returns (ScimCallResponse);
 
   // Gateway lists the skills (tool_id → scope) the given user may invoke.
   // SPIFFE-gated to the agent-gateway identity.
@@ -1990,6 +2004,45 @@ message RetireAgentPublicKeyRequest {
 
 message RetireAgentPublicKeyResponse {
   bool success = 1;
+}
+
+// ── SCIM provisioning (AG-16) ─────────────────────────────────────────────────
+
+message ScimToken {
+  string id           = 1;
+  string prefix       = 2;  // first 8 chars of the token, for display
+  string created_by   = 3;
+  google.protobuf.Timestamp created_at   = 4;
+  google.protobuf.Timestamp last_used_at = 5;  // unset if never used
+}
+
+message ListScimTokensRequest  { string tenant_id = 1; string user_id = 2; }
+message ListScimTokensResponse { repeated ScimToken tokens = 1; string mode = 2; }  // mode: provisioning.mode
+
+message CreateScimTokenRequest {
+  string tenant_id   = 1;
+  string user_id     = 2;
+  string replaces_id = 3;  // optional: rotate (revoke this token in the same step)
+}
+message CreateScimTokenResponse {
+  ScimToken token     = 1;
+  string    raw_token = 2;  // returned exactly once, never stored
+}
+
+message RevokeScimTokenRequest  { string tenant_id = 1; string user_id = 2; string id = 3; }
+message RevokeScimTokenResponse {}
+
+message ScimCallRequest {
+  string tenant_id      = 1;
+  string token_hash_hex = 2;  // hex sha256(bearer token)
+  string method         = 3;
+  string path           = 4;  // below the SCIM base, e.g. "/Users/<id>"
+  string query          = 5;  // raw query string, no "?"
+  bytes  body           = 6;
+}
+message ScimCallResponse {
+  int32 status = 1;
+  bytes body   = 2;  // application/scim+json; empty for 204
 }
 
 // ResolveAgentApiKeyRequest carries the sha256(raw_key) hex digest.

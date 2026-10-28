@@ -6,6 +6,7 @@ import DataTable from "../../components/ui/DataTable.vue";
 import EmptyState from "../../components/ui/EmptyState.vue";
 import FormField from "../../components/ui/FormField.vue";
 import { useToast } from "../../components/ui/useToast.js";
+import ScimSettings from "./ScimSettings.vue";
 
 const { push: toast } = useToast();
 
@@ -14,6 +15,7 @@ const forbidden = ref(false);
 const loading   = ref(false);
 const error     = ref("");
 const addNotice = ref("");
+const mode      = ref("jit"); // provisioning.mode, reported by ScimSettings (AG-16)
 
 // form state
 const matcher    = ref("");
@@ -115,8 +117,15 @@ const TABLE_COLS = [
       <h1>Provisioning</h1>
     </div>
 
+    <ScimSettings @mode="mode = $event" />
+
+    <h2 class="rules-title">Email rules</h2>
+    <div v-if="mode === 'scim'" class="banner-info" data-testid="rules-off-notice">
+      Provisioning mode is <code>scim</code>: email rules grant nothing and new rules are refused.
+      Group membership comes from the identity provider.
+    </div>
     <!-- semantic banner explaining rule behaviour -->
-    <div class="banner-info">
+    <div v-else class="banner-info">
       Wildcard rules (<code>*@domain</code>) apply once at a user's first login. Exact-email rules
       also apply immediately to users who have already signed in. Deleting a rule does
       <strong>not</strong> revoke granted roles — use the Roles tab.
@@ -148,7 +157,7 @@ const TABLE_COLS = [
           class="groups-input"
           data-testid="rule-groups"
         />
-        <button class="btn-primary" data-testid="add-rule-btn" @click="submit">
+        <button class="btn-primary" data-testid="add-rule-btn" :disabled="mode === 'scim'" @click="submit">
           <Icon name="plus" /> Add rule
         </button>
       </div>
@@ -214,6 +223,7 @@ const TABLE_COLS = [
 }
 
 .muted { color: var(--text-muted); font-size: 13px; }
+.rules-title { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
 
 .form {
   display: flex; flex-wrap: wrap; gap: 6px;

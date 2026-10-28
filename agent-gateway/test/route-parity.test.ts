@@ -73,6 +73,8 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // scripts/replay-decision.sh (broker-enforced, tenant-admin gated).
 // AG-08 authorized addition: GET /admin/mcp/:id/tools — discovered MCP tools
 // with their effect class, for the admin confirm step and the agent editor.
+// AG-16 authorized addition: GET /admin/scim + POST /admin/scim/tokens +
+// POST /admin/scim/tokens/revoke — SCIM provisioning tokens (show once).
 const EXPECTED_ROUTES = [
   "DELETE /admin/agents/:id",
   "DELETE /admin/agents/:id/keys/:keyId",
@@ -112,6 +114,7 @@ const EXPECTED_ROUTES = [
   "GET /admin/provisioning",
   "GET /admin/rate-limits",
   "GET /admin/scheduled-runs",
+  "GET /admin/scim",
   "GET /admin/skill-bundles",
   "GET /admin/skills",
   "GET /admin/spend-caps",
@@ -173,6 +176,8 @@ const EXPECTED_ROUTES = [
   "POST /admin/provisioning",
   "POST /admin/provisioning/delete",
   "POST /admin/rate-limits",
+  "POST /admin/scim/tokens",
+  "POST /admin/scim/tokens/revoke",
   "POST /admin/skills",
   "POST /admin/skills/upload",
   "POST /admin/spend-caps",

@@ -333,6 +333,10 @@ type Deps struct {
 	// immediately apply exact-match rules to already-seen users.
 	Provisioning provisioningAdminStore
 
+	// Scim backs SCIM 2.0 provisioning (AG-16): the token admin RPCs and the
+	// south ScimCall. Nil ⇒ the RPCs return FailedPrecondition and ScimCall 503.
+	Scim scimStore
+
 	// SkillOverlay backs the tenant skill overlay repo. Nil when the feature is
 	// not yet wired (older tests); the overlay gate is skipped when nil.
 	SkillOverlay skillOverlayStore

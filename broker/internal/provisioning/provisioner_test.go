@@ -401,3 +401,31 @@ func TestProvisioner_EmptyMatch_ClaimConsumedNoTuplesNoAudit(t *testing.T) {
 		t.Errorf("no audit events must be emitted for empty match; got %d", elen)
 	}
 }
+
+type modeReader struct {
+	mode string
+	err  error
+}
+
+func (m modeReader) GetString(context.Context, string, string) (string, error) { return m.mode, m.err }
+
+// AG-16 (M-02): a tenant on provisioning.mode=scim gets no email-rule grants,
+// and an unreadable mode grants nothing either.
+func TestProvisioner_ScimModeOrUnreadable_NoTuples(t *testing.T) {
+	for name, cfg := range map[string]modeReader{
+		"scim":       {mode: "scim"},
+		"unreadable": {err: errors.New("db down")},
+	} {
+		store := &fakeRuleStore{rules: []db.ProvisioningRule{{Matcher: "*@contoso.com", Groups: []string{"devs"}}}}
+		tw := &fakeTupleWrite{}
+		p := newProvisioner(store, tw, &fakeAudit{})
+		p.Config = cfg
+		p.Seen(context.Background(), "tenant1", identity("sub1", "alice@contoso.com"))
+		time.Sleep(50 * time.Millisecond)
+		tw.mu.Lock()
+		if len(tw.written) != 0 || store.claimed["tenant1/sub1"] {
+			t.Errorf("%s: want no grant and no claim, got %v", name, tw.written)
+		}
+		tw.mu.Unlock()
+	}
+}

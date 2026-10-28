@@ -106,3 +106,18 @@ an agent ("Acts as") in the edit form first, then resumes.
   read-only tools first, or the read-only preset selects nothing. Existing
   MCP rows in Admin → Skills keep their stored class; a class confirmed
   there is no longer raised to `write_external`.
+
+## SCIM 2.0 provisioning (AG-16)
+
+- New, opt-in: a SCIM 2.0 endpoint on the external surface (`/scim/v2`, port
+  8090) for Users and Groups. Entra deactivation blocks the user; Entra group
+  membership becomes FGA group tuples. Setup: `docs/18-scim-provisioning.md`.
+- Migration `060` adds `scim_tokens`, `scim_users` and `scim_groups`.
+- New tenant setting `provisioning.mode` = `jit` (default, unchanged behaviour)
+  or `scim`. Under `scim` email rules grant nothing and new rules are refused;
+  under `jit` the SCIM endpoint answers 403. Nothing changes until an admin
+  switches.
+- New gateway env `AIKONOS_EXTERNAL_BASE_URL` (optional): the public URL of
+  the external surface, shown as the SCIM tenant URL in the admin page.
+- The gateway and broker must both be from this release: the gateway forwards
+  SCIM calls over the new south RPC `ScimCall`.

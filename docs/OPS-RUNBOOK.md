@@ -169,6 +169,16 @@ python3 scripts/aikonosctl kill-switch user <principal-id>
 including its admins; it has no UI and is lifted with the SQL below
 (`scope='tenant'`).
 
+### SCIM token leaked or SCIM writing wrong data (AG-16)
+**Admin → Access Control → Provisioning → Directory sync → Revoke** stops every
+SCIM call with that token at once (audited `aikonos.broker.scim.token.revoked`).
+To stop SCIM entirely, also set **Provisioning mode** back to `jit`; the endpoint
+then answers 403. Blocks SCIM already set stay (kill switch rows with
+`activated_by='scim'`). Review SCIM changes in the audit trail
+(`aikonos.broker.scim.*`, actor `scim-token:<id>`). Create a new token and enter it
+in Entra (Provisioning → Admin Credentials) to resume. See
+[`18-scim-provisioning.md`](18-scim-provisioning.md).
+
 ### Stop an agent immediately
 Use **Admin → Agents → Suspend** (reason required, audited as
 `aikonos.broker.agent.suspended`). Running tasks of the agent stop at their

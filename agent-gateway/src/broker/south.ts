@@ -32,6 +32,8 @@ import type {
   ApproveTaskResponse,
   ResolveAgentApiKeyRequest,
   ResolveAgentApiKeyResponse,
+  ScimCallRequest,
+  ScimCallResponse,
   GetLlmProvidersRequest,
   GetLlmProvidersResponse,
   EmitLlmUsageRequest,
@@ -155,6 +157,12 @@ export class SouthClient {
   // Called by the external surface before any session is built.
   resolveAgentApiKey(req: ResolveAgentApiKeyRequest): Promise<ResolveAgentApiKeyResponse> {
     return unary((r, m, o, cb) => this.client.resolveAgentApiKey(r, m, o, cb), req, new Metadata());
+  }
+
+  // AG-16: one SCIM 2.0 request from the external surface; the broker resolves
+  // the token hash and answers with the SCIM status and body.
+  scimCall(req: ScimCallRequest): Promise<ScimCallResponse> {
+    return unary((r, m, o, cb) => this.client.scimCall(r, m, o, cb), req, new Metadata());
   }
 
   // Per-tenant LLM provider configs (incl. api keys) for session building.

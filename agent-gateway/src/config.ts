@@ -98,6 +98,10 @@ export interface Config {
   // AG-05: the aud an external agent's client assertion must carry. Empty ⇒
   // key-pair auth is off and only tk_ keys are accepted.
   externalAudience?: string;
+  // AG-16: public base URL of the external surface (e.g.
+  // https://aikonos.example.com:8090). The admin Provisioning tab shows
+  // <base>/scim/v2 as the SCIM tenant URL; empty ⇒ the UI guesses from its host.
+  externalBaseUrl?: string;
   // Idle TTL for persistent thread sessions (ms). A session not used for this
   // long is evicted so its OIDC bearer becomes GC-eligible. Default 30 minutes.
   threadTtlMs: number;
@@ -192,6 +196,7 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
       .filter(Boolean),
     externalRateLimit: parsePositiveInt(env, "AIKONOS_EXTERNAL_RATE_LIMIT", "60"),
     externalAudience: get(env, "AIKONOS_EXTERNAL_AUDIENCE", "").trim(),
+    externalBaseUrl: get(env, "AIKONOS_EXTERNAL_BASE_URL", "").trim().replace(/\/+$/, ""),
     threadTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_THREAD_TTL_MS", "1800000"),
     maxChildren: parsePositiveInt(env, "AIKONOS_GATEWAY_MAX_CHILDREN", "32"),
     childTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_CHILD_TTL_MS", "1800000"),

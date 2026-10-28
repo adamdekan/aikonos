@@ -42,6 +42,26 @@ export function deleteProvisioningRule(id) {
   return post("/admin/provisioning/delete", { body: { id } });
 }
 
+// ── SCIM provisioning (AG-16) ────────────────────────────────────────────────
+
+export function getScim() {
+  return get("/admin/scim");
+}
+
+// Create a SCIM token, or rotate one when replacesId is set. The response
+// carries rawToken once.
+export function createScimToken(replacesId = "") {
+  return post("/admin/scim/tokens", { body: { replacesId } });
+}
+
+export function revokeScimToken(id) {
+  return post("/admin/scim/tokens/revoke", { body: { id } });
+}
+
+export function setProvisioningMode(mode) {
+  return put("/admin/config", { body: { key: "provisioning.mode", value: mode } });
+}
+
 // ── MCP connections ───────────────────────────────────────────────────────────
 
 export function listMcpConnections() {

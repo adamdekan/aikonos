@@ -275,6 +275,22 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// provisioning.mode picks who grants groups (AG-16). jit: email rules at
+	// first sign-in (M-02: the email claim is unverified). scim: the identity
+	// provider via SCIM only; email-rule grants are off and the SCIM endpoint
+	// serves. Under jit the SCIM endpoint refuses every call.
+	"provisioning.mode": {
+		Name:    "provisioning.mode",
+		Kind:    KindString,
+		Default: "jit",
+		Doc:     "Who grants group membership: jit (email rules at first sign-in) or scim (the identity provider through SCIM 2.0; email-rule grants are off). The SCIM endpoint only serves under scim.",
+		Validate: func(v string) error {
+			if v != "jit" && v != "scim" {
+				return fmt.Errorf("provisioning.mode: must be jit or scim, got %q", v)
+			}
+			return nil
+		},
+	},
 	// identity.orphan_grace_days is how long an active agent may stay
 	// orphaned (no owner, or every owner blocked) before the orphan sweep
 	// suspends it (AG-03/AG-04). It grants nothing: an admin can suspend at

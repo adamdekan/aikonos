@@ -13,6 +13,7 @@ import {
   type WebSearchConfig,
   type AgentApiKey,
   type AgentPublicKey,
+  type ScimToken,
 } from "../../gen/ts/proto/broker";
 import { PolicyDecision } from "../../gen/ts/proto/audit";
 import { EffectClass } from "../../gen/ts/proto/plan";
@@ -31,6 +32,8 @@ export interface AdminCtx {
   verifyOpts: VerifyOptions;
   // AG-03: an agent that leaves active loses its children on this replica.
   supervisor?: Pick<ChildSupervisor, "evictIdleForAgent">;
+  // AG-16: the SCIM tenant URL shown in the Provisioning tab ("" ⇒ the UI guesses).
+  scimBaseUrl?: string;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -54,6 +57,17 @@ export function publicKeyView(k: AgentPublicKey) {
     alg: k.alg,
     expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
     lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+  };
+}
+
+// scimTokenView is the webui shape of a SCIM token (AG-16); never the token.
+export function scimTokenView(t: ScimToken) {
+  return {
+    id: t.id,
+    prefix: t.prefix,
+    createdBy: t.createdBy,
+    createdAt: t.createdAt ? t.createdAt.toISOString() : null,
+    lastUsedAt: t.lastUsedAt ? t.lastUsedAt.toISOString() : null,
   };
 }
 
@@ -820,6 +834,52 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
     if (!principal) return;
     try {
       await clients.north.deleteProvisioningRule(
+        { tenantId: principal.tenant, userId: principal.sub, id: req.body?.id ?? "" },
+        principal.token,
+      );
+      reply.send({});
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+    }
+  });
+
+  // ── SCIM provisioning (admin, AG-16) ─────────────────────────────────────
+  // The mode itself is the tenant setting provisioning.mode (PUT /admin/config).
+  app.get("/admin/scim", async (req, reply) => {
+    const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+    if (!principal) return;
+    try {
+      const resp = await clients.north.listScimTokens(
+        { tenantId: principal.tenant, userId: principal.sub },
+        principal.token,
+      );
+      reply.send({ mode: resp.mode, baseUrl: ctx.scimBaseUrl ?? "", tokens: (resp.tokens ?? []).map(scimTokenView) });
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { tokens: [] } });
+    }
+  });
+
+  // Create, or rotate when replacesId is set. The raw token is in this one
+  // response only.
+  app.post<{ Body: { replacesId?: string } }>("/admin/scim/tokens", async (req, reply) => {
+    const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+    if (!principal) return;
+    try {
+      const resp = await clients.north.createScimToken(
+        { tenantId: principal.tenant, userId: principal.sub, replacesId: req.body?.replacesId ?? "" },
+        principal.token,
+      );
+      reply.send({ token: resp.token ? scimTokenView(resp.token) : null, rawToken: resp.rawToken });
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+    }
+  });
+
+  app.post<{ Body: { id?: string } }>("/admin/scim/tokens/revoke", async (req, reply) => {
+    const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+    if (!principal) return;
+    try {
+      await clients.north.revokeScimToken(
         { tenantId: principal.tenant, userId: principal.sub, id: req.body?.id ?? "" },
         principal.token,
       );

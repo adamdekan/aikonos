@@ -43,12 +43,23 @@ type AuditEmitter interface {
 	Emit(ctx context.Context, event *auditv1.AuditEvent) error
 }
 
+// ModeReader reads the tenant's provisioning.mode (AG-16); *config.Store
+// satisfies it.
+type ModeReader interface {
+	GetString(ctx context.Context, tenant, key string) (string, error)
+}
+
 // Provisioner applies JIT provisioning rules to new users on first north call.
 type Provisioner struct {
 	store  RuleStore
 	fga    TupleWriter // nil → FGA disabled, Seen is a no-op
 	audit  AuditEmitter
 	logger *zap.Logger
+
+	// Config, when set, is read before every grant: a tenant on
+	// provisioning.mode=scim gets no email-rule grants (M-02). A read error
+	// grants nothing and retries at the next call.
+	Config ModeReader
 
 	mu      sync.Mutex
 	seenSet map[string]struct{} // key = tenantID+"/"+subject; process-lifetime
@@ -112,6 +123,18 @@ func (p *Provisioner) provision(ctx context.Context, tenantID, subject, email, n
 	// ListRules and ClaimProvisioning failures clear the seen-set entry so the
 	// next call retries the full flow; that guards against transient DB errors
 	// consuming the claim permanently.
+	if p.Config != nil {
+		mode, err := p.Config.GetString(ctx, tenantID, "provisioning.mode")
+		if err != nil {
+			p.logger.Warn("provisioning: mode unreadable, no grants",
+				zap.String("tenant", tenantID), zap.String("subject", subject), zap.Error(err))
+			p.removeSeen(tenantID, subject)
+			return
+		}
+		if mode != "jit" {
+			return // scim: the identity provider grants groups
+		}
+	}
 	rules, err := p.store.ListRules(ctx, tenantID)
 	if err != nil {
 		p.logger.Warn("provisioning: ListRules failed",
