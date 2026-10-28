@@ -1521,6 +1521,38 @@ test("an over-budget run ends with an error instead of looping forever", async (
   assert.equal(handle.busy, false, "the child must be released back to the pool, not left busy");
 });
 
+test("a provider error event rejects with a sanitized, caller-visible message", async () => {
+  // WHY: an LLM refusal surfaced in chat as a bare "internal error". The child
+  // flags provider failures; the parent must turn them into a caller-class
+  // error trimmedErrorMessage passes through, minus any key or URL.
+  const { trimmedErrorMessage } = await import("../src/http-errors.js");
+  const rig = makeTestRig();
+  const identity = makeIdentity("alice", "agent-a");
+  const handle = await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(identity), identity);
+  await flushAsync();
+  const rec = rig.spawnRecords[0];
+
+  const outcome = async (runId: string, extra: Record<string, unknown>) => {
+    const p = rig.supervisor.run(handle, { runId, threadId: "th-pe", text: "hi" }, () => {}).then(
+      () => "resolved",
+      (err: unknown) => trimmedErrorMessage(err),
+    );
+    await flushAsync();
+    rec.child.childLink.send({ kind: "error", runId, ...extra } as IpcMessage);
+    await flushAsync();
+    return p;
+  };
+
+  const msg = await outcome("run-pe-1", {
+    provider: true,
+    message: '400 {"type":"error","error":{"type":"invalid_request_error","message":"This request was blocked as it seems to violate our Terms of Service. See https://x.example/?key=sk-ant-abcdef1234567890"}}',
+  });
+  assert.match(msg, /^The model provider refused or failed this request: This request was blocked as it seems to violate our Terms of Service/);
+  assert.doesNotMatch(msg, /sk-ant|https?:/);
+
+  assert.equal(await outcome("run-pe-2", { message: "session creation failed: boom at /app/x.js:1" }), "internal error");
+});
+
 // ── Ephemeral subagent children ───────────
 //
 // WHY this block exists: a subagent branch child must start on fresh context,

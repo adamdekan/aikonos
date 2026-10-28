@@ -275,7 +275,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	callerAgent := strings.TrimSpace(req.AgentId)
 	// ponytail: an unbound task ignores req.AgentId instead of refusing it —
 	// the gateway always sends its session agent id ("<user>-agent",
-	// "agent:<uuid>") and north CreateTask cannot bind an agent yet.
+	// "agent:<uuid>"); a personal session's "<user>-agent" never binds.
 	if reqAgent := strings.TrimPrefix(callerAgent, "agent:"); boundAgentID != "" && reqAgent != "" && !strings.EqualFold(reqAgent, boundAgentID) {
 		s.emitToolDenied(ctx, req, scope, "agent_mismatch", nil, map[string]any{
 			"req_agent_id":   req.AgentId,
@@ -433,10 +433,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 		agentID := boundAgentID
 		if agentID == "" {
-			// ponytail: an unbound task (every interactive task — north
-			// CreateTask carries no agent) falls back to the caller's claim,
-			// which only the FGA can_access check below vets. Binding the agent
-			// at task creation closes this.
+			// ponytail: an unbound task (a personal session, or an old
+			// gateway that sends no north agent_id) falls back to the
+			// caller's claim, which only the FGA can_access check below vets.
 			agentID = callerAgent
 		}
 		if agentID == "" {

@@ -204,6 +204,12 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 			t.ExternalClientID = &id
 		}
 	}
+	// Workflow and interactive grants leave no other trace on the row; stamp
+	// the kind so OnBehalfOf can tell them apart (scheduled/external derive).
+	if grant.Kind == gatewaygrant.KindWorkflow || grant.Kind == gatewaygrant.KindInteractive {
+		kind := grant.Kind
+		t.OBOKind = &kind
+	}
 
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
 }

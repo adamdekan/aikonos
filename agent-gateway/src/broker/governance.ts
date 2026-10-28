@@ -223,6 +223,9 @@ export class GovernanceBridge {
             skillHints: [GATEWAY_EXECUTION_HINT],
             parentTaskId: "",
             clientRequestId: "",
+            // AG-17: bind the acting agent so the run records its actor. Only a
+            // real agent UUID binds; the "<user>-agent" pseudo-id stays unbound.
+            agentId: boundAgentUuid(this.identity.agentId),
           },
           this.identity.token,
         )

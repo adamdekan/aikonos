@@ -103,3 +103,26 @@ export function sendError(reply: ErrorReply, log: Logger, err: unknown, opts: Se
   log.error({ err, route: opts.route, ...opts.context }, "request failed");
   reply.code(httpStatus).send({ ...opts.body, error: trimmedErrorMessage(err) });
 }
+
+// providerErrorMessage turns a raw LLM-provider failure (Pi's errorMessage on a
+// stopReason "error" turn — e.g. an Anthropic refusal or a 4xx/5xx SDK error
+// such as `400 {"type":"error","error":{"message":"..."}}`) into a chat-safe
+// line. The provider's own explanation is what the user needs; URLs, key-like
+// tokens and anything past the first ~300 chars are dropped so a credential or
+// endpoint echoed back by an SDK cannot reach the browser.
+export function providerErrorMessage(raw: string): string {
+  let msg = raw;
+  const json = /"message"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(raw);
+  if (json) {
+    try { msg = JSON.parse(json[1]) as string; } catch { /* keep raw */ }
+  }
+  msg = msg
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\b(bearer|authorization|x-api-key|api[_-]?key|token|secret)\b\s*[:=]?\s*\S+/gi, "$1 [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[redacted]")
+    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (msg.length > 300) msg = `${msg.slice(0, 300)}…`;
+  return `The model provider refused or failed this request${msg ? `: ${msg}` : "."}`;
+}

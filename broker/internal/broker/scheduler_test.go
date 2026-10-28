@@ -15,6 +15,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
+	"github.com/adamdekan/aikonos/broker/internal/notify"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -382,4 +383,107 @@ type revokeScheduledStore struct {
 func (f *revokeScheduledStore) RevokeDelegation(_ context.Context, _, _, by string) error {
 	f.revokedBy = by
 	return nil
+}
+
+// stateScheduledStore records SetState on top of captureScheduledStore.
+type stateScheduledStore struct {
+	captureScheduledStore
+	state db.ScheduledRunState
+}
+
+func (f *stateScheduledStore) SetState(_ context.Context, _, _ string, s db.ScheduledRunState, _ *time.Time) error {
+	f.state = s
+	return nil
+}
+
+// TestUpdateScheduledRun_Actor: a full edit may re-point the schedule's actor,
+// checked as at create (agent in tenant + can_use) and denied + audited the
+// same way; an absent actor keeps the row's; setting one on a row parked
+// actor_missing (identity.obo=enforce) lets resume reactivate it.
+func TestUpdateScheduledRun_Actor(t *testing.T) {
+	agent, other := uuid.New(), uuid.New()
+	f := &fakeFGA{checks: map[string]bool{"user:alice@example.com|can_use|agent:" + agent.String(): true}}
+	srv := f.server(t)
+	defer srv.Close()
+	cfg := newFakeConfigStore()
+	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
+
+	setup := func(t *testing.T) (*BrokerService, *stateScheduledStore, notify.Subscription) {
+		deps, sub := testAdminDepsWithConfigAndBus(t, srv.URL, cfg)
+		tid := uuid.MustParse(testTenantUUID)
+		deps.Agents = &fakeAgentStore{agents: []*db.Agent{
+			{ID: agent, TenantID: tid, Name: "a"}, {ID: other, TenantID: tid, Name: "b"},
+		}}
+		store := &stateScheduledStore{captureScheduledStore: captureScheduledStore{get: &db.ScheduledRun{
+			ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", Prompt: "p",
+			Kind: db.ScheduleKindCron, CronExpr: "0 9 * * *", State: db.ScheduledRunPaused,
+			LastStatus: "actor_missing", DelegationExpiresAt: time.Now().Add(time.Hour),
+		}}}
+		deps.Scheduled = store
+		return NewBrokerService(deps), store, sub
+	}
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+	edit := func(svc *BrokerService, id string, actor *string) error {
+		_, err := svc.UpdateScheduledRun(ctx, &brokerv1.UpdateScheduledRunRequest{
+			UserId: "alice@example.com", Id: id, Prompt: "p",
+			Kind: brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, CronExpr: "0 9 * * *", ActorAgentId: actor,
+		})
+		return err
+	}
+	ptr := func(s string) *string { return &s }
+
+	t.Run("permitted then resume reactivates actor_missing", func(t *testing.T) {
+		svc, store, _ := setup(t)
+		id := store.get.ScheduledRunID.String()
+		if err := edit(svc, id, ptr(agent.String())); err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		if a := store.updated.ActorAgentID; a == nil || *a != agent {
+			t.Fatalf("updated actor = %v, want %s", a, agent)
+		}
+		store.get.ActorAgentID = store.updated.ActorAgentID // persisted
+		if _, err := svc.UpdateScheduledRun(ctx, &brokerv1.UpdateScheduledRunRequest{
+			UserId: "alice@example.com", Id: id, DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_ACTIVE,
+		}); err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		if store.state != db.ScheduledRunActive {
+			t.Errorf("state after resume = %q, want ACTIVE", store.state)
+		}
+	})
+
+	t.Run("absent keeps actor", func(t *testing.T) {
+		svc, store, _ := setup(t)
+		store.get.ActorAgentID = &agent
+		if err := edit(svc, store.get.ScheduledRunID.String(), nil); err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		if a := store.updated.ActorAgentID; a == nil || *a != agent {
+			t.Errorf("updated actor = %v, want kept %s", a, agent)
+		}
+	})
+
+	for name, c := range map[string]struct {
+		actor string
+		code  codes.Code
+	}{
+		"denied (no can_use)": {other.String(), codes.PermissionDenied},
+		"not in tenant":       {uuid.NewString(), codes.NotFound},
+		"invalid":             {"alice-agent", codes.InvalidArgument},
+		"cleared in enforce":  {"", codes.FailedPrecondition},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, store, sub := setup(t)
+			err := edit(svc, store.get.ScheduledRunID.String(), &c.actor)
+			if status.Code(err) != c.code {
+				t.Fatalf("err = %v, want %v", err, c.code)
+			}
+			if store.updated != nil {
+				t.Error("a refused actor must not reach the store")
+			}
+			if ev := receiveAuditEvent(t, sub, "aikonos.scheduler.run.actor_denied", 2*time.Second); ev.Decision != auditv1.PolicyDecision_DENY {
+				t.Errorf("decision = %v, want DENY", ev.Decision)
+			}
+		})
+	}
 }

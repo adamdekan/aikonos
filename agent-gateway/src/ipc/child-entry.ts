@@ -293,7 +293,7 @@ export function startChild(
           // prompt() normally, it does not reject) — surface it as a run
           // error instead of letting the run finish silently empty.
           if (message.stopReason === "error") {
-            queue.push({ error: new Error(message.errorMessage || "LLM call failed") });
+            queue.push({ error: Object.assign(new Error(message.errorMessage || "LLM call failed"), { provider: true }) });
           }
         }
       }
@@ -376,7 +376,8 @@ export function startChild(
         }
         if ("error" in item) {
           inflight.delete(runId);
-          link.send({ kind: "error", runId, message: item.error.message });
+          const provider = (item.error as { provider?: boolean }).provider === true;
+          link.send({ kind: "error", runId, message: item.error.message, ...(provider ? { provider } : {}) });
           return;
         }
 

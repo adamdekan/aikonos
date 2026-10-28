@@ -133,11 +133,11 @@ func TestTaskRepo_OBOColumns_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	tenantID, taskID, client, grant := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	sender := "bob@example.com"
+	sender, kind := "bob@example.com", "workflow"
 	if err := repo.Create(ctx, &Task{
 		TaskID: taskID, TenantID: tenantID, OwnerUserID: "alice@example.com",
 		Prompt: "p", CostBudget: 10,
-		DelegatedByUserID: &sender, ExternalClientID: &client, GrantID: &grant,
+		DelegatedByUserID: &sender, ExternalClientID: &client, GrantID: &grant, OBOKind: &kind,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestTaskRepo_OBOColumns_RoundTrip(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	want := OnBehalfOf{Subject: "alice@example.com", DelegatedBy: sender,
-		ExternalClientID: client.String(), GrantID: grant.String(), Kind: "scheduled"}
+		ExternalClientID: client.String(), GrantID: grant.String(), Kind: "workflow"}
 	if o := got.OnBehalfOf(); o != want {
 		t.Errorf("round trip: got %+v, want %+v", o, want)
 	}

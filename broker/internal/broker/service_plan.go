@@ -594,17 +594,24 @@ func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID st
 			s.deps.Logger.Error("plan audit context could not be encoded", zap.Error(err))
 		}
 	}
+	// Every caller runs after SubmitPlan put the task row in ctx.
+	task := oboTask(ctx)
+	var owner string
+	if task != nil {
+		owner = task.OwnerUserID
+	}
 	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:       ids.EventID(),
 		TraceId:       traceID,
 		TenantId:      tenantID,
 		OccurredAt:    timestampNow(),
+		ActorUserId:   owner,
 		ActorSpiffeId: req.SandboxSpiffeId,
 		EventType:     "aikonos.broker.plan.validated",
 		ResourceRef:   "aikonos:task:" + req.TaskId,
 		Decision:      decision,
 		Context:       ctxStruct,
-	}, oboTask(ctx))); err != nil {
+	}, task)); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.plan.validated")
 	}
 }

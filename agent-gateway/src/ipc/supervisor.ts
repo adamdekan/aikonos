@@ -26,7 +26,7 @@ import { resolveSessionPlan } from "../pi/session-plan.js";
 import type { ResolveIdentity, ResolveSouth, ResolveCfg } from "../pi/session-plan.js";
 import type { AgentSpec } from "../pi/session.js";
 import { log } from "../log.js";
-import { failedPreconditionError } from "../http-errors.js";
+import { failedPreconditionError, providerErrorMessage } from "../http-errors.js";
 
 // ── Env allowlist ─────────────────────────────────────────────────────────────
 //
@@ -555,7 +555,9 @@ export class ChildSupervisor {
           } else if (msg.kind === "done") {
             settle(() => resolve());
           } else if (msg.kind === "error") {
-            settle(() => reject(new Error(msg.message)));
+            // A provider failure carries a caller-class code so trimmedErrorMessage
+            // surfaces the sanitized provider text instead of "internal error".
+            settle(() => reject(msg.provider ? failedPreconditionError(providerErrorMessage(msg.message)) : new Error(msg.message)));
           }
         };
         perKindHandlers[kind] = handler;

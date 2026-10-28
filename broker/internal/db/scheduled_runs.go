@@ -285,8 +285,10 @@ func (r *ScheduledRunRepo) List(ctx context.Context, tenantID, owner string) ([]
 	})
 }
 
-// Update edits a schedule's definition (prompt / kind / cron / approved tools)
-// and resets next_fire_at. Only ACTIVE or PAUSED runs may be edited.
+// Update edits a schedule's definition (prompt / kind / cron / approved tools /
+// actor) and resets next_fire_at. The broker passes the row's current actor
+// when the edit names none, so ActorAgentID is always the full new value. Only ACTIVE or PAUSED runs may
+// be edited.
 // workflow_lineage_id / workflow_inputs are deliberately absent from the SET
 // list — a workflow schedule's binding is immutable post-create, and the
 // broker layer never varies s.WorkflowLineageID/WorkflowInputs on an edit.
@@ -299,9 +301,9 @@ func (r *ScheduledRunRepo) Update(ctx context.Context, tenantID, id string, s *S
 		tag, err := conn.Exec(ctx, `
 		UPDATE scheduled_runs
 		SET prompt = $1, schedule_kind = $2, cron_expr = $3, next_fire_at = $4,
-		    approved_tools = $5, updated_at = NOW()
+		    approved_tools = $5, actor_agent_id = $7, updated_at = NOW()
 		WHERE scheduled_run_id = $6 AND state IN ('ACTIVE','PAUSED')`,
-			s.Prompt, s.Kind, nullableCron(s.Kind, s.CronExpr), s.NextFireAt, toolsJSON, id,
+			s.Prompt, s.Kind, nullableCron(s.Kind, s.CronExpr), s.NextFireAt, toolsJSON, id, s.ActorAgentID,
 		)
 		if err != nil {
 			return fmt.Errorf("update scheduled_run: %w", err)

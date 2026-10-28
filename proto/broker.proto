@@ -607,6 +607,9 @@ message CreateTaskRequest {
   repeated string skill_hints = 6;  // Suggested skills (agent may ignore)
   string parent_task_id = 7;        // Set when spawned from an envelope
   string client_request_id = 8;     // Optional idempotency key; empty = today's behavior
+  // Optional bare agent UUID the task acts as (AG-17). The caller must be
+  // able to operate it (can_use, tenant-admin fallback); empty = unbound.
+  string agent_id = 9;
 }
 
 message TaskHandle {
@@ -1233,6 +1236,11 @@ message UpdateScheduledRunRequest {
   // Revoke the schedule's standing delegation (AG-17 S4). Final: the row is
   // paused and can no longer be resumed. All other fields are ignored.
   bool revoke_delegation = 12;
+  // Re-point the agent the schedule acts as (full edit only). Absent = keep
+  // the current actor; present = validated as at create ("" clears it, which
+  // identity.obo=enforce refuses). Setting one on a row parked actor_missing
+  // lets a later resume reactivate it.
+  optional string actor_agent_id = 13;
 }
 
 message UpdateScheduledRunResponse {

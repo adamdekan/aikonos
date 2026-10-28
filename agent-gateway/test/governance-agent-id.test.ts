@@ -100,3 +100,32 @@ test("GovernanceBridge south-mode: createGatewayTask receives agentId from ident
     "agentId must be forwarded to createGatewayTask so the broker can bind it on the task",
   );
 });
+
+// AG-17: north (interactive) mode binds the actor too — a real agent UUID
+// (bare or "agent:"-prefixed) goes through bare; the "<user>-agent" pseudo-id
+// is never sent.
+for (const [agentId, want] of [
+  ["agent:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+  ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+  ["alice@example.com-agent", ""],
+] as const) {
+  test(`GovernanceBridge north-mode: createTask agentId for ${agentId}`, async () => {
+    const { clients } = makeStubClients();
+    const northCalls: Record<string, unknown>[] = [];
+    (clients.north as unknown as { createTask: (r: Record<string, unknown>) => Promise<unknown> }).createTask =
+      (r) => {
+        northCalls.push(r);
+        return Promise.resolve({ taskId: "task-1" });
+      };
+    const identity = {
+      token: "tok",
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      userId: "alice@example.com",
+      agentId,
+    };
+    const bridge = new GovernanceBridge(cfg, clients, identity, async () => true, log);
+    await bridge.gate("call-1", "web_fetch", { url: "https://example.com" });
+    assert.equal(northCalls.length, 1, "north createTask must be called once");
+    assert.equal(northCalls[0].agentId, want);
+  });
+}

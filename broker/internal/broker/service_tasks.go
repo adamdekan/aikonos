@@ -10,10 +10,12 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
@@ -64,6 +66,13 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 		costBudget = 1000
 	}
 
+	agentID, err := s.northActor(ctx, traceID, tenant, owner, req.AgentId)
+	if err != nil {
+		return nil, err
+	}
+
+	// A north task is always a signed-in user acting directly (AG-17).
+	kind := gatewaygrant.KindInteractive
 	t := &db.Task{
 		TaskID:          uuid.New(),
 		TenantID:        tenantID,
@@ -72,7 +81,9 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 		CostBudget:      costBudget,
 		TraceID:         traceID,
 		GatewayManaged:  hasGatewayHint(req.SkillHints),
+		AgentID:         agentID,
 		ClientRequestID: req.ClientRequestId,
+		OBOKind:         &kind,
 	}
 	if req.Deadline != nil {
 		ts := req.Deadline.AsTime()
@@ -87,6 +98,48 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 	}
 
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
+}
+
+// northActor resolves CreateTaskRequest.agent_id (AG-17): empty is unbound;
+// otherwise it must be the UUID of an agent in the tenant that the caller may
+// operate (can_use, tenant-admin fallback). A refusal (reason actor_not_found
+// or actor_not_permitted) is audited as aikonos.broker.task.denied and is
+// PermissionDenied either way, so the error does not reveal which agents exist.
+func (s *BrokerService) northActor(ctx context.Context, traceID, tenant, owner, agentID string) (*uuid.UUID, error) {
+	if agentID == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(agentID)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
+	}
+	reason := ""
+	if s.deps.Agents == nil {
+		reason = "actor_not_found" // ponytail: agents disabled = no agent exists; fail closed
+	} else if _, err := s.deps.Agents.Get(ctx, tenant, id.String()); err != nil {
+		reason = "actor_not_found"
+	} else if !mayOperateActor(ctx, s.deps, owner, id.String()) {
+		reason = "actor_not_permitted"
+	}
+	if reason != "" {
+		ctxStruct, _ := structpb.NewStruct(map[string]any{"reason": reason})
+		if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+			EventId:      ids.EventID(),
+			TraceId:      traceID,
+			TenantId:     tenant,
+			OccurredAt:   timestampNow(),
+			ActorUserId:  owner,
+			ActorAgentId: id.String(),
+			EventType:    "aikonos.broker.task.denied",
+			ResourceRef:  "agent:" + id.String(),
+			Decision:     auditv1.PolicyDecision_DENY,
+			Context:      ctxStruct,
+		}); err != nil {
+			audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.task.denied")
+		}
+		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", id)
+	}
+	return &id, nil
 }
 
 // writeTaskRelations records the owner/approver relationships for a new task in
