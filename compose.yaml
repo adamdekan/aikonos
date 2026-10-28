@@ -374,6 +374,10 @@ services:
   dev-ca-mint:
     <<: *hardening
     image: alpine/openssl:latest
+    # Run as the host user so it can write the bind-mounted tls dir (owned by
+    # the host user, mode 755) and the certs it mints stay host-owned — the
+    # same result as the Taskfile's host-side `bash scripts/compose-dev-ca.sh`.
+    user: "${AIKONOS_HOST_UID:-1000}:${AIKONOS_HOST_GID:-1000}"
     profiles: [core, full]
     networks: [mesh]
     entrypoint: ["/bin/sh", "/scripts/compose-dev-ca.sh"]
