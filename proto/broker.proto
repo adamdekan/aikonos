@@ -1642,6 +1642,10 @@ message ListMcpServerToolsRequest {
   string tenant_id = 1;
   string user_id = 2;       // acting admin (echoed; OIDC identity preferred)
   string connector_id = 3;  // UUID of the MCP connection to discover
+  // South only: the session's bound agent. The south variant returns only
+  // the tools in this agent's mcp_tools allowlist (AG-08); user_id is then
+  // the session's subject, not the agent.
+  string agent_id = 4;
 }
 
 message ListMcpServerToolsResponse {

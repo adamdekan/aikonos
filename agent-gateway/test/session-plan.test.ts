@@ -60,7 +60,7 @@ function makeSouth(overrides: Partial<{
     listAccessibleMcpServersForAgent: async (_req: { tenantId: string; agentId: string }) => ({
       connections: mcpServers,
     }),
-    listMcpServerToolsSouth: async (_req: { tenantId: string; connectorId: string; userId: string }) => ({
+    listMcpServerToolsSouth: async (_req: { tenantId: string; connectorId: string; userId: string; agentId: string }) => ({
       tools: mcpTools,
     }),
     getAgentSpec: async (_req: { tenantId: string; agentId: string }) => ({ found: false }),
@@ -296,6 +296,31 @@ test("CP4 resolveSessionPlan: mcpTools is populated from south MCP discovery RPC
     "plan name must map back to the full connector id",
   );
   assert.ok(typeof t.schema === "object", "schema must be an object");
+});
+
+test("resolveSessionPlan: the session tool list holds only the agent's allowlisted MCP tools (AG-08)", async () => {
+  // WHY: the model must not see an MCP tool it may not call. The broker filters
+  // by the bound agent's allowlist, so the gateway must send that agent (and the
+  // subject), not the user or the agent in the wrong field.
+  const seen: { agentId: string; userId: string }[] = [];
+  const south = {
+    ...makeSouth({ mcpServers: [{ id: "siem-connector", name: "SIEM" }] }),
+    listMcpServerToolsSouth: async (req: { tenantId: string; connectorId: string; userId: string; agentId: string }) => {
+      seen.push({ agentId: req.agentId, userId: req.userId });
+      // Broker stub: agent-1 is allowlisted for search_alerts only.
+      const allowlist = req.agentId === "agent-1" ? ["search_alerts"] : [];
+      return {
+        tools: ["search_alerts", "delete_alerts"]
+          .filter((n) => allowlist.includes(n))
+          .map((name) => ({ name, description: "", inputSchemaJson: "{}" })),
+      };
+    },
+  };
+  const plan = await resolveSessionPlan(TEST_IDENTITY, { south, cfg: BASE_CFG });
+
+  assert.deepEqual(seen, [{ agentId: "agent-1", userId: "user-abc" }]);
+  assert.deepEqual(plan.mcpTools.map((t) => t.name), [piMcpToolName("siem-connector", "search_alerts")]);
+  assert.ok(!plan.allowedToolNames.includes(piMcpToolName("siem-connector", "delete_alerts")));
 });
 
 test("CP4 resolveSessionPlan: plan.kind is 'init' so it satisfies InitMessage", async () => {

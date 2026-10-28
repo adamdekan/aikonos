@@ -15,6 +15,9 @@ export async function resolveAutoApproveAllowlist(
   tenantId: string,
   agentId: string,
   skills: string[],
+  // The session subject: the broker lists only tools that agentId may call
+  // and, under AG-02 enforce, that this user may reach.
+  userId: string,
 ): Promise<string[]> {
   const ids = new Set<string>(skills);
 
@@ -32,7 +35,8 @@ export async function resolveAutoApproveAllowlist(
       const resp = await south.listMcpServerToolsSouth({
         tenantId,
         connectorId: server.id,
-        userId: agentId,
+        userId,
+        agentId,
       });
       for (const tool of resp.tools ?? []) {
         ids.add(`mcp:${server.id}:${tool.name}`);

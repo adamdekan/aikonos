@@ -541,6 +541,9 @@ func buildSouthSvcForMcp(
 		Mcp:             McpDeps{Connections: repo, AllowPrivate: true},
 		TenantID:        "aikonos-dev",
 		GatewaySpiffeID: gatewaySpiffeID,
+		Agents: &fakeAgentStoreForSkill{agent: &db.Agent{
+			ID: uuid.MustParse(mcpTestAgent), McpServers: []string{connID}, McpTools: []string{"mcp:" + connID + ":echo"},
+		}},
 	})
 }
 
@@ -618,6 +621,8 @@ func TestListMcpServerToolsSouth_GatewayAllowed(t *testing.T) {
 	resp, err := svc.ListMcpServerToolsSouth(ctx, &brokerv1.ListMcpServerToolsRequest{
 		TenantId:    testTenantUUID,
 		ConnectorId: connID,
+		AgentId:     "agent:" + mcpTestAgent,
+		UserId:      "svc-ticker",
 	})
 	if err != nil {
 		t.Fatalf("ListMcpServerToolsSouth: %v", err)
@@ -627,6 +632,47 @@ func TestListMcpServerToolsSouth_GatewayAllowed(t *testing.T) {
 	}
 	if resp.Tools[0].Name != "echo" {
 		t.Errorf("tool name = %q, want %q", resp.Tools[0].Name, "echo")
+	}
+}
+
+// AG-08: a tool outside the agent's mcp_tools allowlist is not listed, so the
+// model never sees it; a missing agent_id is refused.
+func TestListMcpServerToolsSouth_OnlyAllowlistedTools(t *testing.T) {
+	mcpSrv := fakeMCPSrvSimple(t)
+	connID := uuid.New().String()
+	svc := buildSouthSvcForMcp(t, mcpSrv.URL, connID, true, testGatewaySpiffeID)
+	svc.deps.Agents.(*fakeAgentStoreForSkill).agent.McpTools = []string{"mcp:" + connID + ":other"}
+	ctx := gatewayCtx(testGatewaySpiffeID)
+
+	resp, err := svc.ListMcpServerToolsSouth(ctx, &brokerv1.ListMcpServerToolsRequest{
+		TenantId: testTenantUUID, ConnectorId: connID, AgentId: mcpTestAgent, UserId: "svc-ticker",
+	})
+	if err != nil || len(resp.Tools) != 0 {
+		t.Fatalf("echo not allowlisted: want no tools, got %v err=%v", resp, err)
+	}
+	if _, err := svc.ListMcpServerToolsSouth(ctx, &brokerv1.ListMcpServerToolsRequest{
+		TenantId: testTenantUUID, ConnectorId: connID, UserId: "svc-ticker",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("no agent_id: want InvalidArgument, got %v", err)
+	}
+}
+
+// AG-02: a human subject without can_access on the connector sees none of
+// its tools when the tenant enforces; audit mode still lists them.
+func TestListMcpServerToolsSouth_UserBound(t *testing.T) {
+	mcpSrv := fakeMCPSrvSimple(t)
+	connID := uuid.New().String()
+	svc := buildSouthSvcForMcp(t, mcpSrv.URL, connID, true, testGatewaySpiffeID)
+	ctx := gatewayCtx(testGatewaySpiffeID)
+	req := &brokerv1.ListMcpServerToolsRequest{
+		TenantId: testTenantUUID, ConnectorId: connID, AgentId: mcpTestAgent, UserId: "alice@example.com",
+	}
+	for mode, want := range map[string]int{"enforce": 0, "audit": 1} {
+		svc.deps.Config = userBoundCfg(mode)
+		resp, err := svc.ListMcpServerToolsSouth(ctx, req)
+		if err != nil || len(resp.Tools) != want {
+			t.Errorf("%s: want %d tools, got %v err=%v", mode, want, resp, err)
+		}
 	}
 }
 

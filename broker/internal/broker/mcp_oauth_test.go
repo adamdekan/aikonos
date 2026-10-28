@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/connector"
 	"github.com/adamdekan/aikonos/broker/internal/connector/mcpfake"
 	"github.com/adamdekan/aikonos/broker/internal/connectorstore"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -146,15 +148,25 @@ func TestMcpOAuth_AddConnectListDisconnect(t *testing.T) {
 	}
 
 	// Tool discovery for a session uses the session user's own token.
-	south := NewSandboxService(func() Deps { d := f.deps; d.DevMode = true; return d }())
+	// AG-08: the session's agent allowlists whoami; audit mode skips the
+	// AG-02 user-bound filter so the oauth path alone decides.
+	south := NewSandboxService(func() Deps {
+		d := f.deps
+		d.DevMode = true
+		d.Config = userBoundCfg("audit")
+		d.Agents = &fakeAgentStoreForSkill{agent: &db.Agent{
+			ID: uuid.MustParse(mcpTestAgent), McpServers: []string{conn.Id}, McpTools: []string{"mcp:" + conn.Id + ":whoami"},
+		}}
+		return d
+	}())
 	peer := auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: "spiffe://test/gateway"})
 	tools, err := south.ListMcpServerToolsSouth(peer, &brokerv1.ListMcpServerToolsRequest{
-		TenantId: testTenantUUID, ConnectorId: conn.Id, UserId: "alice@example.com"})
+		TenantId: testTenantUUID, ConnectorId: conn.Id, AgentId: mcpTestAgent, UserId: "alice@example.com"})
 	if err != nil || len(tools.Tools) != 1 || tools.Tools[0].Name != "whoami" {
 		t.Fatalf("south tools for alice = %v err=%v", tools, err)
 	}
 	if _, err := south.ListMcpServerToolsSouth(peer, &brokerv1.ListMcpServerToolsRequest{
-		TenantId: testTenantUUID, ConnectorId: conn.Id, UserId: "bob@example.com"}); status.Code(err) != codes.FailedPrecondition {
+		TenantId: testTenantUUID, ConnectorId: conn.Id, AgentId: mcpTestAgent, UserId: "bob@example.com"}); status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("south tools for unlinked bob: want FailedPrecondition, got %v", err)
 	}
 	// The admin has not linked an account either.
@@ -171,7 +183,7 @@ func TestMcpOAuth_AddConnectListDisconnect(t *testing.T) {
 		t.Errorf("after disconnect: %v", list.Connectors)
 	}
 	if _, err := south.ListMcpServerToolsSouth(peer, &brokerv1.ListMcpServerToolsRequest{
-		TenantId: testTenantUUID, ConnectorId: conn.Id, UserId: "alice@example.com"}); status.Code(err) != codes.FailedPrecondition {
+		TenantId: testTenantUUID, ConnectorId: conn.Id, AgentId: mcpTestAgent, UserId: "alice@example.com"}); status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("after disconnect: want FailedPrecondition, got %v", err)
 	}
 }

@@ -78,6 +78,8 @@ interface ApproverDeps {
   south: AllowlistSouth;
   cfg: Pick<Config, "defaultTenantId">;
   log: Logger;
+  // The run's subject, sent with the MCP tool listing (AG-08).
+  userId: string;
 }
 
 // selectRunApprover is the pure approver-selection logic extracted for unit
@@ -108,6 +110,7 @@ export async function selectRunApprover(
     deps.cfg.defaultTenantId,
     sessionAgentId,
     spec.skills,
+    deps.userId,
   );
   return preAuthApprover(allowlist, deps.log);
 }
@@ -752,7 +755,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // A8 / H-06: the org unattended-mode master. Fails closed: an unreadable
     // setting only means this run asks its user, it never breaks the run.
     const approver: Approver = await selectRunApprover(
-      { south: clients.south, cfg, log },
+      { south: clients.south, cfg, log, userId: user },
       spec,
       sessionAgentId,
       hitl,

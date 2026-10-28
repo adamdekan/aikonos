@@ -8,7 +8,7 @@
 // declared model and the actual behavior cannot drift. Placed in src/pi/
 // (alongside tools.ts, whose TOOL_NAMES it imports) rather than src/broker/:
 // governance.ts's existing imports of GovernanceBridge from src/pi/ files
-// (session.ts, mcp-tools.ts) are all `import type`, erased
+// (session.ts) are `import type`, erased
 // at compile time, so broker/governance.ts importing this runtime module from
 // src/pi/ does not close a require cycle — tools.ts itself imports nothing
 // from src/broker.

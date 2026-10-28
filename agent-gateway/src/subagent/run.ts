@@ -335,6 +335,7 @@ export async function runSubagents(
         deps.identity.tenantId,
         deps.identity.agentId,
         deps.callerSkills,
+        deps.identity.userId,
       )
     : [];
 

@@ -106,6 +106,11 @@ an agent ("Acts as") in the edit form first, then resumes.
   read-only tools first, or the read-only preset selects nothing. Existing
   MCP rows in Admin → Skills keep their stored class; a class confirmed
   there is no longer raised to `write_external`.
+- The model sees only the allowed tools: the session tool list (and the
+  auto-approve list) comes from `ListMcpServerToolsSouth`, which now takes the
+  session's `agent_id` and returns only that agent's allowed tools of the
+  connector, and none of it when the session's user lacks access to the
+  connector and `identity.enforce_user_bound=enforce`.
 
 ## Per-user OAuth to MCP servers (AG-09)
 

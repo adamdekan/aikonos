@@ -64,6 +64,7 @@ function makeDeps(south: AllowlistSouth, tenantId = "tenant-1"): Parameters<type
     south,
     cfg,
     log: makeLog(),
+    userId: "alice",
   };
 }
 

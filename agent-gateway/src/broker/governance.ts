@@ -582,6 +582,7 @@ export class GovernanceBridge {
         const resp = await this.south.listMcpServerToolsSouth({
           tenantId: this.identity.tenantId,
           userId: this.identity.userId,
+          agentId: this.identity.agentId,
           connectorId,
         });
         for (const t of resp.tools ?? []) {
