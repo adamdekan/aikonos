@@ -128,6 +128,9 @@ function dispatch(ev, h) {
     case "CUSTOM":
       if (ev.name === "aikonos.approval.request") {
         h.onApprovalRequest?.(ev.value);
+      } else if (ev.name === "aikonos.approval.resolved") {
+        // AG-07: decided elsewhere (Inbox, another approver) or withdrawn.
+        h.onApprovalResolved?.(ev.value);
       } else if (ev.name === "aikonos.tool.error") {
         h.onToolError?.(ev.value);
       } else if (ev.name === "aikonos.user") {

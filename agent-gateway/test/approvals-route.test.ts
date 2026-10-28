@@ -55,7 +55,7 @@ function makeInfo(toolCallId: string): ApprovalInfo {
     effectClass: 0,
     reason: "test",
     args: {},
-    stepUp: true, argsDigest: `digest-${toolCallId}`,
+    stepUp: true, argsDigest: `digest-${toolCallId}`, requiresN: 1, approvals: 0, ownerMayApprove: true,
   };
 }
 

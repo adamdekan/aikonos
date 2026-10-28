@@ -17,6 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GovernanceBridge } from "../src/broker/governance.js";
 import { ValidationOutcome } from "../gen/ts/proto/plan.js";
+import { TaskStatus } from "../gen/ts/proto/broker.js";
 import type { BrokerClients } from "../src/broker/clients.js";
 import type { Config } from "../src/config.js";
 import type { Logger } from "../src/log.js";
@@ -41,11 +42,13 @@ function makeClients(outcome: ValidationOutcome): BrokerClients {
   return {
     north: {
       createTask: () => Promise.resolve({ taskId: "t-1" }),
-      approveTask: () => Promise.resolve({ capabilityTokenIds: {} }),
+      approveTask: () => Promise.resolve({ newStatus: TaskStatus.APPROVED, capabilityTokenIds: {} }),
     },
     south: {
       createGatewayTask: () => Promise.resolve({ taskId: "t-1" }),
-      approveGatewayTask: () => Promise.resolve({ capabilityTokenIds: {} }),
+      approveGatewayTask: () => Promise.resolve({ newStatus: TaskStatus.APPROVED, capabilityTokenIds: {} }),
+      getGatewayApproval: () =>
+        Promise.resolve({ status: TaskStatus.AWAITING_APPROVAL, requiresN: 1, approvals: 0, stepUp: false, ownerMayApprove: true }),
       submitPlan: () => Promise.resolve({ outcome, capabilityTokenIds: {}, violations: [], steps: [] }),
       invokeTool: (req: unknown) => {
         invokeCalls.push(req);

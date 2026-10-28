@@ -3,9 +3,13 @@
 // user may decide, including the second vote of a 2-of-n gate requested in
 // someone else's session. Approve/Deny call the broker's ApproveTask through
 // the gateway.
-import { ref, onMounted } from "vue";
+import { ref, onMounted, nextTick } from "vue";
 import ArgsView from "../../components/ArgsView.vue";
 import { listPendingApprovals, decideApproval } from "../../api/approvals.js";
+
+// AG-07: the deep link in an approval notification (/inbox?approval=<taskId>)
+// marks and scrolls to that request.
+const props = defineProps({ focusTask: { type: String, default: "" } });
 
 const approvals = ref([]);
 const error = ref("");
@@ -14,6 +18,10 @@ const busy = ref("");
 async function load() {
   try {
     approvals.value = (await listPendingApprovals()).approvals ?? [];
+    if (props.focusTask) {
+      await nextTick();
+      document.querySelector(`[data-testid="approval-${CSS.escape(props.focusTask)}"]`)?.scrollIntoView?.({ block: "center" });
+    }
   } catch (e) {
     error.value = e.message || "Failed to load approvals";
   }
@@ -40,7 +48,14 @@ onMounted(load);
     <h3 class="section-title">Pending approvals</h3>
     <p v-if="error" class="pa-error" role="alert">{{ error }}</p>
     <ul class="pa-list">
-      <li v-for="a in approvals" :key="a.taskId" class="pa-row" :data-testid="`approval-${a.taskId}`">
+      <li
+        v-for="a in approvals"
+        :key="a.taskId"
+        class="pa-row"
+        :class="{ 'pa-focus': a.taskId === focusTask }"
+        :data-testid="`approval-${a.taskId}`"
+        :aria-current="a.taskId === focusTask ? 'true' : undefined"
+      >
         <div class="pa-meta">
           <span>{{ a.requesterId }}</span>
           <span v-if="a.stepUp" class="pa-pill">STEP-UP</span>
@@ -71,6 +86,7 @@ onMounted(load);
   padding: var(--space-3) var(--space-4);
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+.pa-focus { border-color: var(--accent-text); }
 .pa-meta { display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: 0.75rem; color: var(--text-muted); }
 .pa-pill { color: var(--accent-text); font-weight: 600; }
 .pa-step { display: flex; flex-direction: column; gap: var(--space-2); }

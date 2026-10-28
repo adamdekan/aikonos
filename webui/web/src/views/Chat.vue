@@ -45,7 +45,7 @@ const discoveryFailed = computed(() =>
   Object.values(discoveryStore.errors).some((e) => e !== null)
 );
 
-const { approval, pendingCount, onApprovalRequest, scheduleOneShotPoll, stopPolling, resetApprovals, onApprovalClose } = useApprovals();
+const { approval, pendingCount, onApprovalRequest, onApprovalResolved, scheduleOneShotPoll, stopPolling, resetApprovals, onApprovalClose } = useApprovals();
 
 const {
   soulEditable, showSoulModal, soulDraft, soulDraftBytes, soulError, soulSaving,
@@ -84,6 +84,7 @@ const { running, textStreaming, stop, submit, editAndResend } = useAguiRun({
   currentAssistant,
   findTool,
   onApprovalRequest,
+  onApprovalResolved,
   scheduleOneShotPoll,
   stopPolling,
   resetApprovals,

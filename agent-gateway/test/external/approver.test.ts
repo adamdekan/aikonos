@@ -12,11 +12,14 @@ function info(toolId: string): ApprovalInfo {
     effectClass: 0,
     reason: "human approval required",
     args: {},
-    stepUp: false, argsDigest: "",
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   };
 }
 
 // ── externalApprover ──────────────────────────────────────────────────────────
+// AG-07 slice 2: a call that is not pre-approved waits for a human until the
+// broker decides; `released` stands for that decision having arrived.
+const released = AbortSignal.abort();
 
 test("externalApprover: mode=auto, tool in set → allow", async () => {
   const { externalApprover } = await import("../../src/external/approver.js");
@@ -31,7 +34,7 @@ test("externalApprover: mode=auto, tool in set → allow", async () => {
   assert.equal(await approver(info("web.fetch")), true);
 });
 
-test("externalApprover: mode=auto, tool NOT in set → deny", async () => {
+test("externalApprover: mode=auto, tool NOT in set → waits for a human", async () => {
   const { externalApprover } = await import("../../src/external/approver.js");
   const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as import("../../src/log.js").Logger;
 
@@ -40,11 +43,11 @@ test("externalApprover: mode=auto, tool NOT in set → deny", async () => {
     async () => "auto",
     log,
   );
-  assert.equal(await approver(info("web.fetch")), false, "tool not in set → deny");
-  assert.equal(await approver(info("email.draft")), false, "tool not in set → deny");
+  assert.equal(await approver(info("web.fetch"), released), false, "tool not in set → not pre-approved");
+  assert.equal(await approver(info("email.draft"), released), false, "tool not in set → not pre-approved");
 });
 
-test("externalApprover: mode=needs_approval → deny even for tool in set", async () => {
+test("externalApprover: mode=needs_approval → waits for a human even for tool in set", async () => {
   // WHY: mid-run flip from auto → needs_approval must cause subsequent gates to deny,
   // even for tools that are in the approved-tools set. preAuthApprover would have
   // allowed these; externalApprover re-checks mode per gate and fails closed.
@@ -56,11 +59,11 @@ test("externalApprover: mode=needs_approval → deny even for tool in set", asyn
     async () => "needs_approval",
     log,
   );
-  assert.equal(await approver(info("doc.read")), false, "needs_approval mode → deny in-set tool");
-  assert.equal(await approver(info("web.fetch")), false, "needs_approval mode → deny in-set tool");
+  assert.equal(await approver(info("doc.read"), released), false, "needs_approval mode → not pre-approved");
+  assert.equal(await approver(info("web.fetch"), released), false, "needs_approval mode → not pre-approved");
 });
 
-test("externalApprover: getApprovalMode rejects → deny (fail closed)", async () => {
+test("externalApprover: getApprovalMode rejects → not pre-approved (fail closed)", async () => {
   // WHY: a south RPC failure must not open the gate. Fail closed — deny.
   const { externalApprover } = await import("../../src/external/approver.js");
   const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as import("../../src/log.js").Logger;
@@ -70,7 +73,24 @@ test("externalApprover: getApprovalMode rejects → deny (fail closed)", async (
     async () => { throw new Error("south RPC timeout"); },
     log,
   );
-  assert.equal(await approver(info("doc.read")), false, "RPC failure → fail closed → deny");
+  assert.equal(await approver(info("doc.read"), released), false, "RPC failure → fail closed → not pre-approved");
+});
+
+test("externalApprover: not pre-approved stays pending until the broker decides; unattended off pre-approves nothing (H-06)", async () => {
+  const { externalApprover } = await import("../../src/external/approver.js");
+  const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as import("../../src/log.js").Logger;
+
+  const decided = new AbortController();
+  let settled = false;
+  const pending = externalApprover(["doc.read"], async () => "auto", log)(info("web.fetch"), decided.signal)
+    .then((v) => { settled = true; return v; });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(settled, false, "waits instead of denying");
+  decided.abort();
+  assert.equal(await pending, false);
+
+  const off = externalApprover(["doc.read"], async () => "auto", log, false);
+  assert.equal(await off(info("doc.read"), released), false, "listed tool not pre-approved when unattended is off");
 });
 
 // ── cachedApprovalMode ────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ import type { ChildSupervisor } from "../ipc/supervisor.js";
 import type { AgentSpec } from "../pi/session.js";
 import { record } from "../audit/stream.js";
 import { externalApprover, cachedApprovalMode } from "./approver.js";
+import { unattendedAllowed } from "../scheduler/ticker.js";
 import { EventQueue } from "../pi/event-queue.js";
 import { trimmedErrorMessage } from "../http-errors.js";
 
@@ -95,14 +96,15 @@ export async function* runAgentInvocation(
     ownerGrant,
   };
 
-  // WHY externalApprover instead of preAuthApprover: the external surface must
-  // re-check approvalMode at each gate. A mid-run admin flip to "needs_approval"
-  // must deny subsequent NEEDS_HUMAN gates rather than continuing to auto-approve.
-  // The scheduler's preAuthApprover keeps its standing-consent semantics unchanged.
+  // WHY externalApprover: the external surface must re-check approvalMode at
+  // each gate. A mid-run admin flip to "needs_approval" must stop
+  // auto-approving later NEEDS_HUMAN gates; they wait for a human instead.
   const getApprovalMode = cachedApprovalMode(
     () => opts.clients.south.getAgentSpec({ agentId, tenantId }).then((r) => r.approvalMode),
   );
-  handle.setRunContext(runId, runIdentity, externalApprover(approvedTools, getApprovalMode, log));
+  // H-06: the org master for unattended pre-approval, read once per run.
+  const unattended = await unattendedAllowed(opts.clients.south, tenantId, log);
+  handle.setRunContext(runId, runIdentity, externalApprover(approvedTools, getApprovalMode, log, unattended));
 
   const queue = new EventQueue<InvocationEvent>();
 

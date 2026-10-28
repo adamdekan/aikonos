@@ -28,6 +28,16 @@ const highRisk = computed(
   () => !!(props.request?.stepUp || props.request?.risk === "high")
 );
 
+// AG-07: under separation of duty (n >= 2) the run's own user may not vote.
+// The dialog then waits for the other approvers and closes when the broker
+// holds the decision (aikonos.approval.resolved). risk/stepUp/requiresN come
+// from the broker's approval row, not from the model's stream.
+const waitingFor = computed(() =>
+  props.request?.ownerMayApprove === false
+    ? Math.max(1, (props.request.requiresN ?? 1) - (props.request.approvals ?? 0))
+    : 0
+);
+
 const approveDisabled = computed(
   () => pending.value || (highRisk.value && !reviewed.value)
 );
@@ -190,6 +200,11 @@ function respondCancel() {
           {{ request.reason }}
         </p>
 
+        <p v-if="waitingFor" class="approval-waiting" role="status" data-testid="approval-waiting">
+          Waiting for {{ waitingFor }} more approver{{ waitingFor === 1 ? "" : "s" }}.
+          You cannot approve your own request; they decide from their Inbox.
+        </p>
+
         <hr class="approval-divider" />
 
         <!-- ARGS: structured k/v view, scrollable -->
@@ -199,7 +214,7 @@ function respondCancel() {
         </section>
 
         <!-- Risk gate: checkbox unlocks Approve for high-risk / step-up calls -->
-        <label v-if="highRisk && !reviewed" class="review-gate">
+        <label v-if="highRisk && !reviewed && !waitingFor" class="review-gate">
           <ToggleSwitch v-model="reviewed" aria-label="I have reviewed the arguments above" />
           <span>I have reviewed the arguments above</span>
         </label>
@@ -213,9 +228,10 @@ function respondCancel() {
             ref="denyBtn"
             class="btn-deny"
             data-action="deny"
+            :data-testid="waitingFor ? 'approval-withdraw' : undefined"
             :disabled="pending"
             :aria-busy="pending && pendingAction === 'deny'"
-            aria-label="Deny"
+            :aria-label="waitingFor ? 'Withdraw request' : 'Deny'"
             @click="respond(false)"
           >
             <Icon
@@ -225,10 +241,11 @@ function respondCancel() {
               class="spin"
             />
             <Icon v-else name="close" :size="14" />
-            {{ pending && pendingAction === "deny" ? "Denying…" : "Deny" }}
+            {{ pending && pendingAction === "deny" ? "Denying…" : waitingFor ? "Withdraw" : "Deny" }}
           </button>
 
           <button
+            v-if="!waitingFor"
             ref="approveBtn"
             class="btn-approve"
             data-action="approve"
@@ -360,6 +377,13 @@ function respondCancel() {
   margin: 0;
   font-size: 0.875rem;
   color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.approval-waiting {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text);
   flex-shrink: 0;
 }
 

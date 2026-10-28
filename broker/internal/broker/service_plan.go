@@ -446,6 +446,9 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			return nil, err
 		}
 		gate = &g
+		if s.deps.ApprovalNotify != nil {
+			go s.deps.ApprovalNotify(context.WithoutCancel(ctx), tenantID, req.TaskId, g.ApproverSet, g.RequiredApprovals)
+		}
 
 		// AG-07: the digest the approve call must carry back, computed from the
 		// stored rows exactly as approvalsvc.Resolve recomputes it.

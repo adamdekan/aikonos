@@ -404,3 +404,64 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 		CapabilityTokenIds: capTokens,
 	}, nil
 }
+
+// GetGatewayApproval reports the broker-held state of a gateway task's
+// approval (AG-07 slice 2). The gateway's waiting run polls it, so a vote cast
+// anywhere (the chat dialog, the Inbox, another session) wakes the run. Once
+// the task is APPROVED it mints the step tokens for that run, as the deciding
+// vote did. SPIFFE-gated to the gateway SVID, which may already vote as the
+// task owner (ApproveGatewayTask), so the tokens grant it nothing more.
+func (s *SandboxService) GetGatewayApproval(ctx context.Context, req *brokerv1.GetGatewayApprovalRequest) (*brokerv1.GatewayApproval, error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return nil, err
+	}
+	if req.TaskId == "" || req.TenantId == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id and task_id required")
+	}
+	store := s.deps.Tasks
+	task, err := store.Get(ctx, req.TenantId, req.TaskId)
+	if err != nil || task == nil {
+		if errors.Is(err, pgx.ErrNoRows) || task == nil {
+			return nil, status.Errorf(codes.NotFound, "task %s not found", req.TaskId)
+		}
+		s.deps.Logger.Error("GetGatewayApproval: load task failed", zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to load task")
+	}
+	if !task.GatewayManaged {
+		return nil, status.Errorf(codes.FailedPrecondition, "task %s is not gateway-managed", req.TaskId)
+	}
+
+	out := &brokerv1.GatewayApproval{Status: dbStateToProtoStatus(task.State)}
+	switch task.State {
+	case db.TaskStateAwaitingApproval:
+		ar, err := store.GetPendingApprovalByTask(ctx, req.TenantId, req.TaskId)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Past expires_at but not yet swept: no vote can land any more.
+			out.Status = brokerv1.TaskStatus_TIMEOUT
+			return out, nil
+		}
+		if err != nil {
+			s.deps.Logger.Error("GetGatewayApproval: load approval failed", zap.Error(err))
+			return nil, status.Error(codes.Internal, "failed to load approval")
+		}
+		out.RequiresN = int32(ar.RequiresN)
+		out.Approvals = int32(len(ar.ApprovedBy))
+		out.StepUp, _ = ar.Summary["step_up"].(bool)
+		out.OwnerMayApprove = db.MayVote(ar.ApproverSet, ar.RequesterID, ar.RequiresN, task.OwnerUserID)
+	case db.TaskStateApproved:
+		steps, err := store.ListMintableSteps(ctx, req.TenantId, req.TaskId)
+		if err != nil {
+			s.deps.Logger.Error("GetGatewayApproval: list steps failed", zap.Error(err))
+			return nil, status.Error(codes.Internal, "failed to load plan steps")
+		}
+		scopes := make([]approvalsvc.StepScope, 0, len(steps))
+		for _, st := range steps {
+			scopes = append(scopes, approvalsvc.StepScope{Seq: st.Seq, ToolID: st.ToolID})
+		}
+		mint := approvalMinter(s.deps.Capability, s.toolReg())
+		if out.CapabilityTokenIds, err = mint(task.OwnerUserID, req.TaskId, task.OnBehalfOf(), scopes); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to mint capability tokens: %v", err)
+		}
+	}
+	return out, nil
+}

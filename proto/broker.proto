@@ -550,6 +550,11 @@ service SandboxService {
   // BrokerService.ApproveTask). SPIFFE-gated to the agent-gateway identity.
   rpc ApproveGatewayTask(ApproveGatewayTaskRequest) returns (ApproveTaskResponse);
 
+  // The broker-held state of a gateway task's approval (AG-07 slice 2). The
+  // gateway's waiting run polls it, so a decision made anywhere wakes the run;
+  // once the task is APPROVED it carries the minted step tokens.
+  rpc GetGatewayApproval(GetGatewayApprovalRequest) returns (GatewayApproval);
+
   // Gateway resolves a raw API key sha256 hash to the agent + service principal.
   // SPIFFE-gated to the agent-gateway identity. Returns valid=false on miss/revoke.
   rpc ResolveAgentApiKey(ResolveAgentApiKeyRequest) returns (ResolveAgentApiKeyResponse);
@@ -1857,6 +1862,22 @@ message CreateGatewayTaskRequest {
 // owner_user_id (field 3) is DEPRECATED / ignored for authorization — the
 // broker derives the approver from the stored task row (CP2). Kept for wire
 // compat with pre-CP2 gateway versions.
+message GetGatewayApprovalRequest {
+  string tenant_id = 1;
+  string task_id   = 2;
+}
+
+message GatewayApproval {
+  TaskStatus status        = 1;  // AWAITING_APPROVAL until decided
+  int32 requires_n         = 2;
+  int32 approvals          = 3;  // votes so far
+  bool  step_up            = 4;
+  bool  owner_may_approve  = 5;  // false under separation of duty (n >= 2)
+  // Per-step tokens, keyed by plan-step seq; set only when status is APPROVED
+  // (as ApproveTaskResponse.capability_token_ids).
+  map<int32, string> capability_token_ids = 6;
+}
+
 message ApproveGatewayTaskRequest {
   string tenant_id      = 1;
   string task_id        = 2;

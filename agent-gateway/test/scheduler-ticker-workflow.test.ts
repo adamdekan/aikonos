@@ -16,6 +16,7 @@ import type { Logger } from "../src/log.js";
 import type { BrokerClients } from "../src/broker/clients.js";
 import type { ChildSupervisor } from "../src/ipc/supervisor.js";
 import { ValidationOutcome } from "../gen/ts/proto/plan";
+import { TaskStatus } from "../gen/ts/proto/broker";
 import type { WorkflowDef } from "../src/workflow/author.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -64,6 +65,7 @@ interface FakeSouthOpts {
   def: WorkflowDef;
   outcomeFor: Record<string, ValidationOutcome>;
   hang?: boolean; // never resolve getWorkflow — used by the timeout test
+  unattendedAllowed?: boolean; // org master (H-06); default true
   providers?: unknown[]; // resolved by GovernanceBridge.reason() for a kind:"reason" step
 }
 
@@ -84,8 +86,12 @@ function makeFakeSouth(opts: FakeSouthOpts, calls: { approveGatewayTask: number;
     },
     approveGatewayTask: () => {
       calls.approveGatewayTask += 1;
-      return Promise.resolve({ capabilityTokenIds: ["tok0", "tok1"] });
+      return Promise.resolve({ newStatus: TaskStatus.APPROVED, capabilityTokenIds: ["tok0", "tok1"] });
     },
+    // AG-07 slice 2: the broker's approval row; the owner may vote (n = 1).
+    getGatewayApproval: () =>
+      Promise.resolve({ status: TaskStatus.AWAITING_APPROVAL, requiresN: 1, approvals: 0, stepUp: false, ownerMayApprove: true, capabilityTokenIds: {} }),
+    getOrgSettings: () => Promise.resolve({ settings: { unattendedAllowed: opts.unattendedAllowed ?? true } }),
     invokeTool: () => Promise.resolve({ success: true, result: { ok: true }, costUnitsConsumed: 1 }),
     emitStatus: () => Promise.resolve(),
     reportScheduledRunResult: (req: { success: boolean; summary: string }) => {
@@ -305,4 +311,51 @@ test("a rateLimitChecker passed to tick() reaches the runViaWorkflow-built bridg
     /rate limit exceeded: spend_agent/,
     "the reason step's pre-gate denial must halt the run",
   );
+});
+
+// ── AG-07 slice 2: L-25 / H-06 ────────────────────────────────────────────────
+
+test("org master off (H-06): a scheduled workflow's own steps are not pre-approved; the run waits for a human", async () => {
+  const def = workflowDef([{ skill: "email.draft" }]);
+  const calls = { approveGatewayTask: 0 } as { approveGatewayTask: number; reportedResult?: { success: boolean; summary: string } };
+  const south = makeFakeSouth(
+    { def, outcomeFor: { "email.draft": ValidationOutcome.NEEDS_HUMAN }, unattendedAllowed: false },
+    calls,
+  );
+  const clients = { south, north: {} } as unknown as BrokerClients;
+  (clients.south as unknown as { claimDueScheduledRuns: () => Promise<unknown> }).claimDueScheduledRuns = () =>
+    Promise.resolve({ runs: [makeDueRun("sched-h06", def)] });
+
+  await tick({ ...baseCfg, schedulerRunTimeoutMs: 50 } as unknown as Config, clients, log, supervisorThatMustNotSpawn());
+
+  assert.equal(calls.approveGatewayTask, 0, "no unattended vote while the org master is off");
+  assert.match(calls.reportedResult?.summary ?? "", /run timed out/, "the run paused for a human instead of approving");
+});
+
+test("prompt schedule (L-25): no baseline — web.fetch is not pre-approved when approvedTools is empty", async () => {
+  let approver: import("../src/broker/governance.js").Approver | undefined;
+  const supervisor = {
+    getOrSpawn: () =>
+      Promise.resolve({
+        setRunContext: (_r: string, _i: unknown, a: typeof approver) => { approver = a; },
+        clearRunContext: () => {},
+        abortRun: () => {},
+      }),
+    run: () => Promise.resolve(),
+    keyFor: () => "k",
+  } as unknown as ChildSupervisor;
+  const south = {
+    claimDueScheduledRuns: () =>
+      Promise.resolve({ runs: [{ id: "s", ownerUserId: "alice@example.com", prompt: "hi", approvedTools: ["doc.read"], ownerGrant: "g" }] }),
+    reportScheduledRunResult: () => Promise.resolve(),
+    getOrgSettings: () => Promise.resolve({ settings: { unattendedAllowed: true } }),
+  };
+  await tick(baseCfg, { south } as unknown as BrokerClients, log, supervisor);
+
+  const info = (toolId: string) => ({
+    toolCallId: "tc", toolName: toolId, toolId, effectClass: 0, reason: "", args: {},
+    stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
+  });
+  assert.equal(await approver!(info("doc.read")), true, "the schedule's explicit list is still standing consent");
+  assert.equal(await approver!(info("web.fetch"), AbortSignal.abort()), false, "web.fetch is no longer a baseline");
 });

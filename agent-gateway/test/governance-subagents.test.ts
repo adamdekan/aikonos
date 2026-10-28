@@ -111,6 +111,7 @@ function makeSouth(overrides: Partial<{ skills: string[]; providers: unknown[] }
   return {
     listUserSkillsCalls,
     emitLlmUsageCalls,
+    getOrgSettings: () => Promise.resolve({ settings: { unattendedAllowed: true } }),
     createGatewayTask: () => Promise.resolve({ taskId: "t-1" }),
     approveGatewayTask: () => Promise.resolve({ capabilityTokenIds: {} }),
     submitPlan: () => Promise.resolve({ outcome: 1, capabilityTokenIds: { 1: "tok" }, violations: [], steps: [] }),

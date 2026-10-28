@@ -372,9 +372,9 @@ func (r *TaskRepo) GetPendingApprovalByTask(ctx context.Context, tenantID, taskI
 }
 
 // ListPendingApprovalsFor returns the tenant's PENDING, unexpired approval
-// requests userID may vote on: a member of approver_set (or the set is empty,
-// same rule as voterAllowed) and not already among approved_by. The FGA
-// can_approve check is the caller's job. Oldest first, capped at 100.
+// requests userID may vote on (the MayVote rule) and has not already
+// approved. The FGA can_approve check is the caller's job. Oldest first,
+// capped at 100.
 func (r *TaskRepo) ListPendingApprovalsFor(ctx context.Context, tenantID, userID string) ([]ApprovalRequest, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]ApprovalRequest, error) {
 		rows, err := conn.Query(ctx, `
@@ -383,6 +383,7 @@ func (r *TaskRepo) ListPendingApprovalsFor(ctx context.Context, tenantID, userID
 		FROM approval_requests
 		WHERE state = 'PENDING' AND expires_at > NOW()
 		  AND (cardinality(approver_set) = 0 OR $1 = ANY(approver_set))
+		  AND NOT (requires_n >= 2 AND requester_id = $1)
 		  AND NOT ($1 = ANY(COALESCE(approved_by, '{}')))
 		ORDER BY created_at ASC
 		LIMIT 100`, userID)
@@ -470,17 +471,18 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 
 		var (
 			requiresN   int16
+			requester   string
 			approverSet []string
 			approvedBy  []string
 			deniedBy    []string
 			state       ApprovalState
 		)
 		err = tx.QueryRow(ctx, `
-		SELECT requires_n, approver_set, approved_by, denied_by, state
+		SELECT requires_n, requester_id, approver_set, approved_by, denied_by, state
 		FROM approval_requests
 		WHERE approval_id = $1 AND expires_at > NOW()
 		FOR UPDATE`, approvalID,
-		).Scan(&requiresN, &approverSet, &approvedBy, &deniedBy, &state)
+		).Scan(&requiresN, &requester, &approverSet, &approvedBy, &deniedBy, &state)
 		if err != nil {
 			return "", false, err
 		}
@@ -489,8 +491,9 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 		}
 
 		// SoD: when an explicit approver_set is configured, only members may vote.
-		// An empty set (legacy rows) skips the check — any voter satisfies the gate.
-		if !voterAllowed(approverSet, approver) {
+		// An empty set (legacy rows) admits any voter but the requester of an
+		// n >= 2 gate (MayVote).
+		if !MayVote(approverSet, requester, requiresN, approver) {
 			return ApprovalPending, false, fmt.Errorf("%w (approval %s)", ErrVoterNotInApproverSet, approvalID)
 		}
 
@@ -538,6 +541,16 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 // voterAllowed reports whether voter may cast a vote on an approval request.
 // An empty approverSet means legacy / unrestricted — any voter is allowed.
 // A non-empty set enforces explicit membership (SoD boundary).
+// MayVote is the voting rule: a member of approver_set (an empty set admits
+// anyone), and never the requester once n >= 2. Build already drops the
+// requester from the set then, but an empty set would readmit them (AG-07).
+func MayVote(approverSet []string, requester string, requiresN int16, voter string) bool {
+	if requiresN >= 2 && voter == requester {
+		return false
+	}
+	return voterAllowed(approverSet, voter)
+}
+
 func voterAllowed(approverSet []string, voter string) bool {
 	if len(approverSet) == 0 {
 		return true

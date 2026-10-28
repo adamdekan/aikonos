@@ -291,3 +291,57 @@ func TestSMTPNotifier_QuitFailureLogsWarn(t *testing.T) {
 		t.Error("expected at least one Warn log entry for smtp QUIT failure, got none")
 	}
 }
+
+// TestSMTPNotifier_RequiresSTARTTLS (L-08): a server offering STARTTLS gets
+// the upgrade before anything else (this fake cannot complete it, so the
+// send fails rather than continue in clear); only a loopback relay may run
+// without TLS.
+func TestSMTPNotifier_RequiresSTARTTLS(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	sawStartTLS := make(chan bool, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		conn.Write([]byte("220 fake ESMTP\r\n"))
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				sawStartTLS <- false
+				return
+			}
+			switch up := strings.ToUpper(strings.TrimSpace(line)); {
+			case strings.HasPrefix(up, "EHLO"):
+				conn.Write([]byte("250-fake\r\n250 STARTTLS\r\n"))
+			case up == "STARTTLS":
+				sawStartTLS <- true
+				conn.Write([]byte("454 TLS not available\r\n"))
+				return
+			default:
+				sawStartTLS <- false
+				return
+			}
+		}
+	}()
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	n := &SMTPNotifier{Host: host, Port: port, From: "a@b.com", To: "c@d.com"}
+	if err := n.Notify(context.Background(), Alert{Rule: "denial"}); err == nil {
+		t.Fatal("Notify succeeded although STARTTLS failed")
+	}
+	if !<-sawStartTLS {
+		t.Fatal("client did not issue STARTTLS before other commands")
+	}
+
+	for host, want := range map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true, "smtp.example.com": false, "10.0.0.5": false} {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AGUIStream } from "../agui/stream.js";
 import {
   AIKONOS_APPROVAL_REQUEST,
+  AIKONOS_APPROVAL_RESOLVED,
   AIKONOS_USER,
   AIKONOS_SKILLS_LOADED,
   AIKONOS_MEMORY_RECALLED,
@@ -19,7 +20,7 @@ import type { VerifyOptions, JwksResolver } from "../auth/verify.js";
 import { type Approver, noopRateLimitChecker } from "../broker/governance.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
 import { type AgentSpec } from "../pi/session.js";
-import { preAuthApprover } from "../scheduler/ticker.js";
+import { preAuthApprover, unattendedAllowed } from "../scheduler/ticker.js";
 import { resolveAutoApproveAllowlist, type AllowlistSouth } from "../broker/auto-approve.js";
 import { ChildSupervisor, GatewayOverloadError, type ChildHandle } from "../ipc/supervisor.js";
 import type { RunIdentity } from "../ipc/bridge-server.js";
@@ -735,30 +736,27 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // Build the HITL approver closure now that the SSE stream exists — approval
     // cards are written to this run's socket and resolved by the browser's
     // /approve/:id POST via the parent-side ApprovalRegistry.
-    const hitl: Approver = async (info) => {
+    // AG-07 slice 2: when the broker decides first (another approver, the
+    // Inbox), `decided` withdraws the card and the dialog is told to close.
+    const hitl: Approver = async (info, decided) => {
       stream.custom(AIKONOS_APPROVAL_REQUEST, info);
-      return approvals.await_(info, user, runId);
+      const ok = await approvals.await_(info, user, runId, decided);
+      if (decided?.aborted) stream.custom(AIKONOS_APPROVAL_RESOLVED, { toolCallId: info.toolCallId });
+      return ok;
     };
 
     // selectRunApprover picks preAuthApprover when spec.approvalMode === "auto"
     // (covering both named and default agents), HITL otherwise. Spec undefined
     // (default agent with no DB record) → HITL. preAuthApprover never overrides
     // OPA DENY or capability-scope failures; it only flips NEEDS_HUMAN → allow.
-    // A8: read the org unattended-mode master. Fail-open to allowed on any
-    // error — the master narrows automation, it must not break interactive runs.
-    let unattendedAllowed = true;
-    try {
-      const org = await clients.south.getOrgSettings({ tenantId: cfg.defaultTenantId });
-      unattendedAllowed = org.settings?.unattendedAllowed ?? true;
-    } catch (err) {
-      log.warn({ err: String(err) }, "getOrgSettings (A8) failed — defaulting unattended to allowed");
-    }
+    // A8 / H-06: the org unattended-mode master. Fails closed: an unreadable
+    // setting only means this run asks its user, it never breaks the run.
     const approver: Approver = await selectRunApprover(
       { south: clients.south, cfg, log },
       spec,
       sessionAgentId,
       hitl,
-      unattendedAllowed,
+      await unattendedAllowed(clients.south, cfg.defaultTenantId, log),
     );
 
     // Bind the per-run context: verified identity + approval surface for THIS

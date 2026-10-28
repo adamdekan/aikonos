@@ -49,6 +49,8 @@ type Gate struct {
 	Approvers         int  `json:"approvers"`          // eligible approvers after separation of duty
 	SeparationOfDuty  bool `json:"separation_of_duty"` // the requester is excluded (n >= 2)
 	ExpiryHours       int  `json:"expiry_hours"`
+	// ApproverSet is who may vote, for notifying them; not part of the record.
+	ApproverSet []string `json:"-"`
 }
 
 // Build constructs the approval-gate request for a plan outcome that
@@ -168,5 +170,6 @@ func Build(ctx context.Context, in BuildInput) (Gate, error) {
 		Approvers:         len(approverSet),
 		SeparationOfDuty:  requiresN >= 2,
 		ExpiryHours:       expiryHours,
+		ApproverSet:       approverSet,
 	}, nil
 }

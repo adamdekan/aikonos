@@ -7,6 +7,8 @@ import { mtlsCredentials, channelOptions } from "./creds";
 import { unary } from "./unary";
 import { SandboxServiceClient } from "../../gen/ts/proto/broker";
 import type {
+  GatewayApproval,
+  GetGatewayApprovalRequest,
   SubmitPlanRequest,
   InvokeToolRequest,
   InvokeToolResponse,
@@ -142,6 +144,11 @@ export class SouthClient {
 
   approveGatewayTask(req: ApproveGatewayTaskRequest): Promise<ApproveTaskResponse> {
     return unary((r, m, o, cb) => this.client.approveGatewayTask(r, m, o, cb), req, new Metadata());
+  }
+
+  // AG-07 slice 2: the broker-held approval state a waiting gate polls.
+  getGatewayApproval(req: GetGatewayApprovalRequest): Promise<GatewayApproval> {
+    return unary((r, m, o, cb) => this.client.getGatewayApproval(r, m, o, cb), req, new Metadata());
   }
 
   // South RPC for resolving a per-agent API key by its sha256 hex digest.

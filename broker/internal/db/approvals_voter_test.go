@@ -31,3 +31,18 @@ func TestVoterAllowed_NonMember_Rejected(t *testing.T) {
 		t.Error("eve is not in the set and must be rejected")
 	}
 }
+
+// TestMayVote_SeparationOfDuty: the requester of an n >= 2 gate never votes,
+// even when the set is empty (which admits anyone else); n = 1 keeps the
+// plain voterAllowed rule (AG-07).
+func TestMayVote_SeparationOfDuty(t *testing.T) {
+	if MayVote(nil, "owner", 2, "owner") {
+		t.Error("requester voted on an n=2 gate with an empty set")
+	}
+	if !MayVote(nil, "owner", 2, "other") {
+		t.Error("empty set must admit a non-requester")
+	}
+	if !MayVote([]string{"owner"}, "owner", 1, "owner") {
+		t.Error("n=1: the requester in the set may vote")
+	}
+}

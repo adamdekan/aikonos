@@ -1,15 +1,16 @@
 // externalApprover: per-gate approvalMode re-check for the external (:8090) surface.
 //
-// Unlike preAuthApprover (scheduler standing consent), this re-reads the agent's
-// current approvalMode on every gate. A mid-run admin flip from "auto" to
-// "needs_approval" causes all subsequent NEEDS_HUMAN gates to deny — the run
-// continues but no new tool calls are auto-approved.
+// Unlike a scheduled run's standing consent, this re-reads the agent's current
+// approvalMode on every gate. A mid-run admin flip from "auto" to
+// "needs_approval" makes every later NEEDS_HUMAN gate wait for a human — the
+// run continues but no new tool call is auto-approved.
 //
 // WHY cachedApprovalMode: repeated gates in one run would otherwise hammer the
 // broker south RPC. The cache TTL is short (5 s default) so a flip takes effect
 // within one cache interval. On any fetch failure the gate denies (fail closed).
 import type { Approver } from "../broker/governance.js";
 import type { Logger } from "../log.js";
+import { unattendedApprover } from "../scheduler/ticker.js";
 
 // cachedApprovalMode wraps a fetch function with a short-TTL memoize.
 //
@@ -45,16 +46,19 @@ export function cachedApprovalMode(
 
 // externalApprover builds an Approver that re-checks approvalMode on each gate.
 //
-// If mode is not "auto" (including on south RPC error — cachedApprovalMode
-// resolves to "error") the gate denies immediately. Otherwise behaves like
-// preAuthApprover: allow iff toolId is in approvedTools.
+// A tool in approvedTools is pre-approved only while mode is "auto" and the
+// org master allows unattended runs (H-06). Anything else — including a south
+// RPC error (cachedApprovalMode resolves to "error") — is not pre-approved:
+// the run waits for a human to decide it in the Inbox (AG-07 slice 2).
 export function externalApprover(
   approvedTools: string[],
   getApprovalMode: () => Promise<string>,
   log: Logger,
+  unattended = true,
 ): Approver {
-  const allow = new Set(approvedTools);
-  return async (info) => {
+  const allow = new Set(unattended ? approvedTools : []);
+  const waitForHuman = unattendedApprover([], log);
+  return async (info, decided) => {
     let mode: string;
     // WHY: in production, getApprovalMode is always a cachedApprovalMode-wrapped
     // function that swallows rejections and returns the "error" sentinel — it never
@@ -63,14 +67,11 @@ export function externalApprover(
     // gate pass by default.
     try {
       mode = await getApprovalMode();
-    } catch (err) {
-      log.info({ tool: info.toolId, err: String(err) }, "external approvalMode no longer auto — denying");
-      return false;
+    } catch {
+      mode = "error";
     }
-    if (mode !== "auto") {
-      log.info({ tool: info.toolId, mode }, "external approvalMode no longer auto — denying");
-      return false;
-    }
-    return allow.has(info.toolId);
+    if (mode === "auto" && allow.has(info.toolId)) return true;
+    log.info({ tool: info.toolId, mode }, "external run: not pre-approved — waiting for a human");
+    return waitForHuman(info, decided);
   };
 }

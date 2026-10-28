@@ -212,6 +212,10 @@ type Deps struct {
 	// injected, manifest-loaded Registry.
 	ToolRegistry *toolregistry.Registry
 
+	// ApprovalNotify tells approvers about a new approval request (AG-07).
+	// Nil ⇒ no notification.
+	ApprovalNotify ApprovalNotifyFunc
+
 	// AlertRepo backs the ListAlerts admin RPC. Nil when alerting persistence is
 	// not configured — the handler returns an empty list safely.
 	AlertRepo alerting.AlertRepo

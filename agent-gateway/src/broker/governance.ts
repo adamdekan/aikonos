@@ -9,6 +9,7 @@
 //             (which mints the token), stash, allow; on no, block
 //   execute(): InvokeTool with the stashed token (faithful: runs through the
 //              broker capability gate + Tool Proxy + audit), then EmitStatus.
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Config } from "../config";
 import type { BrokerClients } from "./clients";
 import { mapTool, knownWorkflowStepSkills, unknownSkills, type ToolMapping } from "./mapping";
@@ -89,11 +90,20 @@ export interface ApprovalInfo {
   // approval dialog echoes it back; the approve call carries it to the broker,
   // which refuses it if the stored args no longer match.
   argsDigest: string;
+  // AG-07 slice 2, from the broker's approval row (as stepUp): the n-of-m
+  // threshold, votes so far, and whether the run's own user may vote. False
+  // under separation of duty: the dialog then waits for the other approvers.
+  requiresN: number;
+  approvals: number;
+  ownerMayApprove: boolean;
 }
 
 // Injected decision for NEEDS_HUMAN/STEP_UP. CLI auto-approves; the AG-UI server
 // surfaces an approval card to the browser and resolves this from the response.
-export type Approver = (info: ApprovalInfo) => Promise<boolean>;
+// `decided` aborts once the broker holds the decision (an approver voted from
+// the Inbox or another session) or the run ended: stop asking then. A true from
+// a user who may not vote just means "keep waiting for the others".
+export type Approver = (info: ApprovalInfo, decided?: AbortSignal) => Promise<boolean>;
 
 export interface GateDecision {
   allow: boolean;
@@ -110,6 +120,11 @@ interface PendingCall {
 /** Parent-side broker RPC bridge: gates each Pi tool call through create-task → SubmitPlan → optional HITL, then executes via InvokeTool with the minted capability token. */
 export class GovernanceBridge {
   private readonly pending = new Map<string, PendingCall>();
+  // Aborted by close(): ends any approval this run still waits for.
+  private readonly closed = new AbortController();
+  // How often a waiting gate polls the broker for the decision (AG-07).
+  // ponytail: a 2 s poll, not a stream; one cheap read per waiting call.
+  approvalPollMs = 2_000;
 
   constructor(
     private readonly cfg: Config,
@@ -179,6 +194,8 @@ export class GovernanceBridge {
   // the approval surface (which streams to the current request) change per run.
   setApprover(a: Approver): void { this.approver = a; }
   setToken(token?: string): void { this.identity.token = token; }
+  // The run is over: stop waiting for any approval (its gate is denied).
+  close(): void { this.closed.abort(); }
 
   // Stable who-is-running snapshot for usage attribution (no token). tenantId/
   // userId/agentId are fixed for the life of a session; only the token rotates.
@@ -287,47 +304,116 @@ export class GovernanceBridge {
         return { allow: false, reason: result.violations.join("; ") || "denied by policy" };
       case ValidationOutcome.NEEDS_HUMAN:
       case ValidationOutcome.NEEDS_STEP_UP: {
-        const stepUp = result.outcome === ValidationOutcome.NEEDS_STEP_UP;
-        const ok = await this.approver({
+        // AG-07 slice 2: the approval lives in the broker. Its row, not the
+        // plan outcome or the stream, says step-up and who may still vote.
+        const gate = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
+        const decided = await this.awaitApproval(taskId, result.argsDigest, {
           toolCallId,
           toolName,
           toolId: mapping.toolId,
           effectClass: mapping.effectClass,
-          reason: stepUp ? "elevated (step-up) approval required" : "human approval required",
+          reason: gate.stepUp ? "elevated (step-up) approval required" : "human approval required",
           args: input,
-          stepUp,
+          stepUp: gate.stepUp,
           argsDigest: result.argsDigest,
+          requiresN: gate.requiresN,
+          approvals: gate.approvals,
+          ownerMayApprove: gate.ownerMayApprove,
         });
-        if (!ok) return { allow: false, reason: "approval declined" };
-
-        const approval = this.identity.token
-          ? await this.north.approveTask(
-              {
-                taskId,
-                tenantId: this.identity.tenantId,
-                approved: true,
-                reason: "approved via agent-gateway",
-                approverUserId: this.identity.userId,
-                argsDigest: result.argsDigest,
-              },
-              this.identity.token,
-            )
-          : await this.south.approveGatewayTask({
-              taskId,
-              tenantId: this.identity.tenantId,
-              ownerUserId: this.identity.userId,
-              approved: true,
-              reason: "approved via agent-gateway",
-              argsDigest: result.argsDigest,
-            });
+        if ("reason" in decided) return { allow: false, reason: decided.reason };
         if (decisionOnly) return { allow: true };
-        const tok = approval.capabilityTokenIds[1];
+        const tok = decided.tokens[1];
         if (!tok) return { allow: false, reason: "internal: no token after approval" };
         this.pending.set(toolCallId, { taskId, capToken: tok, mapping, args: input });
         return { allow: true };
       }
       default:
         return { allow: false, reason: `unexpected validation outcome ${result.outcome}` };
+    }
+  }
+
+  // awaitApproval waits for the human decision on a gated call (AG-07 slice 2).
+  // The injected approver (chat dialog, standing allowlist) races a poll of
+  // the broker, so a vote cast anywhere — the Inbox, another session — ends
+  // the wait. The run's own yes is cast as its vote when it may vote; when it
+  // may not (separation of duty) or more votes are due, the wait goes on for
+  // the other approvers. Resolves to the minted step tokens or a refusal.
+  private async awaitApproval(
+    taskId: string,
+    argsDigest: string,
+    info: ApprovalInfo,
+  ): Promise<{ tokens: Record<number, string> } | { reason: string }> {
+    const decided = new AbortController();
+    const stop = () => decided.abort();
+    this.closed.signal.addEventListener("abort", stop);
+    try {
+      const remote = this.pollApproval(taskId, decided.signal);
+      let local: boolean | undefined;
+      let state = await Promise.race([
+        remote,
+        this.approver(info, decided.signal).then((ok) => { local = ok; return undefined; }),
+      ]);
+      if (state === undefined) {
+        if (!local) return { reason: "approval declined" };
+        if (info.ownerMayApprove) {
+          const vote = this.identity.token
+            ? await this.north.approveTask(
+                {
+                  taskId,
+                  tenantId: this.identity.tenantId,
+                  approved: true,
+                  reason: "approved via agent-gateway",
+                  approverUserId: this.identity.userId,
+                  argsDigest,
+                },
+                this.identity.token,
+              )
+            : await this.south.approveGatewayTask({
+                taskId,
+                tenantId: this.identity.tenantId,
+                ownerUserId: this.identity.userId,
+                approved: true,
+                reason: "approved via agent-gateway",
+                argsDigest,
+              });
+          if (vote.newStatus === TaskStatus.APPROVED) return { tokens: vote.capabilityTokenIds };
+          if (vote.newStatus === TaskStatus.DENIED) return { reason: "approval declined" };
+        }
+        this.log.info({ taskId, requiresN: info.requiresN }, "approval waits for other approvers");
+        state = await remote;
+      }
+      if (state.status === TaskStatus.APPROVED) return { tokens: state.capabilityTokenIds };
+      if (state.status === TaskStatus.TIMEOUT) return { reason: "approval expired" };
+      if (state.status === TaskStatus.DENIED) return { reason: "approval declined" };
+      return { reason: "approval abandoned: the run ended" };
+    } finally {
+      decided.abort();
+      this.closed.signal.removeEventListener("abort", stop);
+    }
+  }
+
+  // pollApproval reads the broker's approval state until it leaves
+  // AWAITING_APPROVAL, or until signal aborts (reported as CANCELLED). Never
+  // rejects: a failed read is retried on the next tick, and nothing is
+  // approved without a broker-held APPROVED.
+  private async pollApproval(
+    taskId: string,
+    signal: AbortSignal,
+  ): Promise<{ status: TaskStatus; capabilityTokenIds: Record<number, string> }> {
+    const cancelled = { status: TaskStatus.CANCELLED, capabilityTokenIds: {} };
+    for (;;) {
+      try {
+        await sleep(this.approvalPollMs, undefined, { signal });
+      } catch {
+        return cancelled;
+      }
+      try {
+        const st = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
+        if (signal.aborted) return cancelled;
+        if (st.status !== TaskStatus.AWAITING_APPROVAL) return st;
+      } catch (err) {
+        this.log.warn({ taskId, err: String(err) }, "approval poll failed; retrying");
+      }
     }
   }
 

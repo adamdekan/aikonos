@@ -130,7 +130,7 @@ task-row binding idiom and add the regression test pattern already used in
 - L-05 MCP client: no response body cap, fail-open when tool not in advertised list, no injection scan on MCP content, connector URL leaked to agent (`toolproxy/mcp.go:229-263`, `mcp_handler.go:128-166`).
 - L-06 LLM spend accounting trusts gateway-reported tokens/cost; negative/NaN accepted; 30s cache + check-before-record overshoot (`providers_south.go:36-110`, `spend_caps.go:48,170-192`).
 - L-07 Metrics labels from request-controlled `tool_id`/`tenant` (cardinality) (`service_invoke.go:459`, `metrics/task.go:73-74`).
-- L-08 SMTP alert notifier never STARTTLS; `normalizeHost` mangles IPv6 literals (`alerting/notifier.go:121-139`, `netacl/eval.go:45-51`).
+- L-08 SMTP alert notifier never STARTTLS; `normalizeHost` mangles IPv6 literals (`alerting/notifier.go:121-139`, `netacl/eval.go:45-51`). **Fixed (AG-07 slice 2):** the notifier upgrades with STARTTLS (TLS 1.2+, server name verified) and refuses a server without it unless the host is loopback; `normalizeHost` uses `net.SplitHostPort` and keeps bare IPv6 literals whole.
 
 ---
 
@@ -169,7 +169,7 @@ task-row binding idiom and add the regression test pattern already used in
 - **Fix:** After resolving the id in `startChatTurn`, require it in `north.listMyAgents({tenantId,userId}, token)` or add a south RPC `CheckFGA(user:<sub>, can_use, agent:<id>)`; 403 otherwise. Validate as UUID string. Apply the same to the scheduler's agent path.
 
 ### H-06 Org-wide `unattendedAllowed=false` enforced only on interactive chat
-- **Status:** open
+- **Status:** fixed (AG-07 slice 2): `unattendedAllowed()` (`scheduler/ticker.ts`) is read once per run and fails closed; with the master off nothing is pre-approved on the scheduler prompt and workflow paths, the external surface, subagent branches, or `auto`-mode chat. Gated calls wait for a human (the broker-held approval in the Inbox) instead of being denied. Interactive chat no longer fails open on a settings error.
 - **Where:** only `routes/agui.ts:96-107,739-751` (fails open on `getOrgSettings` error). Not in `scheduler/ticker.ts:121,313`, `external/core.ts:101-103`, `external/rest.ts:112`. Broker stores only (`org_settings.go:98,126`); no OPA reference.
 - **Exploit:** Admin disables unattended execution; a user's cron schedule still fires with `preAuthApprover(SCHEDULER_BASELINE_TOOLS + approvedTools)` (web.fetch, doc.read, doc.write always pre-approved, `ticker.ts:41-45`), and an agent API-key call still auto-approves.
 - **Fix:** One `resolveUnattendedApprover()` helper (cached ~30s) used in `tick()`, `runViaChild`, `runViaWorkflow`, `runAgentInvocation`; deny-all approver when false; fail closed on settings error. Consider enforcing in the broker on `CreateScheduledRun`/`ResolveAgentApiKey` too, but existing schedules need the fire-time check.
@@ -195,7 +195,7 @@ task-row binding idiom and add the regression test pattern already used in
 - L-22 Error text leaks on workflow routes and provider errors (`routes/workflows.ts:319`, `broker/governance.ts:401,449`, `llm/reason.ts:137-141`, `llm/embed.ts:108-113`).
 - L-23 Provider `fetch` follows redirects and forwards `api-key`/`x-api-key`; accepts `http://` endpoints (`llm/reason.ts:127`, `vision.ts:149`, `embed.ts:98`). `redirect:'error'`, require https.
 - L-24 `/delegate` demo defaults (`to`, `scopes`, `maxCost=50`) and unvalidated `maxCost`/`scopes` (`routes/delegation.ts:30`).
-- L-25 Scheduler baseline pre-approves web.fetch/doc.read/doc.write for every schedule even with `approvedTools: []` (`ticker.ts:41-45`). Make explicit at creation.
+- L-25 Scheduler baseline pre-approves web.fetch/doc.read/doc.write for every schedule even with `approvedTools: []` (`ticker.ts:41-45`). Make explicit at creation. **Fixed (AG-07 slice 2):** the baseline is gone; only the schedule's own `approvedTools` are pre-approved, and any other gated call pauses the run for a human.
 - I-03 Forged assistant turns in client history are possible (roles user/assistant), accepted class L-01. I-04 Wildcard ACAO on SSE responses, not exploitable (bearer-only, no credentials).
 
 ---
@@ -207,7 +207,7 @@ task-row binding idiom and add the regression test pattern already used in
 |---|---|---|---|
 | M-26 | No CSP, X-Frame-Options, nosniff, Referrer-Policy, HSTS anywhere; markdown from LLM rendered via `vue-stream-markdown` (beta) with katex/mermaid/shiki → clickjacking of approval modal, zero-click `img-src` exfil, no backstop for any sanitizer gap | `webui/server.mjs:93-119`, `webui/web/index.html:1-56`, `components/MarkdownMessage.vue:12` | `onSend` hook: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' <idp>; frame-ancestors 'none'; base-uri 'none'; object-src 'none'` + nosniff, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; hash/externalize the two inline scripts |
 | M-27 | Access/ID/refresh tokens in `sessionStorage`; any XSS = account takeover (compounds M-26) | `web/src/auth/oidc.js:57-69` | Ship CSP; no `offline_access`; short lifetimes + rotation; longer term BFF httpOnly cookie via the existing proxy |
-| M-28 | Approval modal collapses nested args by default; "reviewed" toggle doesn't require opening; approve POST sends only `{approved}`+`toolCallId` (no args hash); `risk`/`stepUp` from stream payload; `.arg-val` lacks `pre-wrap` | `components/ApprovalModal.vue:25-29,127-129,196-203`, `ArgsView.vue:45-56`, `api/agui.js:129-130` | `<details open>` or full `JSON.stringify` pre-wrap; gate on nested args; server re-reads args by `toolCallId` and optionally requires args hash. **Fixed (AG-07) except `risk`/`stepUp` provenance:** nested args render open with `pre-wrap`; SubmitPlan returns `args_digest` (sha256 of the canonical step args), the dialog echoes it, and the gateway and the broker (recomputing from the stored plan-step args) refuse an approval without the matching digest |
+| M-28 | Approval modal collapses nested args by default; "reviewed" toggle doesn't require opening; approve POST sends only `{approved}`+`toolCallId` (no args hash); `risk`/`stepUp` from stream payload; `.arg-val` lacks `pre-wrap` | `components/ApprovalModal.vue:25-29,127-129,196-203`, `ArgsView.vue:45-56`, `api/agui.js:129-130` | `<details open>` or full `JSON.stringify` pre-wrap; gate on nested args; server re-reads args by `toolCallId` and optionally requires args hash. **Fixed (AG-07):** nested args render open with `pre-wrap`; SubmitPlan returns `args_digest` (sha256 of the canonical step args), the dialog echoes it, and the gateway and the broker (recomputing from the stored plan-step args) refuse an approval without the matching digest. Slice 2: `stepUp`, `requiresN` and whether the requester may vote come from the broker's approval row (`GetGatewayApproval`), not the plan outcome or stream; the gateway emits no `risk` field, so the modal's `risk` branch stays inert |
 
 ### Low / Info
 - L-26 Chat history in `localStorage`, not keyed by `sub`, cleared only by Settings sign-out (`store/chat.js:41-165`, `store/user.js:26-35`). Key by `sub`, clear on `logout()`.

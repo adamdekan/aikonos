@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GovernanceBridge } from "../src/broker/governance.js";
 import { ValidationOutcome } from "../gen/ts/proto/plan";
+import { TaskStatus } from "../gen/ts/proto/broker";
 
 // ── Minimal stubs ─────────────────────────────────────────────────────────────
 
@@ -14,7 +15,12 @@ function taskHandle(taskId = "task-1") {
 }
 
 function approvalResponse(capToken = "tok-1") {
-  return { capabilityTokenIds: { 1: capToken } };
+  return { newStatus: TaskStatus.APPROVED, capabilityTokenIds: { 1: capToken } };
+}
+
+// The broker's approval row as GetGatewayApproval reports it (AG-07 slice 2).
+function gatewayApproval(over: Partial<{ status: TaskStatus; ownerMayApprove: boolean; capabilityTokenIds: Record<number, string> }> = {}) {
+  return { status: TaskStatus.AWAITING_APPROVAL, requiresN: 1, approvals: 0, stepUp: false, ownerMayApprove: true, capabilityTokenIds: {}, ...over };
 }
 
 function approvedPlan(capToken = "tok-1") {
@@ -60,10 +66,18 @@ function makeNorth(plan: "approved" | "needs-human" = "approved") {
   };
 }
 
-function makeSouth(planResult: ReturnType<typeof approvedPlan> | ReturnType<typeof needsHumanPlan>) {
+function makeSouth(
+  planResult: ReturnType<typeof approvedPlan> | ReturnType<typeof needsHumanPlan>,
+  // Successive GetGatewayApproval replies; the last one repeats.
+  approvalStates: ReturnType<typeof gatewayApproval>[] = [gatewayApproval()],
+) {
   const calls: CallLog[] = [];
   return {
     calls,
+    getGatewayApproval: (...args: unknown[]) => {
+      calls.push({ method: "getGatewayApproval", args });
+      return Promise.resolve(approvalStates.length > 1 ? approvalStates.shift()! : approvalStates[0]);
+    },
     createGatewayTask: (...args: unknown[]) => {
       calls.push({ method: "createGatewayTask", args });
       return Promise.resolve(taskHandle());
@@ -246,6 +260,59 @@ test("GovernanceBridge south-mode: NEEDS_HUMAN + approver declines → allow=fal
     0,
     "approveGatewayTask must not be called when approver declines",
   );
+});
+
+// ── AG-07 slice 2: the gate resumes from broker state ──────────────────────────
+
+const southIdentity = {
+  tenantId: "11111111-1111-1111-1111-111111111111",
+  userId: "alice@example.com",
+  agentId: "alice-agent",
+};
+
+test("2-of-n gate the owner may not vote on: waits, then runs on the others' approval", async () => {
+  const south = makeSouth(needsHumanPlan(), [
+    gatewayApproval({ ownerMayApprove: false }),
+    gatewayApproval({ ownerMayApprove: false }),
+    gatewayApproval({ status: TaskStatus.APPROVED, capabilityTokenIds: { 1: "tok-others" } }),
+  ]);
+  let shown: { ownerMayApprove: boolean } | undefined;
+  let released = false;
+  // The chat dialog: shows "waiting for approvers", never answers itself.
+  const waitingDialog = (info: { ownerMayApprove: boolean }, decided?: AbortSignal) => {
+    shown = info;
+    return new Promise<boolean>((resolve) => decided?.addEventListener("abort", () => { released = true; resolve(false); }));
+  };
+  const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, waitingDialog, log);
+  bridge.approvalPollMs = 1;
+
+  const decision = await bridge.gate("call-sod", "web_fetch", { url: "https://example.com" });
+
+  assert.equal(decision.allow, true);
+  assert.equal(shown?.ownerMayApprove, false, "dialog is told the owner cannot vote");
+  assert.equal(released, true, "dialog released once the broker decided");
+  assert.equal(south.calls.filter((c) => c.method === "approveGatewayTask").length, 0, "owner never votes");
+});
+
+test("a denial cast elsewhere (Inbox) ends the wait with a refusal", async () => {
+  const south = makeSouth(needsHumanPlan(), [gatewayApproval(), gatewayApproval({ status: TaskStatus.DENIED })]);
+  const neverAnswers = (_i: unknown, decided?: AbortSignal) =>
+    new Promise<boolean>((resolve) => decided?.addEventListener("abort", () => resolve(false)));
+  const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, neverAnswers, log);
+  bridge.approvalPollMs = 1;
+
+  const decision = await bridge.gate("call-denied", "web_fetch", { url: "https://example.com" });
+  assert.deepEqual(decision, { allow: false, reason: "approval declined" });
+});
+
+test("closing the run's bridge ends a pending wait", async () => {
+  const south = makeSouth(needsHumanPlan(), [gatewayApproval({ ownerMayApprove: false })]);
+  const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, async () => true, log);
+  bridge.approvalPollMs = 1;
+
+  const pending = bridge.gate("call-closed", "web_fetch", { url: "https://example.com" });
+  setTimeout(() => bridge.close(), 10);
+  assert.equal((await pending).allow, false);
 });
 
 // ── Grep gate (no tokenForUser / x-aikonos-user / demoPassword in src) ─────────

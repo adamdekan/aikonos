@@ -105,3 +105,30 @@ func TestApprovalExpiry(t *testing.T) {
 		t.Fatalf("second ExpireApproval: ok=%v err=%v, want false", ok, err)
 	}
 }
+
+// AG-07 slice 2: separation of duty holds on an empty approver set too — the
+// requester of a 2-of-n gate neither sees it in their list nor can vote.
+func TestApproval_EmptySetStillExcludesRequester(t *testing.T) {
+	repo, tenant, _, id := newApprovalFixture(t, []string{}, 2, time.Now().Add(time.Hour))
+	ctx := context.Background()
+
+	list, err := repo.ListPendingApprovalsFor(ctx, tenant, "alice@example.com")
+	if err != nil {
+		t.Fatalf("ListPendingApprovalsFor: %v", err)
+	}
+	for _, ar := range list {
+		if ar.ApprovalID.String() == id {
+			t.Fatal("requester listed for their own 2-of-n gate")
+		}
+	}
+	if _, _, err := repo.ResolveApproval(ctx, tenant, id, "alice@example.com", true, ""); !errors.Is(err, ErrVoterNotInApproverSet) {
+		t.Fatalf("requester vote: err = %v, want ErrVoterNotInApproverSet", err)
+	}
+	// Two other voters complete it, so no open gate leaks into sibling tests
+	// (a superuser test role sees every tenant's rows).
+	for _, v := range []string{"bob@example.com", "carol@example.com"} {
+		if _, _, err := repo.ResolveApproval(ctx, tenant, id, v, true, ""); err != nil {
+			t.Fatalf("vote by %s: %v", v, err)
+		}
+	}
+}
