@@ -12,6 +12,7 @@ import {
   listAgentApiKeys,
   revokeAgentApiKey,
   revokeAgentSessions,
+  setAgentStatus,
   listLlmProviders,
   listSkills,
 } from "../../api/admin.js";
@@ -431,6 +432,49 @@ async function confirmRevokeSessions() {
   }
 }
 
+// ── AG-03: agent lifecycle (kill switch) ────────────────────────────────────
+// Only an active agent runs. Suspend stops running tasks at their next tool
+// call and refuses new runs, API keys and scheduled fires until reactivated;
+// retire is final. Both need a reason (audited). Activation needs an owner who
+// is not blocked; the broker refuses otherwise and the message is shown.
+const statusTarget = ref(null); // { agent, to }
+const statusReason = ref("");
+const statusError  = ref("");
+const statusSaving = ref(false);
+
+async function activate(agent) {
+  error.value = "";
+  try {
+    await setAgentStatus(agent.id, "active");
+    toast("ok", "Agent activated.");
+    await load();
+  } catch (e) {
+    error.value = e.message;
+  }
+}
+
+function askStatus(agent, to) {
+  statusTarget.value = { agent, to };
+  statusReason.value = "";
+  statusError.value  = "";
+}
+
+async function confirmStatus() {
+  if (!statusReason.value.trim()) { statusError.value = "A reason is required."; return; }
+  statusSaving.value = true;
+  try {
+    const { agent, to } = statusTarget.value;
+    await setAgentStatus(agent.id, to, statusReason.value.trim());
+    toast("ok", to === "retired" ? "Agent retired." : "Agent suspended.");
+    statusTarget.value = null;
+    await load();
+  } catch (e) {
+    statusError.value = e.message;
+  } finally {
+    statusSaving.value = false;
+  }
+}
+
 function fmtDate(iso) {
   const d = new Date(iso);
   return isNaN(d) ? iso : d.toLocaleString();
@@ -447,7 +491,7 @@ const TABLE_COLS = [
   { key: "_skills",      label: "Skills" },
   { key: "_mcp",         label: "MCP" },
   { key: "_assigned",    label: "Assigned to" },
-  { key: "_actions",     label: "",            width: "300px" },
+  { key: "_actions",     label: "",            width: "460px" },
 ];
 </script>
 
@@ -482,7 +526,15 @@ const TABLE_COLS = [
         :row-attrs="{ 'data-testid': 'agent-row' }"
       >
         <template #row="{ row }">
-          <td class="mono">{{ row.name }}</td>
+          <td class="mono">
+            {{ row.name }}
+            <span
+              v-if="row.status"
+              :class="['badge', `badge-status-${row.status}`]"
+              :data-testid="`agent-status-${row.id}`"
+              :title="row.statusReason || ''"
+            >{{ row.status }}</span>
+          </td>
           <td class="muted">{{ row.llm_model || row.llmModel || "default" }}</td>
           <td>
             <span class="badge">{{ row.approval_mode || row.approvalMode || "needs_approval" }}</span>
@@ -524,6 +576,30 @@ const TABLE_COLS = [
               Revoke sessions
             </button>
             <button
+              v-if="row.status === 'staged' || row.status === 'suspended'"
+              :data-testid="`agent-activate-${row.id}`"
+              class="btn-secondary-sm"
+              @click="activate(row)"
+            >
+              Activate
+            </button>
+            <button
+              v-if="row.status === 'active'"
+              :data-testid="`agent-suspend-${row.id}`"
+              class="btn-danger-sm"
+              @click="askStatus(row, 'suspended')"
+            >
+              Suspend
+            </button>
+            <button
+              v-if="row.status && row.status !== 'retired' && !row.isDefault"
+              :data-testid="`agent-retire-${row.id}`"
+              class="btn-secondary-sm"
+              @click="askStatus(row, 'retired')"
+            >
+              Retire
+            </button>
+            <button
               v-if="!row.isDefault"
               :data-testid="`agent-delete-${row.id}`"
               class="btn-danger-sm"
@@ -563,6 +639,42 @@ const TABLE_COLS = [
           :disabled="revoking || !revokeReason.trim()"
           @click="confirmRevokeSessions"
         >Revoke sessions</button>
+      </template>
+    </Modal>
+
+    <!-- AG-03: suspend / retire reason dialog -->
+    <Modal
+      :open="!!statusTarget"
+      :title="statusTarget?.to === 'retired' ? 'Retire agent' : 'Suspend agent'"
+      @close="statusTarget = null"
+    >
+      <template v-if="statusTarget">
+        <p class="muted" v-if="statusTarget.to === 'retired'">
+          {{ statusTarget.agent.name }} stops for good: it cannot run or be activated again,
+          and its schedules are parked.
+        </p>
+        <p class="muted" v-else>
+          {{ statusTarget.agent.name }}: running tasks stop at their next tool call; new chats,
+          API key calls and scheduled runs are refused until you activate it again.
+        </p>
+        <FormField label="Reason (recorded in the audit log)">
+          <textarea
+            v-model="statusReason"
+            rows="3"
+            maxlength="500"
+            data-testid="agent-status-reason"
+          ></textarea>
+        </FormField>
+        <div v-if="statusError" class="banner-err" data-testid="agent-status-error">{{ statusError }}</div>
+      </template>
+      <template #footer>
+        <button class="btn-ghost" data-testid="agent-status-cancel" @click="statusTarget = null">Cancel</button>
+        <button
+          class="btn-danger-sm"
+          data-testid="agent-status-confirm"
+          :disabled="statusSaving || !statusReason.trim()"
+          @click="confirmStatus"
+        >{{ statusTarget?.to === 'retired' ? 'Retire' : 'Suspend' }}</button>
       </template>
     </Modal>
 
@@ -897,6 +1009,10 @@ const TABLE_COLS = [
   background: var(--fill-danger); color: var(--danger);
   border-color: var(--danger); margin-left: 4px;
 }
+.badge-status-active    { color: var(--ok); margin-left: 4px; }
+.badge-status-staged    { margin-left: 4px; }
+.badge-status-suspended { background: var(--fill-danger); color: var(--danger); border-color: var(--danger); margin-left: 4px; }
+.badge-status-retired   { text-decoration: line-through; margin-left: 4px; }
 .badge-ext {
   background: var(--fill-accent, var(--fill-muted));
   color: var(--accent, var(--text-muted));

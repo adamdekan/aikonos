@@ -58,6 +58,8 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // AG-06 authorized addition: POST /admin/members/:subject/block +
 // POST /admin/members/:subject/revoke-sessions +
 // POST /admin/agents/:id/revoke-sessions — user block and revoke-all.
+// AG-03 authorized addition: POST /admin/agents/:id/status — agent lifecycle
+// (activate / suspend / retire; broker-enforced, gateway evicts children).
 // CP2 authorized
 // addition: POST /admin/providers/:id/default-for — per-capability provider
 // default (supersedes the three single-capability routes, which stay).
@@ -144,6 +146,7 @@ const EXPECTED_ROUTES = [
   "POST /admin/agents",
   "POST /admin/agents/:id/keys",
   "POST /admin/agents/:id/revoke-sessions",
+  "POST /admin/agents/:id/status",
   "POST /admin/assignments",
   "POST /admin/assignments/revoke",
   "POST /admin/m365/test",

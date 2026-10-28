@@ -38,7 +38,17 @@ type Agent struct {
 	UpdatedAt         time.Time
 	RevokedBefore     *time.Time // AG-06 revocation epoch: credentials issued before it are void
 	IsDefault         bool       // AG-01: the tenant default agent (EnsureDefault creates it)
+	Status            string     // AG-03: staged | active | suspended | retired; only active runs
+	StatusReason      string     // AG-03: reason recorded with the last status change
 }
+
+// AG-03 agent lifecycle states (agents.status, migration 056).
+const (
+	AgentStaged    = "staged"
+	AgentActive    = "active"
+	AgentSuspended = "suspended"
+	AgentRetired   = "retired"
+)
 
 type AgentRepo struct {
 	pool   *pgxpool.Pool
@@ -49,7 +59,7 @@ func NewAgentRepo(pool *pgxpool.Pool, logger *zap.Logger) *AgentRepo {
 	return &AgentRepo{pool: pool, logger: logger}
 }
 
-const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at, revoked_before, is_default`
+const agentCols = `id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, soul, gateway_enabled, service_agent, created_by, created_at, updated_at, revoked_before, is_default, status, status_reason`
 
 func scanAgent(row interface {
 	Scan(dest ...any) error
@@ -58,7 +68,7 @@ func scanAgent(row interface {
 	var skillsJSON, mcpJSON, allowedProvidersJSON []byte
 	if err := row.Scan(&a.ID, &a.TenantID, &a.Name, &a.LLMModel, &a.ApprovalMode,
 		&skillsJSON, &mcpJSON, &allowedProvidersJSON, &a.PreferredProvider,
-		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.RevokedBefore, &a.IsDefault); err != nil {
+		&a.Soul, &a.GatewayEnabled, &a.ServiceAgent, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.RevokedBefore, &a.IsDefault, &a.Status, &a.StatusReason); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(skillsJSON, &a.Skills); err != nil {
@@ -100,9 +110,9 @@ func (r *AgentRepo) Create(ctx context.Context, a *Agent) error {
 			return fmt.Errorf("marshal allowed_providers: %w", err)
 		}
 		_, err = conn.Exec(ctx, `
-		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, service_agent, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.CreatedBy,
+		INSERT INTO agents (id, tenant_id, name, llm_model, approval_mode, skills, mcp_servers, allowed_providers, preferred_provider, gateway_enabled, service_agent, created_by, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13, ''), 'staged'))`,
+			a.ID, a.TenantID, a.Name, a.LLMModel, a.ApprovalMode, skillsJSON, mcpJSON, allowedProvidersJSON, a.PreferredProvider, a.GatewayEnabled, a.ServiceAgent, a.CreatedBy, a.Status,
 		)
 		if err != nil {
 			return fmt.Errorf("insert agent: %w", err)
@@ -216,8 +226,8 @@ func (r *AgentRepo) EnsureDefault(ctx context.Context, tenantID string) (*Agent,
 	var created bool
 	a, err := withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (*Agent, error) {
 		tag, err := conn.Exec(ctx, `
-		INSERT INTO agents (tenant_id, name, created_by, is_default)
-		VALUES ($1, $2, '', TRUE)
+		INSERT INTO agents (tenant_id, name, created_by, is_default, status)
+		VALUES ($1, $2, '', TRUE, 'active')
 		ON CONFLICT (tenant_id) WHERE is_default DO NOTHING`, tenantID, DefaultAgentName)
 		if err != nil {
 			return nil, fmt.Errorf("insert default agent: %w", err)

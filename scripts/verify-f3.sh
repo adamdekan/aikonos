@@ -130,6 +130,10 @@ else
     bad "create approvalMode:auto agent failed (admin token rejected?)"
   else
     ok "created approvalMode:auto agent"
+    # AG-03: new agents start staged; the creator owns it, so activation passes.
+    curl -s --max-time 8 -X POST "${GATEWAY}/admin/agents/${AGENT_ID}/status" \
+      -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+      -d '{"status":"active"}' >/dev/null 2>&1
 
     # 4b. mint an API key
     KEY_JSON=$(curl -s --max-time 8 -X POST "${GATEWAY}/admin/agents/${AGENT_ID}/keys" \

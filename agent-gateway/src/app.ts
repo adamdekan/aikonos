@@ -109,7 +109,7 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
 
   // ── Admin routes ─────────────────────────────────────────────────────────────
   // All /admin/* endpoints + /agents/:id/mcp-servers.
-  registerAdminRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
+  registerAdminRoutes(app, { clients: ctx.clients, jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts, supervisor: ctx.supervisor });
 
   // ── AG-UI SSE run endpoint ────────────────────────────────────────────────────
   registerAgUiRoutes(app, {

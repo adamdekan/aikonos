@@ -3,9 +3,9 @@
 // epochs. A revocation epoch ("not before") voids every credential issued to
 // the principal before it; a block is an infinite epoch. The north
 // interceptor, owner-grant verification, InvokeTool and the capability check
-// read through one Checker, so a block or revoke-all lands everywhere within
-// the cache TTL (immediately on the replica that wrote it: writes reset the
-// cache).
+// read through one Checker, so a block, revoke-all or agent suspension (AG-03)
+// lands everywhere within the cache TTL (immediately on the replica that wrote
+// it: writes reset the cache).
 package revocation
 
 import (
@@ -23,7 +23,8 @@ const TTL = 30 * time.Second
 // Store is the persisted state. *db.RevocationRepo satisfies it.
 type Store interface {
 	UserState(ctx context.Context, tenantID, subject string) (bool, time.Time, error)
-	AgentNotBefore(ctx context.Context, tenantID, agentID string) (time.Time, error)
+	AgentState(ctx context.Context, tenantID, agentID string) (string, time.Time, error)
+	SetAgentStatus(ctx context.Context, tenantID, agentID, from, to, reason string) error
 	BlockUser(ctx context.Context, tenantID, subject, reason, by string) (bool, error)
 	UnblockUser(ctx context.Context, tenantID, subject, by string) (bool, error)
 	UserBlocks(ctx context.Context, tenantID string) (map[string]db.UserBlock, error)
@@ -35,6 +36,19 @@ type Store interface {
 type State struct {
 	Blocked   bool      // user or tenant block: nothing issued is valid
 	NotBefore time.Time // credentials issued before this are void; zero = none
+	// AgentStatus is the agent's lifecycle status (AG-03): "" when no agent
+	// is in scope, "missing" when the agent does not exist.
+	AgentStatus string
+}
+
+// AgentRefusal is the AG-03 kill switch: "" when no agent is in scope or the
+// agent is active, else the refusal reason "agent_<status>" (agent_suspended,
+// agent_staged, agent_retired, agent_missing).
+func (s State) AgentRefusal() string {
+	if s.AgentStatus == "" || s.AgentStatus == db.AgentActive {
+		return ""
+	}
+	return "agent_" + s.AgentStatus
 }
 
 // Revoked reports whether a credential issued at iat is void. A zero iat (the
@@ -76,14 +90,18 @@ func (c *Checker) User(ctx context.Context, tenantID, subject string) (State, er
 	})
 }
 
-// Agent returns the agent's epoch (agents have no block; AG-03 owns status).
+// Agent returns the agent's epoch and lifecycle status (agents have no
+// block; a non-active status refuses instead, see AgentRefusal).
 func (c *Checker) Agent(ctx context.Context, tenantID, agentID string) (State, error) {
 	if c == nil || agentID == "" {
 		return State{}, nil
 	}
 	return c.cached("a|"+tenantID+"|"+agentID, func() (State, error) {
-		nb, err := c.Store.AgentNotBefore(ctx, tenantID, agentID)
-		return State{NotBefore: nb}, err
+		st, nb, err := c.Store.AgentState(ctx, tenantID, agentID)
+		if st == "" {
+			st = "missing"
+		}
+		return State{NotBefore: nb, AgentStatus: st}, err
 	})
 }
 
@@ -102,6 +120,7 @@ func (c *Checker) OnBehalfOf(ctx context.Context, tenantID, subject, actor strin
 	if a.NotBefore.After(u.NotBefore) {
 		u.NotBefore = a.NotBefore
 	}
+	u.AgentStatus = a.AgentStatus
 	return u, nil
 }
 
@@ -168,6 +187,12 @@ func (c *Checker) RevokeUser(ctx context.Context, tenantID, subject string) (tim
 	defer c.reset()
 	at := c.now().UTC()
 	return at, c.Store.RevokeUserSessions(ctx, tenantID, subject, at)
+}
+
+// SetAgentStatus moves the agent from status from to status to (AG-03).
+func (c *Checker) SetAgentStatus(ctx context.Context, tenantID, agentID, from, to, reason string) error {
+	defer c.reset()
+	return c.Store.SetAgentStatus(ctx, tenantID, agentID, from, to, reason)
 }
 
 // RevokeAgent moves the agent's epoch to now and returns it.

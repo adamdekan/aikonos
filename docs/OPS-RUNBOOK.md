@@ -166,6 +166,13 @@ python3 scripts/aikonosctl kill-switch user <principal-id>
 including its admins; it has no UI and is lifted with the SQL below
 (`scope='tenant'`).
 
+### Stop an agent immediately
+Use **Admin → Agents → Suspend** (reason required, audited as
+`aikonos.broker.agent.suspended`). Running tasks of the agent stop at their
+next tool call; new runs, API key calls, plans and scheduled fires are refused
+until **Activate**. See
+[`user-lifecycle.md`](user-lifecycle.md#agent-lifecycle).
+
 ### Check active kill switches
 ```bash
 python3 scripts/aikonosctl kill-switch status

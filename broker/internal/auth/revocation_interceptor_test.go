@@ -27,8 +27,11 @@ type revStore struct {
 func (s *revStore) UserState(context.Context, string, string) (bool, time.Time, error) {
 	return s.blocked, s.userNB, s.err
 }
-func (s *revStore) AgentNotBefore(context.Context, string, string) (time.Time, error) {
-	return time.Time{}, nil
+func (s *revStore) AgentState(context.Context, string, string) (string, time.Time, error) {
+	return "active", time.Time{}, nil
+}
+func (s *revStore) SetAgentStatus(context.Context, string, string, string, string, string) error {
+	return nil
 }
 func (s *revStore) BlockUser(context.Context, string, string, string, string) (bool, error) {
 	return true, nil

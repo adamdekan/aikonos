@@ -18,6 +18,7 @@ import { EffectClass } from "../../gen/ts/proto/plan";
 import { requireUser } from "../auth/require-user.js";
 import type { BrokerClients } from "../broker/clients";
 import type { VerifyOptions, JwksResolver } from "../auth/verify.js";
+import type { ChildSupervisor } from "../ipc/supervisor.js";
 import { parseSkillMd } from "../pi/skill-parser.js";
 import { scheduleJson } from "../schedule-json.js";
 import { sendError } from "../http-errors.js";
@@ -27,6 +28,8 @@ export interface AdminCtx {
   clients: BrokerClients;
   jwksResolver: JwksResolver;
   verifyOpts: VerifyOptions;
+  // AG-03: an agent that leaves active loses its children on this replica.
+  supervisor?: Pick<ChildSupervisor, "evictIdleForAgent">;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -162,6 +165,8 @@ export function agentJson(a: Agent) {
     sessionsRevokedAt: a.sessionsRevokedAt ?? "",
     orphaned: a.orphaned ?? false,
     isDefault: a.isDefault ?? false,
+    status: a.status ?? "",
+    statusReason: a.statusReason ?? "",
   };
 }
 
@@ -197,6 +202,8 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     sessionsRevokedAt: "", // read-only (AG-06); UpdateAgent ignores it
     orphaned: false, // read-only (AG-04); UpdateAgent ignores it
     isDefault: false, // read-only (AG-01); the broker sets it
+    status: "", // read-only (AG-03); SetAgentStatus moves it
+    statusReason: "",
     usableBy: [],
     createdBy: "",
     createdAt: undefined,
@@ -1680,6 +1687,33 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
           principal.token,
         );
         reply.send({ notBefore: resp.notBefore });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
+  // AG-03: lifecycle move (active | suspended | retired). Leaving active also
+  // evicts the agent's children on this replica, busy ones included.
+  app.post<{ Params: { id: string }; Body: { status?: string; reason?: string } }>(
+    "/admin/agents/:id/status",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      const status = String(req.body?.status ?? "");
+      try {
+        const resp = await clients.north.setAgentStatus(
+          { tenantId: principal.tenant, userId: principal.sub, agentId: req.params.id, status, reason: String(req.body?.reason ?? "") },
+          principal.token,
+        );
+        if (status !== "active") {
+          try {
+            ctx.supervisor?.evictIdleForAgent(req.params.id, `agent ${status}`, true);
+          } catch (evictErr) {
+            log.warn({ agentId: req.params.id, err: String(evictErr) }, "agent eviction failed; the broker refuses its next tool call");
+          }
+        }
+        reply.send({ agent: resp.agent ? agentJson(resp.agent) : null });
       } catch (err) {
         sendError(reply, log, err, { route: `${req.method} ${req.url}` });
       }

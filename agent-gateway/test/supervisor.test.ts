@@ -1221,6 +1221,23 @@ test("evictIdleForAgent: leaves a BUSY child for the target agent running", asyn
   assert.equal(h2, h1, "same busy handle returned");
 });
 
+test("evictIdleForAgent includeBusy (AG-03 kill switch): evicts a BUSY child too", async () => {
+  const rig = makeTestRig({ keying: "per-user" });
+  const identity = makeIdentity("user-a", "agent-a");
+  const key = rig.supervisor.keyFor(identity);
+
+  const h1 = await rig.supervisor.getOrSpawn(key, identity);
+  await flushAsync();
+  rig.supervisor.markBusy(h1);
+
+  rig.supervisor.evictIdleForAgent("agent-a", "agent suspended", true);
+
+  const h2 = await rig.supervisor.getOrSpawn(key, identity);
+  await flushAsync();
+  assert.equal(rig.spawnRecords.length, 2, "busy child of a suspended agent must be evicted");
+  assert.notEqual(h2, h1);
+});
+
 test("evictIdleForAgent: leaves other agents' idle children untouched", async () => {
   const rig = makeTestRig({ keying: "per-user" });
   const identityA = makeIdentity("user-a", "agent-a");

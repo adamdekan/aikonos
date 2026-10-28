@@ -118,6 +118,8 @@ func toProtoAgent(a *db.Agent) *brokerv1.Agent {
 		GatewayEnabled:    a.GatewayEnabled,
 		ServiceAgent:      a.ServiceAgent,
 		IsDefault:         a.IsDefault,
+		Status:            a.Status,
+		StatusReason:      a.StatusReason,
 		CreatedBy:         a.CreatedBy,
 		CreatedAt:         timestamppb.New(a.CreatedAt),
 		UpdatedAt:         timestamppb.New(a.UpdatedAt),
@@ -244,6 +246,7 @@ func (s *BrokerService) CreateAgent(ctx context.Context, req *brokerv1.CreateAge
 		GatewayEnabled:    req.Agent.GatewayEnabled,
 		ServiceAgent:      req.Agent.ServiceAgent,
 		CreatedBy:         user,
+		Status:            db.AgentStaged, // AG-03: activation needs an owner
 	}
 	if a.Skills == nil {
 		a.Skills = []string{}
@@ -336,8 +339,8 @@ func (s *BrokerService) ListAgents(ctx context.Context, req *brokerv1.ListAgents
 
 // agentOrphaned reports an agent that no one is left to answer for (AG-04): it
 // has no owner, or every owner is a user blocked under AG-06.
-// AG-03 hooks here: activation needs a non-orphaned agent, and the orphan sweep
-// suspends an agent that stays orphaned past a grace period.
+// AG-03: activation needs a non-orphaned agent (requireLiveOwner), and
+// SweepOrphanedAgents suspends an agent that stays orphaned past a grace period.
 // ponytail: a group owner counts as live without expanding its members; expand
 // when groups whose members are all blocked turn up.
 func agentOrphaned(owners []string, blocks map[string]db.UserBlock) bool {

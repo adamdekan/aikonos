@@ -82,6 +82,22 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	}
 	ctx = withOBOTask(ctx, task)
 
+	// AG-03: only an active agent plans. Checked before the task moves, so a
+	// refused plan leaves the row where it was.
+	if task.AgentID != nil {
+		r, rerr := agentRunRefusal(ctx, s.deps, tenantID, task.AgentID.String())
+		if rerr != nil {
+			s.deps.Logger.Error("SubmitPlan: agent state read failed", zap.String("task_id", req.TaskId), zap.Error(rerr))
+			return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+		}
+		if r != "" {
+			s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+				"plan_id": plan.PlanId, "reason": r,
+			})
+			return nil, agentRefusedErr(r)
+		}
+	}
+
 	// Move the task into VALIDATING (CREATED→PLANNING→VALIDATING as needed).
 	if err := s.advanceToValidating(ctx, tenantID, task, taskStore); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "task not in a plannable state: %v", err)

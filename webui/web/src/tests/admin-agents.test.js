@@ -31,6 +31,7 @@ vi.mock("../api/admin.js", () => ({
   listAgentApiKeys:     vi.fn(),
   revokeAgentApiKey:    vi.fn(),
   revokeAgentSessions:  vi.fn(),
+  setAgentStatus:       vi.fn(),
   listLlmProviders:     vi.fn(),
   listSkills:           vi.fn(),
 }));
@@ -115,6 +116,70 @@ describe("Agents.vue", () => {
     expect(adminApi.revokeAgentSessions).toHaveBeenCalledWith("a1", "key leaked");
     expect(document.querySelector("[data-testid='agent-revoke-confirm']")).toBeNull();
     w.unmount();
+  });
+
+  // AG-03: status badge and lifecycle actions per status.
+  it("shows the status badge and only the actions the status allows", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [
+      { ...SAMPLE_AGENT, id: "s1", status: "staged" },
+      { ...SAMPLE_AGENT, id: "a1", status: "active" },
+      { ...SAMPLE_AGENT, id: "p1", status: "suspended", statusReason: "incident 42" },
+      { ...SAMPLE_AGENT, id: "r1", status: "retired" },
+      { ...SAMPLE_AGENT, id: "d1", status: "active", isDefault: true },
+    ] });
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] } });
+    await flushPromises();
+    const has = (id) => w.find(`[data-testid='${id}']`).exists();
+    expect(w.find("[data-testid='agent-status-p1']").text()).toBe("suspended");
+    expect(w.find("[data-testid='agent-status-p1']").attributes("title")).toBe("incident 42");
+    expect([has("agent-activate-s1"), has("agent-suspend-s1"), has("agent-retire-s1")]).toEqual([true, false, true]);
+    expect([has("agent-activate-a1"), has("agent-suspend-a1"), has("agent-retire-a1")]).toEqual([false, true, true]);
+    expect([has("agent-activate-p1"), has("agent-suspend-p1"), has("agent-retire-p1")]).toEqual([true, false, true]);
+    expect([has("agent-activate-r1"), has("agent-suspend-r1"), has("agent-retire-r1")]).toEqual([false, false, false]);
+    expect([has("agent-suspend-d1"), has("agent-retire-d1")]).toEqual([true, false]);
+  });
+
+  it("activates directly and suspends with a reason", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [
+      { ...SAMPLE_AGENT, id: "s1", status: "staged" },
+      { ...SAMPLE_AGENT, id: "a1", status: "active" },
+    ] });
+    adminApi.setAgentStatus.mockResolvedValue({ agent: {} });
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] }, attachTo: document.body });
+    await flushPromises();
+
+    await w.find("[data-testid='agent-activate-s1']").trigger("click");
+    await flushPromises();
+    expect(adminApi.setAgentStatus).toHaveBeenCalledWith("s1", "active");
+
+    await w.find("[data-testid='agent-suspend-a1']").trigger("click");
+    await flushPromises();
+    expect(document.querySelector("[data-testid='agent-status-confirm']").disabled).toBe(true);
+    const reason = document.querySelector("[data-testid='agent-status-reason']");
+    reason.value = "incident 42";
+    reason.dispatchEvent(new Event("input"));
+    await flushPromises();
+    document.querySelector("[data-testid='agent-status-confirm']").click();
+    await flushPromises();
+    expect(adminApi.setAgentStatus).toHaveBeenCalledWith("a1", "suspended", "incident 42");
+    expect(document.querySelector("[data-testid='agent-status-confirm']")).toBeNull();
+    w.unmount();
+  });
+
+  it("shows the broker refusal when activation needs an owner", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [{ ...SAMPLE_AGENT, id: "s1", status: "staged" }] });
+    adminApi.setAgentStatus.mockRejectedValue(new Error("agent needs at least one owner who is not blocked before it can be activated"));
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] } });
+    await flushPromises();
+    await w.find("[data-testid='agent-activate-s1']").trigger("click");
+    await flushPromises();
+    expect(w.find("[data-testid='error-banner']").text()).toContain("owner");
   });
 
   // AG-04: ListAgents flags an agent whose owners are all blocked (or gone).

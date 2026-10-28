@@ -363,6 +363,12 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		s.emitToolDenied(ctx, req, scope, "subject_blocked", nil, nil)
 		return nil, status.Error(codes.PermissionDenied, "user is blocked")
 	}
+	// AG-03 kill switch: a task whose agent is no longer active stops here,
+	// at its next tool call, without waiting for the capability token to expire.
+	if r := revState.AgentRefusal(); r != "" {
+		s.emitToolDenied(ctx, req, scope, r, nil, nil)
+		return nil, agentRefusedErr(r)
+	}
 
 	// Capability gate: the step's Biscuit token must be signed by the broker
 	// root and must grant the scope this tool requires. This is enforced before

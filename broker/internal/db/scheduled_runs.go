@@ -105,7 +105,7 @@ type ScheduledRun struct {
 	DelegationRevokedBy string
 	// SkipReason is set by ClaimDue on a claimed row it parked instead of
 	// firing ("delegation_expired" | "delegation_revoked" | "actor_missing" |
-	// "subject_blocked" | "actor_revoked", also written to last_status). Not a
+	// "subject_blocked" | "actor_revoked" | "actor_retired", also written to last_status). Not a
 	// column.
 	SkipReason string
 }
@@ -383,7 +383,8 @@ func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) erro
 // audit the skip; the caller must not fire it. requireActor (identity.obo=
 // enforce, AG-17 S8) parks a row with no actor the same way ("actor_missing"),
 // as does a blocked owner or tenant ("subject_blocked") and an actor revoked
-// after the schedule was created ("actor_revoked", AG-06). An unblocked owner
+// after the schedule was created ("actor_revoked", AG-06), and a retired actor
+// ("actor_retired", AG-03). An unblocked owner
 // resumes the schedule; an actor-revoked one must be recreated.
 func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int, requireActor bool) ([]*ScheduledRun, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*ScheduledRun, error) {
@@ -423,14 +424,17 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 			// AG-06: the owner (or tenant) is blocked, or the actor's
 			// revoke-all came after this delegation was created. Read in the
 			// claim's transaction, uncached.
-			var subjectBlocked, actorRevoked bool
+			// AG-03: a retired actor never runs again; a suspended one is
+			// skipped per fire by the caller and resumes on reactivation.
+			var subjectBlocked, actorRevoked, actorRetired bool
 			if err := tx.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM kill_switches
 			                WHERE tenant_id = $1 AND active
 			                  AND (scope = 'tenant' OR (scope = 'user' AND subject = $2))),
-			       COALESCE((SELECT revoked_before > $4 FROM agents WHERE id = $3), FALSE)`,
+			       COALESCE((SELECT revoked_before > $4 FROM agents WHERE id = $3), FALSE),
+			       COALESCE((SELECT status = 'retired' FROM agents WHERE id = $3), FALSE)`,
 				s.TenantID, s.OwnerUserID, s.ActorAgentID, s.CreatedAt,
-			).Scan(&subjectBlocked, &actorRevoked); err != nil {
+			).Scan(&subjectBlocked, &actorRevoked, &actorRetired); err != nil {
 				return nil, fmt.Errorf("read revocation for scheduled_run: %w", err)
 			}
 			switch {
@@ -444,6 +448,8 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 				s.SkipReason = "subject_blocked"
 			case actorRevoked:
 				s.SkipReason = "actor_revoked"
+			case actorRetired:
+				s.SkipReason = "actor_retired"
 			}
 			if s.SkipReason != "" {
 				if _, err := tx.Exec(ctx, `UPDATE scheduled_runs SET state='PAUSED', next_fire_at=NULL, last_status=$1, updated_at=NOW() WHERE scheduled_run_id=$2`, s.SkipReason, s.ScheduledRunID); err != nil {

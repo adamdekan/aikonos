@@ -1139,6 +1139,8 @@ func main() {
 
 	// AG-07 (M-09): expire approvals past expires_at.
 	go runApprovalExpiryLoop(ctx, taskRepo, auditEmitter, log)
+	// AG-03: suspend agents orphaned past identity.orphan_grace_days.
+	go runOrphanSweepLoop(ctx, northSvc, viper.GetString("tenant_id"), log)
 
 	// Per-call LLM usage event retention.
 	if days := viper.GetInt("llm_usage.retention_days"); days > 0 {
@@ -1281,6 +1283,27 @@ func runApprovalExpiryLoop(ctx context.Context, repo *db.TaskRepo, em *audit.Emi
 		case <-ticker.C:
 			if n := brokersvc.SweepExpiredApprovals(ctx, repo, em, log); n > 0 {
 				log.Info("approval expiry: expired approvals", zap.Int("count", n))
+			}
+		}
+	}
+}
+
+// runOrphanSweepLoop suspends, hourly, every active agent that has stayed
+// orphaned past the tenant's grace period (brokersvc.SweepOrphanedAgents). The
+// grace period is days, so the hour of lag is noise.
+func runOrphanSweepLoop(ctx context.Context, svc *brokersvc.BrokerService, tenant string, log *zap.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			n, err := svc.SweepOrphanedAgents(ctx, tenant, now)
+			if err != nil {
+				log.Warn("orphan sweep failed", zap.Int("suspended", n), zap.Error(err))
+			} else if n > 0 {
+				log.Info("orphan sweep: suspended agents", zap.Int("count", n))
 			}
 		}
 	}

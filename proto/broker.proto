@@ -227,6 +227,12 @@ service BrokerService {
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
   rpc UpdateAgent(UpdateAgentRequest) returns (UpdateAgentResponse);
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
+  // AG-03: move an agent through its lifecycle. staged -> active needs an
+  // owner who is not blocked (FailedPrecondition otherwise); active <->
+  // suspended; any -> retired (final; not the tenant default agent). Only an
+  // active agent runs. Audited as agent.activated / reactivated / suspended /
+  // retired; a concurrent change is Aborted.
+  rpc SetAgentStatus(SetAgentStatusRequest) returns (SetAgentStatusResponse);
 
   // List the agents the caller may use (via FGA can_use). No admin gate.
   // The tenant default agent is not listed: no agent picked means it.
@@ -1754,6 +1760,8 @@ message Agent {
   string sessions_revoked_at = 16; // AG-06: RFC3339 revocation epoch; empty if never
   bool   orphaned = 17;            // AG-04: no owner, or every owner blocked (read-only, ListAgents)
   bool   is_default = 18;          // AG-01: the tenant default agent (read-only; cannot be deleted)
+  string status = 19;              // AG-03: staged | active | suspended | retired (read-only; SetAgentStatus)
+  string status_reason = 20;       // AG-03: reason recorded with the last status change (read-only)
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
@@ -1764,6 +1772,11 @@ message UpdateAgentRequest { string tenant_id = 1; string user_id = 2; Agent age
 message UpdateAgentResponse { Agent agent = 1; }
 message DeleteAgentRequest { string tenant_id = 1; string user_id = 2; string id = 3; }
 message DeleteAgentResponse { bool success = 1; }
+
+// AG-03: status is the target (active | suspended | retired); reason is
+// required for suspended and retired.
+message SetAgentStatusRequest  { string tenant_id = 1; string user_id = 2; string agent_id = 3; string status = 4; string reason = 5; }
+message SetAgentStatusResponse { Agent agent = 1; }
 
 message ListMyAgentsRequest  { string tenant_id = 1; string user_id = 2; }
 message MyAgent              { string id = 1; string name = 2; }
