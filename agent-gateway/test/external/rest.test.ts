@@ -415,3 +415,34 @@ test("revoked key → 401", async () => {
   assert.equal(resp.statusCode, 401);
   await app.close();
 });
+
+test("AG-17 S6: X-Aikonos-Subject-Token forwarded as user_assertion; run owner is the asserted user", async () => {
+  let seen: { userAssertion?: string } | undefined;
+  let ownerUserId: string | undefined;
+  const south = makeSouth(AUTO_AGENT_ID);
+  south.resolveAgentApiKey = async (req?: { userAssertion?: string }) => {
+    seen = req;
+    return { valid: true, agentId: AUTO_AGENT_ID, tenantId: TENANT, principal: "alice-sub" };
+  };
+  const supervisor = {
+    ...fakeSupervisor,
+    keyFor: (id: { userId: string }) => { ownerUserId = id.userId; return "__single__"; },
+  } as unknown as ChildSupervisor;
+  const app = buildExternalApp(baseCfg, makeClients(south), log, supervisor);
+  await app.ready();
+
+  await app.inject({
+    method: "POST",
+    url: `/v1/agents/${AUTO_AGENT_ID}/invoke`,
+    headers: {
+      authorization: `Bearer ${RAW_KEY_AUTO}`,
+      "x-aikonos-subject-token": "user.jwt",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ prompt: "hello" }),
+  });
+
+  assert.equal(seen?.userAssertion, "user.jwt");
+  assert.equal(ownerUserId, "alice-sub");
+  await app.close();
+});

@@ -8,7 +8,7 @@ import { authenticateApiKey, type ResolvedPrincipal } from "../../src/external/a
 // ── Minimal south stub ────────────────────────────────────────────────────────
 
 interface ResolveFn {
-  (req: { keyHashHex: string; tenantId: string }): Promise<{
+  (req: { keyHashHex: string; tenantId: string; userAssertion?: string }): Promise<{
     valid: boolean;
     agentId: string;
     tenantId: string;
@@ -98,4 +98,22 @@ test("sha256 is computed before sending to south (south never sees raw key)", as
   assert.notEqual(capturedHashHex, RAW_KEY);
   // Must be a 64-char hex string (sha256 → 32 bytes → 64 hex chars)
   assert.match(capturedHashHex, /^[0-9a-f]{64}$/);
+});
+
+test("AG-17 S6: subject token forwarded as userAssertion; principal is the asserted user", async () => {
+  let seen: { userAssertion?: string } | undefined;
+  const south = makeSouth(async (req) => {
+    seen = req;
+    return { valid: true, agentId: AGENT_ID, tenantId: TENANT, principal: "alice-sub" };
+  });
+  const result = await authenticateApiKey(`Bearer ${RAW_KEY}`, TENANT, south, undefined, "user.jwt");
+  assert.equal(seen?.userAssertion, "user.jwt");
+  assert.ok(result.ok);
+  assert.equal(result.principal.principal, "alice-sub");
+});
+
+test("AG-17 S6: assertion answered as svc- (pre-S6 broker) → 401, no silent fallback", async () => {
+  const south = makeSouth(async () => ({ valid: true, agentId: AGENT_ID, tenantId: TENANT, principal: `svc-${AGENT_ID}` }));
+  const result = await authenticateApiKey(`Bearer ${RAW_KEY}`, TENANT, south, undefined, "user.jwt");
+  assert.equal(result.ok, false);
 });

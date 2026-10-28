@@ -9,7 +9,7 @@ import type { Logger } from "../log.js";
 export interface ResolvedPrincipal {
   agentId: string;
   tenantId: string;
-  principal: string; // "svc-<agentId>"
+  principal: string; // assertion subject (AG-17 S6), else "svc-<agentId>"
   ownerGrant: string; // broker-minted HMAC grant; forwarded to createGatewayTask
 }
 
@@ -33,6 +33,7 @@ export async function authenticateApiKey(
   tenantId: string,
   south: SouthClient,
   log?: Logger,
+  userAssertion?: string, // X-Aikonos-Subject-Token; the broker validates it
 ): Promise<AuthResult> {
   if (!authHeader) return fail("missing Authorization header");
 
@@ -44,8 +45,10 @@ export async function authenticateApiKey(
   const keyHashHex = sha256Hex(rawKey);
 
   try {
-    const resp = await south.resolveAgentApiKey({ keyHashHex, tenantId });
+    const resp = await south.resolveAgentApiKey({ keyHashHex, tenantId, userAssertion: userAssertion ?? "" });
     if (!resp.valid) return fail("key revoked or not found");
+    // A pre-S6 broker drops user_assertion and answers as svc-; never run that.
+    if (userAssertion && resp.principal.startsWith("svc-")) return fail("user assertion not honoured");
     return {
       ok: true,
       principal: {

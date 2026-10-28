@@ -1806,17 +1806,20 @@ message RevokeAgentApiKeyResponse {
 
 // ResolveAgentApiKeyRequest carries the sha256(raw_key) hex digest.
 // The gateway computes sha256 locally; the broker applies the pepper.
+// user_assertion (AG-17 S6) is an optional north OIDC token for the person the
+// external agent acts for; when set and valid the run carries that subject.
 message ResolveAgentApiKeyRequest {
-  string key_hash_hex = 1;  // hex-encoded sha256(raw_key)
-  string tenant_id    = 2;  // used for RLS + cross-tenant guard
+  string key_hash_hex   = 1;  // hex-encoded sha256(raw_key)
+  string tenant_id      = 2;  // used for RLS + cross-tenant guard
+  string user_assertion = 3;  // optional OIDC token (X-Aikonos-Subject-Token)
 }
 
 message ResolveAgentApiKeyResponse {
   bool   valid       = 1;
   string agent_id    = 2;   // bare UUID (if valid)
   string tenant_id   = 3;   // UUID string (if valid)
-  string principal   = 4;   // "svc-<agentId>" (if valid)
-  string owner_grant = 5;   // broker-issued HMAC owner-grant token for "svc-<agentId>" (CP2); gateway threads into CreateGatewayTask
+  string principal   = 4;   // assertion subject, else "svc-<agentId>" (if valid)
+  string owner_grant = 5;   // broker-issued HMAC owner-grant token for principal (CP2); gateway threads into CreateGatewayTask
 }
 
 // ── LLM provider messages ─────────────────────────────────────────────────────

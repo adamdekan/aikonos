@@ -22,6 +22,9 @@
 // History caps: not an array, a bad role/content shape, >100 turns, or >200 KiB
 // of total content → 400. Body cap (256 KiB, server.ts) return Fastify's own 413.
 // Auth: authenticateApiKey middleware (Bearer tk_…). 401 on miss/revoke.
+// Optional X-Aikonos-Subject-Token (AG-17 S6): a user OIDC token the broker
+// validates; the run then acts for that user instead of svc-<agentId>. A bad
+// token is a 401, never a silent svc- fallback.
 // Agent must have gateway_enabled=true. 403 otherwise (deny-by-default).
 // Agent must have approvalMode:auto. 409 otherwise (pre-session, no session built).
 // URL :id must match the key-resolved agentId. 409 if they disagree.
@@ -59,7 +62,9 @@ export function registerExternalRoutes(
     async (req, reply) => {
       // 1. Auth: resolve the API key.
       const authHeader = req.headers.authorization;
-      const auth = await authenticateApiKey(authHeader, cfg.defaultTenantId, clients.south, log);
+      const subjectToken = req.headers["x-aikonos-subject-token"];
+      const auth = await authenticateApiKey(authHeader, cfg.defaultTenantId, clients.south, log,
+        typeof subjectToken === "string" ? subjectToken : undefined);
       if (!auth.ok) {
         return reply.code(auth.status).send({ error: auth.message });
       }
@@ -120,9 +125,8 @@ export function registerExternalRoutes(
         connection: "keep-alive",
       });
 
-      const ownerUserId = `svc-${agentId}`;
       try {
-        const iter = runAgentInvocation(agentId, ownerUserId, tenantId, agentSpec.skills, prompt, {
+        const iter = runAgentInvocation(agentId, principal, tenantId, agentSpec.skills, prompt, {
           clients,
           cfg,
           log,
