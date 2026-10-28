@@ -34,8 +34,11 @@ interface ScheduleBody {
   cronExpr?: string;
   runAt?: string; // ISO datetime
   approvedTools?: string[];
+  actorAgentId?: string; // bare agent UUID the run acts as; empty = no agent
   action?: "pause" | "resume" | "revoke";
 }
+
+const AGENT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): void {
   app.get("/schedules", async (req, reply) => {
@@ -56,6 +59,11 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
     const b = req.body ?? {};
+    const actorAgentId = (b.actorAgentId ?? "").trim();
+    if (actorAgentId && !AGENT_UUID_RE.test(actorAgentId)) {
+      reply.code(400).send({ error: "actorAgentId must be an agent UUID" });
+      return;
+    }
     try {
       const resp = await ctx.clients.north.createScheduledRun(
         {
@@ -70,7 +78,7 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
           // webui-facing route — always prompt-mode.
           workflowLineageId: "",
           workflowInputs: {},
-          actorAgentId: "",
+          actorAgentId,
         },
         principal.token,
       );
@@ -84,6 +92,13 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
     const b = req.body ?? {};
+    // Absent = keep the schedule's actor; present ("" clears) is checked by
+    // the broker exactly as at create.
+    const actorAgentId = b.actorAgentId == null ? undefined : String(b.actorAgentId).trim();
+    if (actorAgentId && !AGENT_UUID_RE.test(actorAgentId)) {
+      reply.code(400).send({ error: "actorAgentId must be an agent UUID" });
+      return;
+    }
     let desiredState = ScheduledRunState.SCHEDULED_RUN_STATE_UNSPECIFIED;
     if (b.action === "pause") desiredState = ScheduledRunState.SCHEDULED_RUN_PAUSED;
     else if (b.action === "resume") desiredState = ScheduledRunState.SCHEDULED_RUN_ACTIVE;
@@ -106,6 +121,7 @@ export function registerScheduleRoutes(app: FastifyInstance, ctx: ScheduleCtx): 
           workflowLineageId: "",
           workflowInputs: {},
           revokeDelegation: b.action === "revoke",
+          actorAgentId,
         },
         principal.token,
       );

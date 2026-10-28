@@ -16,7 +16,12 @@ vi.mock("../api/schedules.js", () => ({
   deleteSchedule: vi.fn(),
 }));
 
+vi.mock("../api/agents.js", () => ({
+  listMyAgents: vi.fn().mockResolvedValue({ agents: [] }),
+}));
+
 import Schedules from "../views/Schedules.vue";
+import * as agentsApi from "../api/agents.js";
 import RecurrenceSelector from "../components/RecurrenceSelector.vue";
 import * as schedApiView from "../api/schedules.js";
 import { localTz } from "../lib/cron.js";
@@ -76,6 +81,7 @@ describe("Schedules.vue", () => {
     setActivePinia(createPinia());
     useUserStore().setFromProfile({ email: "alice@example.com", sub: "alice@example.com" });
     vi.clearAllMocks();
+    agentsApi.listMyAgents.mockResolvedValue({ agents: [] });
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -372,5 +378,107 @@ describe("Schedules.vue", () => {
     const w = mount(Schedules, { global: { plugins: [router] } });
     await flushPromises();
     expect(w.find("[data-testid='error-banner']").exists()).toBe(true);
+  });
+
+  // ── AG-17: "Acts as" picker + absolute one-off time ─────────────────────────
+  async function mountView() {
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+    return w;
+  }
+
+  it("preselects the only agent and sends it as actorAgentId", async () => {
+    agentsApi.listMyAgents.mockResolvedValue({ agents: [{ id: "11111111-1111-1111-1111-111111111111", name: "Reporter" }] });
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [] });
+    schedApiView.createSchedule.mockResolvedValue({ schedule: SAMPLE_SCHED });
+    const w = await mountView();
+
+    const opts = w.findAll("[data-testid='new-actor'] option").map(o => o.text());
+    expect(opts).toEqual(["No agent", "Reporter"]);
+    await w.find("[data-testid='new-prompt']").setValue("p");
+    await w.find("[data-testid='create-schedule-form']").trigger("submit");
+    await flushPromises();
+    expect(schedApiView.createSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ actorAgentId: "11111111-1111-1111-1111-111111111111" }),
+    );
+  });
+
+  it("defaults to no agent when the user has several, and sends the chosen one", async () => {
+    agentsApi.listMyAgents.mockResolvedValue({ agents: [{ id: "a-1", name: "One" }, { id: "a-2", name: "Two" }] });
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [] });
+    schedApiView.createSchedule.mockResolvedValue({ schedule: SAMPLE_SCHED });
+    const w = await mountView();
+
+    expect(w.find("[data-testid='new-actor']").element.value).toBe("");
+    await w.find("[data-testid='new-actor']").setValue("a-2");
+    await w.find("[data-testid='new-prompt']").setValue("p");
+    await w.find("[data-testid='create-schedule-form']").trigger("submit");
+    await flushPromises();
+    expect(schedApiView.createSchedule).toHaveBeenCalledWith(expect.objectContaining({ actorAgentId: "a-2" }));
+  });
+
+  it("edit form offers the same Acts as picker and sends a changed actor (re-arms an actor_missing row)", async () => {
+    agentsApi.listMyAgents.mockResolvedValue({ agents: [{ id: "a-1", name: "One" }, { id: "a-2", name: "Two" }] });
+    const parked = { ...SAMPLE_SCHED, actorAgentId: "", state: "PAUSED", lastStatus: "actor_missing" };
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [parked] });
+    schedApiView.updateSchedule.mockResolvedValue({ schedule: { ...parked, actorAgentId: "a-2" } });
+    const w = await mountView();
+
+    await w.find("[data-testid='edit-s1']").trigger("click");
+    await flushPromises();
+    const picker = w.find("[data-testid='edit-actor-s1']");
+    expect(picker.findAll("option").map(o => o.text())).toEqual(["No agent", "One", "Two"]);
+    expect(picker.element.value).toBe("");
+    await picker.setValue("a-2");
+    await w.find("[data-testid='save-s1']").trigger("click");
+    await flushPromises();
+    expect(schedApiView.updateSchedule).toHaveBeenCalledWith("s1", expect.objectContaining({ actorAgentId: "a-2" }));
+  });
+
+  it("an edit that leaves the actor alone does not send actorAgentId", async () => {
+    agentsApi.listMyAgents.mockResolvedValue({ agents: [{ id: "a-1", name: "One" }] });
+    const bound = { ...SAMPLE_SCHED, actorAgentId: "a-1" };
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [bound] });
+    schedApiView.updateSchedule.mockResolvedValue({ schedule: bound });
+    const w = await mountView();
+
+    await w.find("[data-testid='edit-s1']").trigger("click");
+    await flushPromises();
+    expect(w.find("[data-testid='edit-actor-s1']").element.value).toBe("a-1");
+    await w.find("[data-testid='save-s1']").trigger("click");
+    await flushPromises();
+    expect(schedApiView.updateSchedule.mock.calls[0][1].actorAgentId).toBeUndefined();
+  });
+
+  it("one-off create sends runAt as an absolute ISO instant of the local time", async () => {
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [] });
+    schedApiView.createSchedule.mockResolvedValue({ schedule: SAMPLE_SCHED });
+    const w = await mountView();
+
+    await w.find("[data-testid='new-prompt']").setValue("p");
+    await w.find("[data-testid='new-kind']").setValue("ONCE");
+    await w.find("[data-testid='new-run-at']").setValue("2099-03-01T09:30");
+    await w.find("[data-testid='create-schedule-form']").trigger("submit");
+    await flushPromises();
+    const { runAt } = schedApiView.createSchedule.mock.calls[0][0];
+    expect(runAt).toBe(new Date("2099-03-01T09:30").toISOString());
+    expect(runAt.endsWith("Z")).toBe(true);
+  });
+
+  it("one-off edit shows the stored instant in local time and round-trips it", async () => {
+    const at = new Date(2099, 2, 1, 9, 30); // local 09:30
+    const once = { ...SAMPLE_SCHED, kind: "ONCE", cronExpr: "", nextFireAt: at.toISOString() };
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [once] });
+    schedApiView.updateSchedule.mockResolvedValue({ schedule: once });
+    const w = await mountView();
+
+    await w.find("[data-testid='edit-s1']").trigger("click");
+    await flushPromises();
+    expect(w.find("[data-testid='edit-run-at-s1']").element.value).toBe("2099-03-01T09:30");
+    await w.find("[data-testid='save-s1']").trigger("click");
+    await flushPromises();
+    expect(schedApiView.updateSchedule).toHaveBeenCalledWith("s1", expect.objectContaining({ runAt: at.toISOString() }));
   });
 });

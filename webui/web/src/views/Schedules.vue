@@ -1,9 +1,13 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import Icon from "../components/Icon.vue";
 import RecurrenceSelector from "../components/RecurrenceSelector.vue";
 import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, revokeSchedule, deleteSchedule } from "../api/schedules.js";
 import { describeCron } from "../lib/cron.js";
+import { useAgentsStore } from "../store/agents.js";
+
+const agentsStore = useAgentsStore();
+const agentNameById = computed(() => Object.fromEntries(agentsStore.assigned.map(a => [a.id, a.name])));
 
 const schedules = ref([]);
 const error = ref("");
@@ -13,6 +17,18 @@ const newPrompt   = ref("");
 const newKind     = ref("CRON");
 const newCron     = ref("0 9 * * *"); // daily 09:00 — valid default if submitted untouched
 const newRunAt    = ref("");
+const newActor    = ref(""); // "" = no agent; the broker's identity.obo=enforce rejects that
+
+// Exactly one agent → preselect it; several → make the user choose.
+function defaultActor() {
+  newActor.value = agentsStore.assigned.length === 1 ? agentsStore.assigned[0].id : "";
+}
+
+// datetime-local is naive local time; the server reads a bare string as UTC,
+// so send an absolute instant.
+function localInputToIso(v) {
+  return v ? new Date(v).toISOString() : undefined;
+}
 
 // Inline-edit state (one row at a time)
 const editingId   = ref(null);
@@ -20,6 +36,8 @@ const editPrompt  = ref("");
 const editKind    = ref("CRON");
 const editCron    = ref("0 9 * * *");
 const editRunAt   = ref("");
+const editActor   = ref("");
+let   editActorWas = ""; // sent only when changed, so a timing edit never re-checks the actor
 let   editTools   = [];
 
 // ISO → the local "YYYY-MM-DDTHH:mm" that <input type="datetime-local"> wants.
@@ -36,6 +54,7 @@ function startEdit(s) {
   editKind.value   = s.kind === "ONCE" ? "ONCE" : "CRON";
   editCron.value   = s.cronExpr || "0 9 * * *";
   editRunAt.value  = s.kind === "ONCE" ? isoToLocalInput(s.nextFireAt) : "";
+  editActor.value  = editActorWas = s.actorAgentId ?? "";
   editTools        = s.approvedTools ?? []; // resend verbatim so the broker doesn't clear them
 }
 
@@ -57,8 +76,9 @@ async function saveEdit(id) {
       prompt:        editPrompt.value.trim(),
       kind:          editKind.value,
       cronExpr:      editKind.value === "CRON" ? editCron.value.trim() : "",
-      runAt:         editKind.value === "ONCE" ? (editRunAt.value || undefined) : undefined,
+      runAt:         editKind.value === "ONCE" ? localInputToIso(editRunAt.value) : undefined,
       approvedTools: editTools,
+      actorAgentId:  editActor.value !== editActorWas ? editActor.value : undefined,
     });
     if (result.schedule) updateRow(result.schedule);
     editingId.value = null;
@@ -84,8 +104,9 @@ async function submit() {
       prompt:        newPrompt.value.trim(),
       kind:          newKind.value,
       cronExpr:      newKind.value === "CRON" ? newCron.value.trim() : "",
-      runAt:         newKind.value === "ONCE" ? (newRunAt.value || undefined) : undefined,
+      runAt:         newKind.value === "ONCE" ? localInputToIso(newRunAt.value) : undefined,
       approvedTools: ["web.fetch", "doc.read", "doc.write"],
+      actorAgentId:  newActor.value,
     });
     if (result.schedule) {
       schedules.value.push(result.schedule);
@@ -143,7 +164,10 @@ function updateRow(updated) {
   if (idx !== -1) schedules.value[idx] = updated;
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  agentsStore.refresh().then(defaultActor); // store swallows its own errors
+});
 </script>
 
 <template>
@@ -184,6 +208,13 @@ onMounted(load);
           type="datetime-local"
           data-testid="new-run-at"
         />
+        <label class="form-inline">
+          Acts as
+          <select v-model="newActor" class="field" data-testid="new-actor">
+            <option value="">No agent</option>
+            <option v-for="a in agentsStore.assigned" :key="a.id" :value="a.id">{{ a.name }}</option>
+          </select>
+        </label>
       </div>
       <div class="form-actions">
         <button type="submit" class="btn-accent">
@@ -224,6 +255,14 @@ onMounted(load);
               type="datetime-local"
               :data-testid="`edit-run-at-${s.id}`"
             />
+            <label class="form-inline">
+              Acts as
+              <select v-model="editActor" class="field" :data-testid="`edit-actor-${s.id}`">
+                <option value="">No agent</option>
+                <option v-if="s.actorAgentId && !agentNameById[s.actorAgentId]" :value="s.actorAgentId">{{ s.actorAgentId }}</option>
+                <option v-for="a in agentsStore.assigned" :key="a.id" :value="a.id">{{ a.name }}</option>
+              </select>
+            </label>
           </div>
         </div>
         <div v-else class="schedule-main">
@@ -241,7 +280,7 @@ onMounted(load);
             Next: {{ new Date(s.nextFireAt).toLocaleString() }}
           </span>
           <span class="schedule-next" :data-testid="`delegation-${s.id}`">
-            Acts as {{ s.actorAgentId || "no agent" }} ·
+            Acts as {{ s.actorAgentId ? (agentNameById[s.actorAgentId] || s.actorAgentId) : "no agent" }} ·
             <template v-if="s.delegationRevokedAt">
               Revoked {{ new Date(s.delegationRevokedAt).toLocaleString() }}{{ s.delegationRevokedBy ? ` by ${s.delegationRevokedBy}` : "" }}
             </template>

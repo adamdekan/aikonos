@@ -9,6 +9,7 @@ import (
 func TestTaskOnBehalfOf(t *testing.T) {
 	agent, client, grant := uuid.New(), uuid.New(), uuid.New()
 	sender := "u-sender"
+	interactive, workflow := "interactive", "workflow"
 	cases := []struct {
 		name string
 		task Task
@@ -21,6 +22,10 @@ func TestTaskOnBehalfOf(t *testing.T) {
 			OnBehalfOf{Subject: "u-1", Actor: agent.String(), GrantID: grant.String(), Kind: "scheduled"}},
 		{"delegated", Task{OwnerUserID: "u-2", DelegatedByUserID: &sender},
 			OnBehalfOf{Subject: "u-2", DelegatedBy: sender}},
+		{"interactive", Task{OwnerUserID: "u-1", AgentID: &agent, OBOKind: &interactive},
+			OnBehalfOf{Subject: "u-1", Actor: agent.String(), Kind: "interactive"}},
+		{"workflow", Task{OwnerUserID: "u-1", AgentID: &agent, OBOKind: &workflow},
+			OnBehalfOf{Subject: "u-1", Actor: agent.String(), Kind: "workflow"}},
 	}
 	for _, tc := range cases {
 		if got := tc.task.OnBehalfOf(); got != tc.want {

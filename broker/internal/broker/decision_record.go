@@ -156,6 +156,9 @@ func emitPolicyDecision(ctx context.Context, emitter auditEmitter, logger *zap.L
 	} else {
 		ev.Context = ctxStruct
 	}
+	// Task-scoped records (SubmitPlan) carry the on-behalf-of chain; nil
+	// task (envelope send) leaves ev untouched.
+	withOBO(ev, oboTask(ctx))
 	ev.EventId = ids.EventID()
 	ev.EventType = PolicyDecisionEvent
 	ev.OccurredAt = timestampNow()

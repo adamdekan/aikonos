@@ -490,6 +490,18 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 			return nil, status.Errorf(codes.Internal, "resume: %v", err)
 		}
 	default: // full edit
+		// Absent actor_agent_id keeps the row's actor; a present one is checked
+		// exactly as at create (and denied + audited the same way).
+		actor := run.ActorAgentID
+		if req.ActorAgentId != nil {
+			a, aerr := s.scheduleActor(ctx, tenant, user, *req.ActorAgentId)
+			if aerr != nil {
+				schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
+					"aikonos.scheduler.run.actor_denied", req.Id, auditv1.PolicyDecision_DENY)
+				return nil, aerr
+			}
+			actor = a
+		}
 		if run.WorkflowLineageID != nil {
 			// Workflow-mode row: timing (kind/cron/run_at) is the only editable
 			// field. Any attempt to touch the prompt, approved_tools, or the
@@ -519,6 +531,7 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 				ApprovedTools:     []string{},
 				WorkflowLineageID: run.WorkflowLineageID,
 				WorkflowInputs:    run.WorkflowInputs,
+				ActorAgentID:      actor,
 			}
 			if err := s.deps.Scheduled.Update(ctx, tenant, req.Id, edit); err != nil {
 				return nil, status.Errorf(codes.Internal, "update: %v", err)
@@ -542,6 +555,7 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 			CronExpr:      cronExpr,
 			NextFireAt:    &next,
 			ApprovedTools: tools,
+			ActorAgentID:  actor,
 		}
 		if err := s.deps.Scheduled.Update(ctx, tenant, req.Id, edit); err != nil {
 			return nil, status.Errorf(codes.Internal, "update: %v", err)

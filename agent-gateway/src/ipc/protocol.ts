@@ -460,6 +460,10 @@ export interface ErrorEvent {
   kind: "error";
   runId: string;
   message: string;
+  // true when the LLM provider itself failed the turn (Pi stopReason "error":
+  // refusal, 4xx/5xx). The parent surfaces a sanitized form of `message` to
+  // the user instead of the generic "internal error".
+  provider?: boolean;
 }
 
 export type IpcMessage =

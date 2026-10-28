@@ -81,6 +81,7 @@ async function main(): Promise<void> {
       skillHints: [GATEWAY_EXECUTION_HINT],
       parentTaskId: "",
       clientRequestId: "",
+      agentId: "",
     },
     token,
   );

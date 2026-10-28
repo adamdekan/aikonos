@@ -91,6 +91,8 @@ func TestSubmitPlan_RecordsEachDecision(t *testing.T) {
 	pol := &fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{NeedsApproval: true, Reason: "needs a human",
 		PolicyRuleID: "opa:tool_invocation", Evidence: evidence}}
 	tasks := &fakeTaskStore{task: newFakeTask(db.TaskStateValidating)}
+	interactive := "interactive"
+	tasks.task.OBOKind = &interactive
 	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: pol}
 
 	step := makeStep(1, "web.fetch", map[string]any{"url": "https://example.org"})
@@ -140,6 +142,19 @@ func TestSubmitPlan_RecordsEachDecision(t *testing.T) {
 	if field(plans[0], "approval", "required_approvals") != float64(1) || field(plans[0], "outcome") != "NEEDS_HUMAN" {
 		t.Errorf("plan.validated context: %v", plans[0].GetContext().AsMap())
 	}
+	// AG-17: plan.validated names the task owner; every task-scoped record
+	// carries the on-behalf-of chain.
+	if plans[0].ActorUserId != "alice@example.com" {
+		t.Errorf("plan.validated actor_user_id = %q, want alice@example.com", plans[0].ActorUserId)
+	}
+	for _, r := range append(records, plans[0]) {
+		if field(r, "obo", "subject") != "alice@example.com" || field(r, "obo", "kind") != "interactive" {
+			t.Errorf("%s obo: %v", r.EventType, field(r, "obo"))
+		}
+	}
+	if field(tool, "kind") != decisionKindToolInvocation {
+		t.Errorf("obo stamping clobbered the record: %v", tool.GetContext().AsMap())
+	}
 }
 
 func TestSubmitPlan_AgentBoundaryDenialIsRecorded(t *testing.T) {
@@ -158,6 +173,9 @@ func TestSubmitPlan_AgentBoundaryDenialIsRecorded(t *testing.T) {
 	records := audit.ofType(PolicyDecisionEvent)
 	if len(records) != 1 || field(records[0], "kind") != decisionKindAgentSkills || field(records[0], "outcome", "decided_by") != "broker:agent_skills" {
 		t.Fatalf("agent boundary record: %+v", records)
+	}
+	if records[0].ActorAgentId != agentID.String() || field(records[0], "obo", "actor") != agentID.String() {
+		t.Errorf("policy.decision actor: %q obo %v, want %s", records[0].ActorAgentId, field(records[0], "obo"), agentID)
 	}
 }
 
