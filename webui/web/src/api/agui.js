@@ -9,7 +9,7 @@ import { uuid } from "../lib/uuid.js";
 import { getAccessToken } from "../auth/oidc.js";
 
 export async function runAgui(
-  { prompt, threadId, agentId, history, signal, skillName, userInstructions, sessionId },
+  { prompt, threadId, agentId, history, signal, skillName, userInstructions, sessionId, envelopeId },
   handlers = {},
   fetchFn = fetch,
   getTokenFn = getAccessToken,
@@ -34,7 +34,7 @@ export async function runAgui(
         "Authorization": `Bearer ${token}`,
         ...extraHeaders,
       },
-      body: JSON.stringify({ prompt, threadId: usedThreadId, agentId: agentId || undefined, history: (Array.isArray(history) && history.length > 0) ? history : undefined, ...(skillName ? { skillName } : {}), ...(userInstructions ? { userInstructions } : {}), ...(sessionId ? { session_id: sessionId } : {}) }),
+      body: JSON.stringify({ prompt, threadId: usedThreadId, agentId: agentId || undefined, history: (Array.isArray(history) && history.length > 0) ? history : undefined, ...(skillName ? { skillName } : {}), ...(userInstructions ? { userInstructions } : {}), ...(sessionId ? { session_id: sessionId } : {}), ...(envelopeId ? { envelopeId } : {}) }),
       signal,
     });
   } catch (err) {

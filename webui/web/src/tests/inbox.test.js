@@ -129,6 +129,7 @@ describe("Inbox.vue — CP5", () => {
     await flushPromises();
 
     expect(promptStore.pending).toBe("fetch market data");
+    expect(promptStore.envelopeId).toBe("env-1");
     expect(inboxApi.dismiss).toHaveBeenCalledWith("env-1");
     expect(router.currentRoute.value.path).toBe("/chat");
   });
@@ -179,6 +180,7 @@ describe("Inbox.vue — CP5", () => {
     await flushPromises();
 
     expect(promptStore.prefill).toBe("fetch market data");
+    expect(promptStore.envelopeId).toBe("env-1");
     expect(router.currentRoute.value.path).toBe("/chat");
     expect(inboxApi.dismiss).not.toHaveBeenCalled();
   });

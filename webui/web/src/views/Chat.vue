@@ -62,6 +62,9 @@ const { addUser, addAssistant, currentAssistant, findTool } = createMessageHelpe
 // composable to avoid a circular construction order (useDelegation needs draft +
 // addUser; useAguiRun needs pendingDelegation from useDelegation).
 const draft = ref("");
+// Inbox delegation this chat handles (AG-17) — seeded from promptStore on mount,
+// consumed by the first run.
+const pendingEnvelopeId = ref("");
 
 const { pendingDelegation, cancelDelegate, confirmDelegate } = useDelegation({
   draft,
@@ -87,6 +90,7 @@ const { running, textStreaming, stop, submit, editAndResend } = useAguiRun({
   maybeCreateSession,
   persistSessionMessages,
   pendingDelegation,
+  pendingEnvelopeId,
 });
 
 // ── per-message actions ───────────────────────────────────────────────────────
@@ -120,6 +124,8 @@ onMounted(async () => {
   discoveryStore.load();
 
   await initResume();
+
+  pendingEnvelopeId.value = promptStore.takeEnvelopeId();
 
   // Two independent prefill paths — callers set exactly ONE, never both.
   // pending = auto-submit path (sets draft AND calls submit immediately).
