@@ -218,6 +218,41 @@ test("failover: primary 500 → retried on the fallback; client sees the fallbac
   }
 });
 
+test("failover: a cross-dialect fallback is dropped — anthropic primary 500 never fails over to an openai fallback", async () => {
+  // WHY: the proxy passes the child's body through untranslated, so an
+  // OpenAI-family fallback would receive an Anthropic Messages body it cannot
+  // parse. Better the client sees the primary's real error.
+  const primary = await startFakeProvider({ status: 500, body: "primary exploded" });
+  const fallback = await startFakeProvider({ status: 200, body: '{"from":"fallback"}' });
+  const proxy = new EgressProxy();
+  await proxy.start();
+  try {
+    const { childBaseUrl } = proxy.register({
+      upstreamBaseUrl: primary.baseUrl,
+      realApiKey: "sk-primary",
+      modelAllowlist: ["claude", "gpt"],
+      tenantId: "t1",
+      agentId: "a1",
+      api: "anthropic-messages",
+      fallbacks: [{ upstreamBaseUrl: fallback.baseUrl, apiKey: "sk-fallback", modelId: "gpt", api: "openai-completions" }],
+    });
+
+    const res = await fetch(`${childBaseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude", messages: [] }),
+    });
+    assert.equal(res.status, 500, "the client must see the primary's 500");
+    assert.equal(await res.text(), "primary exploded");
+    assert.equal(primary.captured.length, 1);
+    assert.equal(fallback.captured.length, 0, "the cross-dialect fallback must never be contacted");
+  } finally {
+    await proxy.stop();
+    await primary.close();
+    await fallback.close();
+  }
+});
+
 // ── 2. The trigger set is respected — a request error is never retried ─────────
 
 test("failover: primary 400 → NO failover; the 400 is passed through and the fallback is never billed", async () => {

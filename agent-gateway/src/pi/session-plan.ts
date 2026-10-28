@@ -94,7 +94,8 @@ export interface ResolveIdentity {
 // test stubs don't need the full generated type. Defined by the selection
 // module — the ordering and the shape it reads belong together.
 export type { ProviderModelLike } from "../llm/provider-fallback.js";
-export type ProviderLike = ChatProviderLike;
+// api is optional so stubs that predate dialect-aware chat need not set it.
+export type ProviderLike = ChatProviderLike & { api?: string };
 
 // PersonalSkillListLike is the frontmatter-only catalog row shape
 // resolveSessionPlan reads from listPersonalSkillsSouth. Narrower than the generated PersonalSkillEntry so stubs
@@ -189,9 +190,9 @@ export interface ResolveSouth {
 function pickModelId(
   providers: ProviderLike[],
   agentSpec?: AgentSpec,
-): { providerId: string; modelId: string } | undefined {
+): { providerId: string; modelId: string; api?: string } | undefined {
   const [head] = chatCandidates(providers, agentSpec);
-  return head ? { providerId: head.provider.id, modelId: head.modelId } : undefined;
+  return head ? { providerId: head.provider.id, modelId: head.modelId, api: head.provider.api } : undefined;
 }
 
 // ResolveCfg is the minimal config shape that resolveSessionPlan reads.
@@ -366,11 +367,14 @@ export async function resolveSessionPlan(
   // is taken (no DB providers resolved) — no provider row to attribute to;
   // the broker's cost fallback records tokens with cost 0 in that case.
   let providerId = "";
+  // The picked provider's wire dialect; undefined on the env fallback path.
+  let api: string | undefined;
   if (providers.length > 0) {
     const picked = pickModelId(providers, agentSpec);
     if (picked) {
       modelId = picked.modelId;
       providerId = picked.providerId;
+      api = picked.api;
     } else {
       modelId = await resolveEnvModel(cfg, south, identity.tenantId, agentSpec?.model);
     }
@@ -438,6 +442,7 @@ export async function resolveSessionPlan(
     kind: "init",
     modelId,
     providerId,
+    ...(api !== undefined ? { api } : {}),
     systemPrompt,
     allowedToolNames: activeToolNames,
     mcpTools,
@@ -493,13 +498,17 @@ export async function createSessionFromPlan(
     throw new Error("createSessionFromPlan: realApiKey is required when useProxy is false — no key supplied and falling back to DUMMY_KEY would cause an opaque LLM auth failure");
   }
   const apiKey = opts.useProxy ? DUMMY_KEY : (deps.realApiKey ?? DUMMY_KEY);
+  // Speak the provider's own dialect: the proxy forwards the body untranslated,
+  // so an Anthropic upstream needs Pi's native /v1/messages client.
+  const api = plan.api === "anthropic-messages" ? "anthropic-messages" : "openai-completions";
 
   modelRuntime.registerProvider("openrouter", {
     name: "OpenRouter",
     baseUrl,
     apiKey,
-    api: "openai-completions",
-    authHeader: true,
+    api,
+    // Bearer is the OpenAI auth shape; the Anthropic client sends x-api-key itself.
+    authHeader: api === "openai-completions",
     headers: { "HTTP-Referer": "https://aikonos.com", "X-Title": "aikonOS Agent Gateway" },
     models: [
       {
@@ -644,7 +653,7 @@ export async function createSessionFromPlan(
         sessionManager.appendMessage({
           role: "assistant",
           content: [{ type: "text", text: turn.content }],
-          api: "openai-completions",
+          api,
           provider: "openrouter",
           model: plan.modelId,
           usage: {

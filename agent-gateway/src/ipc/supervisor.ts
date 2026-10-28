@@ -12,6 +12,7 @@
 //   "single"   — legacy opt-in. One shared child for all identities; key=constant.
 //   "per-user" — default (F28). Key = "<tenantId> <userId> <agentId>".
 import { fork, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { ParentLink } from "./protocol.js";
@@ -82,6 +83,14 @@ function sameToolSet(a: string[], b: string[]): boolean {
   return b.every((n) => set.has(n));
 }
 
+// credsFingerprint identifies everything a child's proxy registration pins.
+// Hashed so the handle never holds a second plaintext copy of the api key.
+function credsFingerprint(c: ProviderCredentials): string {
+  return createHash("sha256")
+    .update(JSON.stringify([c.upstreamBaseUrl, c.apiKey, c.modelId, c.modelAllowlist, c.api, c.apiVersion, c.fallbacks]))
+    .digest("hex");
+}
+
 // ── ChildHandle ────────────────────────────────────────────────────────────────
 
 export interface ChildHandle {
@@ -122,6 +131,10 @@ export interface ChildHandle {
   // alongside allowedToolNames — a persona edit takes effect on the next idle
   // reuse after PLAN_RECHECK_MS (same timing semantics as tool-allowlist refresh).
   systemPrompt: string;
+  // credsFingerprint of the credentials the child's proxy registration pins.
+  // Compared on idle reuse so a provider change (endpoint, key, model,
+  // dialect, fallbacks) respawns the child instead of waiting out its TTL.
+  credsFingerprint: string;
   // Last time the plan was re-resolved for this handle. Throttles the extra south
   // RPCs to at most one per PLAN_RECHECK_MS across bursty reuse.
   lastPlanCheckAt: number;
@@ -333,20 +346,26 @@ export class ChildSupervisor {
       existing.lastUsedAt = Date.now();
       // Approach A: a long-lived child caches the FGA-derived tool allowlist from
       // spawn time, so a grant added since then would not take effect. Re-resolve
-      // the plan (throttled, idle-only) and respawn the child when its tool set
-      // changed. A busy child is never killed mid-run — it refreshes on the next
-      // idle reuse. A transient resolve failure keeps the existing child (fail to
+      // the plan and the provider credentials (throttled, idle-only) and respawn
+      // the child when its tool set, persona, or LLM provider changed. A busy
+      // child is never killed mid-run — it refreshes on the next idle reuse. A transient resolve failure keeps the existing child (fail to
       // the last-known-good plan rather than dropping a working session).
       if (!existing.busy && Date.now() - existing.lastPlanCheckAt >= PLAN_RECHECK_MS) {
         existing.lastPlanCheckAt = Date.now();
         try {
-          const fresh = await this.resolveAllowedToolNames(identity, agentSpec);
+          const [fresh, freshCreds] = await Promise.all([
+            this.resolveAllowedToolNames(identity, agentSpec),
+            this.resolveCredentials(identity, agentSpec),
+          ]);
+          const providerChanged = credsFingerprint(freshCreds) !== existing.credsFingerprint;
           if (
             !existing.busy &&
             (!sameToolSet(fresh.allowedToolNames, existing.allowedToolNames) ||
-              fresh.systemPrompt !== existing.systemPrompt)
+              fresh.systemPrompt !== existing.systemPrompt ||
+              providerChanged)
           ) {
-            log.info({ key }, "tool allowlist or persona changed since spawn — respawning child");
+            const reason = providerChanged ? "llm provider changed" : "tool allowlist or persona changed";
+            log.info({ key, reason }, "plan changed since spawn — respawning child");
             // Hold the slot this evict frees: the respawn below only registers
             // several awaits later, so an unreserved gap hands the freed slot to
             // a concurrent new-key caller and the pool ends over cap. spawn()'s
@@ -358,7 +377,7 @@ export class ChildSupervisor {
             // `existing` without ever calling spawn(), so a reservation taken
             // first would never be released and the pool would be permanently
             // one slot smaller.
-            this.evict(key, "tool allowlist or persona changed");
+            this.evict(key, reason);
             this.reserved.add(key);
             return this.spawn(key, identity, agentSpec);
           }
@@ -742,6 +761,14 @@ export class ChildSupervisor {
           `llm credentials unavailable: session plan model "${plan.modelId}" is not in the resolved credentials' allowlist [${creds.modelAllowlist.join(", ")}] — credential and session-plan resolution diverged`,
         );
       }
+      // Same divergence, dialect edition: the proxy passes the child's body
+      // through untranslated, so a child speaking the other dialect family
+      // would fail every LLM call.
+      if ((creds.api === "anthropic-messages") !== (plan.api === "anthropic-messages")) {
+        throw failedPreconditionError(
+          `llm credentials unavailable: session plan dialect "${plan.api ?? "openai-completions"}" does not match the resolved credentials' dialect "${creds.api ?? "openai-completions"}" — credential and session-plan resolution diverged`,
+        );
+      }
 
       // Fork with scrubbed env — no secrets cross the process boundary.
       const scrubbedEnv = scrubEnv(process.env);
@@ -785,6 +812,7 @@ export class ChildSupervisor {
         busy: false,
         allowedToolNames: plan.allowedToolNames,
         systemPrompt: plan.systemPrompt,
+        credsFingerprint: credsFingerprint(creds),
         lastPlanCheckAt: Date.now(),
         setRunContext(
           runId: string,

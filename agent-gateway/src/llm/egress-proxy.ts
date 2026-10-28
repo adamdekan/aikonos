@@ -12,8 +12,9 @@
 //   1. Loopback-only bind (127.0.0.1) — the key injection point is never
 //      exposed to the network.
 //   2. Per-child token lookup — unknown/forged token → 403, reaches nothing.
-//   3. Path allowlist — only /chat/completions is forwarded; anything else
-//      → 404 (SSRF guard).
+//   3. Path allowlist — only the entry's own dialect route is forwarded
+//      (/v1/messages for anthropic-messages, else /chat/completions); anything
+//      else → 404 (SSRF guard).
 //   4. Model allowlist — model not in child's list → 400, not forwarded.
 //      Fail-closed: unparseable body or missing/non-string model → 400.
 //   5. Key lives only in the in-memory Map — never logged, never in a plan.
@@ -120,9 +121,20 @@ interface ChildEntry {
 
 // Azure AI Foundry classic deployment route — api-key header + deployment path.
 const API_AZURE_OPENAI = "azure-openai";
+const API_ANTHROPIC = "anthropic-messages";
 
-// The only path the proxy forwards — completing requests from Pi's openai client.
-const ALLOWED_SUFFIX = "/chat/completions";
+// The only path the proxy forwards for an entry — the route Pi's client for
+// that dialect posts to. The body is passed through untranslated.
+function allowedSuffix(api: string | undefined): string {
+  return api === API_ANTHROPIC ? "/v1/messages" : "/chat/completions";
+}
+
+// The child's body is in exactly one of two families — Anthropic Messages or
+// OpenAI chat-completions (azure/gemini/bedrock all share the latter) — and
+// only a target of the same family can accept it.
+function isAnthropic(api: string | undefined): boolean {
+  return api === API_ANTHROPIC;
+}
 
 // TransportLike is the minimal surface of node:http / node:https that forward()
 // uses — specifically the single RequestOptions + callback overload. Exposed so
@@ -208,6 +220,17 @@ export class EgressProxy {
       throw new Error("EgressProxy.register called before start(): proxy is not listening");
     }
     const childToken = randomBytes(16).toString("hex");
+    // The child's body is passed through untranslated, so a fallback of the
+    // other dialect family could not parse it — drop it rather than send it.
+    // Hostnames only — never the key.
+    const fallbacks = (opts.fallbacks ?? []).filter((fb) => {
+      if (isAnthropic(fb.api) === isAnthropic(opts.api)) return true;
+      log.warn(
+        { primary: new URL(opts.upstreamBaseUrl).hostname, fallback: new URL(fb.upstreamBaseUrl).hostname },
+        "llm egress: dropping cross-dialect fallback provider",
+      );
+      return false;
+    });
     this.children.set(childToken, {
       upstreamBaseUrl: opts.upstreamBaseUrl,
       realApiKey: opts.realApiKey,
@@ -217,7 +240,7 @@ export class EgressProxy {
       userId: opts.userId ?? "",
       api: opts.api ?? "openai-completions",
       apiVersion: opts.apiVersion ?? "",
-      fallbacks: opts.fallbacks ?? [],
+      fallbacks,
       llmCalls: 0,
     });
     const childBaseUrl = `http://127.0.0.1:${this.port}/${childToken}`;
@@ -304,8 +327,9 @@ export class EgressProxy {
       return;
     }
 
-    // Path SSRF guard: only forward /chat/completions.
-    // Normalise with URL to collapse any ../ attempts.
+    // Path SSRF guard: only forward the entry's dialect route.
+    // Normalise with URL to collapse any ../ attempts (and drop the query —
+    // Anthropic's SDK may append ?beta=true).
     let normSuffix: string;
     try {
       normSuffix = new URL(`http://x${suffix}`).pathname;
@@ -313,7 +337,7 @@ export class EgressProxy {
       res.writeHead(404).end();
       return;
     }
-    if (normSuffix !== ALLOWED_SUFFIX) {
+    if (normSuffix !== allowedSuffix(entry.api)) {
       res.writeHead(404).end();
       return;
     }
@@ -500,15 +524,11 @@ export class EgressProxy {
     // provider-dialect.ts, which does not URL-encode itself — encode here
     // before calling, since egress-proxy's model/apiVersion come from an
     // untrusted child and must be encoded into the path.
-    // egress-proxy has only ever handled azure/openai (never anthropic) —
-    // narrow explicitly instead of passing the target's api straight through, so
-    // an anthropic-dialect provider still falls back to the openai route exactly
-    // as it did before the shared resolver existed. Cross-dialect request/
-    // response body translation is out of scope: an anthropic provider through
-    // this proxy is a pre-existing limitation that failover neither fixes nor
-    // worsens (each target is narrowed the same way the single target was).
+    // Anthropic targets get /v1/messages + x-api-key; the child already speaks
+    // that dialect (register() drops cross-family fallbacks), so no body
+    // translation. Every other api is narrowed to azure or openai-completions.
     const { path: dialectPath, headers: authHeaders } = resolveDialectRequest({
-      api: isAzure ? "azure-openai" : "openai-completions",
+      api: isAnthropic(target.api) ? API_ANTHROPIC : isAzure ? API_AZURE_OPENAI : "openai-completions",
       apiKey: target.apiKey,
       apiVersion: encodeURIComponent(target.apiVersion ?? ""),
       modelId: encodeURIComponent(target.modelId),

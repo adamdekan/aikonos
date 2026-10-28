@@ -128,3 +128,59 @@ test("CP1 Case C: session-plan model outside the resolved credentials' allowlist
 
   supervisor.dispose();
 });
+
+test("coherence guard: plan dialect (anthropic-messages) differing from the credentials' dialect rejects spawn", async () => {
+  // WHY: the proxy passes the child's body through untranslated, so a child
+  // speaking Anthropic Messages against an OpenAI-dialect registration (or the
+  // reverse) would fail every LLM call. Same model on both sides — only the
+  // dialect diverges.
+  const credsResolver: ProviderCredentialResolver = async () => ({
+    upstreamBaseUrl: "https://api.anthropic.com",
+    apiKey: "k",
+    modelId: "claude-sonnet-4-5",
+    modelAllowlist: ["claude-sonnet-4-5"],
+    api: "openai-completions",
+    fallbacks: [],
+  });
+  const deps: SupervisorDeps = {
+    south: {
+      getLlmProviders: async () => ({
+        providers: [{ id: "anthropic", enabled: true, isDefault: true, api: "anthropic-messages", models: [{ id: "claude-sonnet-4-5" }] }],
+      }),
+      getTenantModel: async () => ({ model: "" }),
+      listUserSkills: async () => ({ skills: [] }),
+      listUserAgentSkills: async () => ({ bundles: [] }),
+      listAccessibleMcpServersForAgent: async () => ({ connections: [] }),
+      listMcpServerToolsSouth: async () => ({ tools: [] }),
+      getAgentSpec: async () => ({ found: false }),
+    },
+    cfg: { llmModel: "x", defaultTenantId: "tenant-1" },
+  };
+  const { proxy, registered, unregistered } = makeTrackedProxy();
+  const { spawnFn, spawnCount } = makeFakeSpawn();
+  const supervisor = new ChildSupervisor(
+    proxy,
+    deps,
+    () => ({
+      gate: async () => ({ allow: true }),
+      execute: async () => ({ ok: true, output: null }),
+      delegate: async () => ({ ok: true }),
+      saveWorkflow: async () => ({ ok: true }),
+      runWorkflow: async () => ({ ok: true, result: null }),
+      listWorkflows: async () => ({ ok: true, items: [] }),
+      publishWorkflow: async () => ({ ok: true }),
+      proposeWorkflow: async () => ({ ok: true }),
+      analyzeImage: async () => ({ ok: true, text: "" }),
+      scheduleWorkflow: async () => ({ ok: true }),
+    }),
+    spawnFn,
+    credsResolver,
+  );
+
+  const identity = makeIdentity();
+  await assert.rejects(() => supervisor.getOrSpawn(supervisor.keyFor(identity), identity), /dialect/);
+  assert.equal(spawnCount[0], 0, "no fork on dialect mismatch");
+  assert.deepEqual(unregistered, registered, "no leaked proxy registration");
+
+  supervisor.dispose();
+});

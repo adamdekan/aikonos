@@ -2107,15 +2107,16 @@ test("CP3.5 drift respawn: the slot a persona-drift respawn frees is reserved fo
   const { factory } = makeBridgeFactory();
   const { spawnFn, records } = makeFakeSpawnFn();
 
-  // Park the THIRD credential resolve (A, B, then A's respawn) so the test can
-  // fire the racing caller exactly inside the respawn's window.
+  // Park the FOURTH credential resolve (A, B, A's drift recheck, then A's
+  // respawn) so the test can fire the racing caller exactly inside the
+  // respawn's window.
   let credCalls = 0;
   let respawnParked = false;
   let releaseRespawn!: () => void;
   const respawnGate = new Promise<void>((r) => { releaseRespawn = r; });
   const resolveCreds: ProviderCredentialResolver = async (_identity: ResolveIdentity): Promise<ProviderCredentials> => {
     credCalls++;
-    if (credCalls === 3) {
+    if (credCalls === 4) {
       respawnParked = true;
       await respawnGate;
     }

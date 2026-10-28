@@ -204,7 +204,8 @@ test("CP4 resolveSessionPlan: plan fields are exactly the allowed secret-free se
   // providerId (spend-caps CP3): the real DB provider id backing modelId — not a
   // secret (no api-key/bearer/grant), carried so the child's usage relay can
   // attribute spend to the correct provider.
-  const allowedKeys = new Set(["kind", "modelId", "providerId", "systemPrompt", "allowedToolNames", "mcpTools", "proxyBaseUrl", "proxyModelAllowlist", "skillBundles"]);
+  // api: the chat provider's wire dialect name — not a secret.
+  const allowedKeys = new Set(["kind", "modelId", "providerId", "api", "systemPrompt", "allowedToolNames", "mcpTools", "proxyBaseUrl", "proxyModelAllowlist", "skillBundles"]);
   for (const key of Object.keys(plan)) {
     assert.ok(allowedKeys.has(key), `unexpected key '${key}' in plan — secret-free field set violated`);
   }
@@ -359,6 +360,23 @@ test("CP4 resolveSessionPlan: proxyModelAllowlist contains the resolved modelId"
     `proxyModelAllowlist must include modelId '${plan.modelId}'`);
 });
 
+test("resolveSessionPlan: plan.api carries the picked provider's wire dialect", async () => {
+  // WHY: the child must speak the provider's own dialect — the egress proxy
+  // passes the body through untranslated.
+  const south = makeSouth({
+    providers: [{
+      id: "p-anthropic", enabled: true, isDefault: true, api: "anthropic-messages",
+      models: [{ id: "claude-sonnet-4-5" }],
+    }],
+  });
+  const plan = await resolveSessionPlan(TEST_IDENTITY, { south, cfg: BASE_CFG });
+  assert.equal(plan.modelId, "claude-sonnet-4-5");
+  assert.equal(plan.api, "anthropic-messages");
+
+  const envPlan = await resolveSessionPlan(TEST_IDENTITY, { south: makeSouth(), cfg: BASE_CFG });
+  assert.equal(envPlan.api, undefined, "env-fallback path carries no dialect");
+});
+
 // ── Personal skills ────────────────────────
 
 function personalSkill(overrides: Partial<PersonalSkillListLike> = {}): PersonalSkillListLike {
@@ -504,6 +522,31 @@ test("CP4 createSessionFromPlan (useProxy:true): registers provider with dummy k
   assert.ok(reg.apiKey !== "sk-real-key", "real api key must NOT be in the child's provider registration");
   // The dummy key is a non-secret placeholder; assert it is present but not the real key.
   assert.ok(typeof reg.apiKey === "string" && reg.apiKey.length > 0, "a dummy key string must be present");
+});
+
+test("createSessionFromPlan: registers the anthropic-messages dialect when plan.api is anthropic, openai-completions otherwise", async () => {
+  // WHY: Pi's native Anthropic client posts to <baseUrl>/v1/messages — the
+  // route the proxy forwards for an anthropic entry. Registering
+  // openai-completions sent an OpenAI body to /chat/completions → 404.
+  const base: SessionPlan = {
+    kind: "init",
+    modelId: "claude-sonnet-4-5",
+    systemPrompt: "You are helpful.",
+    allowedToolNames: [],
+    mcpTools: [],
+    proxyBaseUrl: "http://127.0.0.1:19999/tok",
+    proxyModelAllowlist: ["claude-sonnet-4-5"],
+  };
+  const apis: unknown[] = [];
+  const createAgentSession: CreateAgentSessionFn = async (opts?) => {
+    apis.push((opts?.model as { api?: string } | undefined)?.api);
+    return { session: { prompt: async () => {}, subscribe: () => () => {}, dispose: () => {} } };
+  };
+
+  await createSessionFromPlan({ ...base, api: "anthropic-messages" }, makeFakeBridge(), { createAgentSession }, { useProxy: true });
+  await createSessionFromPlan(base, makeFakeBridge(), { createAgentSession }, { useProxy: true });
+  await createSessionFromPlan({ ...base, api: "azure-openai" }, makeFakeBridge(), { createAgentSession }, { useProxy: true });
+  assert.deepEqual(apis, ["anthropic-messages", "openai-completions", "openai-completions"]);
 });
 
 test("createSessionFromPlan: provider retries are enabled so a transient 5xx doesn't kill the run", async () => {

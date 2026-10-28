@@ -27,6 +27,7 @@ interface CapturedRequest {
   apiKey: string | undefined;
   path: string;
   body: string;
+  headers: http.IncomingHttpHeaders;
 }
 
 // Gap the fake upstream leaves between SSE chunks. Every timing assertion below
@@ -64,6 +65,7 @@ async function startFakeUpstream(): Promise<FakeUpstream> {
         apiKey: req.headers["api-key"] as string | undefined,
         path: req.url ?? "/",
         body,
+        headers: req.headers,
       });
 
       res.writeHead(200, {
@@ -446,6 +448,110 @@ test("CP5 egress-proxy: path SSRF guard — path other than /chat/completions �
       assert.equal(res.status, 404, `SSRF path '${badPath}' must return 404, got ${res.status}`);
     }
     assert.equal(upstream.captured.length, 0, "no SSRF path must reach upstream");
+  } finally {
+    await proxy.stop();
+    await upstream.close();
+  }
+});
+
+// anthropicPost sends what Pi's native Anthropic client sends: POST
+// <baseUrl><suffix> with its own (dummy) x-api-key and anthropic-version.
+async function anthropicPost(
+  childBaseUrl: string,
+  suffix: string,
+  body: Record<string, unknown>,
+): Promise<{ status: number; body: string }> {
+  const res = await fetch(`${childBaseUrl}${suffix}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": "dummy-child-key",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.text() };
+}
+
+test("egress-proxy: anthropic-messages → /v1/messages passed through with the real x-api-key, no Bearer", async () => {
+  // WHY: the child speaks the Anthropic dialect natively for an anthropic
+  // provider; the proxy must forward that body untouched to <base>/v1/messages
+  // with the real key in x-api-key. Sending it to /chat/completions was the 404.
+  const upstream = await startFakeUpstream();
+  const proxy = new EgressProxy();
+  await proxy.start();
+  try {
+    upstream.nextChunks = ["event: message_start\n\n", "event: message_stop\n\n"];
+    const { childBaseUrl } = proxy.register({
+      upstreamBaseUrl: `${upstream.baseUrl}/base`,
+      realApiKey: "sk-ant-real",
+      tenantId: "test-tenant",
+      agentId: "test-agent",
+      modelAllowlist: ["claude-sonnet-4-5"],
+      api: "anthropic-messages",
+    });
+
+    const sent = { model: "claude-sonnet-4-5", max_tokens: 8192, stream: true, messages: [] };
+    for (const suffix of ["/v1/messages", "/v1/messages?beta=true"]) {
+      const res = await anthropicPost(childBaseUrl, suffix, sent);
+      assert.equal(res.status, 200, `${suffix} must be forwarded`);
+      assert.equal(res.body, "event: message_start\n\nevent: message_stop\n\n", "stream must pass through");
+    }
+
+    assert.equal(upstream.captured.length, 2);
+    for (const req of upstream.captured) {
+      assert.equal(req.path, "/base/v1/messages", "upstream path must be <basePath>/v1/messages");
+      assert.equal(req.headers["x-api-key"], "sk-ant-real", "upstream must get the REAL key in x-api-key");
+      assert.equal(req.headers["anthropic-version"], "2023-06-01");
+      assert.equal(req.authorization, undefined, "no Authorization header for anthropic");
+      assert.deepEqual(JSON.parse(req.body), sent, "body must be passed through untranslated");
+    }
+  } finally {
+    await proxy.stop();
+    await upstream.close();
+  }
+});
+
+test("egress-proxy: path allowlist is per dialect — /chat/completions on anthropic and /v1/messages on openai → 404", async () => {
+  const upstream = await startFakeUpstream();
+  const proxy = new EgressProxy();
+  await proxy.start();
+  try {
+    const anthropic = proxy.register({
+      upstreamBaseUrl: upstream.baseUrl,
+      realApiKey: "sk-ant",
+      tenantId: "t", agentId: "a", modelAllowlist: ["m"],
+      api: "anthropic-messages",
+    });
+    const openai = proxy.register({
+      upstreamBaseUrl: upstream.baseUrl,
+      realApiKey: "sk-oai",
+      tenantId: "t", agentId: "a", modelAllowlist: ["m"],
+    });
+
+    assert.equal((await anthropicPost(anthropic.childBaseUrl, "/chat/completions", { model: "m" })).status, 404);
+    assert.equal((await anthropicPost(openai.childBaseUrl, "/v1/messages", { model: "m" })).status, 404);
+    assert.equal(upstream.captured.length, 0, "neither wrong-dialect path may reach upstream");
+  } finally {
+    await proxy.stop();
+    await upstream.close();
+  }
+});
+
+test("egress-proxy: anthropic-messages still enforces the model allowlist", async () => {
+  const upstream = await startFakeUpstream();
+  const proxy = new EgressProxy();
+  await proxy.start();
+  try {
+    const { childBaseUrl } = proxy.register({
+      upstreamBaseUrl: upstream.baseUrl,
+      realApiKey: "sk-ant",
+      tenantId: "t", agentId: "a", modelAllowlist: ["allowed"],
+      api: "anthropic-messages",
+    });
+    const res = await anthropicPost(childBaseUrl, "/v1/messages", { model: "forbidden", messages: [] });
+    assert.equal(res.status, 400);
+    assert.equal(upstream.captured.length, 0, "forbidden model must not reach upstream");
   } finally {
     await proxy.stop();
     await upstream.close();
