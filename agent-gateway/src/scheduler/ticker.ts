@@ -71,23 +71,25 @@ export type { ChildSupervisor as SupervisorDeps };
 
 // runViaChild executes one scheduled prompt via the supervisor. The child's
 // IPC events are drained into a RunOutcome (text_delta → summary, done → ok).
+// AG-17 S4: the acting agent is the schedule's delegated actor, supplied by the
+// broker and bound in the owner grant (bare UUID: CreateGatewayTask compares it
+// to the grant actor). A legacy row with no actor keeps the interactive path's
+// agentForUser id ("<user>-agent", deliberately not a UUID → unbound task, or the
+// AIKONOS_AGENT_FOR_USER override). Never the bare ownerUserId: a UUID there
+// FK-fails tasks_agent_id_fkey.
+// ponytail: drop the agentForUser fallback once AG-01 backfills an actor on every row.
+function scheduledAgentId(cfg: Config, run: { ownerUserId: string; actorAgentId: string }): string {
+  return run.actorAgentId || agentForUser(run.ownerUserId, cfg.agentForUserOverrides);
+}
+
 async function runViaChild(
   cfg: Config,
   supervisor: ChildSupervisor,
   log: Logger,
-  run: { id: string; ownerUserId: string; prompt: string; approvedTools: string[]; ownerGrant: string; runId: string; runAt: string },
+  run: { id: string; ownerUserId: string; prompt: string; approvedTools: string[]; ownerGrant: string; actorAgentId: string; runId: string; runAt: string },
   timeoutMs: number,
 ): Promise<RunOutcome> {
-  // Derive the acting agent id exactly as the interactive /agui path does
-  // (agentForUser). For a personal run this is "<userId>-agent" — deliberately
-  // NOT a UUID — so the broker's CreateGatewayTask stores tasks.agent_id = NULL
-  // (an unbound personal task). Passing the bare ownerUserId here (a valid UUID)
-  // made the broker try to FK it to a non-existent agents row, failing
-  // tasks_agent_id_fkey (SQLSTATE 23503) and blocking every tool call in a
-  // scheduled run with "13 INTERNAL: failed to create task". Using agentForUser
-  // also makes the scheduler share the user's interactive child (same supervisor
-  // key) — the sharing the old bare-ownerUserId comment intended but never achieved.
-  const sessionAgentId = agentForUser(run.ownerUserId, cfg.agentForUserOverrides);
+  const sessionAgentId = scheduledAgentId(cfg, run);
 
   const identity: Identity = {
     tenantId: cfg.defaultTenantId,
@@ -260,6 +262,7 @@ async function runViaWorkflow(
     id: string;
     ownerUserId: string;
     ownerGrant: string;
+    actorAgentId: string;
     workflowLineageId: string;
     workflowInputs: Record<string, string>;
     runId: string;
@@ -279,11 +282,10 @@ async function runViaWorkflow(
   // the pool slot, the same guarantee the prompt path gets from its own timer.
   const { def, outcome } = await raceTimeout(
     (async () => {
-      const sessionAgentId = agentForUser(run.ownerUserId, cfg.agentForUserOverrides);
       const identity: Identity = {
         tenantId: cfg.defaultTenantId,
         userId: run.ownerUserId,
-        agentId: sessionAgentId,
+        agentId: scheduledAgentId(cfg, run),
         ownerGrant: run.ownerGrant,
         runId: run.runId,
       };
@@ -406,6 +408,7 @@ async function runOneScheduledRun(
     prompt: string;
     approvedTools?: string[];
     ownerGrant?: string;
+    actorAgentId?: string;
     workflowLineageId?: string;
     workflowInputs?: Record<string, string>;
   },
@@ -427,6 +430,7 @@ async function runOneScheduledRun(
             id: run.id,
             ownerUserId: run.ownerUserId,
             ownerGrant: run.ownerGrant ?? "",
+            actorAgentId: run.actorAgentId ?? "",
             workflowLineageId: run.workflowLineageId,
             workflowInputs: run.workflowInputs ?? {},
             runId,
@@ -441,6 +445,7 @@ async function runOneScheduledRun(
           prompt: run.prompt,
           approvedTools: run.approvedTools ?? [],
           ownerGrant: run.ownerGrant ?? "",
+          actorAgentId: run.actorAgentId ?? "",
           runId,
           runAt,
         }, cfg.schedulerRunTimeoutMs);

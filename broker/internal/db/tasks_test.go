@@ -146,7 +146,7 @@ func TestTaskRepo_OBOColumns_RoundTrip(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	want := OnBehalfOf{Subject: "alice@example.com", DelegatedBy: sender,
-		ExternalClientID: client.String(), GrantID: grant.String()}
+		ExternalClientID: client.String(), GrantID: grant.String(), Kind: "scheduled"}
 	if o := got.OnBehalfOf(); o != want {
 		t.Errorf("round trip: got %+v, want %+v", o, want)
 	}

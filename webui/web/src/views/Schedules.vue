@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import Icon from "../components/Icon.vue";
 import RecurrenceSelector from "../components/RecurrenceSelector.vue";
-import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, deleteSchedule } from "../api/schedules.js";
+import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, revokeSchedule, deleteSchedule } from "../api/schedules.js";
 import { describeCron } from "../lib/cron.js";
 
 const schedules = ref([]);
@@ -118,6 +118,16 @@ async function resume(id) {
   }
 }
 
+async function revoke(id) {
+  error.value = "";
+  try {
+    const result = await revokeSchedule(id);
+    if (result.schedule) updateRow(result.schedule);
+  } catch (e) {
+    error.value = e.message || "Failed to revoke";
+  }
+}
+
 async function remove(id) {
   error.value = "";
   try {
@@ -230,6 +240,15 @@ onMounted(load);
           <span v-if="s.nextFireAt" class="schedule-next">
             Next: {{ new Date(s.nextFireAt).toLocaleString() }}
           </span>
+          <span class="schedule-next" :data-testid="`delegation-${s.id}`">
+            Acts as {{ s.actorAgentId || "no agent" }} ·
+            <template v-if="s.delegationRevokedAt">
+              Revoked {{ new Date(s.delegationRevokedAt).toLocaleString() }}{{ s.delegationRevokedBy ? ` by ${s.delegationRevokedBy}` : "" }}
+            </template>
+            <template v-else-if="s.delegationExpiresAt">
+              Delegation until {{ new Date(s.delegationExpiresAt).toLocaleDateString() }}
+            </template>
+          </span>
         </div>
         <div v-if="editingId === s.id" class="schedule-actions">
           <button
@@ -268,13 +287,23 @@ onMounted(load);
             <Icon name="pause" :size="15" />
           </button>
           <button
-            v-else-if="s.state === 'PAUSED'"
+            v-else-if="s.state === 'PAUSED' && !s.delegationRevokedAt && !(s.delegationExpiresAt && new Date(s.delegationExpiresAt) <= new Date())"
             class="btn-icon"
             :data-testid="`resume-${s.id}`"
             :aria-label="`Resume ${s.id}`"
             @click="resume(s.id)"
           >
             <Icon name="play" :size="15" />
+          </button>
+          <button
+            v-if="!s.delegationRevokedAt"
+            class="btn-icon btn-icon-danger"
+            :data-testid="`revoke-${s.id}`"
+            :aria-label="`Revoke delegation ${s.id}`"
+            title="Revoke delegation (cannot be resumed)"
+            @click="revoke(s.id)"
+          >
+            <Icon name="shield" :size="15" />
           </button>
           <button
             class="btn-icon btn-icon-danger"

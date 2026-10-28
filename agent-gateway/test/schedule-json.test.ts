@@ -29,6 +29,10 @@ function baseRun(overrides: Partial<ScheduledRun> = {}): ScheduledRun {
     workflowLineageId: "",
     workflowInputs: {},
     workflowDisplayName: "",
+    actorAgentId: "",
+    delegationExpiresAt: undefined,
+    delegationRevokedAt: undefined,
+    delegationRevokedBy: "",
     ...overrides,
   };
 }
@@ -46,4 +50,19 @@ test("scheduleJson leaves workflow fields empty for a prompt-mode row", () => {
   assert.equal(json.workflowLineageId, "");
   assert.equal(json.workflowDisplayName, "");
   assert.equal(json.prompt, "daily report");
+});
+
+test("scheduleJson surfaces the AG-17 S4 delegation (actor, expiry, revocation)", () => {
+  const json = scheduleJson(
+    baseRun({
+      actorAgentId: "agent-uuid",
+      delegationExpiresAt: new Date("2027-01-01T00:00:00Z"),
+      delegationRevokedAt: new Date("2026-11-01T00:00:00Z"),
+      delegationRevokedBy: "admin@example.com",
+    }),
+  );
+  assert.equal(json.actorAgentId, "agent-uuid");
+  assert.equal(json.delegationExpiresAt, "2027-01-01T00:00:00.000Z");
+  assert.equal(json.delegationRevokedAt, "2026-11-01T00:00:00.000Z");
+  assert.equal(json.delegationRevokedBy, "admin@example.com");
 });

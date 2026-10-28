@@ -27,6 +27,9 @@ const (
 	maxSchedulePromptLen = 8000
 	maxApprovedTools     = 32
 	defaultClaimLimit    = 20
+	// delegationTTL is how long a schedule's standing delegation lives (AG-17 S4).
+	// ponytail: fixed 90 days, no extend path; add one when admins ask for it.
+	delegationTTL = 90 * 24 * time.Hour
 	// listAllSentinel is the owner_filter value the admin all-runs view sends;
 	// any other non-empty value is a filter by a specific username.
 	listAllSentinel = "*"
@@ -107,7 +110,22 @@ func toProtoScheduledRun(s *db.ScheduledRun) *brokerv1.ScheduledRun {
 	if s.LastFireAt != nil {
 		out.LastFireAt = timestamppb.New(*s.LastFireAt)
 	}
+	if s.ActorAgentID != nil {
+		out.ActorAgentId = s.ActorAgentID.String()
+	}
+	if !s.DelegationExpiresAt.IsZero() {
+		out.DelegationExpiresAt = timestamppb.New(s.DelegationExpiresAt)
+	}
+	if s.DelegationRevokedAt != nil {
+		out.DelegationRevokedAt = timestamppb.New(*s.DelegationRevokedAt)
+		out.DelegationRevokedBy = s.DelegationRevokedBy
+	}
 	return out
+}
+
+// delegationLive reports whether the schedule's standing delegation still holds.
+func delegationLive(r *db.ScheduledRun, now time.Time) bool {
+	return r.DelegationRevokedAt == nil && now.Before(r.DelegationExpiresAt)
 }
 
 // enforceCronFloor rejects a cron that fires more often than minInterval.
@@ -297,6 +315,12 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tenant_id: %v", err)
 	}
+	actor, err := s.scheduleActor(ctx, tenant, user, req.ActorAgentId)
+	if err != nil {
+		schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
+			"aikonos.scheduler.run.actor_denied", req.ActorAgentId, auditv1.PolicyDecision_DENY)
+		return nil, err
+	}
 
 	id := uuid.New()
 	run := &db.ScheduledRun{
@@ -311,6 +335,10 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 		CreatedBy:         user,
 		WorkflowLineageID: lineageID,
 		WorkflowInputs:    workflowInputs,
+		// ponytail: nil actor when the request names none, until AG-01 gives a
+		// tenant default agent to fall back to.
+		ActorAgentID:        actor,
+		DelegationExpiresAt: now.Add(delegationTTL),
 	}
 	if run.ApprovedTools == nil {
 		run.ApprovedTools = []string{}
@@ -325,6 +353,38 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 	schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
 		"aikonos.scheduler.run.created", id.String(), auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.CreateScheduledRunResponse{Run: toProtoScheduledRun(stored)}, nil
+}
+
+// scheduleActor resolves the optional agent a new schedule acts as: it must be
+// an agent of the tenant the caller may operate (can_use, tenant-admin fallback).
+func (s *BrokerService) scheduleActor(ctx context.Context, tenant, user, agentID string) (*uuid.UUID, error) {
+	if agentID == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(agentID)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid actor_agent_id: %v", err)
+	}
+	if s.deps.Agents == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agents are not enabled")
+	}
+	if _, err := s.deps.Agents.Get(ctx, tenant, agentID); err != nil {
+		return nil, status.Error(codes.NotFound, "actor agent not found")
+	}
+	if !mayOperateActor(ctx, s.deps, user, agentID) {
+		return nil, status.Errorf(codes.PermissionDenied, "you do not have access to agent %s", agentID)
+	}
+	return &id, nil
+}
+
+// mayOperateActor is MayOperateAgent (can_use, tenant-admin fallback) for a
+// schedule's subject and actor; checked at create and again at every claim.
+func mayOperateActor(ctx context.Context, deps Deps, user, agentID string) bool {
+	var ap workflowsvc.AccessPolicy
+	if deps.Policy != nil {
+		ap = deps.Policy
+	}
+	return workflowsvc.MayOperateAgent(ctx, ap, user, agentID, "tenant:"+deps.TenantID)
 }
 
 func (s *BrokerService) ListScheduledRuns(ctx context.Context, req *brokerv1.ListScheduledRunsRequest) (*brokerv1.ListScheduledRunsResponse, error) {
@@ -382,6 +442,18 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 	}
 
 	now := time.Now().UTC()
+	if req.RevokeDelegation {
+		if err := s.deps.Scheduled.RevokeDelegation(ctx, tenant, req.Id, user); err != nil {
+			return nil, status.Errorf(codes.Internal, "revoke: %v", err)
+		}
+		schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
+			"aikonos.scheduler.run.delegation_revoked", req.Id, auditv1.PolicyDecision_ALLOW)
+		revoked, err := s.deps.Scheduled.Get(ctx, tenant, req.Id)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "load revoked run: %v", err)
+		}
+		return &brokerv1.UpdateScheduledRunResponse{Run: toProtoScheduledRun(revoked)}, nil
+	}
 	switch req.DesiredState {
 	case brokerv1.ScheduledRunState_SCHEDULED_RUN_PAUSED:
 		// Keep next_fire_at; ClaimDue ignores non-ACTIVE rows.
@@ -391,6 +463,10 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 	case brokerv1.ScheduledRunState_SCHEDULED_RUN_ACTIVE:
 		// Resume: re-anchor a recurring run to its next future slot so a long
 		// pause doesn't fire a backlog; a one-off keeps its original time.
+		// A revoked or expired delegation stays down: resume would re-grant it.
+		if !delegationLive(run, now) {
+			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked or expired; create a new schedule")
+		}
 		next := run.NextFireAt
 		if run.Kind == db.ScheduleKindCron {
 			n, cerr := db.NextCronFire(run.CronExpr, now)
@@ -545,9 +621,28 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	out := make([]*brokerv1.DueRun, 0, len(due))
 	traceID := span.SpanContext().TraceID().String()
 	for _, r := range due {
+		obo := &db.Task{OwnerUserID: r.OwnerUserID, AgentID: r.ActorAgentID, GrantID: &r.ScheduledRunID}
+		// ClaimDue parked a revoked/expired delegation instead of advancing it.
+		// ponytail: the subject-block (AG-06) and suspended-actor (AG-03) checks
+		// belong here; neither a user block nor an agent status exists yet.
+		if r.SkipReason != "" {
+			schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
+				"aikonos.scheduler.run.skipped."+r.SkipReason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+			continue
+		}
+		actor := ""
+		if r.ActorAgentID != nil {
+			actor = r.ActorAgentID.String()
+			// can_use may have been revoked since create: skip this fire, keep the row.
+			// ponytail: not parked, so a restored tuple resumes it at the next slot.
+			if !mayOperateActor(ctx, s.deps, r.OwnerUserID, actor) {
+				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
+					"aikonos.scheduler.run.skipped.actor_not_permitted", r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				continue
+			}
+		}
 		ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
-			// Actor stays "" until scheduled_runs.actor_agent_id lands (AG-17 S4).
-			TenantID: req.TenantId, Subject: r.OwnerUserID, Kind: gatewaygrant.KindScheduled, GrantID: r.ScheduledRunID.String(),
+			TenantID: req.TenantId, Subject: r.OwnerUserID, Actor: actor, Kind: gatewaygrant.KindScheduled, GrantID: r.ScheduledRunID.String(),
 		}, s.deps.GatewayGrantTTL)
 		if mintErr != nil {
 			// A mint failure means we cannot hand the gateway a usable, non-impersonable
@@ -566,14 +661,14 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			ApprovedTools:  r.ApprovedTools,
 			OwnerGrant:     ownerGrant,
 			WorkflowInputs: r.WorkflowInputs,
+			ActorAgentId:   actor,
 		}
 		if r.WorkflowLineageID != nil {
 			due.WorkflowLineageId = r.WorkflowLineageID.String()
 		}
 		out = append(out, due)
 		schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
-			"aikonos.scheduler.run.fired", r.ScheduledRunID.String(), auditv1.PolicyDecision_ALLOW,
-			&db.Task{OwnerUserID: r.OwnerUserID, GrantID: &r.ScheduledRunID})
+			"aikonos.scheduler.run.fired", r.ScheduledRunID.String(), auditv1.PolicyDecision_ALLOW, obo)
 	}
 	return &brokerv1.ClaimDueScheduledRunsResponse{Runs: out}, nil
 }

@@ -1168,6 +1168,13 @@ message ScheduledRun {
   // Joined display name of the lineage's current approved version (List
   // only; never denormalized onto the row). Empty for a prompt-mode schedule.
   string workflow_display_name = 17;
+  // Standing delegation (AG-17 S4): the owner (subject) lets this agent
+  // (actor) run unattended until expiry or revocation. actor_agent_id is
+  // empty for a row created before AG-01 gave every tenant a default agent.
+  string actor_agent_id = 18;
+  google.protobuf.Timestamp delegation_expires_at = 19;
+  google.protobuf.Timestamp delegation_revoked_at = 20; // unset while live
+  string delegation_revoked_by = 21;
 }
 
 message CreateScheduledRunRequest {
@@ -1183,6 +1190,8 @@ message CreateScheduledRunRequest {
   // mutually exclusive with prompt/approved_tools.
   string workflow_lineage_id = 8;
   map<string, string> workflow_inputs = 9;
+  // Optional agent the run acts as (AG-17 S4); must be a tenant agent.
+  string actor_agent_id = 10;
 }
 
 message CreateScheduledRunResponse {
@@ -1221,6 +1230,9 @@ message UpdateScheduledRunRequest {
   ScheduledRunState desired_state = 9;
   string workflow_lineage_id = 10;
   map<string, string> workflow_inputs = 11;
+  // Revoke the schedule's standing delegation (AG-17 S4). Final: the row is
+  // paused and can no longer be resumed. All other fields are ignored.
+  bool revoke_delegation = 12;
 }
 
 message UpdateScheduledRunResponse {
@@ -1255,6 +1267,8 @@ message DueRun {
   // Workflow-mode fields (mutually exclusive with prompt/approved_tools).
   string workflow_lineage_id = 6;
   map<string, string> workflow_inputs = 7;
+  // Agent the run acts as (AG-17 S4); empty for a legacy row with no actor.
+  string actor_agent_id = 8;
 }
 
 message ClaimDueScheduledRunsResponse {

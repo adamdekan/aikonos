@@ -63,6 +63,7 @@ type scheduledRunStore interface {
 	List(ctx context.Context, tenantID, owner string) ([]*db.ScheduledRun, error)
 	Update(ctx context.Context, tenantID, id string, s *db.ScheduledRun) error
 	SetState(ctx context.Context, tenantID, id string, state db.ScheduledRunState, nextFire *time.Time) error
+	RevokeDelegation(ctx context.Context, tenantID, id, by string) error
 	Delete(ctx context.Context, tenantID, id string) error
 	ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int) ([]*db.ScheduledRun, error)
 	ReportResult(ctx context.Context, tenantID, id string, ok bool, summary string) error

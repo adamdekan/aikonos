@@ -79,6 +79,8 @@ function runOf(id: string, decoded: { prompt: string; kind: ScheduleKind; cronEx
     workflowLineageId: "",
     workflowInputs: {},
     workflowDisplayName: "",
+    actorAgentId: "",
+    delegationRevokedBy: "",
   };
 }
 

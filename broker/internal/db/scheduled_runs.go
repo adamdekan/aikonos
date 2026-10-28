@@ -96,6 +96,17 @@ type ScheduledRun struct {
 	// WorkflowDisplayName is populated only by List's join against the
 	// workflow's current approved version — never by Create/Get/ClaimDue.
 	WorkflowDisplayName string
+	// Delegation (migration 049, AG-17 S4): the row is a standing grant from
+	// OwnerUserID (subject) to ActorAgentID (actor), until expiry or revocation.
+	// ponytail: ActorAgentID stays nil until AG-01 gives every tenant a default agent.
+	ActorAgentID        *uuid.UUID
+	DelegationExpiresAt time.Time
+	DelegationRevokedAt *time.Time
+	DelegationRevokedBy string
+	// SkipReason is set by ClaimDue on a claimed row it parked instead of
+	// firing ("delegation_expired" | "delegation_revoked", also written to
+	// last_status). Not a column.
+	SkipReason string
 }
 
 type ScheduledRunRepo struct {
@@ -110,7 +121,8 @@ func NewScheduledRunRepo(pool *pgxpool.Pool, logger *zap.Logger) *ScheduledRunRe
 const scheduledRunCols = `
 	scheduled_run_id, tenant_id, owner_user_id, prompt, schedule_kind, cron_expr,
 	next_fire_at, approved_tools, state, last_fire_at, last_status, last_summary,
-	run_count, created_by, created_at, updated_at, workflow_lineage_id, workflow_inputs`
+	run_count, created_by, created_at, updated_at, workflow_lineage_id, workflow_inputs,
+	actor_agent_id, delegation_expires_at, delegation_revoked_at, delegation_revoked_by`
 
 // scanScheduledRun maps a single row in scheduledRunCols order. approved_tools /
 // workflow_inputs are jsonb, scanned as raw bytes then unmarshaled (pgx would
@@ -119,7 +131,7 @@ const scheduledRunCols = `
 // workflow display name) appended after scheduledRunCols in the query.
 func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 	var r ScheduledRun
-	var cronExpr, lastStatus, lastSummary *string
+	var cronExpr, lastStatus, lastSummary, revokedBy *string
 	var toolsJSON, inputsJSON []byte
 	var workflowLineageID *uuid.UUID
 
@@ -127,6 +139,7 @@ func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 		&r.ScheduledRunID, &r.TenantID, &r.OwnerUserID, &r.Prompt, &r.Kind, &cronExpr,
 		&r.NextFireAt, &toolsJSON, &r.State, &r.LastFireAt, &lastStatus, &lastSummary,
 		&r.RunCount, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &workflowLineageID, &inputsJSON,
+		&r.ActorAgentID, &r.DelegationExpiresAt, &r.DelegationRevokedAt, &revokedBy,
 	}
 	if nameDest != nil {
 		dest = append(dest, nameDest)
@@ -142,6 +155,9 @@ func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 	}
 	if lastSummary != nil {
 		r.LastSummary = *lastSummary
+	}
+	if revokedBy != nil {
+		r.DelegationRevokedBy = *revokedBy
 	}
 	if len(toolsJSON) > 0 {
 		if err := json.Unmarshal(toolsJSON, &r.ApprovedTools); err != nil {
@@ -165,6 +181,14 @@ func nullableCron(kind ScheduleKind, expr string) *string {
 		return &expr
 	}
 	return nil
+}
+
+// nullableTime maps the zero time to SQL NULL (Create then takes the column default).
+func nullableTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // nullableInputs marshals workflow_inputs to JSON, or nil (SQL NULL) when the
@@ -192,11 +216,12 @@ func (r *ScheduledRunRepo) Create(ctx context.Context, s *ScheduledRun) error {
 		INSERT INTO scheduled_runs (
 			scheduled_run_id, tenant_id, owner_user_id, prompt, schedule_kind,
 			cron_expr, next_fire_at, approved_tools, state, created_by,
-			workflow_lineage_id, workflow_inputs
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			workflow_lineage_id, workflow_inputs, actor_agent_id, delegation_expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			COALESCE($14, NOW() + INTERVAL '90 days'))`,
 			s.ScheduledRunID, s.TenantID, s.OwnerUserID, s.Prompt, s.Kind,
 			nullableCron(s.Kind, s.CronExpr), s.NextFireAt, toolsJSON, ScheduledRunActive, s.CreatedBy,
-			s.WorkflowLineageID, inputsJSON,
+			s.WorkflowLineageID, inputsJSON, s.ActorAgentID, nullableTime(s.DelegationExpiresAt),
 		)
 		if err != nil {
 			return fmt.Errorf("insert scheduled_run: %w", err)
@@ -308,6 +333,30 @@ func (r *ScheduledRunRepo) SetState(ctx context.Context, tenantID, id string, st
 	})
 }
 
+// RevokeDelegation ends a schedule's standing delegation for good: it records
+// who revoked it and parks a live row (PAUSED, no next fire); a COMPLETED or
+// FAILED row keeps its terminal state. Resume refuses a revoked row.
+func (r *ScheduledRunRepo) RevokeDelegation(ctx context.Context, tenantID, id, by string) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		tag, err := conn.Exec(ctx, `
+		UPDATE scheduled_runs
+		SET delegation_revoked_at = COALESCE(delegation_revoked_at, NOW()),
+		    delegation_revoked_by = COALESCE(delegation_revoked_by, $1),
+		    state = CASE WHEN state IN ('ACTIVE', 'PAUSED') THEN 'PAUSED' ELSE state END,
+		    next_fire_at = NULL, updated_at = NOW()
+		WHERE scheduled_run_id = $2`,
+			by, id,
+		)
+		if err != nil {
+			return fmt.Errorf("revoke scheduled_run delegation: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("scheduled_run %s not found", id)
+		}
+		return nil
+	})
+}
+
 func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		tag, err := conn.Exec(ctx, `DELETE FROM scheduled_runs WHERE scheduled_run_id = $1`, id)
@@ -326,6 +375,9 @@ func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) erro
 // back: a CRON run's next_fire_at jumps to its next slot (computed from `now`, so
 // missed slots are skipped rather than backfilled); a ONCE run's next_fire_at
 // goes NULL. FOR UPDATE SKIP LOCKED keeps concurrent ticks from double-claiming.
+// A row whose delegation is revoked or expired (AG-17 S4) is parked instead
+// (PAUSED, no next fire) and returned with SkipReason set, so the caller can
+// audit the skip; the caller must not fire it.
 func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int) ([]*ScheduledRun, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*ScheduledRun, error) {
 		tx, err := conn.Begin(ctx)
@@ -361,6 +413,18 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 		}
 
 		for _, s := range due {
+			switch {
+			case s.DelegationRevokedAt != nil:
+				s.SkipReason = "delegation_revoked"
+			case !now.Before(s.DelegationExpiresAt):
+				s.SkipReason = "delegation_expired"
+			}
+			if s.SkipReason != "" {
+				if _, err := tx.Exec(ctx, `UPDATE scheduled_runs SET state='PAUSED', next_fire_at=NULL, last_status=$1, updated_at=NOW() WHERE scheduled_run_id=$2`, s.SkipReason, s.ScheduledRunID); err != nil {
+					return nil, fmt.Errorf("park scheduled_run: %w", err)
+				}
+				continue
+			}
 			var next *time.Time
 			if s.Kind == ScheduleKindCron {
 				n, err := NextCronFire(s.CronExpr, now)
