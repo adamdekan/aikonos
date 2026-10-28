@@ -315,47 +315,62 @@ func (s *BrokerService) ListAgents(ctx context.Context, req *brokerv1.ListAgents
 	ctx, span := tracer.Start(ctx, "broker.agents.list")
 	defer span.End()
 
-	if !s.agentsEnabled() {
-		return nil, status.Error(codes.FailedPrecondition, "agents disabled")
-	}
-	tenant, user, err := s.callerIdentity(ctx, req.TenantId, req.UserId)
+	_, _, out, err := s.listAgents(ctx, req.TenantId, req.UserId, false)
 	if err != nil {
 		return nil, err
 	}
+	return &brokerv1.ListAgentsResponse{Agents: out}, nil
+}
+
+// listAgents is ListAgents behind the tenant-admin gate. With strictOwners an
+// unreadable FGA fails the call instead of listing no owners (AG-14 export:
+// a governance tool must not record an owned agent as ownerless).
+func (s *BrokerService) listAgents(ctx context.Context, reqTenant, reqUser string, strictOwners bool) (tenant, user string, out []*brokerv1.Agent, err error) {
+	if !s.agentsEnabled() {
+		return "", "", nil, status.Error(codes.FailedPrecondition, "agents disabled")
+	}
+	tenant, user, err = s.callerIdentity(ctx, reqTenant, reqUser)
+	if err != nil {
+		return "", "", nil, err
+	}
 	if err := s.requireTenantAdmin(ctx, user); err != nil {
-		return nil, err
+		return "", "", nil, err
 	}
 	rows, err := s.deps.Agents.List(ctx, tenant)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list agents: %v", err)
+		return "", "", nil, status.Errorf(codes.Internal, "list agents: %v", err)
 	}
 	// AG-04: the orphan flag rests on AG-06 block status, a security state, so
 	// a read failure fails the listing rather than showing "not orphaned".
 	var blocks map[string]db.UserBlock
 	if s.deps.Revocation != nil {
 		if blocks, err = s.deps.Revocation.UserBlocks(ctx, tenant); err != nil {
-			return nil, status.Errorf(codes.Internal, "list user blocks: %v", err)
+			return "", "", nil, status.Errorf(codes.Internal, "list user blocks: %v", err)
 		}
 	}
-	out := make([]*brokerv1.Agent, 0, len(rows))
+	out = make([]*brokerv1.Agent, 0, len(rows))
 	for _, row := range rows {
 		pa := toProtoAgent(row)
-		// Populate usable_by subjects and the orphan flag from FGA (best-effort;
-		// FGA disabled or unreadable → empty, not flagged).
+		// Populate usable_by subjects, owners and the orphan flag from FGA
+		// (best-effort; FGA disabled or unreadable → empty, not flagged).
 		rels, rerr := s.deps.Policy.ReadTuples(ctx, policy.ReadFilter{Object: "agent:" + row.ID.String()})
+		if rerr != nil && strictOwners && s.deps.Policy.FGAEnabled() {
+			return "", "", nil, status.Errorf(codes.Unavailable, "read agent owners: %v", rerr)
+		}
 		if rerr == nil && s.deps.Policy.FGAEnabled() {
 			for _, r := range rels {
 				if r.Relation == "usable_by" {
 					pa.UsableBy = append(pa.UsableBy, r.User)
 				}
 			}
+			pa.Owners = agentOwnerRefs(rels)
 			// AG-01: the tenant default agent has no owner by design; the
 			// tenant admins answer for it.
-			pa.Orphaned = !row.IsDefault && agentOrphaned(agentOwnerRefs(rels), blocks)
+			pa.Orphaned = !row.IsDefault && agentOrphaned(pa.Owners, blocks)
 		}
 		out = append(out, pa)
 	}
-	return &brokerv1.ListAgentsResponse{Agents: out}, nil
+	return tenant, user, out, nil
 }
 
 // agentOrphaned reports an agent that no one is left to answer for (AG-04): it

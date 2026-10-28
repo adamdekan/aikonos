@@ -96,6 +96,7 @@ const EXPECTED_ROUTES = [
   "GET /admin/agents",
   "GET /admin/agents/:id/keys",
   "GET /admin/agents/:id/public-keys",
+  "GET /admin/agents/inventory",
   "GET /admin/alerts",
   "GET /admin/assignments",
   "GET /admin/audit/evidence/:eventId",

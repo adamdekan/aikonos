@@ -1,4 +1,4 @@
-import { get, post, put, patch, del, upload } from "./client.js";
+import { get, post, put, patch, del, upload, download } from "./client.js";
 
 // ── Role/assignment management ────────────────────────────────────────────────
 
@@ -109,6 +109,12 @@ export function updateAgent(id, body) {
 
 export function deleteAgent(id) {
   return del(`/admin/agents/${id}`);
+}
+
+// AG-14: agent inventory for identity-governance tools; format "json" | "csv".
+// Resolves { text } or { forbidden: true }.
+export function exportAgentInventory(format) {
+  return download(`/admin/agents/inventory?format=${format === "csv" ? "csv" : "json"}`);
 }
 
 // ── Per-agent API keys ────────────────────────────────────────────────────────

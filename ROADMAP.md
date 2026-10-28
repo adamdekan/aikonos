@@ -78,8 +78,10 @@ Not committed, listed so the direction is visible.
 - **Reproducible image builds.** Release images are signed and carry SBOMs
   and provenance, which proves who built them. Only a bit-for-bit rebuild
   would let a third party confirm they follow from the source alone.
-- **Agent inventory and lifecycle.** Discovering, onboarding and retiring
-  agent identities is manual today.
+- **Agent inventory and lifecycle.** Admins export the agent inventory
+  (owners, status, connectors, keys) for identity-governance tools, and agents
+  move through staged, active, suspended and retired. Discovering agents that
+  run outside aikonOS is still manual.
 - **Access-decision replay.** Policy decisions replay against the archived
   policy that made them. Access checks record the OpenFGA model and their
   result, but not the relationship tuples behind it; archiving tuple history

@@ -14,6 +14,7 @@ import {
   type AgentApiKey,
   type AgentPublicKey,
   type ScimToken,
+  type AgentInventoryEntry,
 } from "../../gen/ts/proto/broker";
 import { PolicyDecision } from "../../gen/ts/proto/audit";
 import { EffectClass } from "../../gen/ts/proto/plan";
@@ -197,7 +198,50 @@ export function agentJson(a: Agent) {
     isDefault: a.isDefault ?? false,
     status: a.status ?? "",
     statusReason: a.statusReason ?? "",
+    owners: a.owners ?? [],
   };
+}
+
+// inventoryRow is one agent of the AG-14 inventory export, in the shape both
+// the JSON and the CSV download use.
+export function inventoryRow(e: AgentInventoryEntry) {
+  const a = e.agent;
+  return {
+    id: a?.id ?? "",
+    name: a?.name ?? "",
+    status: a?.status ?? "",
+    owners: a?.owners ?? [],
+    serviceAgent: a?.serviceAgent ?? false,
+    gatewayEnabled: a?.gatewayEnabled ?? false,
+    orphaned: a?.orphaned ?? false,
+    isDefault: a?.isDefault ?? false,
+    connectors: a?.mcpServers ?? [],
+    allowedTools: a?.mcpTools ?? [],
+    skills: a?.skills ?? [],
+    apiKeys: e.apiKeys ?? 0,
+    publicKeys: e.publicKeys ?? 0,
+    nearestKeyExpiry: e.nearestKeyExpiry ? e.nearestKeyExpiry.toISOString() : null,
+    lastUsedAt: e.lastUsedAt ? e.lastUsedAt.toISOString() : null,
+    createdBy: a?.createdBy ?? "",
+    createdAt: a?.createdAt ? a.createdAt.toISOString() : null,
+  };
+}
+
+// inventoryCsv renders inventory rows as RFC 4180 CSV; lists are joined with
+// ";". A cell that a spreadsheet would read as a formula (=, +, -, @, tab,
+// CR) is prefixed with ' so an agent name cannot run in the reader's sheet.
+export function inventoryCsv(rows: ReturnType<typeof inventoryRow>[]): string {
+  const cols = [
+    "id", "name", "status", "owners", "serviceAgent", "gatewayEnabled", "orphaned", "isDefault",
+    "connectors", "allowedTools", "skills", "apiKeys", "publicKeys", "nearestKeyExpiry", "lastUsedAt",
+    "createdBy", "createdAt",
+  ] as const;
+  const cell = (v: unknown) => {
+    let s = Array.isArray(v) ? v.join(";") : String(v ?? "");
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+  };
+  return [cols.join(","), ...rows.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\r\n") + "\r\n";
 }
 
 // normalizeRoleTuple builds a wire-safe RoleTuple from an untrusted request body.
@@ -236,6 +280,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     status: "", // read-only (AG-03); SetAgentStatus moves it
     statusReason: "",
     usableBy: [],
+    owners: [], // read-only (AG-14); owners are FGA tuples
     createdBy: "",
     createdAt: undefined,
     updatedAt: undefined,
@@ -1508,6 +1553,28 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
       reply.send({ agents: (resp.agents ?? []).map(agentJson) });
     } catch (err) {
       sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { agents: [] } });
+    }
+  });
+
+  // AG-14: agent inventory for identity-governance tools. Tenant-admin gated
+  // in the broker; ?format=csv for CSV, JSON otherwise.
+  app.get<{ Querystring: { format?: string } }>("/admin/agents/inventory", async (req, reply) => {
+    const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+    if (!principal) return;
+    try {
+      const resp = await clients.north.exportAgentInventory(
+        { tenantId: principal.tenant, userId: principal.sub },
+        principal.token,
+      );
+      const rows = (resp.agents ?? []).map(inventoryRow);
+      const csv = req.query.format === "csv";
+      reply
+        .header("content-type", csv ? "text/csv; charset=utf-8" : "application/json; charset=utf-8")
+        .header("content-disposition", `attachment; filename="aikonos-agent-inventory.${csv ? "csv" : "json"}"`)
+        .header("cache-control", "no-store")
+        .send(csv ? inventoryCsv(rows) : JSON.stringify({ agents: rows }, null, 2));
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
     }
   });
 
