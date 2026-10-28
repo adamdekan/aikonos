@@ -125,7 +125,11 @@ function makeIdentity(): Identity {
 
 // Build a supervisor whose resolveSessionPlan returns a controllable systemPrompt
 // alongside the skill-derived allowedToolNames.
-function makeMutableSoulRig(initialPrompt: string, initialSkills: string[]): {
+function makeMutableSoulRig(
+  initialPrompt: string,
+  initialSkills: string[],
+  credentials: ProviderCredentialResolver = makeFakeCredentials(),
+): {
   supervisor: ChildSupervisor;
   records: FakeSpawnRecord[];
   setPrompt: (p: string) => void;
@@ -170,7 +174,7 @@ function makeMutableSoulRig(initialPrompt: string, initialSkills: string[]): {
     deps,
     makeBridgeFactory(),
     spawnFn,
-    makeFakeCredentials(),
+    credentials,
     { keying: "per-user" } satisfies Partial<SupervisorConfig>,
   );
 
@@ -243,6 +247,44 @@ test("soul-refresh: changed tool allowlist still triggers respawn (regression)",
   const h2 = await supervisor.getOrSpawn(key, identity);
   assert.equal(records.length, 2, "tool allowlist change must still respawn");
   assert.notEqual(h2, h1);
+});
+
+test("provider-refresh: idle child IS respawned when the resolved LLM credentials changed; unchanged creds do not respawn", async () => {
+  // WHY: the child's proxy registration (endpoint, key, model, dialect) is
+  // pinned at spawn. Without this an admin's provider fix would not take
+  // effect until the child's TTL expired.
+  let creds: ProviderCredentials = {
+    upstreamBaseUrl: "https://openrouter.ai/api/v1",
+    apiKey: "KEY_A",
+    modelId: "anthropic/claude-sonnet-4.6",
+    modelAllowlist: ["anthropic/claude-sonnet-4.6"],
+    fallbacks: [],
+  };
+  const { supervisor, records } = makeMutableSoulRig("p", ["web.fetch"], async () => creds);
+  const identity = makeIdentity();
+  const key = supervisor.keyFor(identity);
+
+  const h1 = await supervisor.getOrSpawn(key, identity);
+  h1.lastPlanCheckAt = 0;
+  assert.equal(await supervisor.getOrSpawn(key, identity), h1, "unchanged creds must not respawn");
+  assert.equal(records.length, 1);
+
+  creds = { ...creds, apiKey: "KEY_B" };
+  // Still inside the throttle window — no recheck yet.
+  assert.equal(await supervisor.getOrSpawn(key, identity), h1, "no recheck before PLAN_RECHECK_MS");
+  h1.lastPlanCheckAt = 0;
+  const h2 = await supervisor.getOrSpawn(key, identity);
+  assert.equal(records.length, 2, "a changed api key must respawn the child");
+  assert.notEqual(h2, h1);
+
+  creds = { ...creds, upstreamBaseUrl: "https://api.openai.com/v1" };
+  h2.lastPlanCheckAt = 0;
+  const h3 = await supervisor.getOrSpawn(key, identity);
+  assert.equal(records.length, 3, "a changed endpoint must respawn the child");
+  assert.notEqual(h3, h2);
+  assert.ok(!JSON.stringify(h3.credsFingerprint).includes("KEY_B"), "the handle must not hold the plaintext key");
+
+  supervisor.dispose();
 });
 
 // ThrowingReresolveSupervisor overrides the protected resolveAllowedToolNames

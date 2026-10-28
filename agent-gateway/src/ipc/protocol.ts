@@ -388,6 +388,10 @@ export interface InitMessage {
   // the real id for the broker's per-provider cost-fallback lookup. Optional
   // for backward/forward plan compatibility — an absent value relays "".
   providerId?: string;
+  // The chat provider's wire dialect (e.g. "anthropic-messages"). Not a
+  // secret. The child speaks it natively and the egress proxy passes the body
+  // through untranslated, so both must agree. Absent = openai-completions.
+  api?: string;
   systemPrompt: string;
   allowedToolNames: string[];
   mcpTools: McpTool[];
