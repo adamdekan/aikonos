@@ -21,7 +21,7 @@ const { delegatableGroups: groups, loading: groupsLoading, errors: discoveryErro
   storeToRefs(discoveryStore);
 const groupsError = computed(() => discoveryErrors.value.delegatableGroups);
 
-// Refresh on every open so the list is never stale (mirrors ApprovalModal pattern).
+// Refresh on every open so the list is never stale.
 watch(
   () => props.visible,
   (val) => { if (val) discoveryStore.refresh(); },

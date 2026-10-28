@@ -1,8 +1,8 @@
-import { ref, computed, onUnmounted } from "vue";
+import { ref, onUnmounted } from "vue";
 import { get } from "../api/client.js";
 import { useToast } from "../components/ui/useToast.js";
 
-// HITL approval state: a FIFO queue of pending approvals plus the polling
+// HITL approval state: the chat's pending approvals (inline cards) plus the polling
 // fallback that keeps the queue fed (the CUSTOM event and /approvals poll
 // both feed the same dedup path via the handled-toolCallId set).
 //
@@ -28,9 +28,6 @@ export function useApprovals() {
   let toastedThisSession = false; // first poll failure per polling session surfaces a toast
 
   const { push: toast } = useToast();
-
-  const approval = computed(() => queue.value[0] ?? null);
-  const pendingCount = computed(() => queue.value.length);
 
   function enqueue(info) {
     if (!info || handled.has(info.toolCallId)) return;
@@ -102,15 +99,15 @@ export function useApprovals() {
     }
   }
 
-  // Resolving (approve/deny) the current approval advances the queue to the next.
-  function onApprovalClose() {
-    queue.value.shift();
+  // A decided card leaves the transcript.
+  function removeApproval(toolCallId) {
+    queue.value = queue.value.filter((a) => a.toolCallId !== toolCallId);
   }
 
   // AG-07: the broker decided it elsewhere (the Inbox, another approver) or the
-  // run gave up on it — drop its dialog.
+  // run gave up on it — drop its card.
   function onApprovalResolved(ev) {
-    queue.value = queue.value.filter((a) => a.toolCallId !== ev?.toolCallId);
+    removeApproval(ev?.toolCallId);
   }
 
   // Called on run end (finish/error/stop) alongside stopPolling — the handled
@@ -126,14 +123,16 @@ export function useApprovals() {
   });
 
   return {
-    approval,
-    pendingCount,
+    // Every pending approval of this chat, one inline card each.
+    approvals: queue,
+    // A request found in the broker after a reload: a card, no polling.
+    addApproval: enqueue,
+    removeApproval,
     onApprovalRequest,
     onApprovalResolved,
     startPolling,
     scheduleOneShotPoll,
     stopPolling,
-    onApprovalClose,
     resetApprovals,
   };
 }

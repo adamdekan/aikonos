@@ -130,7 +130,17 @@ export function useAguiRun({
         }
       },
 
-      onApprovalRequest,
+      // AG-07: remember the broker task the call waits on and save the session
+      // now, so a reload or a reopened session finds the approval again.
+      onApprovalRequest(info) {
+        const tool = assistantMsg && info?.taskId && findTool(assistantMsg, info.toolCallId);
+        if (tool) {
+          tool.taskId = info.taskId;
+          chatStore.persist();
+          persistSessionMessages();
+        }
+        onApprovalRequest(info);
+      },
       onApprovalResolved,
 
       onToolError(info) {

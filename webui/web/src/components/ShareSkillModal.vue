@@ -32,8 +32,8 @@ const submitting = ref(false);
 const submitError = ref("");
 const skippedCount = ref(0);
 
-// Refresh discovery + reset all local state on every open (ApprovalModal/
-// PublishWorkflowDialog precedent) — a stale pick from a previous open must
+// Refresh discovery + reset all local state on every open (PublishWorkflowDialog
+// precedent) — a stale pick from a previous open must
 // never survive into this one.
 watch(
   () => props.visible,

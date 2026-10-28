@@ -55,6 +55,7 @@ vi.mock("../api/sessions.js", () => ({
 }));
 
 import * as sessionsMod from "../api/sessions.js";
+import * as clientMod from "../api/client.js";
 
 function makeRouter() {
   return createRouter({
@@ -213,5 +214,71 @@ describe("Chat.vue — sessionless navigation clears active session", () => {
     chatStore.promoteDraft(newId);
     expect(chatStore.activeSessionId).toBe(newId);
     expect(chatStore.activeSessionId).not.toBe("RESUMED");
+  });
+});
+
+// AG-07: a reloaded or reopened session that still waits for an approval shows
+// its card again, sourced from the broker's pending list for this session's
+// tasks only; deciding it says the run is gone.
+describe("Chat.vue — approval card after reload", () => {
+  let router;
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    router = makeRouter();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    clientMod.get.mockReset();
+    clientMod.get.mockResolvedValue({ approvals: [] });
+    vi.restoreAllMocks();
+  });
+
+  it("shows the card from the pending list and decides it with the digest", async () => {
+    sessionsMod.readSession.mockResolvedValue({
+      id: "R",
+      title: "Fetch",
+      thread_id: "thread-r",
+      messages: [
+        { role: "user", text: "fetch it" },
+        { role: "assistant", text: "", error: null, tools: [
+          { id: "tc-r", name: "web_fetch", argsJson: "", result: null, isError: false, done: false, taskId: "task-r" },
+        ] },
+      ],
+    });
+    const pending = (taskId, toolId) => ({
+      taskId, argsDigest: `d-${taskId}`, stepUp: false, requiresN: 1, approvals: 0,
+      steps: [{ seq: 1, toolId, args: { url: "https://example.com" } }],
+    });
+    clientMod.get.mockImplementation(async (url) =>
+      url === "/pending-approvals"
+        ? { approvals: [pending("task-r", "web.fetch"), pending("task-elsewhere", "doc.write")] }
+        : { approvals: [] } // the gateway holds no live run after the reload
+    );
+    clientMod.post.mockResolvedValue({ newStatus: 5 });
+
+    await router.push("/chat?session=R");
+    const w = mount(Chat, { global: { plugins: [router] } });
+    await flushPromises();
+
+    expect(w.findAll("[data-testid^='chat-deny-']").length).toBe(1);
+    expect(w.find("[data-testid='chat-approval-tc-r']").text()).toContain("web.fetch");
+
+    await w.find("[data-testid='chat-approve-tc-r']").trigger("click");
+    await flushPromises();
+    expect(clientMod.post).toHaveBeenCalledWith("/pending-approvals/task-r", { body: { approved: true, argsDigest: "d-task-r" } });
+    expect(w.find("[data-testid='chat-approval-gone-tc-r']").text()).toContain("no longer running");
+  });
+
+  it("does not ask the broker when no tool call of the session waited", async () => {
+    sessionsMod.readSession.mockResolvedValue({
+      id: "Q", title: "q", thread_id: "t", messages: [{ role: "user", text: "hi" }],
+    });
+    await router.push("/chat?session=Q");
+    mount(Chat, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(clientMod.get).not.toHaveBeenCalledWith("/pending-approvals");
   });
 });
