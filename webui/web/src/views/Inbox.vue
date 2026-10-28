@@ -53,7 +53,7 @@ async function sendToAgent(env) {
     push("error", "Nothing to send");
     return;
   }
-  promptStore.set(intent);
+  promptStore.set(intent, env.envelopeId);
   try {
     await dismiss(env.envelopeId);
   } catch (e) {
@@ -64,7 +64,7 @@ async function sendToAgent(env) {
 }
 
 function startSession(env) {
-  promptStore.setPrefill(env.task?.intent ?? "");
+  promptStore.setPrefill(env.task?.intent ?? "", env.envelopeId);
   router.push("/chat");
 }
 

@@ -361,7 +361,13 @@ interface RunBody {
   // non-string or oversized value degrades to "" instead of failing the turn.
   // Typed unknown for the same reason history is: a client value is untrusted.
   session_id?: unknown;
+  // AG-17: the inbox envelope this chat was started from ("Send to agent" /
+  // "New session"). Forwarded on the run's north CreateTask calls; the broker
+  // decides whether the caller is its recipient. Malformed values are a 400.
+  envelopeId?: unknown;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Long enough for a UUID plus any future prefix; a larger value is a
 // hand-crafted request, not a webui session id. Exported so every route that
@@ -390,6 +396,7 @@ interface ChatTurnPlan {
   prompt: string;
   history: ConvMessage[] | undefined;
   userInstructions: string | undefined;
+  envelopeId: string | undefined;
   sessionAgentId: string;
   spec: AgentSpec | undefined;
   handle: ChildHandle;
@@ -488,6 +495,12 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       }
     }
     const userInstructions = body.userInstructions?.trim() || undefined;
+
+    if (body.envelopeId !== undefined && (typeof body.envelopeId !== "string" || !UUID_RE.test(body.envelopeId))) {
+      reply.code(400).send({ error: "envelopeId must be a UUID" });
+      return null;
+    }
+    const envelopeId = body.envelopeId as string | undefined;
 
     // Validate history[] BEFORE the SSE hijack, same caps as the external
     // :8090 surface —
@@ -678,6 +691,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       prompt,
       history,
       userInstructions,
+      envelopeId,
       sessionAgentId,
       spec,
       handle,
@@ -694,7 +708,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
   async function streamTurn(reply: FastifyReply, plan: ChatTurnPlan): Promise<void> {
     const {
       threadId, runId, sessionId, user, displayName, token, prompt, history,
-      userInstructions, sessionAgentId, spec, handle, commandSkillResult, skillMatch,
+      userInstructions, envelopeId, sessionAgentId, spec, handle, commandSkillResult, skillMatch,
       memoryRecall, memoryVia,
     } = plan;
 
@@ -770,6 +784,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       userId: user,
       agentId: sessionAgentId,
       token,
+      ...(envelopeId ? { envelopeId } : {}),
     };
     // CP7: one SSE CUSTOM frame per branch
     // spawn/resolution. Fields are RAW branch-supplied data rendered by a UI,

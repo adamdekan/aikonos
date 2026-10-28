@@ -75,6 +75,7 @@ export interface Identity {
   agentId: string; // agent acting on behalf of this user (e.g. alice-agent)
   ownerGrant?: string; // broker-minted HMAC grant (south-path only; absent on the north/bearer path)
   runId?: string; // scheduled-run id (scheduler-path only); forwarded as CreateGatewayTask's client_request_id for idempotent replay
+  envelopeId?: string; // inbox envelope this chat run handles (AG-17); the broker records its sender as delegated_by when the caller is the recipient
 }
 
 export interface ApprovalInfo {
@@ -226,6 +227,7 @@ export class GovernanceBridge {
             // AG-17: bind the acting agent so the run records its actor. Only a
             // real agent UUID binds; the "<user>-agent" pseudo-id stays unbound.
             agentId: boundAgentUuid(this.identity.agentId),
+            envelopeId: this.identity.envelopeId ?? "",
           },
           this.identity.token,
         )

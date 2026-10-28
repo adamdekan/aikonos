@@ -610,6 +610,10 @@ message CreateTaskRequest {
   // Optional bare agent UUID the task acts as (AG-17). The caller must be
   // able to operate it (can_use, tenant-admin fallback); empty = unbound.
   string agent_id = 9;
+  // Optional inbox envelope id (AG-17). When the caller is the envelope's
+  // recipient, the task records the envelope sender as delegated_by. A
+  // non-recipient or unknown id is ignored (audited), never an error.
+  string envelope_id = 10;
 }
 
 message TaskHandle {

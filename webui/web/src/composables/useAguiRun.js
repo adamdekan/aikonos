@@ -44,6 +44,8 @@ export function createMessageHelpers(messages, chatStore) {
 // from useApprovals.
 // maybeCreateSession/persistSessionMessages: from useSessionLifecycle.
 // pendingDelegation: ref from useDelegation — submit() routes @-mention delegation there.
+// pendingEnvelopeId: optional ref<string> — the inbox delegation this chat handles
+// (AG-17). The next run sends it and clears it, so only the first run carries it.
 export function useAguiRun({
   draft,
   messages,
@@ -61,6 +63,7 @@ export function useAguiRun({
   maybeCreateSession,
   persistSessionMessages,
   pendingDelegation,
+  pendingEnvelopeId = null,
 }) {
   const running = ref(false);
   const textStreaming = ref(false);  // TEXT_MESSAGE_START → TEXT_MESSAGE_END
@@ -312,6 +315,9 @@ export function useAguiRun({
     // folds them into the system prompt when the thread session is created.
     const userInstructions = usePrefsStore().chatInstructions.trim() || undefined;
 
+    const envelopeId = pendingEnvelopeId?.value || undefined;
+    if (pendingEnvelopeId) pendingEnvelopeId.value = "";
+
     abortController = new AbortController();
     await runAgui(
       {
@@ -326,6 +332,7 @@ export function useAguiRun({
         ...(chatStore.activeSessionId ? { sessionId: chatStore.activeSessionId } : {}),
         ...(skillName ? { skillName } : {}),
         ...(userInstructions ? { userInstructions } : {}),
+        ...(envelopeId ? { envelopeId } : {}),
       },
       handlers,
     );

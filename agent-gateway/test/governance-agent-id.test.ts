@@ -129,3 +129,26 @@ for (const [agentId, want] of [
     assert.equal(northCalls[0].agentId, want);
   });
 }
+
+// AG-17: the run's inbox envelope rides every north createTask; absent = "".
+for (const envelopeId of ["55555555-5555-4555-8555-555555555555", undefined]) {
+  test(`GovernanceBridge north-mode: createTask envelopeId ${envelopeId ?? "(none)"}`, async () => {
+    const { clients } = makeStubClients();
+    const northCalls: Record<string, unknown>[] = [];
+    (clients.north as unknown as { createTask: (r: Record<string, unknown>) => Promise<unknown> }).createTask =
+      (r) => {
+        northCalls.push(r);
+        return Promise.resolve({ taskId: "task-1" });
+      };
+    const identity = {
+      token: "tok",
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      userId: "bob@example.com",
+      agentId: "bob@example.com-agent",
+      envelopeId,
+    };
+    const bridge = new GovernanceBridge(cfg, clients, identity, async () => true, log);
+    await bridge.gate("call-1", "web_fetch", { url: "https://example.com" });
+    assert.equal(northCalls[0].envelopeId, envelopeId ?? "");
+  });
+}

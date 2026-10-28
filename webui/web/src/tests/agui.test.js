@@ -277,6 +277,16 @@ describe("runAgui — event dispatch", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).session_id).toBeUndefined();
   });
 
+  // AG-17: inbox delegation id rides the body only when given.
+  it("includes envelopeId in the body only when set", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(makeResponse([])));
+    await runAgui({ prompt: "hi", threadId: "t9", envelopeId: "env-1" }, handlers, fetchMock, testToken);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).envelopeId).toBe("env-1");
+
+    await runAgui({ prompt: "hi", threadId: "t9" }, handlers, fetchMock, testToken);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).envelopeId).toBeUndefined();
+  });
+
   it("calls onError when no token is available", async () => {
     const fetchMock = vi.fn();
     const noToken = async () => null;

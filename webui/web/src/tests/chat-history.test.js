@@ -157,3 +157,62 @@ describe("Chat.vue — history sent with submit", () => {
     expect(h.find((m) => m.role === "user" && m.content === "do a fetch")).toBeDefined();
   });
 });
+
+// AG-17: an inbox delegation ("Send to agent" auto-submit, "New session"
+// prefill) sends its envelopeId on the chat's first run only.
+describe("Chat.vue — inbox envelopeId", () => {
+  let router;
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActivePinia(createPinia());
+    router = makeRouter();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  function captureRuns() {
+    const ids = [];
+    mockRunAgui = vi.fn().mockImplementation((opts, handlers) => {
+      ids.push(opts.envelopeId);
+      handlers.onFinished?.();
+      return Promise.resolve("thread-abc");
+    });
+    return ids;
+  }
+
+  async function mountAndSendTwice(seed) {
+    const ids = captureRuns();
+    seed(usePromptStore());
+    await router.push("/chat");
+    const w = mount(Chat, { global: { plugins: [router] } });
+    await flushPromises();
+    const textarea = w.find("textarea");
+    if (ids.length === 0) {
+      await w.find("form").trigger("submit");
+      await flushPromises();
+    }
+    await textarea.setValue("follow-up");
+    await w.find("form").trigger("submit");
+    await flushPromises();
+    return ids;
+  }
+
+  it("Send to agent: the auto-submitted run carries envelopeId, the next does not", async () => {
+    const ids = await mountAndSendTwice((p) => p.set("fetch market data", "env-1"));
+    expect(ids).toEqual(["env-1", undefined]);
+  });
+
+  it("New session: the first sent run carries envelopeId, the next does not", async () => {
+    const ids = await mountAndSendTwice((p) => p.setPrefill("fetch market data", "env-1"));
+    expect(ids).toEqual(["env-1", undefined]);
+  });
+
+  it("an ordinary prompt carries no envelopeId", async () => {
+    const ids = await mountAndSendTwice((p) => p.set("hello"));
+    expect(ids).toEqual([undefined, undefined]);
+  });
+});

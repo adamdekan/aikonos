@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -96,8 +97,71 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 		}
 		t.ParentTaskID = &pid
 	}
+	if req.EnvelopeId != "" {
+		t.DelegatedByUserID = s.envelopeDelegator(ctx, traceID, tenant, owner, req.EnvelopeId)
+	}
 
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
+}
+
+// envelopeDelegator resolves CreateTaskRequest.envelope_id (AG-17): when the
+// caller is the addressed recipient of a live (pending, delivered, accepted or
+// dismissed) envelope in their tenant, it returns the envelope sender as the
+// task's delegated_by. Anything else is ignored rather than failing the chat —
+// the task is just not marked delegated — and audited as
+// aikonos.broker.task.delegation_ignored with the reason.
+func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, owner, envelopeID string) *string {
+	reason := "envelope_not_found"
+	var env *db.Envelope
+	if _, err := uuid.Parse(envelopeID); err == nil {
+		env, _ = s.deps.Tasks.GetEnvelope(ctx, tenant, envelopeID)
+	}
+	if env != nil && env.TenantID.String() == tenant {
+		toType, _ := env.ToTarget["type"].(string)
+		toID, _ := env.ToTarget["id"].(string)
+		switch {
+		// Same recipient test as RespondEnvelope/DismissEnvelope; group sends
+		// fan out to one user envelope per member, so there is no group arm.
+		case toType != "user" || toID != owner:
+			reason = "envelope_not_recipient"
+		case !envelopeUsable(env):
+			reason = "envelope_not_active"
+		default:
+			from := env.FromUserID
+			return &from
+		}
+	}
+	ctxStruct, _ := structpb.NewStruct(map[string]any{"reason": reason, "envelope_id": envelopeID})
+	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+		EventId:     ids.EventID(),
+		TraceId:     traceID,
+		TenantId:    tenant,
+		OccurredAt:  timestampNow(),
+		ActorUserId: owner,
+		EventType:   "aikonos.broker.task.delegation_ignored",
+		ResourceRef: "envelope:" + envelopeID,
+		Decision:    auditv1.PolicyDecision_DENY,
+		Context:     ctxStruct,
+	}); err != nil {
+		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.task.delegation_ignored")
+	}
+	s.deps.Logger.Warn("CreateTask: envelope_id ignored",
+		zap.String("envelope_id", envelopeID), zap.String("user", owner), zap.String("reason", reason))
+	return nil
+}
+
+// envelopeUsable: the inbox "Send to agent" path dismisses before the chat
+// runs, so DISMISSED counts alongside the open and accepted states. Rejected,
+// completed and expired envelopes (or past expires_at) do not.
+func envelopeUsable(env *db.Envelope) bool {
+	if !env.ExpiresAt.IsZero() && time.Now().After(env.ExpiresAt) {
+		return false
+	}
+	switch env.State {
+	case db.EnvelopePending, db.EnvelopeDelivered, db.EnvelopeAccepted, db.EnvelopeDismissed:
+		return true
+	}
+	return false
 }
 
 // northActor resolves CreateTaskRequest.agent_id (AG-17): empty is unbound;
