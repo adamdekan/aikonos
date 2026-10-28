@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
+	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -97,6 +99,17 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 		return nil, status.Errorf(codes.NotFound, "mcp connection %q not found: %v", req.ConnectorId, err)
 	}
 
+	// AG-08: the model sees only the tools the session's agent may call.
+	// No allowlisted tool on this connector lists nothing, without reaching
+	// the server.
+	allowed, err := s.southAllowedMcpTools(ctx, req, conn.ID.String())
+	if err != nil {
+		return nil, err
+	}
+	if len(allowed) == 0 {
+		return &brokerv1.ListMcpServerToolsResponse{}, nil
+	}
+
 	// An oauth connection lists with the session user's linked account; a
 	// user who has not linked it gets FailedPrecondition and the gateway
 	// leaves the server out of the session.
@@ -121,6 +134,9 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 
 	out := make([]*brokerv1.McpToolSchema, 0, len(tools))
 	for _, t := range tools {
+		if !allowed["mcp:"+conn.ID.String()+":"+t.Name] {
+			continue
+		}
 		out = append(out, &brokerv1.McpToolSchema{
 			Name:            t.Name,
 			Description:     t.Description,
@@ -129,9 +145,49 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 		})
 	}
 
-	s.emitSouthMcpAudit(ctx, span.SpanContext().TraceID().String(), req.TenantId, "",
+	s.emitSouthMcpAudit(ctx, span.SpanContext().TraceID().String(), req.TenantId, "agent:"+strings.TrimPrefix(req.AgentId, "agent:"),
 		"aikonos.broker.mcp.south.server.tools.listed", req.ConnectorId, auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.ListMcpServerToolsResponse{Tools: out}, nil
+}
+
+// southAllowedMcpTools returns the "mcp:<conn>:<tool>" ids of connID the
+// session may see: the bound agent (req.AgentId) must have the connector
+// attached and the tool in its mcp_tools allowlist (AG-08), and a human
+// subject (req.UserId) needs its own can_access on the connector when the
+// tenant enforces the AG-02 user bound. Audit mode keeps listing; the call
+// itself is still checked at InvokeTool. Empty means list nothing.
+func (s *SandboxService) southAllowedMcpTools(ctx context.Context, req *brokerv1.ListMcpServerToolsRequest, connID string) (map[string]bool, error) {
+	bare := strings.TrimPrefix(req.AgentId, "agent:")
+	if _, err := uuid.Parse(bare); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
+	}
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id (the session subject) required")
+	}
+	if s.deps.Agents == nil {
+		return nil, status.Error(codes.FailedPrecondition, "agents store not configured")
+	}
+	agent, err := s.deps.Agents.Get(ctx, req.TenantId, bare)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "agent %q not found", bare)
+	}
+	if !slices.Contains(agent.McpServers, connID) {
+		return nil, nil
+	}
+	allowed := map[string]bool{}
+	for _, id := range agent.McpTools {
+		if c, _, ok := toolregistry.ParseMcpToolID(id); ok && c == connID {
+			allowed[id] = true
+		}
+	}
+	if len(allowed) == 0 || strings.HasPrefix(req.UserId, "svc-") || agent.ServiceAgent {
+		return allowed, nil
+	}
+	if d, _ := s.userFGADecision(ctx, &fgaRecord{User: "user:" + req.UserId, Relation: "can_access", Object: "mcp_connector:" + connID}); d != "allow" &&
+		s.userBoundMode(ctx, req.TenantId) == "enforce" {
+		return nil, nil
+	}
+	return allowed, nil
 }
 
 // emitSouthMcpAudit emits an audit event for a south-bound MCP RPC.

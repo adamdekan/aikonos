@@ -1051,7 +1051,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
       if (!principal) return;
       try {
         const resp = await clients.north.listMcpServerTools(
-          { tenantId: principal.tenant, userId: principal.sub, connectorId: req.params.id },
+          { tenantId: principal.tenant, userId: principal.sub, connectorId: req.params.id, agentId: "" },
           principal.token,
         );
         reply.send({

@@ -157,3 +157,5 @@ preset*. The broker refuses any other tool of that connector at plan and at
 call time. An MCP tool runs as `destructive` (approval plus step-up on every
 call) until a tenant admin confirms its effect class under Admin → MCP →
 *Tools*; the server's `readOnlyHint` and the tool's name are never trusted.
+The model is shown only the tools its agent may call; the others are not
+listed in its session.

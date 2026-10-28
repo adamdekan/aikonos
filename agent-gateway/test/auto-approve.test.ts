@@ -44,7 +44,7 @@ test("resolveAutoApproveAllowlist: MCP id present — skill + mcp:<server>:<tool
     { s1: [{ name: "echo" }] },
   );
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills);
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
 
   assert.ok(allowlist.includes("web.fetch"), "skills must be in allowlist");
   assert.ok(allowlist.includes("mcp:s1:echo"), "MCP tool not in skills must still be in allowlist");
@@ -60,7 +60,7 @@ test("resolveAutoApproveAllowlist: listAccessibleMcpServersForAgent rejects — 
     listMcpServerToolsSouth: async () => ({ tools: [] }),
   };
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills);
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
 
   assert.deepEqual(allowlist.sort(), ["doc.write", "web.fetch"]);
 });
@@ -82,7 +82,7 @@ test("resolveAutoApproveAllowlist: per-server listMcpServerToolsSouth rejects �
     },
   };
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills);
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
 
   assert.ok(allowlist.includes("mcp:good:ping"), "good server's tool must be included");
   assert.ok(!allowlist.includes("mcp:bad:"), "bad server must be skipped");
@@ -99,7 +99,7 @@ test("resolveAutoApproveAllowlist: dedup — skill id equal to mcp id appears on
     { s1: [{ name: "echo" }] },
   );
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills);
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
 
   const echoEntries = allowlist.filter((id) => id === "mcp:s1:echo");
   assert.equal(echoEntries.length, 1, "duplicate mcp id must appear exactly once");

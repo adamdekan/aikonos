@@ -172,7 +172,9 @@ export interface ResolveSouth {
   listUserSkills(req: { tenantId: string; userId: string }): Promise<{ skills: string[] }>;
   listUserAgentSkills(req: { tenantId: string; userId: string }): Promise<{ bundles: SkillBundleEntry[] }>;
   listAccessibleMcpServersForAgent(req: { tenantId: string; agentId: string }): Promise<{ connections?: { id: string; name: string }[] }>;
-  listMcpServerToolsSouth(req: { tenantId: string; connectorId: string; userId: string }): Promise<{
+  // AG-08: agentId is the session's bound agent (the broker lists only its
+  // allowlisted tools); userId is the session subject.
+  listMcpServerToolsSouth(req: { tenantId: string; connectorId: string; userId: string; agentId: string }): Promise<{
     tools?: { name: string; description: string; inputSchemaJson?: string; readOnlyHint?: boolean }[];
   }>;
   getAgentSpec(req: { tenantId: string; agentId: string }): Promise<{ found: boolean; soul?: string }>;
@@ -281,6 +283,7 @@ async function resolveMcpTools(
         tenantId,
         connectorId: server.id,
         userId,
+        agentId,
       });
       for (const t of resp.tools ?? []) {
         const name = piMcpToolName(server.id, t.name);
