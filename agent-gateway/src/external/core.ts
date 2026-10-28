@@ -1,7 +1,8 @@
-// External invocation core: drives a named agent as svc-<agentId> through the
-// child supervisor, yielding InvocationEvents live as the child emits them.
+// External invocation core: drives a named agent as its resolved principal
+// (svc-<agentId>, or the asserted user, AG-17 S6) through the child supervisor,
+// yielding InvocationEvents live as the child emits them.
 //
-// Identity is always south-mode (no OIDC token): userId = "svc-<agentId>",
+// Identity is always south-mode (no OIDC token): userId = resolved principal,
 // agentId = the resolved agent UUID. The GovernanceBridge detects the absent
 // token and routes to createGatewayTask / approveGatewayTask (south twins).
 //
@@ -56,7 +57,7 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 // or any user-supplied field.
 export async function* runAgentInvocation(
   agentId: string,
-  ownerUserId: string, // "svc-<agentId>"
+  ownerUserId: string, // resolved principal: asserted user, else "svc-<agentId>"
   tenantId: string,
   approvedTools: string[], // agent's spec.skills
   prompt: string,
@@ -79,7 +80,8 @@ export async function* runAgentInvocation(
     ownerGrant,
   };
 
-  const key = supervisor.keyFor(identity);
+  // "ext " keeps an asserted user's external runs off their /agui child (AG-17 S6).
+  const key = `ext ${supervisor.keyFor(identity)}`;
   const handle = await supervisor.getOrSpawn(key, identity, spec);
 
   const runId = randomUUID();

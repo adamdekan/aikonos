@@ -828,3 +828,83 @@ func TestResolveAgentApiKey_ServiceAgentAllowedUnderEnforce(t *testing.T) {
 		t.Fatalf("service agent must not record a denial, got %v", aud.events)
 	}
 }
+
+// ── AG-17 S6: external agent with a user assertion ──────────────────────────
+
+// fakeAssertions stands in for the north OIDC validator: it returns id or err
+// for any token (real audience/svc- checks live in auth/oidc_test.go).
+type fakeAssertions struct {
+	id  *auth.Identity
+	err error
+}
+
+func (f fakeAssertions) Validate(context.Context, string) (*auth.Identity, error) { return f.id, f.err }
+
+func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
+	const alice = "alice-sub"
+	canUse := "user:" + alice + "|can_use|agent:" + apiKeyTestAgentUUID
+	cases := []struct {
+		name       string
+		validator  *fakeAssertions // nil = Deps.UserAssertions unset
+		canUse     bool
+		wantReason string // "" = valid with Subject=alice
+	}{
+		{"good assertion, non-service agent under enforce", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: apiKeyTestTenantUUID}}, true, ""},
+		{"wrong audience", &fakeAssertions{err: errors.New("oidc: invalid audience")}, true, "assertion_invalid"},
+		{"svc- subject", &fakeAssertions{err: &auth.SvcSubjectError{Subject: "svc-x"}}, true, "assertion_svc_subject"},
+		{"no can_use", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: apiKeyTestTenantUUID}}, false, "assertion_no_can_use"},
+		{"no tenant claim", &fakeAssertions{id: &auth.Identity{Subject: alice}}, true, "assertion_tenant_mismatch"},
+		{"other tenant", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: "33333333-0000-0000-0000-000000000003"}}, true, "assertion_tenant_mismatch"},
+		{"validator unset fails closed", nil, true, "assertion_unavailable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}, checks: map[string]bool{canUse: tc.canUse}}
+			deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, &fakeApiKeyStore{}, agentStoreWithAgent(t))
+			aud := &fakeInvokeAudit{}
+			deps.Audit = aud
+			cfg := newFakeConfigStore()
+			cfg.values[apiKeyTestTenantUUID+":identity.obo"] = "enforce"
+			deps.Config = cfg
+			if tc.validator != nil {
+				deps.UserAssertions = tc.validator
+			}
+			mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+				TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID,
+			})
+			if err != nil {
+				t.Fatalf("MintAgentApiKey: %v", err)
+			}
+			resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
+				KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID, UserAssertion: "token",
+			})
+			if err != nil {
+				t.Fatalf("ResolveAgentApiKey: %v", err)
+			}
+			if tc.wantReason != "" {
+				if resp.Valid || resp.OwnerGrant != "" {
+					t.Fatalf("want refused, got %+v", resp)
+				}
+				for _, ev := range aud.events {
+					if ev.EventType == "aikonos.broker.apikey.denied" && ev.Context.Fields["reason"].GetStringValue() == tc.wantReason {
+						return
+					}
+				}
+				t.Fatalf("want %s DENY, got %v", tc.wantReason, aud.events)
+			}
+			if !resp.Valid || resp.Principal != alice {
+				t.Fatalf("want valid with principal %q, got %+v", alice, resp)
+			}
+			g, err := gatewaygrant.Verify(testGrantKey, resp.OwnerGrant, false)
+			if err != nil {
+				t.Fatalf("Verify owner grant: %v", err)
+			}
+			if g.Subject != alice || g.Owner() != alice || g.Actor != apiKeyTestAgentUUID || g.Kind != gatewaygrant.KindExternal || g.GrantID != mintResp.Key.GetId() {
+				t.Fatalf("grant = %+v, want subject %s, actor %s, external, key id", g, alice, apiKeyTestAgentUUID)
+			}
+			if serviceAgentDenied(aud) {
+				t.Fatalf("an asserted subject must skip the service-agent gate, got %v", aud.events)
+			}
+		})
+	}
+}

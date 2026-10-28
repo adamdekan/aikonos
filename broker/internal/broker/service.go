@@ -22,6 +22,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/alerting"
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/baseline"
 	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/connector"
@@ -235,6 +236,12 @@ type Deps struct {
 	// GatewayGrantAcceptV1 lets Verify accept legacy v1 grants during the
 	// AG-17 rollout window (gateway_grant.accept_v1, default true).
 	GatewayGrantAcceptV1 bool
+	// UserAssertions validates the optional ResolveAgentApiKey user assertion
+	// (AG-17 S6) with the north OIDC rules; *auth.Validator satisfies it. Nil
+	// (or a disabled validator) refuses every assertion.
+	UserAssertions interface {
+		Validate(ctx context.Context, raw string) (*auth.Identity, error)
+	}
 
 	// Providers backs the LLM provider admin + south RPCs. Nil ⇒ provider RPCs
 	// return FailedPrecondition (fail closed).

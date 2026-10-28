@@ -28,6 +28,7 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/apikey"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
@@ -281,12 +282,22 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
-	// AG-17 S5: a key runs subject-less, so its agent must be a service agent.
-	// Every pre-S5 agent defaults to false, so identity.obo=audit logs the gap
-	// and proceeds (a DENY row per successful call would flood the audit
-	// chain); enforce refuses with a DENY event. ponytail: S6 relaxes this to
-	// "no service_agent and no user assertion"; dedupe the audit-mode log per
-	// key if it gets noisy.
+	// AG-17 S6: an optional user assertion names the person the agent acts
+	// for. A bad one refuses the key outright, never falls back to svc-.
+	var subject string
+	if req.UserAssertion != "" {
+		var reason string
+		if subject, reason = s.verifyUserAssertion(ctx, k, req.UserAssertion); reason != "" {
+			s.emitApiKeyDenied(ctx, k, reason, "")
+			return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+		}
+	}
+
+	// AG-17 S5: a key without a user assertion runs subject-less, so its agent
+	// must be a service agent. Every pre-S5 agent defaults to false, so
+	// identity.obo=audit logs the gap and proceeds (a DENY row per successful
+	// call would flood the audit chain); enforce refuses with a DENY event.
+	// ponytail: dedupe the audit-mode log per key if it gets noisy.
 	if s.deps.Agents != nil {
 		a, aerr := s.deps.Agents.Get(ctx, k.TenantID.String(), k.AgentID.String())
 		if errors.Is(aerr, db.ErrAgentNotFound) {
@@ -295,7 +306,7 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		if aerr != nil {
 			return nil, status.Errorf(codes.Internal, "get agent: %v", aerr)
 		}
-		if !a.ServiceAgent {
+		if !a.ServiceAgent && subject == "" {
 			mode, cerr := s.cfg().GetString(ctx, k.TenantID.String(), "identity.obo")
 			if cerr != nil {
 				s.emitApiKeyDenied(ctx, k, "settings_check_failed", "")
@@ -311,8 +322,8 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 	}
 
 	ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
-		// No subject: Grant.Owner() yields the same svc-<agent> owner as before.
-		TenantID: k.TenantID.String(), Actor: k.AgentID.String(), Kind: gatewaygrant.KindExternal, GrantID: k.ID.String(),
+		// Empty subject (no assertion): Grant.Owner() yields the svc-<agent> owner.
+		TenantID: k.TenantID.String(), Subject: subject, Actor: k.AgentID.String(), Kind: gatewaygrant.KindExternal, GrantID: k.ID.String(),
 	}, s.deps.GatewayGrantTTL)
 	if mintErr != nil {
 		// Cannot hand the gateway a usable resolution without a grant — fail closed.
@@ -323,13 +334,47 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
+	principal := "svc-" + k.AgentID.String()
+	if subject != "" {
+		principal = subject
+	}
 	return &brokerv1.ResolveAgentApiKeyResponse{
 		Valid:      true,
 		AgentId:    k.AgentID.String(),
 		TenantId:   k.TenantID.String(),
-		Principal:  "svc-" + k.AgentID.String(),
+		Principal:  principal,
 		OwnerGrant: ownerGrant,
 	}, nil
+}
+
+// verifyUserAssertion validates an external caller's user assertion (AG-17 S6)
+// and returns its subject, or a denial reason. The north OIDC validator checks
+// signature, issuer and audience and refuses svc- subjects; the subject must
+// also hold can_use on the key's agent. Every failure path fails closed.
+func (s *SandboxService) verifyUserAssertion(ctx context.Context, k *db.StoredApiKey, raw string) (subject, reason string) {
+	if s.deps.UserAssertions == nil || s.deps.Policy == nil {
+		return "", "assertion_unavailable"
+	}
+	id, err := s.deps.UserAssertions.Validate(ctx, raw)
+	var svcErr *auth.SvcSubjectError
+	if errors.As(err, &svcErr) {
+		return "", "assertion_svc_subject"
+	}
+	if err != nil {
+		return "", "assertion_invalid"
+	}
+	subject = id.PrincipalID() // same principal the north API uses for FGA
+	if subject == "" || strings.HasPrefix(subject, "svc-") {
+		return "", "assertion_svc_subject"
+	}
+	if id.TenantID != k.TenantID.String() { // no tenant claim refused too, as north does
+		return "", "assertion_tenant_mismatch"
+	}
+	ok, err := s.deps.Policy.CheckFGA(ctx, "user:"+subject, "can_use", "agent:"+k.AgentID.String())
+	if err != nil || !ok {
+		return "", "assertion_no_can_use"
+	}
+	return subject, ""
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

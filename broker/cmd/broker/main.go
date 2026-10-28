@@ -1075,6 +1075,7 @@ func main() {
 		AgentSkillBundles:    agentSkillRepo,
 		OrgSettings:          orgSettingsRepo,
 		Workflows:            workflowRepo,
+		UserAssertions:       oidcValidator, // never nil; disabled ⇒ assertions refused
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)
 	reflection.Register(southServer) // dev convenience; south is mTLS+SPIFFE-gated
