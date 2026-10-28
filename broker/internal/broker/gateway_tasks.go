@@ -20,9 +20,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
@@ -139,15 +141,21 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 
 	// Require a broker-issued owner grant — without one the gateway could assert
 	// any owner and impersonate arbitrary users (the pre-CP2 attack vector).
-	if req.OwnerGrant == "" {
-		return nil, status.Error(codes.PermissionDenied, "owner grant required")
+	grant, err := s.verifyOwnerGrant(ctx, req.TenantId, req.OwnerGrant)
+	if err != nil {
+		return nil, err
 	}
-	grantTenant, grantOwner, grantErr := gatewaygrant.Verify(s.deps.GatewayGrantKey, req.OwnerGrant)
-	if grantErr != nil {
-		return nil, status.Errorf(codes.PermissionDenied, "invalid owner grant: %v", grantErr)
-	}
-	if grantTenant != req.TenantId {
-		return nil, status.Error(codes.PermissionDenied, "owner grant tenant mismatch")
+	grantOwner := grant.Owner()
+	// AG-17: a grant naming an actor fixes the agent; the gateway may echo it
+	// (any UUID spelling) or leave agent_id empty, nothing else.
+	if grant.Actor != "" && req.AgentId != "" {
+		asked, errA := uuid.Parse(req.AgentId)
+		bound, errB := uuid.Parse(grant.Actor)
+		if errA != nil || errB != nil || asked != bound {
+			s.emitGrantDenied(ctx, req.TenantId, grantOwner, grant.Actor, "grant_actor_mismatch",
+				map[string]any{"grant_actor": grant.Actor, "requested_agent": req.AgentId})
+			return nil, status.Error(codes.PermissionDenied, "agent_id does not match owner grant actor")
+		}
 	}
 
 	traceID := span.SpanContext().TraceID().String()
@@ -162,8 +170,12 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 	}
 
 	var agentID *uuid.UUID
-	if req.AgentId != "" {
-		parsed, parseErr := uuid.Parse(req.AgentId)
+	agentRef := req.AgentId
+	if grant.Actor != "" {
+		agentRef = grant.Actor // bind to the grant's actor, never the asserted field
+	}
+	if agentRef != "" {
+		parsed, parseErr := uuid.Parse(agentRef)
 		if parseErr == nil {
 			agentID = &parsed
 		}
@@ -184,8 +196,67 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 		AgentID:         agentID,
 		ClientRequestID: req.ClientRequestId,
 	}
+	if id, err := uuid.Parse(grant.GrantID); err == nil {
+		switch grant.Kind {
+		case gatewaygrant.KindScheduled:
+			t.GrantID = &id
+		case gatewaygrant.KindExternal:
+			t.ExternalClientID = &id
+		}
+	}
 
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
+}
+
+// verifyOwnerGrant requires an owner grant, verifies it with the configured key
+// and v1 policy, and checks it names tenantID. Every rejection is audited
+// (invalid_grant / grant_tenant_mismatch) and returned as PermissionDenied;
+// grant_v1_used is logged when a legacy grant is accepted.
+// ponytail: plain log per v1 use; rate-limit per gateway SVID if it gets noisy.
+func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token string) (gatewaygrant.Grant, error) {
+	if token == "" {
+		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant required")
+	}
+	g, err := gatewaygrant.Verify(s.deps.GatewayGrantKey, token, s.deps.GatewayGrantAcceptV1)
+	if err != nil {
+		s.emitGrantDenied(ctx, tenantID, "", "", "invalid_grant", map[string]any{"error": err.Error()})
+		return gatewaygrant.Grant{}, status.Errorf(codes.PermissionDenied, "invalid owner grant: %v", err)
+	}
+	if g.TenantID != tenantID {
+		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "grant_tenant_mismatch",
+			map[string]any{"grant_tenant": g.TenantID})
+		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant tenant mismatch")
+	}
+	if g.Kind == gatewaygrant.KindLegacy {
+		s.deps.Logger.Info("grant_v1_used", zap.String("tenant_id", g.TenantID))
+	}
+	return g, nil
+}
+
+// emitGrantDenied fires a DENY audit event for an owner-grant rejection.
+// Fire-and-forget, nil-guards deps.Audit (same shape as emitToolDenied).
+func (s *SandboxService) emitGrantDenied(ctx context.Context, tenantID, owner, actor, reason string, extras map[string]any) {
+	if s.deps.Audit == nil {
+		return
+	}
+	fields := map[string]any{"reason": reason}
+	for k, v := range extras {
+		fields[k] = v
+	}
+	ctxStruct, _ := structpb.NewStruct(fields)
+	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+		EventId:      ids.EventID(),
+		TenantId:     tenantID,
+		OccurredAt:   timestamppb.New(time.Now().UTC()),
+		ActorUserId:  owner,
+		ActorAgentId: actor,
+		TraceId:      trace.SpanContextFromContext(ctx).TraceID().String(),
+		EventType:    "aikonos.broker.task.denied",
+		Decision:     auditv1.PolicyDecision_DENY,
+		Context:      ctxStruct,
+	}); err != nil {
+		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.task.denied")
+	}
 }
 
 // ApproveGatewayTask approves a gateway-managed task and mints per-step tokens.

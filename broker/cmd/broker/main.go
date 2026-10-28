@@ -269,6 +269,8 @@ func main() {
 	// Gateway-grant TTL — how long a minted grant stays valid. Must cover a full
 	// multi-step agent loop. Default 1h is documented as the reuse window.
 	viper.SetDefault("gateway_grant.ttl", "1h")
+	// AG-17: accept legacy v1 owner grants for one release, then remove.
+	viper.SetDefault("gateway_grant.accept_v1", true)
 	// LLM provider seed file. Empty → skip seeding. The compose deployment
 	// sets AIKONOS_LLM_PROVIDERS_SEED_FILE and bind-mounts the file (CP5).
 	viper.SetDefault("llm_providers.seed_file", "")
@@ -993,6 +995,7 @@ func main() {
 		Provisioning:             provisioningRepo,
 		GatewayGrantKey:          gatewayGrantKey,
 		GatewayGrantTTL:          gatewayGrantTTL,
+		GatewayGrantAcceptV1:     viper.GetBool("gateway_grant.accept_v1"),
 		SkillOverlay:             skillOverlayRepo,
 		AgentSkillBundles:        agentSkillRepo,
 		Workflows:                workflowRepo,
@@ -1051,26 +1054,27 @@ func main() {
 			Bearer:       mcpSecrets,
 			AllowPrivate: viper.GetBool("toolproxy.mcp.allow_private"),
 		},
-		ToolRegistry:      toolReg,
-		Agents:            agentRepo,
-		ApiKeys:           apiKeyRepo,
-		ApiKeyPepper:      viper.GetString("api_key.pepper"),
-		Secrets:           secretsProvider,
-		Providers:         llmProviderRepo,
-		UsageMetrics:      usageMetrics,
-		TaskMetrics:       taskMetrics,
-		Baseline:          baselineIface,
-		RateLimiter:       rateLimiter,
-		SpendCaps:         spendCapRepo,
-		SpendCounters:     spendCounterRepo,
-		UsageEvents:       usageEventRepo,
-		SpendCache:        spendCache,
-		GatewayGrantKey:   gatewayGrantKey,
-		GatewayGrantTTL:   gatewayGrantTTL,
-		SkillOverlay:      skillOverlayRepo,
-		AgentSkillBundles: agentSkillRepo,
-		OrgSettings:       orgSettingsRepo,
-		Workflows:         workflowRepo,
+		ToolRegistry:         toolReg,
+		Agents:               agentRepo,
+		ApiKeys:              apiKeyRepo,
+		ApiKeyPepper:         viper.GetString("api_key.pepper"),
+		Secrets:              secretsProvider,
+		Providers:            llmProviderRepo,
+		UsageMetrics:         usageMetrics,
+		TaskMetrics:          taskMetrics,
+		Baseline:             baselineIface,
+		RateLimiter:          rateLimiter,
+		SpendCaps:            spendCapRepo,
+		SpendCounters:        spendCounterRepo,
+		UsageEvents:          usageEventRepo,
+		SpendCache:           spendCache,
+		GatewayGrantKey:      gatewayGrantKey,
+		GatewayGrantTTL:      gatewayGrantTTL,
+		GatewayGrantAcceptV1: viper.GetBool("gateway_grant.accept_v1"),
+		SkillOverlay:         skillOverlayRepo,
+		AgentSkillBundles:    agentSkillRepo,
+		OrgSettings:          orgSettingsRepo,
+		Workflows:            workflowRepo,
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)
 	reflection.Register(southServer) // dev convenience; south is mTLS+SPIFFE-gated

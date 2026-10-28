@@ -18,23 +18,63 @@ import (
 
 var testKey = []byte("00000000000000000000000000000001") // 32 bytes
 
-// roundTrip: Mint then Verify returns the same tenant and owner.
+var testGrant = Grant{TenantID: "tenant-abc", Subject: "user-xyz", Actor: "agent-1", Kind: KindScheduled, GrantID: "sched-1"}
+
+// roundTrip: Mint then Verify returns the same Grant.
 // WHY: the happy path — the gateway presents a broker-issued grant and gets
 // back the identity the broker authorised, not an attacker-asserted one.
 func TestRoundTrip(t *testing.T) {
-	token, err := Mint(testKey, "tenant-abc", "user-xyz", time.Hour)
+	token, err := Mint(testKey, testGrant, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	tenant, owner, err := Verify(testKey, token)
+	for _, acceptV1 := range []bool{true, false} {
+		g, err := Verify(testKey, token, acceptV1)
+		if err != nil {
+			t.Fatalf("Verify(acceptV1=%v): %v", acceptV1, err)
+		}
+		if g != testGrant {
+			t.Errorf("got %+v, want %+v", g, testGrant)
+		}
+	}
+}
+
+// v1 tokens verify only while accept_v1 is on, and map to a legacy Grant.
+func TestV1AcceptedOnlyWithFlag(t *testing.T) {
+	token := buildRawToken(testKey, []byte("v1|tenant-abc|svc-a1|9999999999"))
+	g, err := Verify(testKey, token, true)
 	if err != nil {
-		t.Fatalf("Verify: %v", err)
+		t.Fatalf("Verify(acceptV1): %v", err)
 	}
-	if tenant != "tenant-abc" {
-		t.Errorf("tenant: got %q, want %q", tenant, "tenant-abc")
+	if want := (Grant{TenantID: "tenant-abc", Subject: "svc-a1", Kind: KindLegacy}); g != want {
+		t.Errorf("got %+v, want %+v", g, want)
 	}
-	if owner != "user-xyz" {
-		t.Errorf("owner: got %q, want %q", owner, "user-xyz")
+	if g.Owner() != "svc-a1" {
+		t.Errorf("legacy owner: got %q", g.Owner())
+	}
+	if _, err := Verify(testKey, token, false); !errors.Is(err, ErrMalformed) {
+		t.Errorf("v1 with acceptV1=false: got %v, want ErrMalformed", err)
+	}
+}
+
+// A delimiter in any field would shift the v2 fields; Mint must refuse it.
+func TestMintRejectsDelimiter(t *testing.T) {
+	for _, g := range []Grant{
+		{TenantID: "t|x"}, {Subject: "u|x"}, {Actor: "a|x"}, {Kind: "k|x"}, {GrantID: "g|x"},
+	} {
+		if _, err := Mint(testKey, g, time.Hour); err == nil {
+			t.Errorf("Mint(%+v): want error", g)
+		}
+	}
+}
+
+// Owner keeps the svc-<agent> encoding for subject-less (service) grants.
+func TestOwner(t *testing.T) {
+	if got := (Grant{Actor: "a1", Kind: KindExternal}).Owner(); got != "svc-a1" {
+		t.Errorf("service owner: got %q", got)
+	}
+	if got := testGrant.Owner(); got != "user-xyz" {
+		t.Errorf("subject owner: got %q", got)
 	}
 }
 
@@ -42,7 +82,7 @@ func TestRoundTrip(t *testing.T) {
 // WHY: a breached gateway cannot forge a different owner by mutating the payload
 // without holding the HMAC key.
 func TestTamperedPayload(t *testing.T) {
-	token, err := Mint(testKey, "tenant-abc", "user-xyz", time.Hour)
+	token, err := Mint(testKey, testGrant, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -55,7 +95,7 @@ func TestTamperedPayload(t *testing.T) {
 	}
 	payloadBytes[3] ^= 0xFF
 	tampered := base64.RawURLEncoding.EncodeToString(payloadBytes) + token[dot:]
-	_, _, err = Verify(testKey, tampered)
+	_, err = Verify(testKey, tampered, true)
 	if !errors.Is(err, ErrBadMAC) {
 		t.Errorf("tampered payload: got %v, want ErrBadMAC", err)
 	}
@@ -65,11 +105,11 @@ func TestTamperedPayload(t *testing.T) {
 // WHY: tokens from a different broker (or a fabricated key) cannot be accepted.
 func TestWrongKey(t *testing.T) {
 	otherKey := []byte("99999999999999999999999999999999") // 32 bytes, different
-	token, err := Mint(otherKey, "tenant-abc", "user-xyz", time.Hour)
+	token, err := Mint(otherKey, testGrant, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	_, _, err = Verify(testKey, token)
+	_, err = Verify(testKey, token, true)
 	if !errors.Is(err, ErrBadMAC) {
 		t.Errorf("wrong key: got %v, want ErrBadMAC", err)
 	}
@@ -83,12 +123,12 @@ func TestExpiredToken(t *testing.T) {
 	// Mint 2 hours in the past with a 1h TTL → expired 1 hour ago.
 	nowFn = func() time.Time { return now.Add(-2 * time.Hour) }
 	t.Cleanup(func() { nowFn = time.Now })
-	token, err := Mint(testKey, "tenant-abc", "user-xyz", time.Hour)
+	token, err := Mint(testKey, testGrant, time.Hour)
 	nowFn = func() time.Time { return now } // restore before Verify
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	_, _, err = Verify(testKey, token)
+	_, err = Verify(testKey, token, true)
 	if !errors.Is(err, ErrExpired) {
 		t.Errorf("expired token: got %v, want ErrExpired", err)
 	}
@@ -97,7 +137,7 @@ func TestExpiredToken(t *testing.T) {
 // malformedNoDot: a token with no "." separator must be ErrMalformed.
 // WHY: format contract is payload.mac; anything else is garbled input.
 func TestMalformedNoDot(t *testing.T) {
-	_, _, err := Verify(testKey, "nodotinthisstring")
+	_, err := Verify(testKey, "nodotinthisstring", true)
 	if !errors.Is(err, ErrMalformed) {
 		t.Errorf("no dot: got %v, want ErrMalformed", err)
 	}
@@ -105,7 +145,7 @@ func TestMalformedNoDot(t *testing.T) {
 
 // malformedBadBase64Payload: non-base64 payload bytes must be ErrMalformed.
 func TestMalformedBadBase64Payload(t *testing.T) {
-	_, _, err := Verify(testKey, "!!!notbase64!!!.dmFsaWRtYWM=")
+	_, err := Verify(testKey, "!!!notbase64!!!.dmFsaWRtYWM=", true)
 	if !errors.Is(err, ErrMalformed) {
 		t.Errorf("bad base64 payload: got %v, want ErrMalformed", err)
 	}
@@ -115,7 +155,7 @@ func TestMalformedBadBase64Payload(t *testing.T) {
 func TestMalformedBadBase64MAC(t *testing.T) {
 	// Valid base64 payload, invalid base64 MAC.
 	payload := base64.RawURLEncoding.EncodeToString([]byte("v1|t|u|9999999999"))
-	_, _, err := Verify(testKey, payload+".!!!notbase64!!!")
+	_, err := Verify(testKey, payload+".!!!notbase64!!!", true)
 	if !errors.Is(err, ErrMalformed) {
 		t.Errorf("bad base64 MAC: got %v, want ErrMalformed", err)
 	}
@@ -124,20 +164,20 @@ func TestMalformedBadBase64MAC(t *testing.T) {
 // malformedWrongFieldCount: a payload with wrong pipe field count must be ErrMalformed.
 // WHY: prevents stripped-down or extended payloads from being misinterpreted.
 func TestMalformedWrongFieldCount(t *testing.T) {
-	badPayload := []byte("v1|tenant|owner") // 3 fields, needs 4
+	badPayload := []byte("v2|tenant|owner|9999999999") // 4 fields, v2 needs 7
 	token := buildRawToken(testKey, badPayload)
-	_, _, err := Verify(testKey, token)
+	_, err := Verify(testKey, token, true)
 	if !errors.Is(err, ErrMalformed) {
 		t.Errorf("wrong field count: got %v, want ErrMalformed", err)
 	}
 }
 
-// malformedWrongVersion: a non-"v1" version prefix must be ErrMalformed.
+// malformedWrongVersion: an unknown version prefix must be ErrMalformed.
 // WHY: version gate blocks future format changes from being misinterpreted.
 func TestMalformedWrongVersion(t *testing.T) {
-	badPayload := []byte("v2|tenant|owner|9999999999")
+	badPayload := []byte("v3|tenant|subject|actor|kind|grant|9999999999")
 	token := buildRawToken(testKey, badPayload)
-	_, _, err := Verify(testKey, token)
+	_, err := Verify(testKey, token, true)
 	if !errors.Is(err, ErrMalformed) {
 		t.Errorf("wrong version: got %v, want ErrMalformed", err)
 	}
@@ -147,7 +187,7 @@ func TestMalformedWrongVersion(t *testing.T) {
 // WHY: asserts constant-time comparison — the check must not be short-circuited
 // by a length check that could be used as a timing oracle.
 func TestWrongMACCorrectLength(t *testing.T) {
-	token, err := Mint(testKey, "tenant-abc", "user-xyz", time.Hour)
+	token, err := Mint(testKey, testGrant, time.Hour)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -158,7 +198,7 @@ func TestWrongMACCorrectLength(t *testing.T) {
 	// Replace MAC with 32 zero bytes (same length as SHA-256 HMAC, different value).
 	fakeMAC := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 	tampered := token[:dot+1] + fakeMAC
-	_, _, err = Verify(testKey, tampered)
+	_, err = Verify(testKey, tampered, true)
 	if !errors.Is(err, ErrBadMAC) {
 		t.Errorf("wrong MAC correct length: got %v, want ErrBadMAC", err)
 	}

@@ -16,9 +16,9 @@ func TestTaskOnBehalfOf(t *testing.T) {
 	}{
 		{"human owner", Task{OwnerUserID: "u-1"}, OnBehalfOf{Subject: "u-1"}},
 		{"svc- owner", Task{OwnerUserID: "svc-" + agent.String(), AgentID: &agent, ExternalClientID: &client},
-			OnBehalfOf{Actor: agent.String(), ServiceRun: true, ExternalClientID: client.String()}},
+			OnBehalfOf{Actor: agent.String(), ServiceRun: true, ExternalClientID: client.String(), Kind: "external"}},
 		{"agent-bound", Task{OwnerUserID: "u-1", AgentID: &agent, GrantID: &grant},
-			OnBehalfOf{Subject: "u-1", Actor: agent.String(), GrantID: grant.String()}},
+			OnBehalfOf{Subject: "u-1", Actor: agent.String(), GrantID: grant.String(), Kind: "scheduled"}},
 		{"delegated", Task{OwnerUserID: "u-2", DelegatedByUserID: &sender},
 			OnBehalfOf{Subject: "u-2", DelegatedBy: sender}},
 	}

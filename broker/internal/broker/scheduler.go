@@ -545,7 +545,10 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	out := make([]*brokerv1.DueRun, 0, len(due))
 	traceID := span.SpanContext().TraceID().String()
 	for _, r := range due {
-		ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, req.TenantId, r.OwnerUserID, s.deps.GatewayGrantTTL)
+		ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
+			// Actor stays "" until scheduled_runs.actor_agent_id lands (AG-17 S4).
+			TenantID: req.TenantId, Subject: r.OwnerUserID, Kind: gatewaygrant.KindScheduled, GrantID: r.ScheduledRunID.String(),
+		}, s.deps.GatewayGrantTTL)
 		if mintErr != nil {
 			// A mint failure means we cannot hand the gateway a usable, non-impersonable
 			// run — skip rather than return a run with an empty grant that the broker

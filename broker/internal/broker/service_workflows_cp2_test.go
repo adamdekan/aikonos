@@ -76,7 +76,7 @@ func TestWorkflowCallerSouth_InvalidGrant_PermissionDenied(t *testing.T) {
 
 func TestWorkflowCallerSouth_TenantMismatch_PermissionDenied(t *testing.T) {
 	svc := newSandboxSvcForCallerTest(t, &fakeSkillPolicy{enabled: true, granted: true})
-	grant, err := gatewaygrant.Mint(testGrantKey, testWFTenant, testWFOwner, testGrantTTL)
+	grant, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: testWFTenant, Subject: testWFOwner}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("gatewaygrant.Mint: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestWorkflowCallerSouth_TenantMismatch_PermissionDenied(t *testing.T) {
 
 func TestWorkflowCallerSouth_SkillDenied_PermissionDenied(t *testing.T) {
 	svc := newSandboxSvcForCallerTest(t, &fakeSkillPolicy{enabled: true, granted: false})
-	grant, err := gatewaygrant.Mint(testGrantKey, testWFTenant, testWFOwner, testGrantTTL)
+	grant, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: testWFTenant, Subject: testWFOwner}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("gatewaygrant.Mint: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWorkflowCallerSouth_SkillDenied_PermissionDenied(t *testing.T) {
 
 func TestWorkflowCallerSouth_Success(t *testing.T) {
 	svc := newSandboxSvcForCallerTest(t, &fakeSkillPolicy{enabled: true, granted: true})
-	grant, err := gatewaygrant.Mint(testGrantKey, testWFTenant, testWFOwner, testGrantTTL)
+	grant, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{TenantID: testWFTenant, Subject: testWFOwner}, testGrantTTL)
 	if err != nil {
 		t.Fatalf("gatewaygrant.Mint: %v", err)
 	}
