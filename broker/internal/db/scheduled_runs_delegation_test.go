@@ -80,3 +80,38 @@ func TestScheduledRun_ClaimSkipsDeadDelegation(t *testing.T) {
 		t.Errorf("revocation not recorded: %+v", r)
 	}
 }
+
+// TestScheduledRun_ExtendDelegation: extend moves a live or expired expiry and
+// leaves state alone; a revoked delegation cannot be extended.
+func TestScheduledRun_ExtendDelegation(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewScheduledRunRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenant := uuid.New()
+	now := time.Now().UTC()
+	mk := func() uuid.UUID {
+		id := uuid.New()
+		if err := repo.Create(ctx, &ScheduledRun{
+			ScheduledRunID: id, TenantID: tenant, OwnerUserID: "alice", Prompt: "p",
+			Kind: ScheduleKindOnce, NextFireAt: &now, ApprovedTools: []string{}, CreatedBy: "alice",
+			DelegationExpiresAt: now.Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return id
+	}
+	until := now.Add(90 * 24 * time.Hour).Truncate(time.Second)
+	expired, revoked := mk(), mk()
+	if err := repo.ExtendDelegation(ctx, tenant.String(), expired.String(), until); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	if r, _ := repo.Get(ctx, tenant.String(), expired.String()); !r.DelegationExpiresAt.Equal(until) || r.State != ScheduledRunActive {
+		t.Errorf("extended row = expires %v state %s, want %v ACTIVE", r.DelegationExpiresAt, r.State, until)
+	}
+	if err := repo.RevokeDelegation(ctx, tenant.String(), revoked.String(), "alice"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if err := repo.ExtendDelegation(ctx, tenant.String(), revoked.String(), until); err == nil {
+		t.Error("extending a revoked delegation must fail")
+	}
+}

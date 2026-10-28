@@ -76,6 +76,19 @@ describe("Runs.vue", () => {
     expect(w.find(".dt-table").exists()).toBe(true);
   });
 
+  it("flags an expired delegation on the row (AG-17)", async () => {
+    adminApi.listAdminRuns.mockResolvedValue({ schedules: [
+      { ...SAMPLE_RUN, state: "PAUSED", delegationExpiresAt: "2024-04-01T00:00:00Z" },
+      { ...SAMPLE_RUN, id: "run-3", delegationExpiresAt: "2999-01-01T00:00:00Z" },
+    ], fgaEnabled: true });
+    const router = makeRouter();
+    await router.push("/admin/runs");
+    const w = mount(Runs, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='admin-delegation-expired-run-1']").exists()).toBe(true);
+    expect(w.find("[data-testid='admin-delegation-expired-run-3']").exists()).toBe(false);
+  });
+
   it("listAdminRuns is called with owner filter when set", async () => {
     adminApi.listAdminRuns.mockResolvedValue({ schedules: [], fgaEnabled: true });
     const router = makeRouter();

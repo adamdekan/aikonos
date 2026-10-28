@@ -52,7 +52,7 @@ const TABLE_COLS = [
   { key: "schedule",   label: "Schedule" },
   { key: "prompt",     label: "Prompt" },
   { key: "nextFireAt", label: "Next fire" },
-  { key: "state",      label: "State",   width: "90px" },
+  { key: "state",      label: "State",   width: "150px" },
   { key: "last",       label: "Last" },
 ];
 </script>
@@ -103,7 +103,16 @@ const TABLE_COLS = [
           </td>
           <td v-else class="prompt" :title="row.prompt">{{ row.prompt }}</td>
           <td class="muted">{{ fmt(row.nextFireAt) }}</td>
-          <td><span class="badge" :class="badgeClass(row.state)">{{ row.state }}</span></td>
+          <td>
+            <span class="badge" :class="badgeClass(row.state)">{{ row.state }}</span>
+            <span v-if="row.delegationRevokedAt" class="badge s-fail" :data-testid="`admin-delegation-revoked-${row.id}`">revoked</span>
+            <span
+              v-else-if="row.delegationExpiresAt && new Date(row.delegationExpiresAt) <= new Date()"
+              class="badge s-fail"
+              :data-testid="`admin-delegation-expired-${row.id}`"
+              :title="`Delegation expired ${fmt(row.delegationExpiresAt)}; only the owner can extend it`"
+            >expired</span>
+          </td>
           <td class="muted" :title="row.lastSummary || ''">
             {{ row.lastStatus || "—" }}<span v-if="row.runCount"> · {{ row.runCount }}×</span>
           </td>

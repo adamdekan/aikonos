@@ -1311,6 +1311,10 @@ message UpdateScheduledRunRequest {
   // identity.obo=enforce refuses). Setting one on a row parked actor_missing
   // lets a later resume reactivate it.
   optional string actor_agent_id = 13;
+  // Extend the standing delegation to now + 90 days (owner only, audited).
+  // Refused on a revoked delegation; renews an expired one, which the owner
+  // then resumes. All other fields are ignored.
+  bool extend_delegation = 14;
 }
 
 message UpdateScheduledRunResponse {

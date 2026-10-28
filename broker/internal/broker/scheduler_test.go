@@ -548,3 +548,91 @@ func TestSchedulerLifecycleEvents_CarryOBO(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateScheduledRun_ResumeActorlessRefusedInEnforce: under
+// identity.obo=enforce resuming a parked actorless row is refused up front
+// (ClaimDue would only re-park it); audit mode still resumes it.
+func TestUpdateScheduledRun_ResumeActorlessRefusedInEnforce(t *testing.T) {
+	for mode, want := range map[string]codes.Code{"enforce": codes.FailedPrecondition, "audit": codes.OK} {
+		cfg := newFakeConfigStore()
+		cfg.values[testTenantUUID+":identity.obo"] = mode
+		deps := testAdminDeps(t, "")
+		deps.Config = cfg
+		store := &stateScheduledStore{captureScheduledStore: captureScheduledStore{get: &db.ScheduledRun{
+			ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", Kind: db.ScheduleKindCron, CronExpr: "0 9 * * *",
+			State: db.ScheduledRunPaused, LastStatus: "actor_missing", DelegationExpiresAt: time.Now().Add(time.Hour),
+		}}}
+		deps.Scheduled = store
+		_, err := NewBrokerService(deps).UpdateScheduledRun(ctxWithIdentity(testTenantUUID, "alice@example.com"),
+			&brokerv1.UpdateScheduledRunRequest{UserId: "alice@example.com", Id: store.get.ScheduledRunID.String(),
+				DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_ACTIVE})
+		if status.Code(err) != want {
+			t.Errorf("%s: resume = %v, want %v", mode, err, want)
+		}
+		if mode == "enforce" && store.state != "" {
+			t.Errorf("enforce: a refused resume must not reach the store (state %q)", store.state)
+		}
+	}
+}
+
+type extendScheduledStore struct {
+	captureScheduledStore
+	until time.Time
+}
+
+func (f *extendScheduledStore) ExtendDelegation(_ context.Context, _, _ string, until time.Time) error {
+	f.until = until
+	return nil
+}
+
+// TestUpdateScheduledRun_ExtendDelegation: the owner renews an expired
+// delegation to now+90d (audited); an admin who is not the owner cannot
+// re-grant it, and a revoked delegation stays final.
+func TestUpdateScheduledRun_ExtendDelegation(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	revokedAt := time.Now()
+	row := func() *db.ScheduledRun {
+		return &db.ScheduledRun{ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", Kind: db.ScheduleKindCron,
+			CronExpr: "0 9 * * *", State: db.ScheduledRunPaused, LastStatus: "delegation_expired",
+			DelegationExpiresAt: time.Now().Add(-time.Hour)}
+	}
+	extend := func(t *testing.T, caller string, r *db.ScheduledRun) (*extendScheduledStore, notify.Subscription, error) {
+		deps, sub := testAdminDepsWithConfigAndBus(t, srv.URL, newFakeConfigStore())
+		store := &extendScheduledStore{captureScheduledStore: captureScheduledStore{get: r}}
+		deps.Scheduled = store
+		_, err := NewBrokerService(deps).UpdateScheduledRun(ctxWithIdentity(testTenantUUID, caller),
+			&brokerv1.UpdateScheduledRunRequest{UserId: caller, Id: r.ScheduledRunID.String(), ExtendDelegation: true})
+		return store, sub, err
+	}
+
+	t.Run("owner extends expired", func(t *testing.T) {
+		before := time.Now()
+		store, sub, err := extend(t, "alice@example.com", row())
+		if err != nil {
+			t.Fatalf("extend: %v", err)
+		}
+		if d := store.until.Sub(before); d < delegationTTL || d > delegationTTL+time.Minute {
+			t.Errorf("until = now+%v, want now+%v", d, delegationTTL)
+		}
+		ev := receiveAuditEvent(t, sub, "aikonos.scheduler.run.delegation_extended", 2*time.Second)
+		if ev.Decision != auditv1.PolicyDecision_ALLOW || ev.ActorUserId != "alice@example.com" {
+			t.Errorf("audit = %v by %q, want ALLOW by alice", ev.Decision, ev.ActorUserId)
+		}
+	})
+	t.Run("admin not owner refused", func(t *testing.T) {
+		store, _, err := extend(t, "admin@example.com", row())
+		if status.Code(err) != codes.PermissionDenied || !store.until.IsZero() {
+			t.Errorf("err = %v, until = %v; want PermissionDenied and no store write", err, store.until)
+		}
+	})
+	t.Run("revoked refused", func(t *testing.T) {
+		r := row()
+		r.DelegationRevokedAt = &revokedAt
+		store, _, err := extend(t, "alice@example.com", r)
+		if status.Code(err) != codes.FailedPrecondition || !store.until.IsZero() {
+			t.Errorf("err = %v, until = %v; want FailedPrecondition and no store write", err, store.until)
+		}
+	})
+}

@@ -41,6 +41,10 @@ func (stubScheduledStore) RevokeDelegation(_ context.Context, _, _, _ string) er
 	return nil
 }
 
+func (stubScheduledStore) ExtendDelegation(_ context.Context, _, _ string, _ time.Time) error {
+	return nil
+}
+
 func (stubScheduledStore) Delete(_ context.Context, _, _ string) error {
 	return nil
 }

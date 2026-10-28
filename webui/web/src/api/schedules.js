@@ -22,6 +22,12 @@ export function revokeSchedule(id) {
   return patch(`/schedules/${id}`, { body: { action: "revoke" } });
 }
 
+// Extend renews the owner's standing delegation to 90 days from now (owner
+// only); an expired schedule is then resumed separately.
+export function extendSchedule(id) {
+  return patch(`/schedules/${id}`, { body: { action: "extend" } });
+}
+
 // No `action` field → the broker takes the full-edit branch (overwrites
 // prompt/kind/cronExpr/runAt/approvedTools). approvedTools must be resent or the
 // broker treats nil as "clear to empty". actorAgentId undefined = keep the

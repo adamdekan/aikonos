@@ -5,6 +5,9 @@
 
 > aikonOS deploys via **Docker Compose only**. See `deploy/compose/README.md` for the
 > operator guide and `compose.yaml` for the stack. Profiles: `core` / `full` / `obs` / `dev` / `docs-mcp`.
+>
+> Upgrading to the agent-identity release: follow the order in
+> [release-notes-agent-identity.md](release-notes-agent-identity.md) (audit verifiers first).
 
 ---
 

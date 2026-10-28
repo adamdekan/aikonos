@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import Icon from "../components/Icon.vue";
 import RecurrenceSelector from "../components/RecurrenceSelector.vue";
-import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, revokeSchedule, deleteSchedule } from "../api/schedules.js";
+import { listSchedules, createSchedule, updateSchedule, pauseSchedule, resumeSchedule, revokeSchedule, extendSchedule, deleteSchedule } from "../api/schedules.js";
 import { describeCron } from "../lib/cron.js";
 import { useAgentsStore } from "../store/agents.js";
 
@@ -149,6 +149,20 @@ async function revoke(id) {
   }
 }
 
+async function extend(id) {
+  error.value = "";
+  try {
+    const result = await extendSchedule(id);
+    if (result.schedule) updateRow(result.schedule);
+  } catch (e) {
+    error.value = e.message || "Failed to extend";
+  }
+}
+
+function delegationExpired(s) {
+  return !!s.delegationExpiresAt && new Date(s.delegationExpiresAt) <= new Date();
+}
+
 async function remove(id) {
   error.value = "";
   try {
@@ -284,6 +298,9 @@ onMounted(() => {
             <template v-if="s.delegationRevokedAt">
               Revoked {{ new Date(s.delegationRevokedAt).toLocaleString() }}{{ s.delegationRevokedBy ? ` by ${s.delegationRevokedBy}` : "" }}
             </template>
+            <span v-else-if="delegationExpired(s)" class="badge badge-danger" :data-testid="`delegation-expired-${s.id}`">
+              Delegation expired {{ new Date(s.delegationExpiresAt).toLocaleDateString() }}
+            </span>
             <template v-else-if="s.delegationExpiresAt">
               Delegation until {{ new Date(s.delegationExpiresAt).toLocaleDateString() }}
             </template>
@@ -326,13 +343,23 @@ onMounted(() => {
             <Icon name="pause" :size="15" />
           </button>
           <button
-            v-else-if="s.state === 'PAUSED' && !s.delegationRevokedAt && !(s.delegationExpiresAt && new Date(s.delegationExpiresAt) <= new Date())"
+            v-else-if="s.state === 'PAUSED' && !s.delegationRevokedAt && !delegationExpired(s)"
             class="btn-icon"
             :data-testid="`resume-${s.id}`"
             :aria-label="`Resume ${s.id}`"
             @click="resume(s.id)"
           >
             <Icon name="play" :size="15" />
+          </button>
+          <button
+            v-if="!s.delegationRevokedAt"
+            class="btn-icon"
+            :data-testid="`extend-${s.id}`"
+            :aria-label="`Extend delegation ${s.id}`"
+            title="Extend delegation by 90 days from today"
+            @click="extend(s.id)"
+          >
+            <Icon name="plus" :size="15" />
           </button>
           <button
             v-if="!s.delegationRevokedAt"
@@ -537,6 +564,11 @@ onMounted(() => {
 .badge-muted {
   background: var(--fill-muted);
   color: var(--text-muted);
+}
+
+.badge-danger {
+  background: var(--fill-danger);
+  color: var(--danger);
 }
 
 .badge-workflow {
