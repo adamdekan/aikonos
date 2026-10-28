@@ -102,6 +102,10 @@ var manageableRules = []manageRule{
 	{"spawned_by", "agent", userOrAgent, brokerv1.AssignmentSection_AGENT_RELATION},
 	{"usable_by", "agent", userOrGroup, brokerv1.AssignmentSection_AGENT_RELATION},
 	{"permitted_agent", "mcp_connector", agentOnly, brokerv1.AssignmentSection_MCP_ACCESS},
+	// AG-02: the user-side connector grants a human subject needs next to its
+	// agent's permitted_agent.
+	{"permitted_group", "mcp_connector", groupOnly, brokerv1.AssignmentSection_MCP_ACCESS},
+	{"permitted_user", "mcp_connector", userOnly, brokerv1.AssignmentSection_MCP_ACCESS},
 }
 
 // sectionForObject maps an object's type prefix to its curated assignment

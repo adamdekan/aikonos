@@ -296,4 +296,44 @@ describe("Mcp.vue", () => {
     const { toasts } = useToast();
     expect(toasts.some(t => t.type === "ok")).toBe(true);
   });
+
+  // AG-02: a connector can be granted to one user or a group next to agents.
+  it("Access panel grants and revokes permitted_user / permitted_group", async () => {
+    adminApi.listMcpConnections.mockResolvedValue({ connections: [SAMPLE_CONN] });
+    adminApi.listAssignments.mockResolvedValue({ tuples: [
+      { user: "agent:a1", relation: "permitted_agent", object: "mcp_connector:c1" },
+      { user: "user:bob@example.com", relation: "permitted_user", object: "mcp_connector:c1" },
+      { user: "user:x", relation: "permitted_user", object: "mcp_connector:other" },
+    ] });
+    adminApi.assignRole.mockResolvedValue({ success: true });
+    adminApi.revokeRole.mockResolvedValue({ success: true });
+    const router = makeRouter();
+    await router.push("/admin/mcp");
+    const w = mount(Mcp, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await w.find("[data-testid='access-c1']").trigger("click");
+    await flushPromises();
+    expect(w.findAll("[data-testid='conn-grant-row']").length).toBe(2);
+
+    await w.find("[data-testid='conn-grant-user-input']").setValue("alice@example.com");
+    await w.find("[data-testid='conn-grant-user-btn']").trigger("click");
+    await flushPromises();
+    expect(adminApi.assignRole).toHaveBeenCalledWith({
+      user: "user:alice@example.com", relation: "permitted_user", object: "mcp_connector:c1",
+    });
+
+    await w.find("[data-testid='conn-grant-group-input']").setValue("ops");
+    await w.find("[data-testid='conn-grant-group-btn']").trigger("click");
+    await flushPromises();
+    expect(adminApi.assignRole).toHaveBeenCalledWith({
+      user: "group:ops#member", relation: "permitted_group", object: "mcp_connector:c1",
+    });
+
+    await w.find("[data-testid='conn-grant-revoke-user:bob@example.com']").trigger("click");
+    await flushPromises();
+    expect(adminApi.revokeRole).toHaveBeenCalledWith({
+      user: "user:bob@example.com", relation: "permitted_user", object: "mcp_connector:c1",
+    });
+  });
 });

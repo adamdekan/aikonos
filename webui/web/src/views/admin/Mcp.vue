@@ -1,6 +1,9 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import {
+  listAssignments,
+  assignRole,
+  revokeRole,
   listMcpConnections,
   addMcpConnection,
   updateMcpConnection,
@@ -115,12 +118,65 @@ async function remove(conn) {
   }
 }
 
+// ── Access (AG-02) ───────────────────────────────────────────────────────────
+// A human using an agent needs their own grant on the connector next to the
+// agent's: a group (permitted_group) or a direct user grant (permitted_user).
+// Agent grants (permitted_agent) are managed on the agent.
+const accessConn  = ref(null);
+const tuples      = ref([]);
+const grantUser   = ref("");
+const grantGroup  = ref("");
+
+const accessGrants = computed(() => {
+  if (!accessConn.value) return [];
+  const obj = `mcp_connector:${accessConn.value.id}`;
+  return tuples.value.filter((t) => t.object === obj &&
+    ["permitted_agent", "permitted_group", "permitted_user"].includes(t.relation));
+});
+
+async function loadAccess() {
+  const data = await listAssignments();
+  tuples.value = data?.tuples ?? [];
+}
+
+async function openAccess(conn) {
+  error.value = "";
+  accessConn.value = accessConn.value?.id === conn.id ? null : conn;
+  if (!accessConn.value) return;
+  try { await loadAccess(); } catch (e) { error.value = e.message; }
+}
+
+async function mutateAccess(fn, tuple, msg) {
+  error.value = "";
+  try {
+    await fn(tuple);
+    toast("ok", msg);
+    await loadAccess();
+  } catch (e) {
+    error.value = e.message;
+  }
+}
+
+async function grant(relation) {
+  const raw = (relation === "permitted_user" ? grantUser.value : grantGroup.value).trim();
+  if (!raw) return;
+  const user = relation === "permitted_user"
+    ? `user:${raw.replace(/^user:/, "")}`
+    : `group:${raw.replace(/^group:/, "").replace(/#member$/, "")}#member`;
+  await mutateAccess(assignRole, { user, relation, object: `mcp_connector:${accessConn.value.id}` }, "Access granted.");
+  if (relation === "permitted_user") grantUser.value = ""; else grantGroup.value = "";
+}
+
+function revokeGrant(t) {
+  return mutateAccess(revokeRole, { user: t.user, relation: t.relation, object: t.object }, "Access revoked.");
+}
+
 const TABLE_COLS = [
   { key: "name",      label: "Name" },
   { key: "url",       label: "URL" },
   { key: "transport", label: "Transport" },
   { key: "authType",  label: "Auth" },
-  { key: "_actions",  label: "",           width: "160px" },
+  { key: "_actions",  label: "",           width: "230px" },
 ];
 </script>
 
@@ -192,6 +248,13 @@ const TABLE_COLS = [
           <td><span class="badge">{{ row.authType }}</span></td>
           <td class="right actions">
             <button
+              :data-testid="`access-${row.id}`"
+              class="btn-secondary-sm"
+              @click="openAccess(row)"
+            >
+              Access
+            </button>
+            <button
               :data-testid="`edit-${row.id}`"
               class="btn-secondary-sm"
               @click="startEdit(row)"
@@ -208,6 +271,35 @@ const TABLE_COLS = [
           </td>
         </template>
       </DataTable>
+
+      <section v-if="accessConn" class="access" data-testid="conn-access-panel">
+        <h2>Access to {{ accessConn.name }}</h2>
+        <p class="muted">
+          An agent reaches this server only if both it and the person it acts for are granted.
+          Grant people here, directly or through a group; grant agents on the agent.
+        </p>
+        <ul class="grants">
+          <li v-for="t in accessGrants" :key="t.user + t.relation" data-testid="conn-grant-row">
+            <span class="badge">{{ t.relation }}</span>
+            <span class="mono">{{ t.user }}</span>
+            <button
+              v-if="t.relation !== 'permitted_agent'"
+              :data-testid="`conn-grant-revoke-${t.user}`"
+              class="btn-danger-sm"
+              @click="revokeGrant(t)"
+            >
+              Revoke
+            </button>
+          </li>
+          <li v-if="!accessGrants.length" class="muted">No grants yet.</li>
+        </ul>
+        <div class="form">
+          <input v-model="grantUser" placeholder="user email" data-testid="conn-grant-user-input" />
+          <button class="btn-primary" data-testid="conn-grant-user-btn" @click="grant('permitted_user')">Grant user</button>
+          <input v-model="grantGroup" placeholder="group name" data-testid="conn-grant-group-input" />
+          <button class="btn-primary" data-testid="conn-grant-group-btn" @click="grant('permitted_group')">Grant group</button>
+        </div>
+      </section>
     </template>
   </div>
 </template>
@@ -270,6 +362,11 @@ const TABLE_COLS = [
 .mono { font-family: var(--font-mono); word-break: break-all; }
 .right { text-align: right; }
 .actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+.access { margin-top: 24px; }
+.access h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.grants { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 6px; }
+.grants li { display: flex; align-items: center; gap: 8px; }
 
 .badge {
   border-radius: var(--radius-sm); padding: 1px 7px;

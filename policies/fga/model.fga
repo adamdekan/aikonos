@@ -55,7 +55,9 @@ type mcp_connector
     define tenant: [tenant]
     define permitted_agent: [agent]
     define permitted_group: [group#member]
-    define can_access: permitted_agent or permitted_group
+    # AG-02: a direct grant to one person, without a group.
+    define permitted_user: [user]
+    define can_access: permitted_agent or permitted_group or permitted_user
 
 # ── Task and delegation ───────────────────────────────────────────────────────
 

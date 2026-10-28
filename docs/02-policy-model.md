@@ -93,8 +93,10 @@ type skill
 type mcp_connector
   relations
     define tenant: [tenant]
+    define permitted_agent: [agent]
     define permitted_group: [group#member]
-    define can_invoke: permitted_group
+    define permitted_user: [user]
+    define can_access: permitted_agent or permitted_group or permitted_user
 
 type task
   relations
@@ -114,6 +116,11 @@ type agent
     define can_delegate_to_user: owner_user
     define can_use: usable_by or owner
 ```
+
+An agent acting for a person needs both grants (AG-02): `agent:<id> can_access`
+and `user:<subject> can_access` on the connector, and for a skill both the
+agent's skill list and `user:<subject> can_invoke`. `svc-` runs and service
+agents need the agent grant only.
 
 `user:*` exists for the tenant default agent (AG-01): the broker writes
 `user:* usable_by agent:<default>` when it creates that agent, so every user may

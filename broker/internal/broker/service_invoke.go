@@ -432,6 +432,8 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// caller-supplied agent_id must not choose whose per-agent RPM bucket or
 	// behavioral baseline a call counts against.
 	effectiveAgentID := boundAgentID
+	// userBoundExempt is set when an mcp: call skipped the AG-02 user check.
+	var userBoundExempt string
 
 	// Per-call RBAC for MCP tools: InvokeTool re-checks whether the calling
 	// agent is still permitted to access the connector. A revoked FGA grant
@@ -480,6 +482,26 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 				"object": object,
 			})
 			return nil, status.Errorf(codes.PermissionDenied, "agent %q does not have access to mcp_connector:%s", agentRef, connID)
+		}
+		// AG-02: a human subject needs its own can_access on the connector
+		// too, so the agent cannot reach what its user cannot. svc- runs and
+		// service agents keep the agent grant alone; tool.invoked carries why.
+		if userBoundExempt = s.userBoundExemption(ctx, tenantID, task); userBoundExempt == "" {
+			userRef := "user:" + userID
+			ok, uerr := s.deps.Policy.CheckFGA(ctx, userRef, "can_access", object)
+			if uerr != nil || !ok {
+				mode := s.userBoundMode(ctx, tenantID)
+				fields := map[string]any{"user": userRef, "agent": agentRef, "connector": connID, "mode": mode}
+				if mode == "enforce" {
+					s.emitToolDenied(ctx, req, "", "mcp_user_access_denied", uerr, fields)
+					return nil, status.Errorf(codes.PermissionDenied, "user %q does not have access to mcp_connector:%s", userRef, connID)
+				}
+				fields["reason"], fields["stage"], fields["tool_id"] = "mcp_user_access_would_deny", "invoke", req.ToolId
+				if uerr != nil {
+					fields["error"] = uerr.Error()
+				}
+				s.emitUserBoundWouldDeny(ctx, tenantID, userID, req.ToolId, fields)
+			}
 		}
 	}
 
@@ -577,6 +599,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	}
 	if res.Error != "" {
 		auditCtx["error"] = res.Error
+	}
+	if userBoundExempt != "" {
+		auditCtx["user_bound_exempt"] = userBoundExempt
 	}
 	auditDecision := auditv1.PolicyDecision_ALLOW
 	if !res.Success {

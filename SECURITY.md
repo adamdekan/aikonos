@@ -110,3 +110,10 @@ none runs as the user's default agent (Settings → Chat → *Default agent*) or
 without one, the tenant default agent, which acts with the user's own skills.
 MCP connectors attached to the tenant default agent are available to every user
 who may use it, so attach a connector there only when everyone should have it.
+
+An agent never does more than the person it acts for (AG-02): a skill or MCP
+connector needs the person's own grant next to the agent's. Tenants start in
+audit mode (`identity.enforce_user_bound=audit`), which records would-deny
+events (Admin → Settings → Identity); switch to enforce once grants are fixed.
+External `svc-` runs and agents marked as service agents are exempt and flagged
+in their audit events.
