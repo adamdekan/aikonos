@@ -179,7 +179,7 @@ func (s *BrokerService) sendEnvelopeToUser(ctx context.Context, req *brokerv1.Se
 
 	// Auto-accepted delegations immediately spawn the recipient's task.
 	if dec.AutoAccept {
-		if _, err := s.spawnDelegatedTask(ctx, tenantUUID, recipient, req.GetTask().GetIntent(), maxCost, traceID); err != nil {
+		if _, err := s.spawnDelegatedTask(ctx, tenantUUID, recipient, from, req.GetTask().GetIntent(), maxCost, traceID); err != nil {
 			s.deps.Logger.Error("SendEnvelope: auto-accept task spawn failed", zap.Error(err))
 		}
 	}
@@ -408,7 +408,7 @@ func (s *BrokerService) RespondToEnvelope(ctx context.Context, req *brokerv1.Res
 		decision = auditv1.PolicyDecision_ALLOW
 		// Accepting a delegation spawns the recipient's task to do the work.
 		intent, _ := env.TaskSpec["intent"].(string)
-		if _, err := s.spawnDelegatedTask(ctx, env.TenantID, user, intent, delegationMaxCost(env), traceID); err != nil {
+		if _, err := s.spawnDelegatedTask(ctx, env.TenantID, user, env.FromUserID, intent, delegationMaxCost(env), traceID); err != nil {
 			s.deps.Logger.Error("RespondToEnvelope: task spawn failed", zap.Error(err))
 		}
 	}
@@ -466,8 +466,11 @@ func (s *BrokerService) buildDelegationToken(recipient, parentB64 string, attenu
 }
 
 // spawnDelegatedTask creates a task owned by the recipient for an accepted
-// delegation, using the envelope intent as the prompt.
-func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UUID, owner, intent string, costBudget int64, traceID string) (uuid.UUID, error) {
+// delegation, using the envelope intent as the prompt. sender is recorded as
+// delegated_by so the task's on-behalf-of chain names who handed the work over.
+// ponytail: parent_task_id stays nil — envelopes never carry a sender task
+// today; copy env.ParentTaskID here once SendEnvelope records one.
+func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UUID, owner, sender, intent string, costBudget int64, traceID string) (uuid.UUID, error) {
 	if costBudget <= 0 {
 		costBudget = 1000
 	}
@@ -479,6 +482,9 @@ func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UU
 		CostBudget:  costBudget,
 		TraceID:     traceID,
 	}
+	if sender != "" {
+		t.DelegatedByUserID = &sender
+	}
 	if err := s.deps.Tasks.Create(ctx, t); err != nil {
 		return uuid.Nil, err
 	}
@@ -486,6 +492,7 @@ func (s *BrokerService) spawnDelegatedTask(ctx context.Context, tenantID uuid.UU
 	s.deps.Logger.Info("delegated task spawned",
 		zap.String("task_id", t.TaskID.String()),
 		zap.String("owner", owner),
+		zap.String("delegated_by", sender),
 	)
 	return t.TaskID, nil
 }
