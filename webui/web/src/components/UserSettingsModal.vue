@@ -1,8 +1,8 @@
 <script setup>
 // Sidebar-gear settings modal: Account (read-only identity + sign out),
-// Appearance (theme mode), Chat (persistence prefs — all frontend-only Pinia +
-// localStorage,  CP4), Memory.
-import { ref } from "vue";
+// Appearance (theme mode), Chat (persistence prefs — frontend-only Pinia +
+// localStorage, CP4; plus the broker-side default agent, AG-01), Memory.
+import { ref, watch } from "vue";
 import Modal from "./ui/Modal.vue";
 import FormField from "./ui/FormField.vue";
 import ToggleSwitch from "./ui/ToggleSwitch.vue";
@@ -12,6 +12,8 @@ import { useUserStore } from "../store/user.js";
 import { useThemeStore } from "../store/theme.js";
 import { usePrefsStore, MAX_CHAT_INSTRUCTIONS_CHARS } from "../store/prefs.js";
 import { logout } from "../auth/oidc.js";
+import { listMyAgents, getDefaultAgent, setDefaultAgent } from "../api/agents.js";
+import { useToast } from "./ui/useToast.js";
 
 defineProps({
   open: { type: Boolean, required: true },
@@ -31,6 +33,47 @@ const activeCategory = ref("account");
 const userStore = useUserStore();
 const themeStore = useThemeStore();
 const prefsStore = usePrefsStore();
+
+// AG-01: the agent chats and schedules run as when none is picked. Only agents
+// the user can_use are offered ("" = the organisation's default agent); the
+// broker re-checks can_use on save and on every run.
+const { push: toast } = useToast();
+const myAgents = ref([]);
+const defaultAgentId = ref("");
+const defaultAgentLoaded = ref(false);
+
+async function loadDefaultAgent() {
+  try {
+    const [list, current] = await Promise.all([listMyAgents(), getDefaultAgent()]);
+    myAgents.value = list.forbidden ? [] : (list.agents ?? []);
+    defaultAgentId.value = current.forbidden ? "" : (current.agentId ?? "");
+    defaultAgentLoaded.value = true;
+  } catch (e) {
+    toast("error", e.message);
+  }
+}
+
+async function changeDefaultAgent(id) {
+  const prev = defaultAgentId.value;
+  defaultAgentId.value = id;
+  try {
+    const res = await setDefaultAgent(id);
+    if (res.forbidden) {
+      defaultAgentId.value = prev;
+      toast("error", res.error || "You may not use that agent.");
+      return;
+    }
+    defaultAgentId.value = res.agentId ?? "";
+    toast("ok", "Default agent saved");
+  } catch (e) {
+    defaultAgentId.value = prev;
+    toast("error", e.message);
+  }
+}
+
+watch(activeCategory, (cat) => {
+  if (cat === "chat" && !defaultAgentLoaded.value) loadDefaultAgent();
+});
 
 async function handleSignOut() {
   userStore.clear();
@@ -118,6 +161,20 @@ async function handleSignOut() {
         </FormSection>
 
         <FormSection v-else-if="activeCategory === 'chat'" title="Chat">
+          <FormField label="Default agent">
+            <select
+              data-testid="default-agent-select"
+              :value="defaultAgentId"
+              :disabled="!defaultAgentLoaded"
+              @change="changeDefaultAgent($event.target.value)"
+            >
+              <option value="">Organisation default</option>
+              <option v-for="a in myAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+            </select>
+            <div class="field-hint">
+              Chats and schedules run as this agent when you pick none.
+            </div>
+          </FormField>
           <FormField label="History">
             <label class="checkbox-item">
               <ToggleSwitch

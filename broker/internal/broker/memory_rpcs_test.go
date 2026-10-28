@@ -442,6 +442,14 @@ func (m *memoryAgentStore) Update(context.Context, *db.Agent) error             
 func (m *memoryAgentStore) Delete(context.Context, string, string) error          { return nil }
 func (m *memoryAgentStore) SetSoul(context.Context, string, string, string) error { return nil }
 
+func (m *memoryAgentStore) EnsureDefault(context.Context, string) (*db.Agent, bool, error) {
+	return nil, false, db.ErrAgentNotFound
+}
+func (m *memoryAgentStore) UserDefault(context.Context, string, string) (string, error) {
+	return "", nil
+}
+func (m *memoryAgentStore) SetUserDefault(context.Context, string, string, string) error { return nil }
+
 func southMemoryReq(agentID string) *brokerv1.ListMemoryConceptsRequest {
 	return &brokerv1.ListMemoryConceptsRequest{TenantId: testTenantUUID, UserId: memUser, AgentId: agentID}
 }

@@ -166,7 +166,7 @@ function fakeConfig(): Config {
     port: 8080, defaultTenantId: TENANT_ID, oidcIssuer: "", oidcJwksUrl: "", oidcAudience: "",
     oidcSubjectClaim: "sub", oidcTenantClaim: "tenant_id", schedulerEnabled: false,
     schedulerTickMs: 30000, schedulerClaimLimit: 10, schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {}, externalPort: 8090, externalCorsOrigins: [],
+    externalPort: 8090, externalCorsOrigins: [],
     externalRateLimit: 60, threadTtlMs: 1800000, maxChildren: 32, childTtlMs: 1800000,
     natsUrl: "nats://nats:4222", auditSubject: "aikonos.audit.>", egressTimeoutMs: 120000,
     brokerTimeoutMs: 30000, rateLimitBreakerThreshold: 5, workflowReasonMaxTokens: 2048,
@@ -226,6 +226,7 @@ async function makeRig(
   const south: SouthClient = Object.create(SouthClient.prototype);
   Object.assign(south, {
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
     listUserAgentSkills: async () => ({ bundles: [] }),
     getOrgSettings: async () => ({ settings: { unattendedAllowed: true } }),
     listMemoryConceptsSouth,

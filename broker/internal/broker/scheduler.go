@@ -664,7 +664,23 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			continue
 		}
 		actor := ""
-		if r.ActorAgentID != nil {
+		if r.ActorAgentID == nil && s.deps.Agents != nil {
+			// AG-01: a schedule with no actor runs as its owner's default
+			// agent, resolved (and can_use-checked) at every fire.
+			a, reason, aerr := runAgent(ctx, s.deps, req.TenantId, r.OwnerUserID, "")
+			if aerr != nil {
+				// The row is already claimed; skip this fire like a mint failure.
+				s.deps.Logger.Warn("ClaimDueScheduledRuns: default agent unavailable, skipping run",
+					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(aerr))
+				continue
+			}
+			if reason != "" {
+				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
+					"aikonos.scheduler.run.skipped.actor_not_permitted", r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				continue
+			}
+			actor = a.ID.String()
+		} else if r.ActorAgentID != nil {
 			actor = r.ActorAgentID.String()
 			// can_use may have been revoked since create: skip this fire, keep the row.
 			// ponytail: not parked, so a restored tuple resumes it at the next slot.

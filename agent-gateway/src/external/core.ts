@@ -53,7 +53,7 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 // principal via the child supervisor. InvocationEvents are yielded as the
 // child emits them — text_delta and tool_start arrive before the run completes.
 //
-// agentId and ownerUserId come from key resolution — never from agentForUser()
+// agentId and ownerUserId come from key resolution, never from the caller
 // or any user-supplied field.
 export async function* runAgentInvocation(
   agentId: string,

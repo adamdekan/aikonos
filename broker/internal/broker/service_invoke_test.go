@@ -411,7 +411,7 @@ func TestInvokeTool_NoBaselineObserveOnDenial(t *testing.T) {
 
 	tok := mintForScope(t, m, "web:read")
 	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
-		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, AgentId: "agent-1",
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("want ResourceExhausted, got %v", err)
@@ -439,7 +439,7 @@ func TestInvokeTool_NoBaselineObserveOnToolFailure(t *testing.T) {
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
 	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
-		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, AgentId: "agent-1",
+		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
 	}
@@ -735,22 +735,31 @@ func TestInvokeTool_RequestAgentIDComesFromTaskRow(t *testing.T) {
 	}
 }
 
-// TestInvokeTool_RequestAgentIDEmptyForPersonalTask verifies a personal
-// (non-agent-bound) task never gets an agent id, even when the caller supplies
-// one — scope=agent must fail in the handler rather than resolve a bundle.
+// TestInvokeTool_RequestAgentIDEmptyForPersonalTask verifies a personal task
+// never gets an agent id — scope=agent must fail in the handler rather than
+// resolve a bundle. AG-01: a task bound to the tenant default agent is
+// personal too: the default agent is shared by every user, so it must not key
+// a shared agent memory bundle.
 func TestInvokeTool_RequestAgentIDEmptyForPersonalTask(t *testing.T) {
-	var got toolproxy.Request
-	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100}}
-	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
+	agents := &fakeAgentStore{}
+	def, _, _ := agents.EnsureDefault(context.Background(), testTenantUUID)
+	for name, agentID := range map[string]*uuid.UUID{"unbound": nil, "default agent": &def.ID} {
+		t.Run(name, func(t *testing.T) {
+			var got toolproxy.Request
+			tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, AgentID: agentID}}
+			svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
+			svc.deps.Agents = agents
 
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
-		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
-		Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}), AgentId: uuid.New().String(),
-	}); err != nil {
-		t.Fatalf("InvokeTool: %v", err)
-	}
-	if got.AgentID != "" {
-		t.Fatalf("Request.AgentID = %q, want empty for a personal task", got.AgentID)
+			if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+				TaskId: "task-1", TenantId: testTenantUUID, ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
+				Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
+			}); err != nil {
+				t.Fatalf("InvokeTool: %v", err)
+			}
+			if got.AgentID != "" {
+				t.Fatalf("Request.AgentID = %q, want empty for a personal task", got.AgentID)
+			}
+		})
 	}
 }
 
@@ -1249,26 +1258,20 @@ func TestInvokeTool_Binding_RunsAsTaskOwner(t *testing.T) {
 	}
 }
 
-// An unbound (personal/interactive) task ignores the gateway's session agent
-// id: it neither fails the call nor keys the baseline (M-07).
-func TestInvokeTool_Binding_UnboundTaskIgnoresRequestAgent(t *testing.T) {
+// AG-01: the caller-claim fallback is gone. A task with no agent binding (a
+// legacy row) refuses any caller agent claim instead of ignoring it.
+func TestInvokeTool_Binding_UnboundTaskRefusesRequestAgent(t *testing.T) {
 	var got toolproxy.Request
 	svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
 	req := &brokerv1.InvokeToolRequest{
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
-		TenantId: bindTenantA, UserId: bindOwner, AgentId: "owner@example.com-agent",
+		TenantId: bindTenantA, UserId: bindOwner, AgentId: uuid.New().String(),
 	}
-	resp, err := svc.InvokeTool(context.Background(), req)
-	if err != nil || !resp.Success {
-		t.Fatalf("InvokeTool: resp=%v err=%v", resp, err)
+	if _, err := svc.InvokeTool(context.Background(), req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("unbound task with caller agent: want PermissionDenied, got %v", err)
 	}
-	// Every audit event after the binding reads req, so the caller's agent
-	// claim must be gone from it.
-	if req.AgentId != "" {
-		t.Fatalf("req.AgentId = %q after binding, want the bound agent (none)", req.AgentId)
-	}
-	if got.AgentID != "" || len(bl.calls) != 0 {
-		t.Fatalf("unbound task: want no agent and no baseline, got agent %q, baseline %+v", got.AgentID, bl.calls)
+	if got.ToolID != "" || len(bl.calls) != 0 {
+		t.Fatalf("refused call must not reach the proxy or baseline, got %+v %+v", got, bl.calls)
 	}
 }
 

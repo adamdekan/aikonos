@@ -229,7 +229,14 @@ service BrokerService {
   rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
 
   // List the agents the caller may use (via FGA can_use). No admin gate.
+  // The tenant default agent is not listed: no agent picked means it.
   rpc ListMyAgents(ListMyAgentsRequest) returns (ListMyAgentsResponse);
+
+  // AG-01: the caller's default agent, used when a chat or schedule names
+  // none. Empty agent_id = the tenant default agent. Set requires can_use on
+  // the agent (PermissionDenied otherwise); empty clears the setting.
+  rpc GetMyDefaultAgent(GetMyDefaultAgentRequest) returns (MyDefaultAgent);
+  rpc SetMyDefaultAgent(SetMyDefaultAgentRequest) returns (MyDefaultAgent);
 
   // Read/write the SOUL (personality markdown) for a named agent.
   // Caller must be the agent's owner_user or a tenant admin.
@@ -517,6 +524,12 @@ service SandboxService {
   // agent id is unknown or agents are disabled — caller falls back to defaults.
   rpc GetAgentSpec(GetAgentSpecRequest) returns (GetAgentSpecResponse);
 
+  // AG-01: gateway resolves the agent a user's run binds to. A named agent_id
+  // must be an agent of the tenant the user can_use (PermissionDenied
+  // otherwise, H-05); empty resolves the user's default-agent setting, else
+  // the tenant default agent. SPIFFE-gated to the agent-gateway identity.
+  rpc ResolveRunAgent(ResolveRunAgentRequest) returns (ResolveRunAgentResponse);
+
   // Gateway creates a task on behalf of a user (south twin of BrokerService.CreateTask).
   // SPIFFE-gated to the agent-gateway identity; owner is the gateway-asserted user.
   rpc CreateGatewayTask(CreateGatewayTaskRequest) returns (TaskHandle);
@@ -623,7 +636,8 @@ message CreateTaskRequest {
   string parent_task_id = 7;        // Set when spawned from an envelope
   string client_request_id = 8;     // Optional idempotency key; empty = today's behavior
   // Optional bare agent UUID the task acts as (AG-17). The caller must be
-  // able to operate it (can_use, tenant-admin fallback); empty = unbound.
+  // able to operate it (can_use, tenant-admin fallback); empty binds the
+  // caller's default agent (AG-01).
   string agent_id = 9;
   // Optional inbox envelope id (AG-17). When the caller is the envelope's
   // recipient, the task records the envelope sender as delegated_by. A
@@ -1544,7 +1558,7 @@ message DeleteMcpConnectionResponse {
 
 message ListAccessibleMcpServersRequest {
   string tenant_id = 1;
-  string agent_id = 2; // "agent:alice-agent" or bare "alice-agent"
+  string agent_id = 2; // agent UUID, bare or "agent:"-prefixed (AG-01)
 }
 
 message ListAccessibleMcpServersResponse {
@@ -1739,6 +1753,7 @@ message Agent {
   bool   service_agent = 15;       // AG-17: may run subject-less (external key, no user)
   string sessions_revoked_at = 16; // AG-06: RFC3339 revocation epoch; empty if never
   bool   orphaned = 17;            // AG-04: no owner, or every owner blocked (read-only, ListAgents)
+  bool   is_default = 18;          // AG-01: the tenant default agent (read-only; cannot be deleted)
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }
@@ -1753,6 +1768,13 @@ message DeleteAgentResponse { bool success = 1; }
 message ListMyAgentsRequest  { string tenant_id = 1; string user_id = 2; }
 message MyAgent              { string id = 1; string name = 2; }
 message ListMyAgentsResponse { repeated MyAgent agents = 1; }
+
+message GetMyDefaultAgentRequest { string tenant_id = 1; string user_id = 2; }
+message SetMyDefaultAgentRequest { string tenant_id = 1; string user_id = 2; string agent_id = 3; }
+message MyDefaultAgent           { string agent_id = 1; } // "" = tenant default agent
+
+message ResolveRunAgentRequest  { string tenant_id = 1; string user_id = 2; string agent_id = 3; }
+message ResolveRunAgentResponse { string agent_id = 1; bool is_default = 2; } // is_default: the tenant default agent
 
 // ── Agent soul messages ───────────────────────────────────────────────────────
 
@@ -1803,7 +1825,7 @@ message CreateGatewayTaskRequest {
   string owner_user_id  = 2;  // kept for wire compat / logging; NOT trusted for authz — broker derives owner from owner_grant
   string prompt         = 3;
   uint64 cost_budget    = 4;  // 0 → server default (1000)
-  string agent_id       = 5;  // optional: binds the task to a named agent; broker enforces skill boundary at SubmitPlan
+  string agent_id       = 5;  // bare agent UUID (non-UUID → InvalidArgument); empty binds the grant actor or the owner's default agent (AG-01)
   string owner_grant    = 6;  // required (CP2): broker-issued HMAC owner-grant token; absent → PermissionDenied
   string client_request_id = 7;  // Optional idempotency key; empty = today's behavior
 }

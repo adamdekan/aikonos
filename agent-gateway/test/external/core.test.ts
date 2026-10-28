@@ -113,7 +113,6 @@ const baseCfg = {
   schedulerTickMs: 30000,
   schedulerClaimLimit: 10,
   schedulerRunTimeoutMs: 180000,
-  agentForUserOverrides: {},
   externalPort: 8090,
   externalCorsOrigins: [],
   externalRateLimit: 60,
@@ -216,18 +215,6 @@ test("preAuthApprover uses provided skills list — grants skill-listed tool, de
     stepUp: false,
   } as ApprovalInfo);
   assert.equal(deny, false, "web.fetch not in skills → denied");
-});
-
-test("Identity userId is svc-<agentId>, not derived via agentForUser", async () => {
-  // Validate the naming contract: svc-<agentId> must come directly from agentId,
-  // not through agentForUser() which would produce a different value.
-  const agentId = "12345678-0000-0000-0000-000000000000";
-  const expectedUserId = `svc-${agentId}`;
-  assert.equal(expectedUserId, "svc-12345678-0000-0000-0000-000000000000");
-
-  const { agentForUser } = await import("../../src/broker/agent-identity.js");
-  const wrongValue = agentForUser(`svc-${agentId}`, {});
-  assert.notEqual(wrongValue, expectedUserId, "agentForUser must not be used to derive svc- userId");
 });
 
 // ── CP2: early-return (SSE disconnect) stops run and calls clearRunContext ──────

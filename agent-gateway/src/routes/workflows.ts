@@ -97,8 +97,9 @@ interface DecideWorkflowBody {
 // run it agent-bound with NO token, so every bridge call takes the south/
 // ownerGrant path — gate() uses CreateGatewayTask with the agent_id and
 // InvokeTool passes the agent's MCP can_access check. An unbound (personal)
-// workflow returns empty fields: run it on the legacy personal token path,
-// gated by the user's own skills (agentId=sub is unused when the token is set).
+// workflow returns empty fields: run it on the personal token path, gated by
+// the user's own skills. agentId is empty: the broker binds each task to the
+// user's default agent (AG-01) and InvokeTool refuses any other agent claim.
 export function runIdentityFor(
   principal: { token: string; tenant: string; sub: string },
   begin: { ownerGrant: string; boundAgentId: string },
@@ -115,7 +116,7 @@ export function runIdentityFor(
     token: principal.token,
     tenantId: principal.tenant,
     userId: principal.sub,
-    agentId: principal.sub,
+    agentId: "",
   };
 }
 

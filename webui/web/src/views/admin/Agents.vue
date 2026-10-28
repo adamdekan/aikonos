@@ -488,6 +488,12 @@ const TABLE_COLS = [
             <span class="badge">{{ row.approval_mode || row.approvalMode || "needs_approval" }}</span>
             <span v-if="row.gatewayEnabled || row.gateway_enabled" class="badge badge-ext" data-testid="gateway-enabled-badge">ext</span>
             <span
+              v-if="row.isDefault"
+              class="badge"
+              :data-testid="`agent-default-${row.id}`"
+              title="Runs chats and schedules that pick no agent, with each user's own skills. Cannot be deleted."
+            >default</span>
+            <span
               v-if="row.orphaned"
               class="badge badge-orphan"
               :data-testid="`agent-orphaned-${row.id}`"
@@ -518,6 +524,7 @@ const TABLE_COLS = [
               Revoke sessions
             </button>
             <button
+              v-if="!row.isDefault"
               :data-testid="`agent-delete-${row.id}`"
               class="btn-danger-sm"
               data-testid-base="agent-delete-btn"

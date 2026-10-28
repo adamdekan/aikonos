@@ -69,7 +69,6 @@ const baseCfg: Config = {
   schedulerTickMs: 30000,
   schedulerClaimLimit: 10,
   schedulerRunTimeoutMs: 180000,
-  agentForUserOverrides: {},
   externalPort: 8090,
   externalCorsOrigins: [],
   externalRateLimit: 60,

@@ -73,6 +73,7 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     serviceAgent: false,
     sessionsRevokedAt: "",
     orphaned: true,
+    isDefault: false,
   };
 
   const json = agentJson(agent);
@@ -101,6 +102,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     serviceAgent: false,
     sessionsRevokedAt: "",
     orphaned: false,
+    isDefault: false,
   };
 
   const json = agentJson(agent);

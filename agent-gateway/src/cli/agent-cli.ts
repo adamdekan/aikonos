@@ -7,7 +7,6 @@ import { log } from "../log";
 import { BrokerClients } from "../broker/clients";
 import { GovernanceBridge, autoApprover, type Identity } from "../broker/governance";
 import { createRateLimitBreaker } from "../llm/rate-limit-breaker.js";
-import { agentForUser } from "../broker/agent-identity";
 import { resolveSessionPlan, createSessionFromPlan, type ResolveIdentity } from "../pi/session-plan";
 
 async function main(): Promise<void> {
@@ -17,15 +16,16 @@ async function main(): Promise<void> {
   if (!cfg.openrouterApiKey) throw new Error("OPENROUTER_API_KEY not set");
 
   const userId = process.env.AIKONOS_USER ?? "alice@example.com";
-  const agentId = agentForUser(userId, cfg.agentForUserOverrides);
+  const clients = new BrokerClients(cfg);
+  // AG-01: run as the user's default agent, resolved by the broker.
+  const { agentId = "" } = await clients.south.resolveRunAgent({ tenantId: cfg.defaultTenantId, userId, agentId: "" });
   const identity: Identity = {
     token: process.env.AIKONOS_OIDC_TOKEN,
     tenantId: cfg.defaultTenantId,
     userId,
-    agentId,
+    agentId: `agent:${agentId}`,
   };
 
-  const clients = new BrokerClients(cfg);
   // Same breaker-wrapped rate-limit pre-gate server.ts builds. Without it the
   // CLI's bridge fell back to the permissive no-op checker, making this an
   // unmetered path around every RPM/spend cap — a dev tool, but an unmetered

@@ -367,7 +367,6 @@ test("external surface: POST /admin/agents/:id/keys → 404 (route absent)", asy
     schedulerTickMs: 30000,
     schedulerClaimLimit: 10,
     schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {},
     externalPort: 8090,
     externalCorsOrigins: [],
     externalRateLimit: 60,

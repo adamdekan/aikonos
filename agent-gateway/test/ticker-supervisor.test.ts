@@ -182,7 +182,6 @@ const baseCfg = {
   schedulerClaimLimit: 5,
   schedulerRunTimeoutMs: 2000,
   gatewaySpiffeId: "spiffe://aikonos.com/agent-gateway",
-  agentForUserOverrides: {},
   openrouterApiKey: "",
   llmModel: "anthropic/claude-sonnet-4.6",
   brokerNorthAddr: "",
@@ -596,6 +595,7 @@ test("CP8 agent provider selection: agent with preferredProvider resolves to tha
     listAccessibleMcpServersForAgent: async () => ({ connections: [] }),
     listMcpServerToolsSouth: async () => ({ tools: [] }),
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
   };
 
   const agentSpec: AgentSpec = {
@@ -654,6 +654,7 @@ test("CP8 agent provider selection: fallback to tenant default when preferred pr
     listAccessibleMcpServersForAgent: async () => ({ connections: [] }),
     listMcpServerToolsSouth: async () => ({ tools: [] }),
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
   };
 
   // Agent prefers "anthropic-direct" which is not in providers.
@@ -687,11 +688,12 @@ test("CP8 agent provider selection: fallback to tenant default when preferred pr
 // A UUID ownerUserId passed verbatim as agentId parses as a valid UUID on the
 // broker and is inserted into tasks.agent_id — which references no agents row, so
 // CreateGatewayTask fails tasks_agent_id_fkey (SQLSTATE 23503) and EVERY tool call
-// in the run is blocked with "13 INTERNAL: failed to create task". AG-17 S4: a
-// run with a delegation actor uses it; a legacy run with no actor keeps the
-// agentForUser id ("<uuid>-agent", non-UUID → unbound, NULL agent_id).
-test("ticker: scheduled run without an actor is agentForUser-derived, never the bare ownerUserId (FK fix)", async () => {
+// in the run is blocked with "13 INTERNAL: failed to create task". AG-17 S4 /
+// AG-01: the run acts as the actor the broker names on the due run (for a
+// schedule created without one, the owner's default agent).
+test("ticker: scheduled run acts as the broker-named actor, never the bare ownerUserId (FK fix)", async () => {
   const ownerUuid = "cccccccc-0000-4000-8000-000000000001";
+  const defaultAgent = "dddddddd-0000-4000-8000-0000000000de";
   const capturedIdentities: RunIdentity[] = [];
 
   const [parentSide, childSide] = makePairedChannel();
@@ -741,6 +743,7 @@ test("ticker: scheduled run without an actor is agentForUser-derived, never the 
             prompt: "weather report",
             approvedTools: [],
             ownerGrant: "v1.tenant.owner.expires.sig",
+            actorAgentId: defaultAgent,
           },
         ],
       }),
@@ -758,7 +761,7 @@ test("ticker: scheduled run without an actor is agentForUser-derived, never the 
     ownerUuid,
     "agentId must NOT be the bare ownerUserId — a valid UUID would FK-fail as a non-existent agent",
   );
-  assert.equal(id.agentId, `${ownerUuid}-agent`, "no actor → agentForUser-derived (non-UUID → broker stores NULL agent_id)");
+  assert.equal(id.agentId, defaultAgent, "the run acts as the broker-named (default) agent");
 
   captureSupervisor.dispose();
 });

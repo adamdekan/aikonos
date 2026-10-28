@@ -52,7 +52,7 @@ function fakeConfig(): Config {
     port: 8080, defaultTenantId: TENANT_ID, oidcIssuer: "", oidcJwksUrl: "", oidcAudience: "",
     oidcSubjectClaim: "sub", oidcTenantClaim: "tenant_id", schedulerEnabled: false,
     schedulerTickMs: 30000, schedulerClaimLimit: 10, schedulerRunTimeoutMs: 180000,
-    agentForUserOverrides: {}, externalPort: 8090, externalCorsOrigins: [],
+    externalPort: 8090, externalCorsOrigins: [],
     externalRateLimit: 60, threadTtlMs: 1800000, maxChildren: 32, childTtlMs: 1800000,
     natsUrl: "nats://nats:4222", auditSubject: "aikonos.audit.>", egressTimeoutMs: 120000, brokerTimeoutMs: 30000, rateLimitBreakerThreshold: 5, workflowReasonMaxTokens: 2048, maxLlmCallsPerRun: 100, approvalTimeoutMs: 900000, memorySemanticRecall: true, memoryEmbedTimeoutMs: 10000, subagentMaxWidth: 3, subagentBranchTimeoutMs: 180000,
   };
@@ -135,6 +135,7 @@ test("POST /agui: malformed or oversized history is a 400 before any child spawn
   const south: SouthClient = Object.create(SouthClient.prototype);
   Object.assign(south, {
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
@@ -201,6 +202,54 @@ test("POST /agui: malformed or oversized history is a 400 before any child spawn
     assert.equal(overByteCap.status, 400, "over 200 KiB of content must be a clean 400");
 
     assert.equal(spawnCount[0], 0, "no child may be forked for a request rejected by history validation");
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+    supervisor.dispose();
+  }
+});
+
+// H-05 / AG-01: /agui with an agent the user lacks can_use on is refused (403)
+// before any child is forked. The broker decides (ResolveRunAgent); the route
+// passes the requested id through and maps PERMISSION_DENIED to 403.
+test("POST /agui: an agent the user may not use is a 403 before any child spawn", async () => {
+  const { privateKey, jwk } = await makeKey();
+  const jwksResolver = await localResolver(jwk);
+  const token = await mintToken(privateKey);
+
+  const forbidden = "11111111-0000-4000-8000-000000000001";
+  const asked: string[] = [];
+  const clients: BrokerClients = Object.create(BrokerClients.prototype);
+  const south: SouthClient = Object.create(SouthClient.prototype);
+  Object.assign(south, {
+    listUserAgentSkills: async () => ({ bundles: [] }),
+    resolveRunAgent: async (req: { agentId: string }) => {
+      asked.push(req.agentId);
+      throw Object.assign(new Error("PermissionDenied"), { code: 7, details: `you do not have access to agent ${req.agentId}` });
+    },
+  });
+  clients.south = south;
+
+  const { spawnFn, count: spawnCount } = makeCountingSpawn();
+  const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => {
+    throw new Error("must not be reached");
+  }, spawnFn, dummyCredentials);
+
+  const app = Fastify({ logger: false });
+  try {
+    registerAgUiRoutes(app, {
+      clients, jwksResolver, verifyOpts: VERIFY_OPTS, approvals: new ApprovalRegistry(),
+      supervisor, cfg: fakeConfig(), log: pino({ level: "silent" }),
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("expected a bound TCP address");
+    }
+    const res = await postAgui(address.port, token, { prompt: "hello", threadId: "t1", runId: "r1", agentId: forbidden });
+    assert.equal(res.status, 403, "an agent without can_use must be a 403");
+    assert.deepEqual(asked, [forbidden], "the requested agent id reaches the broker check verbatim");
+    assert.equal(spawnCount[0], 0, "no child may be forked for a refused agent");
   } finally {
     app.server.closeAllConnections();
     await app.close();

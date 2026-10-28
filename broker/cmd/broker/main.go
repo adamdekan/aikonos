@@ -1027,8 +1027,12 @@ func main() {
 	}
 	northSvc := brokersvc.NewBrokerService(northDeps)
 	// AG-04: grant the creator owner_user on agents that have no owner tuple.
-	// Idempotent; off the startup path so an FGA outage does not delay serving.
+	// AG-01: ensure the tenant default agent first. Idempotent; off the startup path so an FGA outage does not delay serving.
 	go func() {
+		// AG-01: the tenant default agent every unnamed run binds to.
+		if err := northSvc.EnsureDefaultAgent(ctx, viper.GetString("tenant_id")); err != nil {
+			log.Warn("default agent ensure failed", zap.Error(err))
+		}
 		n, err := northSvc.BackfillAgentOwners(ctx, viper.GetString("tenant_id"))
 		if err != nil {
 			log.Warn("agent owner backfill failed", zap.Int("granted", n), zap.Error(err))

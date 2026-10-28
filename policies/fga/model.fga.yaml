@@ -14,6 +14,9 @@ tuples:
   - user: user:carol
     relation: usable_by
     object: agent:a1
+  - user: user:*
+    relation: usable_by
+    object: agent:default
 tests:
   # AG-04: user and group owners both own and may use the agent; only a named
   # user owner may delegate; a plain user of the agent owns nothing.
@@ -41,3 +44,12 @@ tests:
         assertions:
           owner: false
           can_use: false
+  # AG-01: the tenant default agent is usable by every user (user:*), and
+  # owned by none.
+  - name: default agent
+    check:
+      - user: user:dave
+        object: agent:default
+        assertions:
+          can_use: true
+          owner: false

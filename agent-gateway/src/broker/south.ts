@@ -21,6 +21,8 @@ import type {
   GetTenantModelRequest,
   GetTenantModelResponse,
   GetAgentSpecRequest,
+  ResolveRunAgentRequest,
+  ResolveRunAgentResponse,
   GetAgentSpecResponse,
   CreateGatewayTaskRequest,
   TaskHandle,
@@ -119,6 +121,12 @@ export class SouthClient {
 
   getAgentSpec(req: GetAgentSpecRequest): Promise<GetAgentSpecResponse> {
     return unary((r, m, o, cb) => this.client.getAgentSpec(r, m, o, cb), req, new Metadata());
+  }
+
+  // AG-01: the agent a user's run binds to. A named agent needs can_use
+  // (PERMISSION_DENIED otherwise); empty resolves the user's default agent.
+  resolveRunAgent(req: ResolveRunAgentRequest): Promise<ResolveRunAgentResponse> {
+    return unary((r, m, o, cb) => this.client.resolveRunAgent(r, m, o, cb), req, new Metadata());
   }
 
   // Org governance settings (A-series). Read-only; SPIFFE-gated. Read at session

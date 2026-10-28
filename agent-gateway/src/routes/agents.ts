@@ -1,4 +1,5 @@
-// Agents: user discovery (GET /agents) + per-agent soul read/write.
+// Agents: user discovery (GET /agents) + per-agent soul read/write + the
+// user's default agent (GET/PUT /agents/default, AG-01).
 // GET /agents returns the agents the requesting user can use (ListMyAgents).
 // Registered by registerAgentsRoutes(app, ctx) called from src/app.ts at the
 // same position these routes previously occupied inline in server.ts.
@@ -12,7 +13,7 @@ import { log } from "../log.js";
 
 export interface AgentsCtx {
   clients: {
-    north: Pick<NorthClient, "listMyAgents" | "getAgentSoul" | "setAgentSoul">;
+    north: Pick<NorthClient, "listMyAgents" | "getAgentSoul" | "setAgentSoul" | "getMyDefaultAgent" | "setMyDefaultAgent">;
   };
   jwksResolver: JwksResolver;
   verifyOpts: VerifyOptions;
@@ -33,6 +34,41 @@ export function registerAgentsRoutes(app: FastifyInstance, ctx: AgentsCtx): void
       reply.send({ agents: (resp.agents ?? []).map((a) => ({ id: a.id, name: a.name })) });
     } catch (err) {
       sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { agents: [] } });
+    }
+  });
+
+  // AG-01: the agent a chat or schedule runs as when none is picked. "" = the
+  // tenant default agent. The broker requires can_use on a set (403 otherwise).
+  app.get("/agents/default", async (req, reply) => {
+    const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
+    if (!principal) return;
+    try {
+      const resp = await ctx.clients.north.getMyDefaultAgent(
+        { tenantId: principal.tenant, userId: principal.sub },
+        principal.token,
+      );
+      reply.send({ agentId: resp.agentId ?? "" });
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+    }
+  });
+
+  app.put<{ Body: { agentId?: string } }>("/agents/default", async (req, reply) => {
+    const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
+    if (!principal) return;
+    const agentId = req.body?.agentId ?? "";
+    if (typeof agentId !== "string") {
+      reply.code(400).send({ error: "agentId must be a string" });
+      return;
+    }
+    try {
+      const resp = await ctx.clients.north.setMyDefaultAgent(
+        { tenantId: principal.tenant, userId: principal.sub, agentId },
+        principal.token,
+      );
+      reply.send({ agentId: resp.agentId ?? "" });
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
     }
   });
 

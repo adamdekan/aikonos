@@ -58,10 +58,9 @@ function providerFailoverEligible(err: unknown): boolean {
 
 // boundAgentUuid strips an optional "agent:" prefix and returns the bare id iff
 // it is a canonical UUID; otherwise "". WHY (F9): only a real agent UUID may bind
-// a workflow to an agent. Identity.agentId takes three forms — "agent:<uuid>"
-// (interactive named agent), "<userId>-agent" (synthetic personal/scheduled),
-// and a bare uuid (external invoke). The synthetic personal-session id must not
-// bind, so anything that is not a UUID resolves to "" (unbound/personal).
+// a workflow to an agent. Identity.agentId takes two forms — "agent:<uuid>"
+// (interactive chat, AG-01: the tenant default agent when none is picked) and a
+// bare uuid (scheduled run, external invoke). Anything else resolves to "".
 const AGENT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function boundAgentUuid(agentId: string): string {
   const bare = agentId.startsWith("agent:") ? agentId.slice("agent:".length) : agentId;
@@ -72,7 +71,7 @@ export interface Identity {
   token?: string; // OIDC bearer (north). Omitted in no-OIDC dev brokers.
   tenantId: string;
   userId: string;
-  agentId: string; // agent acting on behalf of this user (e.g. alice-agent)
+  agentId: string; // registered agent acting for this user: "agent:<uuid>" or bare uuid (AG-01)
   ownerGrant?: string; // broker-minted HMAC grant (south-path only; absent on the north/bearer path)
   runId?: string; // scheduled-run id (scheduler-path only); forwarded as CreateGatewayTask's client_request_id for idempotent replay
   envelopeId?: string; // inbox envelope this chat run handles (AG-17); the broker records its sender as delegated_by when the caller is the recipient
@@ -228,8 +227,8 @@ export class GovernanceBridge {
             skillHints: [GATEWAY_EXECUTION_HINT],
             parentTaskId: "",
             clientRequestId: "",
-            // AG-17: bind the acting agent so the run records its actor. Only a
-            // real agent UUID binds; the "<user>-agent" pseudo-id stays unbound.
+            // AG-17 / AG-01: bind the acting agent so the run records its actor
+            // (the broker re-checks can_use).
             agentId: boundAgentUuid(this.identity.agentId),
             envelopeId: this.identity.envelopeId ?? "",
           },
@@ -240,7 +239,8 @@ export class GovernanceBridge {
           ownerUserId: this.identity.userId,
           prompt: `agent tool call: ${mapping.toolId}`,
           costBudget: 0, // broker default (1000) — see the north branch above
-          agentId: this.identity.agentId,
+          // AG-01: bare UUID; the broker refuses anything else (no NULL coercion).
+          agentId: this.identity.agentId.replace(/^agent:/, ""),
           ownerGrant: this.identity.ownerGrant ?? "",
           // Scoped to the individual tool call, not just the run: identity.runId
           // is constant for every gate() call across a scheduled run's lifetime
@@ -387,7 +387,7 @@ export class GovernanceBridge {
               visibilityKind: "private",
               lineageId: "",
               // F9: bind the new lineage to the session's agent (only a real
-              // agent UUID binds; synthetic personal-session ids resolve to "").
+              // agent UUID binds).
               agentId: boundAgentUuid(this.identity.agentId),
             },
             token,
@@ -403,7 +403,7 @@ export class GovernanceBridge {
             visibilityKind: "private",
             lineageId: "",
             // F9: bind the new lineage to the session's agent (only a real
-            // agent UUID binds; synthetic personal-session ids resolve to "").
+            // agent UUID binds).
             agentId: boundAgentUuid(this.identity.agentId),
           }),
       );
@@ -666,8 +666,8 @@ export class GovernanceBridge {
           approvedTools: [],
           workflowLineageId: lineageId,
           workflowInputs: inputs,
-          // AG-17 S4: a named-agent session delegates to that agent; a personal
-          // session's synthetic id resolves to "" (no actor yet, AG-01).
+          // AG-17 S4: the schedule delegates to the session's agent (AG-01:
+          // the default agent for a chat with none picked).
           actorAgentId: boundAgentUuid(this.identity.agentId),
         },
         this.identity.token,

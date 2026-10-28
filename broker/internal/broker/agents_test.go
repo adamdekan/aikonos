@@ -240,9 +240,10 @@ func TestListMyAgents_AgentsDisabled(t *testing.T) {
 
 // fakeAgentStore is an in-memory AgentStore used by handler-level tests.
 type fakeAgentStore struct {
-	mu         sync.Mutex
-	agents     []*db.Agent
-	setSoulErr error // when set, SetSoul returns it (simulates a DB error after the gate passes)
+	mu           sync.Mutex
+	agents       []*db.Agent
+	setSoulErr   error             // when set, SetSoul returns it (simulates a DB error after the gate passes)
+	userDefaults map[string]string // AG-01: user → default agent id
 }
 
 func (f *fakeAgentStore) Create(_ context.Context, a *db.Agent) error {
@@ -312,6 +313,39 @@ func (f *fakeAgentStore) SetSoul(_ context.Context, tenantID, id, soul string) e
 		}
 	}
 	return db.ErrAgentNotFound
+}
+
+func (f *fakeAgentStore) EnsureDefault(_ context.Context, tenantID string) (*db.Agent, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.agents {
+		if a.TenantID.String() == tenantID && a.IsDefault {
+			return a, false, nil
+		}
+	}
+	a := &db.Agent{ID: uuid.New(), TenantID: uuid.MustParse(tenantID), Name: db.DefaultAgentName, IsDefault: true}
+	f.agents = append(f.agents, a)
+	return a, true, nil
+}
+
+func (f *fakeAgentStore) UserDefault(_ context.Context, _, userID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.userDefaults[userID], nil
+}
+
+func (f *fakeAgentStore) SetUserDefault(_ context.Context, _, userID, agentID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.userDefaults == nil {
+		f.userDefaults = map[string]string{}
+	}
+	if agentID == "" {
+		delete(f.userDefaults, userID)
+	} else {
+		f.userDefaults[userID] = agentID
+	}
+	return nil
 }
 
 // ── ListMyAgents handler tests ────────────────────────────────────────────────

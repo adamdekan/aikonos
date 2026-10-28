@@ -67,6 +67,7 @@ async function buildApp(mode: "ok" | "denied" | "not-found", opts?: { setAgentSo
 
   const app = Fastify({ logger: false });
   const fakeSupervisor = makeFakeSupervisor();
+  let defaultAgent = "";
 
   const north = {
     listMyAgents: (): never => { throw new Error("not used in this test"); },
@@ -80,6 +81,15 @@ async function buildApp(mode: "ok" | "denied" | "not-found", opts?: { setAgentSo
       return { soul: "You are a helpful assistant." };
     },
     setAgentSoul: opts?.setAgentSoul ?? ((): never => { throw new Error("not used in this test"); }),
+    // AG-01: in-memory default-agent setting; "forbidden" models a missing can_use.
+    getMyDefaultAgent: async () => ({ agentId: defaultAgent }),
+    setMyDefaultAgent: async (req: { agentId: string }) => {
+      if (req.agentId === "forbidden") {
+        throw Object.assign(new Error("PermissionDenied"), { code: PERMISSION_DENIED_CODE, details: "you do not have access to agent forbidden" });
+      }
+      defaultAgent = req.agentId;
+      return { agentId: defaultAgent };
+    },
   };
 
   registerAgentsRoutes(app, { clients: { north }, jwksResolver, verifyOpts: VERIFY_OPTS, supervisor: fakeSupervisor.supervisor });
@@ -167,6 +177,8 @@ test("PUT /agents/:id/soul — eviction failure does not fail the PUT (best-effo
     listMyAgents: (): never => { throw new Error("not used in this test"); },
     getAgentSoul: (): never => { throw new Error("not used in this test"); },
     setAgentSoul: async () => ({ soul: "You are terse." }),
+    getMyDefaultAgent: (): never => { throw new Error("not used in this test"); },
+    setMyDefaultAgent: (): never => { throw new Error("not used in this test"); },
   };
   const throwingSupervisor = {
     evictIdleForAgent(): void {
@@ -203,6 +215,27 @@ test("GET /agents/:id/soul — error response body never leaks 'Error:' or a sta
 
   assert.doesNotMatch(res.body, /Error:/);
   assert.doesNotMatch(res.body, /at .+:\d+:\d+/);
+
+  await app.close();
+});
+
+// AG-01: the user's default agent. PUT stores what the broker accepts; a
+// broker PERMISSION_DENIED (no can_use on the agent) is a 403.
+test("GET/PUT /agents/default — set, read back, 403 without can_use", async () => {
+  const { app, token } = await buildApp("ok");
+  await app.ready();
+  const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+
+  let res = await app.inject({ method: "PUT", url: "/agents/default", headers, payload: { agentId: "agent-1" } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { agentId: "agent-1" });
+  res = await app.inject({ method: "GET", url: "/agents/default", headers });
+  assert.deepEqual(res.json(), { agentId: "agent-1" });
+
+  res = await app.inject({ method: "PUT", url: "/agents/default", headers, payload: { agentId: "forbidden" } });
+  assert.equal(res.statusCode, 403);
+  res = await app.inject({ method: "PUT", url: "/agents/default", headers, payload: { agentId: 7 } });
+  assert.equal(res.statusCode, 400);
 
   await app.close();
 });

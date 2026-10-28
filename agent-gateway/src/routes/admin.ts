@@ -161,6 +161,7 @@ export function agentJson(a: Agent) {
     serviceAgent: a.serviceAgent ?? false,
     sessionsRevokedAt: a.sessionsRevokedAt ?? "",
     orphaned: a.orphaned ?? false,
+    isDefault: a.isDefault ?? false,
   };
 }
 
@@ -195,6 +196,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     serviceAgent: b.serviceAgent ?? false,
     sessionsRevokedAt: "", // read-only (AG-06); UpdateAgent ignores it
     orphaned: false, // read-only (AG-04); UpdateAgent ignores it
+    isDefault: false, // read-only (AG-01); the broker sets it
     usableBy: [],
     createdBy: "",
     createdAt: undefined,

@@ -39,7 +39,6 @@ const baseCfg = {
   // Short timeout so the test doesn't have to wait around for a real run.
   schedulerRunTimeoutMs: 50,
   gatewaySpiffeId: "spiffe://aikonos.com/agent-gateway",
-  agentForUserOverrides: {},
   openrouterApiKey: "",
   llmModel: "",
   brokerNorthAddr: "",

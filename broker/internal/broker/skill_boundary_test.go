@@ -48,6 +48,16 @@ func (f *fakeAgentStoreForSkill) Update(_ context.Context, _ *db.Agent) error   
 func (f *fakeAgentStoreForSkill) Delete(_ context.Context, _, _ string) error     { return nil }
 func (f *fakeAgentStoreForSkill) SetSoul(_ context.Context, _, _, _ string) error { return nil }
 
+func (f *fakeAgentStoreForSkill) EnsureDefault(context.Context, string) (*db.Agent, bool, error) {
+	return nil, false, db.ErrAgentNotFound
+}
+func (f *fakeAgentStoreForSkill) UserDefault(context.Context, string, string) (string, error) {
+	return "", nil
+}
+func (f *fakeAgentStoreForSkill) SetUserDefault(context.Context, string, string, string) error {
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // allowPol returns a fakePolicyEngine that approves every plan and step.

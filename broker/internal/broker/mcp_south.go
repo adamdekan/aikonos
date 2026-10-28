@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,10 +40,13 @@ func (s *SandboxService) ListAccessibleMcpServersForAgent(ctx context.Context, r
 		return nil, status.Error(codes.InvalidArgument, "agent_id required")
 	}
 
-	agentRef := req.AgentId
-	if !strings.HasPrefix(agentRef, "agent:") {
-		agentRef = "agent:" + agentRef
+	// AG-01: the session's bound agent, a registered agent UUID. The retired
+	// "<user>-agent" pseudo-principal is refused, not checked against FGA.
+	bare := strings.TrimPrefix(req.AgentId, "agent:")
+	if _, err := uuid.Parse(bare); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid agent_id: %v", err)
 	}
+	agentRef := "agent:" + bare
 
 	rows, err := s.deps.Mcp.Connections.List(ctx, req.TenantId)
 	if err != nil {

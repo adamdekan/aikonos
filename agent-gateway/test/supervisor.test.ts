@@ -175,6 +175,7 @@ function makeFakeDeps(opts?: { emitLlmUsage?: SupervisorDeps["emitLlmUsage"] }):
     listAccessibleMcpServersForAgent: async () => ({ connections: [] }),
     listMcpServerToolsSouth: async () => ({ tools: [] }),
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
   };
   const cfg = {
     llmModel: "anthropic/claude-sonnet-4.6",
@@ -1104,6 +1105,7 @@ function makeMutableSkillsRig(initialSkills: string[]): {
     listAccessibleMcpServersForAgent: async () => ({ connections: [] }),
     listMcpServerToolsSouth: async () => ({ tools: [] }),
     getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }), // AG-01 tenant default agent
   };
   const cfg = {
     llmModel: "anthropic/claude-sonnet-4.6",

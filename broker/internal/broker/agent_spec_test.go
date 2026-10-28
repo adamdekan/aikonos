@@ -190,6 +190,12 @@ func (e *explodingAgentStore) SetSoul(context.Context, string, string, string) e
 	return nil
 }
 
+func (e *explodingAgentStore) EnsureDefault(context.Context, string) (*db.Agent, bool, error) {
+	return nil, false, db.ErrAgentNotFound
+}
+func (e *explodingAgentStore) UserDefault(context.Context, string, string) (string, error) { return "", nil }
+func (e *explodingAgentStore) SetUserDefault(context.Context, string, string, string) error { return nil }
+
 // TestGetAgentSpec_NonGatewayPeer: non-gateway SPIFFE ID → PermissionDenied.
 func TestGetAgentSpec_NonGatewayPeer(t *testing.T) {
 	svc := buildAgentSpecSvc(t, &fakeAgentStore{})

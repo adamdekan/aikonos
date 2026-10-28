@@ -270,13 +270,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		s.emitToolDenied(ctx, req, scope, "task_owner_mismatch", nil, nil)
 		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
 	}
-	// callerAgent is the caller's agent claim, kept only for the mcp: fallback
-	// below; req.AgentId itself is normalized to the bound agent.
-	callerAgent := strings.TrimSpace(req.AgentId)
-	// ponytail: an unbound task ignores req.AgentId instead of refusing it —
-	// the gateway always sends its session agent id ("<user>-agent",
-	// "agent:<uuid>"); a personal session's "<user>-agent" never binds.
-	if reqAgent := strings.TrimPrefix(callerAgent, "agent:"); boundAgentID != "" && reqAgent != "" && !strings.EqualFold(reqAgent, boundAgentID) {
+	// AG-01: a caller agent claim ("agent:"-prefixed or bare) must be the
+	// task's bound agent. An unbound (legacy) task accepts no claim at all.
+	if reqAgent := strings.TrimPrefix(strings.TrimSpace(req.AgentId), "agent:"); reqAgent != "" && !strings.EqualFold(reqAgent, boundAgentID) {
 		s.emitToolDenied(ctx, req, scope, "agent_mismatch", nil, map[string]any{
 			"req_agent_id":   req.AgentId,
 			"bound_agent_id": boundAgentID,
@@ -448,13 +444,8 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		if !ok {
 			return nil, status.Errorf(codes.InvalidArgument, "malformed mcp tool_id %q", req.ToolId)
 		}
+		// AG-01: only the task's bound agent; a caller claim never stands in.
 		agentID := boundAgentID
-		if agentID == "" {
-			// ponytail: an unbound task (a personal session, or an old
-			// gateway that sends no north agent_id) falls back to the
-			// caller's claim, which only the FGA can_access check below vets.
-			agentID = callerAgent
-		}
 		if agentID == "" {
 			return nil, status.Errorf(codes.PermissionDenied, "agent_id required for mcp tool calls")
 		}
@@ -532,6 +523,10 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 	}
 
+	memoryAgentID := boundAgentID
+	if strings.HasPrefix(req.ToolId, "memory.") && isDefaultAgent(ctx, s.deps, tenantID, boundAgentID) {
+		memoryAgentID = ""
+	}
 	invokeStart := time.Now()
 	res, err := s.deps.ToolProxy.Invoke(ctx, toolproxy.Request{
 		ToolID:   req.ToolId,
@@ -544,8 +539,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		UserID: userID,
 		// Task-row-sourced, never req.AgentId: memory.*'s scope=agent resolves a
 		// bundle segment from this, so a caller-supplied id would be a
-		// cross-agent memory read or write.
-		AgentID: boundAgentID,
+		// cross-agent memory read or write. The tenant default agent (AG-01)
+		// is shared by every user, so it passes no agent: no shared bundle.
+		AgentID: memoryAgentID,
 		OBO:     task.OnBehalfOf(),
 	})
 	if s.deps.TaskMetrics != nil {

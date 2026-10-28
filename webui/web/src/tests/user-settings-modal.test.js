@@ -2,7 +2,7 @@
 // Modal.vue teleports its content to document.body, so DOM assertions query
 // document directly (mirroring ui-modal.test.js's convention) rather than
 // wrapper.find, which does not traverse Teleport in this vue-test-utils version.
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import UserSettingsModal from "../components/UserSettingsModal.vue";
@@ -16,6 +16,13 @@ vi.mock("../auth/oidc.js", () => ({
   getUser:        vi.fn().mockResolvedValue(null),
   getAccessToken: vi.fn().mockResolvedValue(null),
   handleCallback: vi.fn(),
+}));
+
+// AG-01: the Chat pane's default-agent picker talks to the broker via these.
+vi.mock("../api/agents.js", () => ({
+  listMyAgents:    vi.fn().mockResolvedValue({ agents: [{ id: "a1", name: "Research" }] }),
+  getDefaultAgent: vi.fn().mockResolvedValue({ agentId: "" }),
+  setDefaultAgent: vi.fn(),
 }));
 
 function click(el) {
@@ -140,5 +147,27 @@ describe("UserSettingsModal.vue", () => {
     click(document.querySelector("[data-testid='settings-close-btn']"));
     await wrapper.vm.$nextTick();
     expect(wrapper.emitted("close")).toBeTruthy();
+  });
+
+  it("Default agent picker offers usable agents and saves the choice; a refusal reverts it", async () => {
+    const api = await import("../api/agents.js");
+    api.setDefaultAgent.mockResolvedValueOnce({ agentId: "a1" });
+    wrapper = mount(UserSettingsModal, { props: { open: true }, attachTo: document.body });
+    click(document.querySelector("[data-testid='settings-cat-chat']"));
+    await flushPromises();
+    const select = document.querySelector("[data-testid='default-agent-select']");
+    const options = Array.from(select.querySelectorAll("option")).map((o) => o.value);
+    expect(options).toEqual(["", "a1"]);
+    expect(select.value).toBe("");
+
+    setInputValue(select, "a1");
+    await flushPromises();
+    expect(api.setDefaultAgent).toHaveBeenCalledWith("a1");
+    expect(select.value).toBe("a1");
+
+    api.setDefaultAgent.mockResolvedValueOnce({ forbidden: true, error: "no access" });
+    setInputValue(select, "");
+    await flushPromises();
+    expect(select.value).toBe("a1");
   });
 });

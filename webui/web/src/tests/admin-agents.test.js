@@ -131,6 +131,22 @@ describe("Agents.vue", () => {
     expect(w.find("[data-testid='agent-orphaned-a2']").exists()).toBe(false);
   });
 
+  // AG-01: the tenant default agent is badged and cannot be deleted.
+  it("badges the default agent and offers no delete for it", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [
+      { ...SAMPLE_AGENT, isDefault: true },
+      { ...SAMPLE_AGENT, id: "a2", name: "named" },
+    ] });
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='agent-default-a1']").exists()).toBe(true);
+    expect(w.find("[data-testid='agent-delete-a1']").exists()).toBe(false);
+    expect(w.find("[data-testid='agent-default-a2']").exists()).toBe(false);
+    expect(w.find("[data-testid='agent-delete-a2']").exists()).toBe(true);
+  });
+
   it("opens create modal when New Agent button is clicked", async () => {
     adminApi.listAgents.mockResolvedValue({ agents: [] });
     const router = makeRouter();
