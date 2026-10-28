@@ -1069,6 +1069,10 @@ message BeginConnectorAuthRequest {
   ConnectorProvider provider = 3;
   // Optional scope override; empty → provider defaults.
   repeated string scopes = 4;
+  // AG-09: set to an oauth MCP connection's id to link the caller's own
+  // account on that MCP server instead of a cloud-storage provider (provider
+  // is then ignored).
+  string mcp_connection_id = 5;
 }
 
 message BeginConnectorAuthResponse {
@@ -1548,10 +1552,21 @@ message McpConnection {
   string name = 2;
   string url = 3;
   string transport = 4;     // "streamable_http" | "sse"
-  string auth_type = 5;     // "bearer" | "none"
+  // "none" | "bearer" (service mode: one static token shared by every user
+  // and agent) | "oauth" (AG-09: each user links their own account; calls
+  // carry the task subject's token).
+  string auth_type = 5;
   string auth_secret_ref = 6; // Vault path for the credential (server-set)
   string created_by = 7;
   google.protobuf.Timestamp created_at = 8;
+  // oauth only. A pre-registered client id; empty → the broker uses the
+  // aikonOS client metadata document or dynamic registration and stores the
+  // resulting id here.
+  string oauth_client_id = 9;
+  // oauth only. Scopes to request; empty → the server's scopes_supported.
+  repeated string oauth_scopes = 10;
+  // oauth only, server-set: the authorization server found by discovery.
+  string oauth_issuer = 11;
 }
 
 message ListMcpConnectionsRequest {
@@ -1568,6 +1583,7 @@ message AddMcpConnectionRequest {
   string user_id = 2;
   McpConnection connection = 3; // id/auth_secret_ref/created_by/created_at are server-assigned
   string bearer_token = 4;      // write-only; stored in Vault; never echoed back
+  string oauth_client_secret = 5; // write-only (oauth); omit to keep the stored one
 }
 
 message AddMcpConnectionResponse {
@@ -1579,6 +1595,7 @@ message UpdateMcpConnectionRequest {
   string user_id = 2;
   McpConnection connection = 3; // id must be set; auth_secret_ref/created_at are ignored
   string bearer_token = 4;      // write-only; omit to leave the existing credential unchanged
+  string oauth_client_secret = 5; // write-only (oauth); omit to keep the stored one
 }
 
 message UpdateMcpConnectionResponse {

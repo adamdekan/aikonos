@@ -110,6 +110,8 @@ func New(cfg Config, logger *zap.Logger) *Proxy {
 		p.mcpDeps = &mcpProxyDeps{
 			connections:  cfg.McpConnections,
 			bearer:       cfg.McpBearer,
+			secrets:      cfg.Secrets,
+			oauth:        cfg.OAuth,
 			allowPrivate: cfg.AllowMcpPrivate,
 		}
 		p.mcpSchemas = newMcpSchemaCache()

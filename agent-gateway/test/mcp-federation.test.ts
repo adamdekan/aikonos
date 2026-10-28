@@ -169,6 +169,9 @@ function makeMinimalSouth(
         authSecretRef: "",
         createdBy: "",
         createdAt: undefined,
+        oauthClientId: "",
+        oauthScopes: [],
+        oauthIssuer: "",
       })),
     }),
     listMcpServerToolsSouth: async (req: { connectorId: string }) => ({
@@ -217,7 +220,7 @@ test("buildMcpTools: passes agentId as userId to listMcpServerToolsSouth", async
   let capturedUserId: string | undefined;
   const south = {
     listAccessibleMcpServersForAgent: async () => ({
-      connections: [{ id: "srv-1", name: "S", url: "x", transport: "streamable_http" as const, authType: "bearer" as const, authSecretRef: "", createdBy: "", createdAt: undefined }],
+      connections: [{ id: "srv-1", name: "S", url: "x", transport: "streamable_http" as const, authType: "bearer" as const, authSecretRef: "", createdBy: "", createdAt: undefined, oauthClientId: "", oauthScopes: [], oauthIssuer: "" }],
     }),
     listMcpServerToolsSouth: async (req: { userId: string }) => {
       capturedUserId = req.userId;
@@ -241,7 +244,7 @@ test("buildMcpTools: discovery failure for a server skips it without throwing", 
 
   const south = {
     listAccessibleMcpServersForAgent: async () => ({
-      connections: [{ id: "srv-fail", name: "Failing", url: "x", transport: "streamable_http" as const, authType: "bearer" as const, authSecretRef: "", createdBy: "", createdAt: undefined }],
+      connections: [{ id: "srv-fail", name: "Failing", url: "x", transport: "streamable_http" as const, authType: "bearer" as const, authSecretRef: "", createdBy: "", createdAt: undefined, oauthClientId: "", oauthScopes: [], oauthIssuer: "" }],
     }),
     listMcpServerToolsSouth: async () => { throw new Error("server unreachable"); },
   };

@@ -102,6 +102,10 @@ export interface Config {
   // https://aikonos.example.com:8090). The admin Provisioning tab shows
   // <base>/scim/v2 as the SCIM tenant URL; empty ⇒ the UI guesses from its host.
   externalBaseUrl?: string;
+  // AG-09: the connector OAuth redirect URI (same value as the broker's
+  // connectors.redirect_uri). With externalBaseUrl it enables the public
+  // OAuth client metadata document for MCP servers.
+  connectorsRedirectUri?: string;
   // Idle TTL for persistent thread sessions (ms). A session not used for this
   // long is evicted so its OIDC bearer becomes GC-eligible. Default 30 minutes.
   threadTtlMs: number;
@@ -197,6 +201,7 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
     externalRateLimit: parsePositiveInt(env, "AIKONOS_EXTERNAL_RATE_LIMIT", "60"),
     externalAudience: get(env, "AIKONOS_EXTERNAL_AUDIENCE", "").trim(),
     externalBaseUrl: get(env, "AIKONOS_EXTERNAL_BASE_URL", "").trim().replace(/\/+$/, ""),
+    connectorsRedirectUri: get(env, "AIKONOS_CONNECTORS_REDIRECT_URI", "").trim(),
     threadTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_THREAD_TTL_MS", "1800000"),
     maxChildren: parsePositiveInt(env, "AIKONOS_GATEWAY_MAX_CHILDREN", "32"),
     childTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_CHILD_TTL_MS", "1800000"),

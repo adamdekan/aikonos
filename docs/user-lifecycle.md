@@ -214,6 +214,17 @@ tenant sets `identity.enforce_user_bound=enforce`. Removing a user from a group
 therefore also removes that group's connectors from every agent run for the user.
 Grant a single person a connector in **Admin → MCP → Access**.
 
+An MCP connection with auth type **oauth** (AG-09) calls the server as the user:
+each user links their own account under **Connections → MCP servers → Connect**,
+and an agent's call carries the task subject's token, never a shared one. A
+user who has not linked it gets no tools from that server; a service run (no
+human subject) is refused. **Disconnect** deletes the user's token from Vault.
+Blocking or offboarding a user stops their runs, but their linked MCP tokens
+stay in Vault until they disconnect or the connection is deleted; revoke the
+grant at the MCP server's authorization server when the account must be cut
+immediately. The **service (shared bearer)** auth type keeps one token for every
+user and agent; use it only for servers with no per-user data.
+
 A schedule created without an actor fires as its owner's default agent, resolved at
 each fire. With `identity.obo=enforce` such a schedule stays parked, as before, and
 resuming it is refused until the owner sets an agent in the edit form.
@@ -230,6 +241,7 @@ extension.
 |---|---|---|
 | Remove a stale user from the Users list | `user_directory` rows persist forever | delete-from-directory action, paired with a bulk revoke of the user's tuples |
 | One-click "revoke everything" | revoke group-by-group in the Users tab; Block stops all use without touching grants | "Revoke all access" button = delete every tuple whose subject is the user |
+| Purge a removed user's oauth MCP tokens | stay in Vault until the user disconnects; the connection's deletion orphans them unreadable | sweep `workspaces/<tenant>/<user>/connectors/mcp-*` on block/offboard |
 | Directory sync from the IdP | Done (AG-16): SCIM maps IdP deactivation to a block and IdP groups to FGA groups | — |
 
 Decision: Entra stays the front door and aikonOS the permission system behind it; the

@@ -30,6 +30,13 @@ const url         = ref("");
 const transport   = ref("streamable_http");
 const authType    = ref("none");
 const bearerToken = ref("");
+// AG-09 oauth: optional pre-registered client (blank → client metadata
+// document or dynamic registration), write-only secret, space-separated scopes.
+const oauthClientId     = ref("");
+const oauthClientSecret = ref("");
+const oauthScopes       = ref("");
+
+const AUTH_LABELS = { none: "none", bearer: "service (shared bearer)", oauth: "oauth (per user)" };
 
 async function load() {
   loading.value   = true;
@@ -55,6 +62,9 @@ function startEdit(conn) {
   transport.value   = conn.transport;
   authType.value    = conn.authType;
   bearerToken.value = "";
+  oauthClientId.value     = conn.oauthClientId ?? "";
+  oauthClientSecret.value = "";
+  oauthScopes.value       = (conn.oauthScopes ?? []).join(" ");
 }
 
 function cancelEdit() {
@@ -64,6 +74,9 @@ function cancelEdit() {
   transport.value   = "streamable_http";
   authType.value    = "none";
   bearerToken.value = "";
+  oauthClientId.value     = "";
+  oauthClientSecret.value = "";
+  oauthScopes.value       = "";
 }
 
 async function submit() {
@@ -81,6 +94,11 @@ async function submit() {
   // only include bearerToken when authType=bearer and admin typed a value
   if (authType.value === "bearer" && bearerToken.value) {
     body.bearerToken = bearerToken.value;
+  }
+  if (authType.value === "oauth") {
+    body.oauthClientId = oauthClientId.value.trim();
+    body.oauthScopes   = oauthScopes.value.split(/\s+/).filter(Boolean);
+    if (oauthClientSecret.value) body.oauthClientSecret = oauthClientSecret.value;
   }
   try {
     if (editId.value) {
@@ -262,8 +280,7 @@ const TABLE_COLS = [
           <option value="sse">sse</option>
         </select>
         <select v-model="authType" data-testid="conn-auth-type">
-          <option value="none">none</option>
-          <option value="bearer">bearer</option>
+          <option v-for="(label, v) in AUTH_LABELS" :key="v" :value="v">{{ label }}</option>
         </select>
         <input
           v-if="authType === 'bearer'"
@@ -273,6 +290,27 @@ const TABLE_COLS = [
           class="f-bearer"
           data-testid="conn-bearer"
         />
+        <template v-if="authType === 'oauth'">
+          <input
+            v-model="oauthClientId"
+            placeholder="client id (blank: register automatically)"
+            class="f-url"
+            data-testid="conn-oauth-client-id"
+          />
+          <input
+            v-model="oauthClientSecret"
+            type="password"
+            :placeholder="editId ? 'client secret (leave blank to keep)' : 'client secret (optional)'"
+            class="f-bearer"
+            data-testid="conn-oauth-client-secret"
+          />
+          <input
+            v-model="oauthScopes"
+            placeholder="scopes (blank: server default)"
+            class="f-bearer"
+            data-testid="conn-oauth-scopes"
+          />
+        </template>
         <button class="btn-primary" data-testid="add-conn-btn" @click="submit">
           <Icon name="plus" /> {{ editId ? "Save" : "Add" }}
         </button>
@@ -290,7 +328,10 @@ const TABLE_COLS = [
           <td class="mono">{{ row.name }}</td>
           <td class="mono">{{ row.url }}</td>
           <td><span class="badge">{{ row.transport }}</span></td>
-          <td><span class="badge">{{ row.authType }}</span></td>
+          <td>
+            <span class="badge" :data-testid="`auth-${row.id}`">{{ AUTH_LABELS[row.authType] ?? row.authType }}</span>
+            <span v-if="row.oauthIssuer" class="muted"> {{ row.oauthIssuer }}</span>
+          </td>
           <td class="right actions">
             <button
               :data-testid="`access-${row.id}`"

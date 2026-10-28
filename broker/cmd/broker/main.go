@@ -184,6 +184,10 @@ func main() {
 	// Connector OAuth apps (platform secrets). Empty client_id → that provider
 	// is unconfigured: its connector RPCs/tools are unavailable.
 	viper.SetDefault("connectors.redirect_uri", "")
+	// AG-09: https URL of the aikonOS OAuth client metadata document the
+	// gateway serves (<external base>/oauth/client-metadata.json). Empty →
+	// oauth MCP connections use a configured client id or dynamic registration.
+	viper.SetDefault("connectors.mcp_client_metadata_url", "")
 	viper.SetDefault("connectors.google.client_id", "")
 	viper.SetDefault("connectors.google.client_secret", "")
 	viper.SetDefault("connectors.microsoft.client_id", "")
@@ -991,9 +995,10 @@ func main() {
 		OAuth:                connRegistry,
 		Connectors:           connStore,
 		Mcp: brokersvc.McpDeps{
-			Connections:  mcpRepo,
-			Bearer:       mcpSecrets,
-			AllowPrivate: viper.GetBool("toolproxy.mcp.allow_private"),
+			Connections:       mcpRepo,
+			Bearer:            mcpSecrets,
+			AllowPrivate:      viper.GetBool("toolproxy.mcp.allow_private"),
+			ClientMetadataURL: viper.GetString("connectors.mcp_client_metadata_url"),
 		},
 		Config:                   configStore,
 		ToolRegistry:             toolReg,
@@ -1089,9 +1094,10 @@ func main() {
 		DevMode:         viper.GetBool("dev_mode"),
 		ACL:             netChecker,
 		Mcp: brokersvc.McpDeps{
-			Connections:  mcpRepo,
-			Bearer:       mcpSecrets,
-			AllowPrivate: viper.GetBool("toolproxy.mcp.allow_private"),
+			Connections:       mcpRepo,
+			Bearer:            mcpSecrets,
+			AllowPrivate:      viper.GetBool("toolproxy.mcp.allow_private"),
+			ClientMetadataURL: viper.GetString("connectors.mcp_client_metadata_url"),
 		},
 		ToolRegistry:         toolReg,
 		Agents:               agentRepo,
@@ -1099,6 +1105,7 @@ func main() {
 		PublicKeys:           publicKeyRepo,
 		ApiKeyPepper:         viper.GetString("api_key.pepper"),
 		Secrets:              secretsProvider,
+		OAuth:                connRegistry, // AG-09: oauth MCP tool listing for the session user
 		Providers:            llmProviderRepo,
 		UsageMetrics:         usageMetrics,
 		TaskMetrics:          taskMetrics,

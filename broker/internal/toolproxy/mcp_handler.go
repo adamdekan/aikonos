@@ -25,6 +25,7 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/adamdekan/aikonos/broker/internal/connector"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
@@ -79,6 +80,11 @@ func (c *mcpSchemaCache) compileMcpSchema(schemaJSON string) (*jsonschema.Schema
 type mcpProxyDeps struct {
 	connections mcpConnectionLookup
 	bearer      secrets.McpBearerStore
+	// secrets + oauth back auth_type=oauth connections (AG-09): the per-user
+	// token store and the registry that refreshes and writes it back. Either
+	// nil → oauth connections fail closed.
+	secrets secrets.Provider
+	oauth   *connector.Registry
 	// allowPrivate disables the SSRF guard. False in production; true in tests
 	// that reach httptest servers on 127.0.0.1.
 	allowPrivate bool
@@ -110,6 +116,13 @@ func (p *Proxy) invokeMCP(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	var bearer string
+	if conn.AuthType == "oauth" {
+		tok, terr := p.mcpOAuthToken(ctx, req, conn)
+		if terr != nil {
+			return &Result{Success: false, Error: "mcp: " + terr.Error()}, nil
+		}
+		bearer = tok
+	}
 	if conn.AuthType == "bearer" && p.mcpDeps.bearer != nil {
 		b, rerr := p.mcpDeps.bearer.ReadMcpBearer(ctx, req.TenantID, connID)
 		if rerr != nil && rerr != secrets.ErrMcpBearerNotFound {
@@ -165,4 +178,23 @@ func (p *Proxy) invokeMCP(ctx context.Context, req Request) (*Result, error) {
 		"server":   conn.URL,
 	}
 	return &Result{Success: !isErr, Output: out, CostUnits: 1}, nil
+}
+
+// mcpOAuthToken returns the task subject's own token for an oauth connection.
+// A service run, or a call without a user, is refused exactly like the
+// connector tools: there is no person whose account the server should see.
+func (p *Proxy) mcpOAuthToken(ctx context.Context, req Request, conn *db.McpConnection) (string, error) {
+	tenant, user, err := connectorIdentity(req)
+	if err != nil {
+		return "", err
+	}
+	if p.mcpDeps.secrets == nil || p.mcpDeps.oauth == nil {
+		return "", fmt.Errorf("oauth MCP connections need Vault and connectors configured")
+	}
+	m, err := connector.LoadMcpOAuth(ctx, conn, p.mcpDeps.bearer)
+	if err != nil {
+		return "", err
+	}
+	return p.mcpDeps.oauth.FreshMcpAccessToken(ctx, hardenedClient(mcpTimeout, p.mcpDeps.allowPrivate, nil),
+		p.mcpDeps.secrets, m, tenant, user)
 }
