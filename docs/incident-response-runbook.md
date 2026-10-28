@@ -34,7 +34,7 @@ GET /admin/audit/query?event_type=InvokeTool&decision=2&limit=100
 
 `decision=2` filters for DENY decisions. There is no server-side filter for `reads_sensitive` or `write_external` — query by `event_type` and/or `actor`, then narrow client-side by inspecting the `tool_id` and argument fields in the returned events. Use `cursor` from `nextCursor` to page.
 
-Or via the live stream (`/api/audit/stream` SSE) — filter for events where `tool_id` includes a doc/web read step followed by `email.draft` (send), `web.fetch` (POST), or any connector write in the same `task_id`.
+Or via the live stream (`/api/audit/stream` SSE; tenant admins see the whole tenant, other users only their own events) — filter for events where `tool_id` includes a doc/web read step followed by `email.draft` (send), `web.fetch` (POST), or any connector write in the same `task_id`.
 
 Indicators:
 - `plan_validation.rego` violation logged but plan was resubmitted with altered step ordering.

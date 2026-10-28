@@ -182,3 +182,37 @@ func TestTaskRepo_DelegationLimits_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestTaskRepo_ServiceAgent_ReadOnLoad: a task bound to a service agent reads
+// back service_agent=true for the audit actor chain (AG-12); an ordinary
+// agent and an unbound task read false.
+func TestTaskRepo_ServiceAgent_ReadOnLoad(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	agents := NewAgentRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID := uuid.New()
+
+	for name, svc := range map[string]*bool{"service": ptrBool(true), "ordinary": ptrBool(false), "unbound": nil} {
+		task := &Task{TaskID: uuid.New(), TenantID: tenantID, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 10}
+		if svc != nil {
+			a := &Agent{ID: uuid.New(), TenantID: tenantID, Name: "a-" + name, ApprovalMode: "auto", ServiceAgent: *svc, Status: "active"}
+			if err := agents.Create(ctx, a); err != nil {
+				t.Fatalf("%s: create agent: %v", name, err)
+			}
+			task.AgentID = &a.ID
+		}
+		if err := repo.Create(ctx, task); err != nil {
+			t.Fatalf("%s: Create: %v", name, err)
+		}
+		got, err := repo.Get(ctx, tenantID.String(), task.TaskID.String())
+		if err != nil {
+			t.Fatalf("%s: Get: %v", name, err)
+		}
+		if want := svc != nil && *svc; got.OnBehalfOf().ServiceAgent != want {
+			t.Errorf("%s: service_agent = %v, want %v", name, got.OnBehalfOf().ServiceAgent, want)
+		}
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }

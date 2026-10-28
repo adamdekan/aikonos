@@ -175,7 +175,7 @@ task-row binding idiom and add the regression test pattern already used in
 - **Fix:** One `resolveUnattendedApprover()` helper (cached ~30s) used in `tick()`, `runViaChild`, `runViaWorkflow`, `runAgentInvocation`; deny-all approver when false; fail closed on settings error. Consider enforcing in the broker on `CreateScheduledRun`/`ResolveAgentApiKey` too, but existing schedules need the fire-time check.
 
 ### H-07 Tenant-wide audit stream readable by every tenant member
-- **Status:** open
+- **Status:** fixed (AG-12): `/api/audit` and `/api/audit/stream` give the whole tenant only to a tenant admin (probed via the admin-gated `GetObservabilityInfo`); anyone else, and anyone whose probe fails, sees only events they acted in or that ran on their behalf (`context.obo.subject`). At most 3 open streams per principal (429 above). The webui guards every `/admin/*` route on the admin probe and reads the stream over fetch with the bearer (an `EventSource` sent none). No auditor role exists, so none was added.
 - **Where:** `agent-gateway/src/audit/stream.ts:31-33,71-106` (`requireUser` + tenant filter only); `webui/server.mjs:192-211` forwards verbatim; events carry `actor_user_id`, `actor_email`, `resource_ref`, full `context` (`audit/emitter.go:196-197,243-246`)
 - **Exploit:** Any member streams every colleague's tool calls, approvals, emails and agent ids (feeds H-05). Unlimited SSE connections per user.
 - **Fix:** Tenant-admin gate on both routes (reuse the admin check from `routes/admin.ts`), or filter to `actor_user_id === principal.sub`. Add per-principal connection cap. Add `meta.admin` guard on the `/admin/*` routes in `webui/web/src/router.js:38-104` (UI only hides nav today).

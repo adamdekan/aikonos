@@ -4,7 +4,7 @@ import Icon from "../../components/Icon.vue";
 import EmptyState from "../../components/ui/EmptyState.vue";
 import DecisionBadge from "../../components/audit/DecisionBadge.vue";
 import EventDetail from "../../components/audit/EventDetail.vue";
-import { fmtTimeLive, actor, detail, decision } from "../../components/audit/audit-format.js";
+import { fmtTimeLive, actor, detail, decision, chain } from "../../components/audit/audit-format.js";
 import { toJson, toCsv } from "./auditExport.js";
 
 // eventSourceFactory is injectable for tests: pass a function () => EventSource-like.
@@ -23,6 +23,8 @@ const reconnecting     = ref(false);   // transient failure — retrying with ba
 const disconnected     = ref(false);   // retries exhausted — manual Reconnect available
 const filter           = ref("");
 const tenantFilter     = ref("");      // "" = All tenants
+const agentFilter      = ref("");      // "" = any actor agent (AG-12)
+const subjectFilter    = ref("");      // "" = any subject (AG-12)
 const expanded         = ref(new Set()); // _id values of expanded rows
 const MAX              = 1000;
 
@@ -246,13 +248,16 @@ const filtered = computed(() => {
   const tf = tenantFilter.value;
   let result = events.value;
   if (tf) result = result.filter((e) => e.tenant_id === tf);
+  if (agentFilter.value)   result = result.filter((e) => chain(e).agent === agentFilter.value);
+  if (subjectFilter.value) result = result.filter((e) => chain(e).subject === subjectFilter.value);
   if (!q) return result;
   const terms   = q.split(/\s+/).filter(Boolean);
   const include = terms.filter((t) => !t.startsWith("-"));
   const exclude = terms.filter((t) => t.startsWith("-") && t.length > 1).map((t) => t.slice(1));
   return result.filter((e) => {
     const d = decision(e);
-    const hay = [e.event_type, actor(e), e.resource_ref, detail(e), d?.label ?? ""]
+    const c = chain(e);
+    const hay = [e.event_type, actor(e), e.resource_ref, detail(e), d?.label ?? "", c.subject, c.agent, c.delegatedBy, c.client]
       .join(" ").toLowerCase();
     if (include.some((t) => !hay.includes(t))) return false;
     if (exclude.some((t) => hay.includes(t)))  return false;
@@ -266,6 +271,17 @@ const tenantIds = computed(() => {
   for (const e of events.value) if (e.tenant_id) seen.add(e.tenant_id);
   return [...seen].sort();
 });
+
+// Distinct actor agents / subjects seen, for the chain filters (AG-12).
+function distinct(key) {
+  const seen = new Set();
+  for (const e of events.value) { const v = chain(e)[key]; if (v) seen.add(v); }
+  return [...seen].sort();
+}
+const agentIds = computed(() => distinct("agent"));
+const subjects = computed(() => distinct("subject"));
+
+const short = (id) => (id && id.length > 13 ? id.slice(0, 8) + "…" : id || "—");
 
 const pendingCount = computed(() => pending.value.length);
 const showJumpPill = computed(() => paused.value ? pendingCount.value > 0 : !atTop.value);
@@ -333,6 +349,14 @@ const jumpLabel    = computed(() =>
             <option value="">All tenants</option>
             <option v-for="tid in tenantIds" :key="tid" :value="tid">{{ tid }}</option>
           </select>
+          <select v-model="agentFilter" data-testid="audit-agent-filter" class="filter-select" title="Filter by actor agent">
+            <option value="">All agents</option>
+            <option v-for="id in agentIds" :key="id" :value="id">{{ id }}</option>
+          </select>
+          <select v-model="subjectFilter" data-testid="audit-subject-filter" class="filter-select" title="Filter by subject (the user acted for)">
+            <option value="">All subjects</option>
+            <option v-for="s in subjects" :key="s" :value="s">{{ s }}</option>
+          </select>
           <input
             v-model="filter"
             placeholder="filter events… (-term excludes)"
@@ -380,6 +404,10 @@ const jumpLabel    = computed(() =>
             <col style="width:110px" />
             <col style="width:200px" />
             <col style="width:160px" />
+            <col style="width:140px" />
+            <col style="width:100px" />
+            <col style="width:130px" />
+            <col style="width:100px" />
             <col />
             <col style="width:90px" />
             <col style="width:1.2fr" />
@@ -389,6 +417,10 @@ const jumpLabel    = computed(() =>
               <th>Time</th>
               <th>Event</th>
               <th>Actor</th>
+              <th>Subject</th>
+              <th>Agent</th>
+              <th>Delegated by</th>
+              <th>Client</th>
               <th>Resource</th>
               <th>Decision</th>
               <th>Detail</th>
@@ -407,6 +439,12 @@ const jumpLabel    = computed(() =>
                 <td class="cell-mono cell-muted">{{ fmtTimeLive(ev) }}</td>
                 <td class="cell-mono cell-accent">{{ ev.event_type }}</td>
                 <td class="cell-mono">{{ actor(ev) }}</td>
+                <td class="cell-mono cell-overflow" data-testid="audit-subject" :title="chain(ev).subject">{{ chain(ev).subject || "—" }}</td>
+                <td class="cell-mono cell-overflow" data-testid="audit-agent" :title="chain(ev).agent">
+                  {{ short(chain(ev).agent) }}<span v-if="chain(ev).serviceAgent" class="svc-tag" title="service agent"> svc</span>
+                </td>
+                <td class="cell-mono cell-overflow" data-testid="audit-delegated-by" :title="chain(ev).delegatedBy">{{ chain(ev).delegatedBy || "—" }}</td>
+                <td class="cell-mono cell-overflow" data-testid="audit-client" :title="chain(ev).client">{{ short(chain(ev).client) }}</td>
                 <td class="cell-overflow cell-muted" :title="ev.resource_ref">{{ ev.resource_ref }}</td>
                 <td><DecisionBadge :decision="ev.decision" /></td>
                 <td class="cell-overflow cell-muted" :title="detail(ev)">{{ detail(ev) }}</td>
@@ -416,7 +454,7 @@ const jumpLabel    = computed(() =>
                 data-testid="audit-detail"
                 class="detail-row"
               >
-                <td colspan="6">
+                <td colspan="10">
                   <EventDetail :ev="ev" />
                 </td>
               </tr>
@@ -681,6 +719,7 @@ const jumpLabel    = computed(() =>
 .cell-mono   { font-family: var(--font-mono); }
 .cell-muted  { color: var(--text-muted); }
 .cell-accent { color: var(--accent-text); }
+.svc-tag     { color: var(--text-muted); font-size: 10px; }
 .cell-overflow {
   overflow: hidden;
   text-overflow: ellipsis;

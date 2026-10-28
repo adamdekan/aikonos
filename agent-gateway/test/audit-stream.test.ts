@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import pino from "pino";
-import { buffer, record, fanOutClients, startAuditConsumer, filterByTenant } from "../src/audit/stream";
+import { buffer, record, fanOutClients, startAuditConsumer } from "../src/audit/stream";
 
 // Reset shared state between tests so cases are independent.
 beforeEach(() => { buffer.length = 0; fanOutClients().clear(); });
@@ -96,7 +96,7 @@ test("record() fan-out: tenant-filtered client receives only matching-tenant eve
   const resAll = fakeRes((s) => { unfiltered.push(s); return true; });
   const resTenant = fakeRes((s) => { filtered.push(s); return true; });
   fanOutClients().set(resAll, undefined);
-  fanOutClients().set(resTenant, "tenant-a");
+  fanOutClients().set(resTenant, { tenant: "tenant-a" });
 
   record({ event_id: "e1", tenant_id: "tenant-b" });
 
@@ -107,7 +107,7 @@ test("record() fan-out: tenant-filtered client receives only matching-tenant eve
 test("record() fan-out: tenant-filtered client receives matching-tenant events", () => {
   const filtered: string[] = [];
   const resTenant = fakeRes((s) => { filtered.push(s); return true; });
-  fanOutClients().set(resTenant, "tenant-a");
+  fanOutClients().set(resTenant, { tenant: "tenant-a" });
 
   record({ event_id: "e2", tenant_id: "tenant-a" });
 
@@ -126,23 +126,18 @@ test("record() fan-out: a client whose write() returns false is destroyed and re
   assert.ok(destroyed, "slow client should be destroyed when write() returns false");
 });
 
-test("filterByTenant: mixed-tenant buffer, matching tenant param returns only matching events", () => {
-  record({ event_id: "r1", tenant_id: "tenant-a" });
-  record({ event_id: "r2", tenant_id: "tenant-b" });
+// H-07: a member's stream carries only events they acted in or that were
+// done on their behalf; an admin scope (no user) carries the whole tenant.
+test("record() fan-out: member scope receives only own and on-behalf-of events", () => {
+  const got: string[] = [];
+  fanOutClients().set(fakeRes((s) => { got.push(s); return true; }), { tenant: "tenant-a", user: "alice" });
 
-  const replayed = filterByTenant(buffer, "tenant-a");
+  record({ event_id: "own", tenant_id: "tenant-a", actor_user_id: "alice" });
+  record({ event_id: "obo", tenant_id: "tenant-a", actor_user_id: "bob", context: { obo: { subject: "alice" } } });
+  record({ event_id: "colleague", tenant_id: "tenant-a", actor_user_id: "bob" });
+  record({ event_id: "foreign", tenant_id: "tenant-b", actor_user_id: "alice" });
 
-  assert.equal(replayed.length, 1);
-  assert.deepEqual(replayed[0], { event_id: "r1", tenant_id: "tenant-a" });
-});
-
-test("filterByTenant: absent tenant param returns every event unfiltered", () => {
-  record({ event_id: "r1", tenant_id: "tenant-a" });
-  record({ event_id: "r2", tenant_id: "tenant-b" });
-
-  const replayed = filterByTenant(buffer, undefined);
-
-  assert.equal(replayed.length, 2);
+  assert.deepEqual(got.map((l) => (JSON.parse(l.slice(6)) as { event_id: string }).event_id), ["own", "obo"]);
 });
 
 test("ping write does not throw on a destroyed client socket", () => {

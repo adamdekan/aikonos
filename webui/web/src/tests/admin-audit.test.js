@@ -503,4 +503,43 @@ describe("Audit.vue", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
+
+  // AG-12: the actor chain shows per row and the agent / subject filters
+  // narrow the table.
+  it("shows the actor chain columns and filters by agent and subject", async () => {
+    let fes;
+    const factory = () => { fes = new FakeEventSource(); return fes; };
+    const router = makeRouter();
+    await router.push("/admin/audit");
+    const w = mount(Audit, { global: { plugins: [router] }, props: { eventSourceFactory: factory } });
+    await flushPromises();
+    fes.open();
+    fes.emit("message", {
+      event_id: "a", event_type: "aikonos.broker.tool.invoked", actor_user_id: "alice@example.com",
+      actor_agent_id: "agent-1",
+      context: { obo: { subject: "alice@example.com", actor: "agent-1", delegated_by: "bob@example.com", external_client_id: "key-1", service_agent: true } },
+    });
+    fes.emit("message", {
+      event_id: "b", event_type: "aikonos.broker.tool.invoked", actor_user_id: "carol@example.com",
+      actor_agent_id: "agent-2", context: { obo: { subject: "carol@example.com", actor: "agent-2" } },
+    });
+    await nextTick();
+
+    expect(w.findAll("[data-testid='audit-row']").length).toBe(2);
+    const first = w.findAll("[data-testid='audit-row']")[1]; // newest first: "a" was emitted first
+    expect(first.find("[data-testid='audit-subject']").text()).toBe("alice@example.com");
+    expect(first.find("[data-testid='audit-agent']").text()).toContain("agent-1");
+    expect(first.find("[data-testid='audit-agent']").text()).toContain("svc");
+    expect(first.find("[data-testid='audit-delegated-by']").text()).toBe("bob@example.com");
+    expect(first.find("[data-testid='audit-client']").text()).toBe("key-1");
+
+    await w.find("[data-testid='audit-agent-filter']").setValue("agent-2");
+    expect(w.findAll("[data-testid='audit-row']").length).toBe(1);
+    expect(w.find("[data-testid='audit-subject']").text()).toBe("carol@example.com");
+
+    await w.find("[data-testid='audit-agent-filter']").setValue("");
+    await w.find("[data-testid='audit-subject-filter']").setValue("alice@example.com");
+    expect(w.findAll("[data-testid='audit-row']").length).toBe(1);
+    expect(w.find("[data-testid='audit-agent']").text()).toContain("agent-1");
+  });
 });

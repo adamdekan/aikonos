@@ -452,7 +452,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			Store:         taskStore,
 			Policy:        pol,
 			Config:        s.cfg(),
-			Audit:         s.deps.Audit,
+			Audit:         oboEmitter{s.deps.Audit},
 			Logger:        s.deps.Logger,
 			TraceID:       traceID,
 			TenantID:      tenantID,
@@ -716,7 +716,7 @@ func (s *SandboxService) emitPlanAudit(ctx context.Context, traceID, tenantID st
 }
 
 func (s *SandboxService) emitNetworkAudit(ctx context.Context, traceID, tenantID, actor, host, eventType string, decision auditv1.PolicyDecision) {
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
 		TenantId:    tenantID,
@@ -725,7 +725,7 @@ func (s *SandboxService) emitNetworkAudit(ctx context.Context, traceID, tenantID
 		EventType:   eventType,
 		ResourceRef: "network_host:" + host,
 		Decision:    decision,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, eventType)
 	}
 }

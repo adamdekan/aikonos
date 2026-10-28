@@ -83,6 +83,13 @@ func persistManagedTask(
 		zap.Bool("gateway_managed", t.GatewayManaged),
 	)
 
+	// The row's service_agent flag is read on load; a fresh row needs it for
+	// the chain on this event (AG-12). A failed read leaves it false.
+	if t.AgentID != nil && deps.Agents != nil {
+		if a, err := deps.Agents.Get(ctx, t.TenantID.String(), t.AgentID.String()); err == nil {
+			t.ServiceAgent = a.ServiceAgent
+		}
+	}
 	if err := deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,

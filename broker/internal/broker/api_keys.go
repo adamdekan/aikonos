@@ -252,6 +252,7 @@ func (s *BrokerService) RevokeAgentApiKey(ctx context.Context, req *brokerv1.Rev
 		zap.String("agent_id", req.AgentId),
 		zap.String("actor", user),
 	)
+	revokedCtx, _ := structpb.NewStruct(map[string]any{"key_id": req.KeyId})
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     span.SpanContext().TraceID().String(),
@@ -261,6 +262,7 @@ func (s *BrokerService) RevokeAgentApiKey(ctx context.Context, req *brokerv1.Rev
 		EventType:   "aikonos.broker.apikey.revoked",
 		ResourceRef: "agent:" + req.AgentId,
 		Decision:    auditv1.PolicyDecision_ALLOW,
+		Context:     revokedCtx,
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.apikey.revoked")
 	}
@@ -322,6 +324,7 @@ func (s *SandboxService) resolveAgentCredential(ctx context.Context, k *db.Store
 	if st, rerr := s.deps.Revocation.Agent(ctx, k.TenantID.String(), k.AgentID.String()); rerr != nil {
 		return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
 	} else if st.Revoked(k.CreatedAt) {
+		s.emitApiKeyDenied(ctx, k, "sessions_revoked", "")
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	} else if r := st.AgentRefusal(); r != "" {
 		// AG-03: the key is valid but its agent may not run; say why.
