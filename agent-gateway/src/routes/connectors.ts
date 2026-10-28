@@ -1,4 +1,5 @@
-// Connectors: per-user Google Drive / OneDrive OAuth.
+// Connectors: per-user Google Drive / OneDrive OAuth, and (AG-09) the user's
+// own account on an oauth MCP connection (provider key "mcp:<connection id>").
 // Browser → /api/gw proxy → here → broker north RPCs. The broker runs the OAuth
 // exchange + Vault storage; the gateway just forwards with the user's token.
 // Registered by registerConnectorRoutes(app, ctx) called from src/app.ts at the
@@ -32,14 +33,16 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: ConnectorsCtx
   app.post<{ Body: { provider?: string } }>("/connectors/begin", async (req, reply) => {
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
-    const provider = PROVIDER_BY_KEY[(req.body?.provider ?? "").toLowerCase()];
-    if (provider === undefined) {
+    const key = (req.body?.provider ?? "").toLowerCase();
+    const mcpConnectionId = key.startsWith("mcp:") ? key.slice("mcp:".length) : "";
+    const provider = mcpConnectionId ? ConnectorProvider.CONNECTOR_PROVIDER_UNSPECIFIED : PROVIDER_BY_KEY[key];
+    if (provider === undefined || (key.startsWith("mcp:") && !mcpConnectionId)) {
       reply.code(400).send({ error: `unknown provider: ${req.body?.provider}` });
       return;
     }
     try {
       const resp = await ctx.clients.north.beginConnectorAuth(
-        { tenantId: principal.tenant, userId: principal.sub, provider, scopes: [] },
+        { tenantId: principal.tenant, userId: principal.sub, provider, scopes: [], mcpConnectionId },
         principal.token,
       );
       reply.send({ authorizeUrl: resp.authorizeUrl, state: resp.state });

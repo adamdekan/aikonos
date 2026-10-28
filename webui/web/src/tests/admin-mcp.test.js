@@ -361,4 +361,29 @@ describe("Mcp.vue", () => {
     expect(adminApi.upsertSkill).toHaveBeenCalledWith("mcp:c1:query_rows", { effectClass: "read_only", enabled: true });
     expect(adminApi.listMcpServerTools).toHaveBeenCalledTimes(2);
   });
+
+  // AG-09: oauth auth type sends the optional client fields; bearer is labelled service mode.
+  it("oauth auth type sends client id, scopes and secret; bearer shows as service mode", async () => {
+    adminApi.listMcpConnections.mockResolvedValue({ connections: [SAMPLE_CONN] });
+    adminApi.addMcpConnection.mockResolvedValue({ connection: { ...SAMPLE_CONN, id: "c2", authType: "oauth" } });
+    const router = makeRouter();
+    await router.push("/admin/mcp");
+    const w = mount(Mcp, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='auth-c1']").text()).toBe("service (shared bearer)");
+
+    await w.find("[data-testid='conn-name']").setValue("oauth-server");
+    await w.find("[data-testid='conn-url']").setValue("https://mcp.example.com/mcp");
+    await w.find("[data-testid='conn-auth-type']").setValue("oauth");
+    expect(w.find("[data-testid='conn-bearer']").exists()).toBe(false);
+    await w.find("[data-testid='conn-oauth-client-id']").setValue("pre-registered");
+    await w.find("[data-testid='conn-oauth-client-secret']").setValue("s3cret");
+    await w.find("[data-testid='conn-oauth-scopes']").setValue("read  write");
+    await w.find("[data-testid='add-conn-btn']").trigger("click");
+    await flushPromises();
+    expect(adminApi.addMcpConnection).toHaveBeenCalledWith(expect.objectContaining({
+      authType: "oauth", oauthClientId: "pre-registered", oauthClientSecret: "s3cret", oauthScopes: ["read", "write"],
+    }));
+    expect(adminApi.addMcpConnection.mock.calls[0][0].bearerToken).toBeUndefined();
+  });
 });

@@ -508,6 +508,9 @@ services:
       AIKONOS_VAULT_ROLE_ID:                ${AIKONOS_VAULT_ROLE_ID:-}
       AIKONOS_VAULT_SECRET_ID:              ${AIKONOS_VAULT_SECRET_ID:-}
       AIKONOS_CONNECTORS_REDIRECT_URI:      ${AIKONOS_CONNECTORS_REDIRECT_URI}
+      # AG-09: <AIKONOS_EXTERNAL_BASE_URL>/oauth/client-metadata.json; empty →
+      # oauth MCP connections use a client id or dynamic registration only.
+      AIKONOS_CONNECTORS_MCP_CLIENT_METADATA_URL: ${AIKONOS_CONNECTORS_MCP_CLIENT_METADATA_URL:-}
       AIKONOS_CONNECTORS_GOOGLE_CLIENT_ID:  ${AIKONOS_CONNECTORS_GOOGLE_CLIENT_ID}
       AIKONOS_CONNECTORS_GOOGLE_CLIENT_SECRET: ${AIKONOS_CONNECTORS_GOOGLE_CLIENT_SECRET}
       AIKONOS_CONNECTORS_MICROSOFT_CLIENT_ID:  ${AIKONOS_CONNECTORS_MICROSOFT_CLIENT_ID}
@@ -652,6 +655,10 @@ services:
       AIKONOS_EXTERNAL_PORT:      "8090"
       AIKONOS_EXTERNAL_CORS_ORIGINS: ${AIKONOS_EXTERNAL_CORS_ORIGINS:-}
       AIKONOS_EXTERNAL_RATE_LIMIT:   ${AIKONOS_EXTERNAL_RATE_LIMIT:-60}
+      # AG-09: with both set, the external surface serves the OAuth client
+      # metadata document (/oauth/client-metadata.json) for MCP servers.
+      AIKONOS_EXTERNAL_BASE_URL:     ${AIKONOS_EXTERNAL_BASE_URL:-}
+      AIKONOS_CONNECTORS_REDIRECT_URI: ${AIKONOS_CONNECTORS_REDIRECT_URI:-}
       # H3 Phase 3 (live): per-user child pool is production mode. Code default is
       # "single" (safe for tests/CLI); compose sets "per-user" here. Cap 8 = parent
       # ~400 MB + 8 × ~300 MB ≈ 2.8 GB, within mem_limit:4g. Raise MAX_CHILDREN

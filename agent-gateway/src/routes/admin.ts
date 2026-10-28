@@ -169,6 +169,9 @@ function mcpConnectionJson(c: McpConnection) {
     authSecretRef: c.authSecretRef,
     createdBy: c.createdBy,
     createdAt: c.createdAt ? c.createdAt.toISOString() : null,
+    oauthClientId: c.oauthClientId,
+    oauthScopes: c.oauthScopes ?? [],
+    oauthIssuer: c.oauthIssuer,
   };
 }
 
@@ -263,6 +266,10 @@ interface McpConnectionBody {
   transport?: string;
   authType?: string;
   bearerToken?: string;
+  // AG-09 (authType "oauth"): optional pre-registered client; secret is write-only.
+  oauthClientId?: string;
+  oauthScopes?: string[];
+  oauthClientSecret?: string;
 }
 
 export interface AgentBody {
@@ -924,8 +931,12 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
             authSecretRef: "",
             createdBy: "",
             createdAt: undefined,
+            oauthClientId: b.oauthClientId ?? "",
+            oauthScopes: Array.isArray(b.oauthScopes) ? b.oauthScopes : [],
+            oauthIssuer: "",
           },
           bearerToken: b.bearerToken ?? "",
+          oauthClientSecret: b.oauthClientSecret ?? "",
         },
         principal.token,
       );
@@ -953,8 +964,12 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
             authSecretRef: "",
             createdBy: "",
             createdAt: undefined,
+            oauthClientId: b.oauthClientId ?? "",
+            oauthScopes: Array.isArray(b.oauthScopes) ? b.oauthScopes : [],
+            oauthIssuer: "",
           },
           bearerToken: b.bearerToken ?? "",
+          oauthClientSecret: b.oauthClientSecret ?? "",
         },
         principal.token,
       );

@@ -17,17 +17,32 @@ import (
 // clear "not connected" error; a failed refresh yields "reconnect needed".
 func (r *Registry) FreshAccessToken(ctx context.Context, store secrets.Provider, p Provider, tenant, user string) (string, error) {
 	connectorID := p.ConnectorID()
-	stored, err := store.ReadConnector(ctx, tenant, user, connectorID)
+	stored, err := readStored(ctx, store, tenant, user, connectorID, p.DisplayName())
 	if err != nil {
-		if errors.Is(err, secrets.ErrNotFound) {
-			return "", fmt.Errorf("%s is not connected — link it under Connections first", p.DisplayName())
-		}
 		return "", err
 	}
 	cfg, err := r.OAuthConfig(p, stored.Scopes)
 	if err != nil {
 		return "", err
 	}
+	return r.refresh(ctx, store, cfg, stored, tenant, user, connectorID, p.DisplayName(), string(p))
+}
+
+func readStored(ctx context.Context, store secrets.Provider, tenant, user, connectorID, label string) (*secrets.ConnectorToken, error) {
+	stored, err := store.ReadConnector(ctx, tenant, user, connectorID)
+	if err != nil {
+		if errors.Is(err, secrets.ErrNotFound) {
+			return nil, fmt.Errorf("%s is not connected — link it under Connections first", label)
+		}
+		return nil, err
+	}
+	return stored, nil
+}
+
+// refresh is the shared refresh + write-back + status step of the cloud
+// connectors (FreshAccessToken) and the oauth MCP connections
+// (FreshMcpAccessToken).
+func (r *Registry) refresh(ctx context.Context, store secrets.Provider, cfg *oauth2.Config, stored *secrets.ConnectorToken, tenant, user, connectorID, label, provider string) (string, error) {
 	src := cfg.TokenSource(ctx, &oauth2.Token{
 		AccessToken:  stored.AccessToken,
 		RefreshToken: stored.RefreshToken,
@@ -36,7 +51,7 @@ func (r *Registry) FreshAccessToken(ctx context.Context, store secrets.Provider,
 	tok, err := src.Token()
 	if err != nil {
 		r.recordStatus(tenant, user, connectorID, StatusReconnectNeeded)
-		return "", fmt.Errorf("%s token refresh failed — reconnect needed: %w", p.DisplayName(), err)
+		return "", fmt.Errorf("%s token refresh failed — reconnect needed: %w", label, err)
 	}
 	if tok.AccessToken != stored.AccessToken {
 		r.recordStatus(tenant, user, connectorID, StatusConnected)
@@ -55,7 +70,7 @@ func (r *Registry) FreshAccessToken(ctx context.Context, store secrets.Provider,
 			Scopes:       stored.Scopes,
 		}); werr != nil && r.Logger != nil {
 			r.Logger.Warn("connector token write-back failed; connection may need re-link",
-				zap.String("provider", string(p)),
+				zap.String("provider", provider),
 				zap.String("connector_id", connectorID),
 				zap.Bool("refresh_token_rotated", refresh != stored.RefreshToken),
 				zap.Error(werr))

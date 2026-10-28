@@ -139,6 +139,9 @@ func (s *BrokerService) BeginConnectorAuth(ctx context.Context, req *brokerv1.Be
 	if err != nil {
 		return nil, err
 	}
+	if req.McpConnectionId != "" {
+		return s.beginMcpAuth(ctx, span.SpanContext().TraceID().String(), tenant, user, req.McpConnectionId)
+	}
 	prov, ok := providerFromProto(req.Provider)
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "unknown connector provider")
@@ -214,6 +217,9 @@ func (s *BrokerService) CompleteConnectorAuth(ctx context.Context, req *brokerv1
 	// The state was minted for this identity; a mismatch means a crossed flow.
 	if pending.Tenant != tenant || pending.User != user {
 		return nil, status.Error(codes.PermissionDenied, "state does not match caller")
+	}
+	if connID, ok := connector.McpConnectionID(pending.Provider); ok {
+		return s.completeMcpAuth(ctx, traceID, tenant, user, connID, pending, req.Code)
 	}
 
 	tok, err := s.deps.OAuth.Exchange(ctx, pending.Provider, pending.Scopes, req.Code, pending.Verifier)
@@ -325,6 +331,7 @@ func (s *BrokerService) ListConnectorProviders(ctx context.Context, req *brokerv
 			ConnectorId: p.ConnectorID(),
 		})
 	}
+	out = append(out, s.mcpConnectorProviders(ctx, tenantFromContext(ctx))...)
 	return &brokerv1.ListConnectorProvidersResponse{Providers: out}, nil
 }
 

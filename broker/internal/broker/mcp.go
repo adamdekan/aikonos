@@ -44,6 +44,9 @@ func toProtoMcpConnection(c *db.McpConnection) *brokerv1.McpConnection {
 		AuthSecretRef: c.AuthSecretRef,
 		CreatedBy:     c.CreatedBy,
 		CreatedAt:     timestamppb.New(c.CreatedAt),
+		OauthClientId: c.OAuthClientID,
+		OauthScopes:   c.OAuthScopes,
+		OauthIssuer:   c.OAuthIssuer,
 	}
 	return p
 }
@@ -130,6 +133,11 @@ func (s *BrokerService) AddMcpConnection(ctx context.Context, req *brokerv1.AddM
 		}
 		rec.AuthSecretRef = path
 	}
+	if rec.AuthType == "oauth" {
+		if err := s.configureMcpOAuth(ctx, tenant, rec, req.Connection, req.OauthClientSecret, nil); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := s.deps.Mcp.Connections.Add(ctx, rec); err != nil {
 		return nil, status.Errorf(codes.Internal, "add mcp connection: %v", err)
@@ -183,7 +191,16 @@ func (s *BrokerService) UpdateMcpConnection(ctx context.Context, req *brokerv1.U
 		// AuthSecretRef is never taken from the client; derived server-side only.
 	}
 
+	existing, gerr := s.deps.Mcp.Connections.Get(ctx, tenant, connID.String())
+	if gerr != nil {
+		return nil, status.Errorf(codes.Internal, "fetch existing mcp connection: %v", gerr)
+	}
+
 	switch {
+	case rec.AuthType == "oauth":
+		if err := s.configureMcpOAuth(ctx, tenant, rec, req.Connection, req.OauthClientSecret, existing); err != nil {
+			return nil, err
+		}
 	case rec.AuthType == "bearer" && req.BearerToken != "":
 		// New bearer token supplied: write to Vault, derive the canonical ref.
 		if s.deps.Mcp.Bearer == nil {
@@ -200,13 +217,15 @@ func (s *BrokerService) UpdateMcpConnection(ctx context.Context, req *brokerv1.U
 		rec.AuthSecretRef = path
 	case rec.AuthType == "bearer":
 		// No new token: preserve the existing ref from the DB (re-read to avoid
-		// a client-supplied value ever reaching the store).
-		existing, gerr := s.deps.Mcp.Connections.Get(ctx, tenant, connID.String())
-		if gerr != nil {
-			return nil, status.Errorf(codes.Internal, "fetch existing mcp connection: %v", gerr)
+		// a client-supplied value ever reaching the store). An oauth row's ref
+		// names its client secret, not a bearer.
+		if existing.AuthType == "bearer" {
+			rec.AuthSecretRef = existing.AuthSecretRef
 		}
-		rec.AuthSecretRef = existing.AuthSecretRef
-		// auth_type != "bearer": ref must be empty (zero value is correct).
+		// auth_type none: ref must be empty (zero value is correct).
+	}
+	if existing.AuthType == "oauth" && rec.AuthType != "oauth" {
+		s.deleteMcpClientSecret(ctx, tenant, connID.String())
 	}
 
 	if err := s.deps.Mcp.Connections.Update(ctx, tenant, rec); err != nil {
@@ -243,6 +262,9 @@ func (s *BrokerService) DeleteMcpConnection(ctx context.Context, req *brokerv1.D
 			if derr := s.deps.Mcp.Bearer.DeleteMcpBearer(ctx, path); derr != nil {
 				s.deps.Logger.Warn("DeleteMcpConnection: vault delete failed (continuing)", zap.Error(derr))
 			}
+		}
+		if c, gerr := s.deps.Mcp.Connections.Get(ctx, tenant, req.Id); gerr == nil && c.AuthType == "oauth" {
+			s.deleteMcpClientSecret(ctx, tenant, req.Id)
 		}
 	}
 
@@ -348,14 +370,10 @@ func (s *BrokerService) ListMcpServerTools(ctx context.Context, req *brokerv1.Li
 		return nil, status.Errorf(codes.NotFound, "mcp connection %q not found: %v", req.ConnectorId, err)
 	}
 
-	var bearer string
-	if conn.AuthType == "bearer" && s.deps.Mcp.Bearer != nil {
-		b, rerr := s.deps.Mcp.Bearer.ReadMcpBearer(ctx, tenant, req.ConnectorId)
-		if rerr != nil && rerr != secrets.ErrMcpBearerNotFound {
-			s.deps.Logger.Error("ListMcpServerTools: read bearer failed", zap.Error(rerr))
-			return nil, status.Error(codes.Internal, "failed to read MCP bearer token")
-		}
-		bearer = b
+	// An oauth connection lists with the calling admin's own linked account.
+	bearer, err := s.deps.mcpToken(ctx, conn, tenant, user)
+	if err != nil {
+		return nil, err
 	}
 
 	// NewMCPClientPublic has SSRF guard on (allowPrivate=false). Flip for tests
@@ -415,9 +433,9 @@ func validateMcpConnection(c *brokerv1.McpConnection) error {
 		return status.Errorf(codes.InvalidArgument, "transport must be streamable_http|sse, got %q", c.Transport)
 	}
 	switch strings.TrimSpace(c.AuthType) {
-	case "none", "bearer":
+	case "none", "bearer", "oauth":
 	default:
-		return status.Errorf(codes.InvalidArgument, "auth_type must be none|bearer, got %q", c.AuthType)
+		return status.Errorf(codes.InvalidArgument, "auth_type must be none|bearer|oauth, got %q", c.AuthType)
 	}
 	return nil
 }

@@ -260,6 +260,7 @@ async function resolveMcpTools(
   south: ResolveSouth,
   tenantId: string,
   agentId: string,
+  userId: string,
 ): Promise<McpTool[]> {
   let servers: { id: string; name: string }[];
   try {
@@ -274,10 +275,12 @@ async function resolveMcpTools(
 
   for (const server of servers) {
     try {
+      // AG-09: an oauth connection lists with this user's own linked account;
+      // a user who has not linked it gets an error and the server is skipped.
       const resp = await south.listMcpServerToolsSouth({
         tenantId,
         connectorId: server.id,
-        userId: agentId,
+        userId,
       });
       for (const t of resp.tools ?? []) {
         const name = piMcpToolName(server.id, t.name);
@@ -387,7 +390,7 @@ export async function resolveSessionPlan(
   }
 
   // Resolve MCP tools from south discovery.
-  const mcpTools = await resolveMcpTools(south, identity.tenantId, identity.agentId);
+  const mcpTools = await resolveMcpTools(south, identity.tenantId, identity.agentId, identity.userId);
 
   const mcpToolNames = mcpTools.map((t) => t.name);
   // Agent-bound runs (external invoke, and any future path that threads a spec)

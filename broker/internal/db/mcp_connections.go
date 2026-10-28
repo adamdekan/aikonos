@@ -23,6 +23,14 @@ type McpConnection struct {
 	AuthSecretRef string // Vault path; empty until broker layer writes it
 	CreatedBy     string
 	CreatedAt     time.Time
+	// AG-09, auth_type=oauth only: the client and the endpoints discovery
+	// found when the admin saved the connection. The secret is in Vault.
+	OAuthClientID string
+	OAuthScopes   []string
+	OAuthIssuer   string
+	OAuthAuthURL  string
+	OAuthTokenURL string
+	OAuthResource string
 }
 
 type McpConnectionRepo struct {
@@ -34,14 +42,16 @@ func NewMcpConnectionRepo(pool *pgxpool.Pool, logger *zap.Logger) *McpConnection
 	return &McpConnectionRepo{pool: pool, logger: logger}
 }
 
-const mcpConnectionCols = `id, tenant_id, name, url, transport, auth_type, auth_secret_ref, created_by, created_at`
+const mcpConnectionCols = `id, tenant_id, name, url, transport, auth_type, auth_secret_ref, created_by, created_at,
+	oauth_client_id, oauth_scopes, oauth_issuer, oauth_auth_url, oauth_token_url, oauth_resource`
 
 func scanMcpConnection(row interface {
 	Scan(dest ...any) error
 }) (*McpConnection, error) {
 	var c McpConnection
 	if err := row.Scan(&c.ID, &c.TenantID, &c.Name, &c.URL, &c.Transport,
-		&c.AuthType, &c.AuthSecretRef, &c.CreatedBy, &c.CreatedAt); err != nil {
+		&c.AuthType, &c.AuthSecretRef, &c.CreatedBy, &c.CreatedAt,
+		&c.OAuthClientID, &c.OAuthScopes, &c.OAuthIssuer, &c.OAuthAuthURL, &c.OAuthTokenURL, &c.OAuthResource); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -69,10 +79,12 @@ func (r *McpConnectionRepo) List(ctx context.Context, tenantID string) ([]*McpCo
 func (r *McpConnectionRepo) Add(ctx context.Context, conn *McpConnection) error {
 	return withConnErr(ctx, r.pool, conn.TenantID.String(), func(c *pgxpool.Conn) error {
 		_, err := c.Exec(ctx, `
-		INSERT INTO mcp_connections (id, tenant_id, name, url, transport, auth_type, auth_secret_ref, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		INSERT INTO mcp_connections (id, tenant_id, name, url, transport, auth_type, auth_secret_ref, created_by,
+			oauth_client_id, oauth_scopes, oauth_issuer, oauth_auth_url, oauth_token_url, oauth_resource)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 			conn.ID, conn.TenantID, conn.Name, conn.URL, conn.Transport,
 			conn.AuthType, conn.AuthSecretRef, conn.CreatedBy,
+			conn.OAuthClientID, nonNilStrings(conn.OAuthScopes), conn.OAuthIssuer, conn.OAuthAuthURL, conn.OAuthTokenURL, conn.OAuthResource,
 		)
 		if err != nil {
 			return fmt.Errorf("insert mcp_connection: %w", err)
@@ -85,9 +97,12 @@ func (r *McpConnectionRepo) Update(ctx context.Context, tenantID string, conn *M
 	return withConnErr(ctx, r.pool, tenantID, func(c *pgxpool.Conn) error {
 		tag, err := c.Exec(ctx, `
 		UPDATE mcp_connections
-		SET name = $1, url = $2, transport = $3, auth_type = $4, auth_secret_ref = $5
+		SET name = $1, url = $2, transport = $3, auth_type = $4, auth_secret_ref = $5,
+			oauth_client_id = $7, oauth_scopes = $8, oauth_issuer = $9, oauth_auth_url = $10,
+			oauth_token_url = $11, oauth_resource = $12
 		WHERE id = $6`,
 			conn.Name, conn.URL, conn.Transport, conn.AuthType, conn.AuthSecretRef, conn.ID,
+			conn.OAuthClientID, nonNilStrings(conn.OAuthScopes), conn.OAuthIssuer, conn.OAuthAuthURL, conn.OAuthTokenURL, conn.OAuthResource,
 		)
 		if err != nil {
 			return fmt.Errorf("update mcp_connection: %w", err)
@@ -121,4 +136,12 @@ func (r *McpConnectionRepo) Delete(ctx context.Context, tenantID, id string) err
 		}
 		return nil
 	})
+}
+
+// nonNilStrings keeps a nil slice off a NOT NULL TEXT[] column.
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

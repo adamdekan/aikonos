@@ -7,6 +7,7 @@
 //     100 history turns)
 //   - POST /v1/agents/:id/invoke
 //   - /scim/v2/* (AG-16, SCIM 2.0 provisioning; token-authenticated by the broker)
+//   - GET /oauth/client-metadata.json (AG-09, public OAuth client metadata)
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -16,6 +17,7 @@ import type { BrokerClients } from "../broker/clients.js";
 import type { ChildSupervisor } from "../ipc/supervisor.js";
 import { registerExternalRoutes } from "./rest.js";
 import { registerScimRoutes } from "./scim.js";
+import { registerClientMetadataRoute } from "./client-metadata.js";
 
 // Body cap for the external surface. Sized to cover the 16 KiB prompt cap
 // plus up to 100 history turns totalling 200 KiB of content, with headroom
@@ -52,6 +54,7 @@ export function buildExternalApp(
 
   registerExternalRoutes(app, cfg, clients, log, supervisor);
   registerScimRoutes(app, cfg, clients, log);
+  registerClientMetadataRoute(app, cfg);
 
   return app;
 }

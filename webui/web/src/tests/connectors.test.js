@@ -137,40 +137,51 @@ describe("Connections.vue", () => {
     expect(w.find("[data-testid='connect-google_drive']").exists()).toBe(false);
   });
 });
-
-describe("ConnectCallback.vue", () => {
+// AG-09: one row per oauth MCP connection with connect / disconnect.
+describe("Connections.vue MCP servers", () => {
+  const MCP = { provider: 0, key: "mcp:m1", displayName: "Tracker MCP", connectorId: "mcp-m1" };
   beforeEach(() => {
     setActivePinia(createPinia());
     useUserStore().setFromProfile({ email: "alice@example.com", sub: "alice@example.com" });
     vi.clearAllMocks();
   });
 
-  afterEach(() => vi.restoreAllMocks());
-
-  it("posts code+state from query params to completeConnectorAuth", async () => {
-    connApiView.completeConnectorAuth.mockResolvedValue({ connectorId: "c1", status: "active", scopes: [] });
+  it("shows Connect when not linked and starts the flow with the mcp key", async () => {
+    connApiView.listConnectors.mockResolvedValue({ connectors: [] });
+    connApiView.listConnectorProviders.mockResolvedValue({ providers: [MCP] });
+    connApiView.beginConnectorAuth.mockResolvedValue({ authorizeUrl: "https://as.example.com/authorize", state: "s" });
+    const assignSpy = vi.fn();
+    Object.defineProperty(window, "location", { value: { assign: assignSpy }, configurable: true, writable: true });
     const router = makeRouter();
-    await router.push("/connect/callback?code=CODE123&state=STATE456");
-    const w = mount(ConnectCallback, { global: { plugins: [router] } });
+    await router.push("/connections");
+    const w = mount(Connections, { global: { plugins: [router] } });
     await flushPromises();
-    expect(connApiView.completeConnectorAuth).toHaveBeenCalledWith("CODE123", "STATE456");
+    expect(w.find("[data-testid='mcp-status-m1']").text()).toBe("not connected");
+    expect(w.find("[data-testid='mcp-disconnect-m1']").exists()).toBe(false);
+    // Not offered among the drive providers.
+    expect(w.find("[data-testid='connect-mcp:m1']").exists()).toBe(false);
+    await w.find("[data-testid='mcp-connect-m1']").trigger("click");
+    await flushPromises();
+    expect(connApiView.beginConnectorAuth).toHaveBeenCalledWith("mcp:m1");
+    expect(assignSpy).toHaveBeenCalledWith("https://as.example.com/authorize");
   });
 
-  it("shows success state on completion", async () => {
-    connApiView.completeConnectorAuth.mockResolvedValue({ connectorId: "c1", status: "active", scopes: [] });
+  it("shows connected state and disconnects", async () => {
+    connApiView.listConnectors.mockResolvedValue({
+      connectors: [{ connectorId: "mcp-m1", provider: 0, displayName: "Tracker MCP", status: "connected", scopes: [] }],
+    });
+    connApiView.listConnectorProviders.mockResolvedValue({ providers: [MCP] });
+    connApiView.revokeConnector.mockResolvedValue({ success: true });
     const router = makeRouter();
-    await router.push("/connect/callback?code=CODE123&state=STATE456");
-    const w = mount(ConnectCallback, { global: { plugins: [router] } });
+    await router.push("/connections");
+    const w = mount(Connections, { global: { plugins: [router] } });
     await flushPromises();
-    expect(w.find("[data-testid='callback-success']").exists()).toBe(true);
-  });
-
-  it("shows failure state on API error", async () => {
-    connApiView.completeConnectorAuth.mockRejectedValue(new Error("exchange failed"));
-    const router = makeRouter();
-    await router.push("/connect/callback?code=BAD&state=BAD");
-    const w = mount(ConnectCallback, { global: { plugins: [router] } });
+    expect(w.find("[data-testid='mcp-status-m1']").text()).toBe("connected");
+    expect(w.find("[data-testid='mcp-connect-m1']").exists()).toBe(false);
+    // Listed under MCP servers, not twice under connected accounts.
+    expect(w.findAll("[data-testid='connector-row']").length).toBe(0);
+    await w.find("[data-testid='mcp-disconnect-m1']").trigger("click");
     await flushPromises();
-    expect(w.find("[data-testid='callback-error']").exists()).toBe(true);
+    expect(connApiView.revokeConnector).toHaveBeenCalledWith("mcp-m1");
   });
 });

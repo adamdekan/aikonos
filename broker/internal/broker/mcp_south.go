@@ -12,7 +12,6 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
-	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -98,14 +97,12 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 		return nil, status.Errorf(codes.NotFound, "mcp connection %q not found: %v", req.ConnectorId, err)
 	}
 
-	var bearer string
-	if conn.AuthType == "bearer" && s.deps.Mcp.Bearer != nil {
-		b, rerr := s.deps.Mcp.Bearer.ReadMcpBearer(ctx, req.TenantId, req.ConnectorId)
-		if rerr != nil && rerr != secrets.ErrMcpBearerNotFound {
-			s.deps.Logger.Error("ListMcpServerToolsSouth: read bearer failed", zap.Error(rerr))
-			return nil, status.Error(codes.Internal, "failed to read MCP bearer token")
-		}
-		bearer = b
+	// An oauth connection lists with the session user's linked account; a
+	// user who has not linked it gets FailedPrecondition and the gateway
+	// leaves the server out of the session.
+	bearer, err := s.deps.mcpToken(ctx, conn, req.TenantId, req.UserId)
+	if err != nil {
+		return nil, err
 	}
 
 	var client *toolproxy.MCPClient

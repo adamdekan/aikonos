@@ -107,6 +107,34 @@ an agent ("Acts as") in the edit form first, then resumes.
   MCP rows in Admin → Skills keep their stored class; a class confirmed
   there is no longer raised to `write_external`.
 
+## Per-user OAuth to MCP servers (AG-09)
+
+- New MCP auth type `oauth`: the MCP server sees the user. When an admin saves
+  the connection the broker discovers the server's authorization server (RFC
+  9728 protected-resource metadata, then RFC 8414 / OIDC metadata) and refuses
+  to save one that lacks PKCE S256 or names a different resource. The client is
+  the admin's pre-registered client id (secret optional, in Vault), else the
+  aikonOS client metadata document when the server supports it, else dynamic
+  registration (RFC 7591).
+- Users link their account under Connections → *MCP servers* → *Connect*
+  (authorization code + PKCE, resource indicator RFC 8707 on every authorize
+  and token request). Tokens are per user in Vault and refreshed with
+  write-back, like the Drive connectors; *Disconnect* deletes them.
+- Tool calls carry the task subject's token. Service runs and users who have
+  not linked the server are refused; session tool discovery skips the server
+  for them.
+- The existing `bearer` type is unchanged and labelled *service (shared
+  bearer)* in the admin form.
+- Migration `061` adds the oauth columns to `mcp_connections` and allows
+  `auth_type = 'oauth'`.
+- Config: oauth needs Vault and `connectors.redirect_uri`. Optional
+  `connectors.mcp_client_metadata_url` (broker) =
+  `<AIKONOS_EXTERNAL_BASE_URL>/oauth/client-metadata.json`; the gateway serves
+  that document on the external surface when `AIKONOS_EXTERNAL_BASE_URL` and
+  `AIKONOS_CONNECTORS_REDIRECT_URI` are set.
+- Gateway and broker must both be from this release (new
+  `BeginConnectorAuthRequest.mcp_connection_id`).
+
 ## SCIM 2.0 provisioning (AG-16)
 
 - New, opt-in: a SCIM 2.0 endpoint on the external surface (`/scim/v2`, port

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import Icon from "../components/Icon.vue";
 import { listConnectors, listConnectorProviders, beginConnectorAuth, revokeConnector } from "../api/connectors.js";
 
@@ -11,11 +11,27 @@ const providers = ref([]);
 const error = ref("");
 const busy = ref(false);
 
-function providerLabel(providerEnum) {
-  // Proto enum: 1 = GOOGLE_DRIVE, 2 = ONEDRIVE
-  if (providerEnum === 1) return "Google Drive";
-  if (providerEnum === 2) return "OneDrive";
-  return String(providerEnum);
+function providerLabel(c) {
+  // Proto enum: 1 = GOOGLE_DRIVE, 2 = ONEDRIVE; anything else (an MCP server
+  // whose connection was since removed) carries its own display name.
+  if (c.provider === 1) return "Google Drive";
+  if (c.provider === 2) return "OneDrive";
+  return c.displayName || String(c.provider);
+}
+
+// AG-09: oauth MCP connections are offered as providers keyed "mcp:<id>"; each
+// gets its own row with the user's connected state.
+const mcpServers = computed(() => providers.value.filter((p) => p.key.startsWith("mcp:")));
+const driveProviders = computed(() => providers.value.filter((p) => !p.key.startsWith("mcp:")));
+const accounts = computed(() => {
+  const mcpIds = new Set(mcpServers.value.map((p) => p.connectorId));
+  return connectors.value.filter((c) => !mcpIds.has(c.connectorId));
+});
+function mcpConnector(p) {
+  return connectors.value.find((c) => c.connectorId === p.connectorId);
+}
+function mcpId(p) {
+  return p.key.slice("mcp:".length);
 }
 
 function statusClass(status) {
@@ -74,16 +90,16 @@ onMounted(load);
 
     <section class="section">
       <h3 class="section-title">Connected accounts</h3>
-      <div v-if="connectors.length === 0 && !error" class="empty">No connected accounts.</div>
+      <div v-if="accounts.length === 0 && !error" class="empty">No connected accounts.</div>
       <ul class="connector-list">
         <li
-          v-for="c in connectors"
+          v-for="c in accounts"
           :key="c.connectorId"
           class="connector-row"
           data-testid="connector-row"
         >
           <Icon name="drive" :size="16" />
-          <span class="connector-label">{{ providerLabel(c.provider) }}</span>
+          <span class="connector-label">{{ providerLabel(c) }}</span>
           <span class="connector-status" :class="statusClass(c.status)">
             {{ c.status }}
           </span>
@@ -103,11 +119,50 @@ onMounted(load);
       </ul>
     </section>
 
-    <section v-if="providers.length > 0" class="section">
+    <section v-if="mcpServers.length > 0" class="section" data-testid="mcp-servers">
+      <h3 class="section-title">MCP servers</h3>
+      <p class="hint">Agents call these servers as you. Connect your own account on each one you use.</p>
+      <ul class="connector-list">
+        <li
+          v-for="p in mcpServers"
+          :key="p.key"
+          class="connector-row"
+          :data-testid="`mcp-row-${mcpId(p)}`"
+        >
+          <Icon name="server" :size="16" />
+          <span class="connector-label">{{ p.displayName }}</span>
+          <span
+            class="connector-status"
+            :class="statusClass(mcpConnector(p)?.status)"
+            :data-testid="`mcp-status-${mcpId(p)}`"
+          >
+            {{ mcpConnector(p)?.status ?? "not connected" }}
+          </span>
+          <button
+            v-if="mcpConnector(p)?.status !== 'connected'"
+            class="btn-secondary btn-sm"
+            :data-testid="`mcp-connect-${mcpId(p)}`"
+            @click="connect(p.key)"
+          >
+            {{ mcpConnector(p) ? "Reconnect" : "Connect" }}
+          </button>
+          <button
+            v-if="mcpConnector(p)"
+            class="btn-danger btn-sm"
+            :data-testid="`mcp-disconnect-${mcpId(p)}`"
+            @click="revoke(p.connectorId)"
+          >
+            Disconnect
+          </button>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="driveProviders.length > 0" class="section">
       <h3 class="section-title">Add connection</h3>
       <div class="provider-list">
         <button
-          v-for="p in providers"
+          v-for="p in driveProviders"
           :key="p.key"
           class="btn-secondary"
           :data-testid="`connect-${p.key}`"
@@ -170,6 +225,12 @@ onMounted(load);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
 }
 
 .empty {
