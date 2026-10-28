@@ -284,8 +284,8 @@ func TestPersonalSkillsE2E_NoNewMigrations(t *testing.T) {
 	// llm_usage_events, 046 is
 	// llm_provider_catalog, 047 is
 	// llm_usage_events_units, 048 is tasks_obo, 049 is
-	// scheduled_runs_delegation.
-	const knownMaxMigration = 49
+	// scheduled_runs_delegation, 050 is agents_service_agent.
+	const knownMaxMigration = 50
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

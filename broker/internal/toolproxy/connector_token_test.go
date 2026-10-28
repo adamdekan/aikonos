@@ -10,10 +10,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 )
 
@@ -168,5 +170,19 @@ func TestFreshAccessToken_GDrive_NeverConsultsOBO(t *testing.T) {
 	}
 	if cs.reads == 0 {
 		t.Errorf("expected the legacy Registry path to be consulted for gdrive")
+	}
+}
+
+// TestConnectorTool_ServiceRunRefused pins AG-17 S5: a service run's UserID is
+// svc-<agent>, so connector tools refuse it before any token lookup (the
+// missing store would otherwise answer "not connected").
+func TestConnectorTool_ServiceRunRefused(t *testing.T) {
+	h := newGDriveReadHandler(gdriveDeps(fakeStore{missing: true}), WorkspaceConfig{Root: t.TempDir()})
+	_, _, err := h(context.Background(), Request{
+		TenantID: "t", UserID: "svc-x", OBO: db.OnBehalfOf{ServiceRun: true},
+		Args: map[string]any{"file_id": "x"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "connector tools require a human subject") {
+		t.Fatalf("want human-subject refusal, got %v", err)
 	}
 }

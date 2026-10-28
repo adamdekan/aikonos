@@ -51,6 +51,7 @@ const fAllowedProviders    = ref([]);
 const fSoul                = ref("");
 const soulBytes            = computed(() => new Blob([fSoul.value]).size);
 const fGatewayEnabled      = ref(false);
+const fServiceAgent        = ref(false);
 const formError            = ref("");
 const nameError            = computed(() =>
   formError.value === "Name is required." ? formError.value : ""
@@ -186,6 +187,7 @@ function openCreate() {
   fAllowedProviders.value  = [];
   fSoul.value              = "";
   fGatewayEnabled.value    = false;
+  fServiceAgent.value      = false;
   formError.value          = "";
   assignSubject.value      = "";
   assignError.value        = "";
@@ -213,6 +215,7 @@ async function openEdit(agent) {
   }
   fSoul.value              = "";
   fGatewayEnabled.value    = agent.gatewayEnabled ?? agent.gateway_enabled ?? false;
+  fServiceAgent.value      = agent.serviceAgent ?? agent.service_agent ?? false;
   formError.value          = "";
   assignSubject.value      = "";
   assignError.value        = "";
@@ -309,6 +312,7 @@ async function submit() {
     allowedProviders:  fAllowedProviders.value,
     preferredProvider: providerId,
     gatewayEnabled:    fGatewayEnabled.value,
+    serviceAgent:      fServiceAgent.value,
   };
   saving.value = true;
   try {
@@ -562,6 +566,17 @@ const TABLE_COLS = [
                 aria-label="Allow invocation via external :8090 surface"
               />
               Allow invocation via external :8090 surface (gateway_enabled)
+            </label>
+          </FormField>
+
+          <FormField label="Service agent">
+            <label class="checkbox-item">
+              <ToggleSwitch
+                v-model="fServiceAgent"
+                data-testid="agent-service-agent"
+                aria-label="Service agent (external keys without a user)"
+              />
+              Service agent (external keys without a user)
             </label>
           </FormField>
 

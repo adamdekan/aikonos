@@ -105,6 +105,7 @@ func toProtoAgent(a *db.Agent) *brokerv1.Agent {
 		PreferredProvider: a.PreferredProvider,
 		Soul:              a.Soul,
 		GatewayEnabled:    a.GatewayEnabled,
+		ServiceAgent:      a.ServiceAgent,
 		CreatedBy:         a.CreatedBy,
 		CreatedAt:         timestamppb.New(a.CreatedAt),
 		UpdatedAt:         timestamppb.New(a.UpdatedAt),
@@ -229,6 +230,7 @@ func (s *BrokerService) CreateAgent(ctx context.Context, req *brokerv1.CreateAge
 		AllowedProviders:  req.Agent.AllowedProviders,
 		PreferredProvider: req.Agent.PreferredProvider,
 		GatewayEnabled:    req.Agent.GatewayEnabled,
+		ServiceAgent:      req.Agent.ServiceAgent,
 		CreatedBy:         user,
 	}
 	if a.Skills == nil {
@@ -373,6 +375,7 @@ func (s *BrokerService) UpdateAgent(ctx context.Context, req *brokerv1.UpdateAge
 		AllowedProviders:  allowedProviders,
 		PreferredProvider: req.Agent.PreferredProvider,
 		GatewayEnabled:    req.Agent.GatewayEnabled,
+		ServiceAgent:      req.Agent.ServiceAgent,
 	}
 	if err := s.deps.Agents.Update(ctx, a); err != nil {
 		if errors.Is(err, db.ErrAgentNotFound) {
@@ -599,6 +602,7 @@ func (s *BrokerService) emitAgentAudit(ctx context.Context, traceID, tenant, act
 		ev.ResourceRef = "agent:" + a.ID.String()
 		if c, err := structpb.NewStruct(map[string]any{
 			"name": a.Name, "approval_mode": a.ApprovalMode, "llm_model": a.LLMModel,
+			"service_agent": a.ServiceAgent,
 		}); err == nil {
 			ev.Context = c
 		}

@@ -530,6 +530,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		// bundle segment from this, so a caller-supplied id would be a
 		// cross-agent memory read or write.
 		AgentID: boundAgentID,
+		OBO:     task.OnBehalfOf(),
 	})
 	if s.deps.TaskMetrics != nil {
 		s.deps.TaskMetrics.RecordToolInvokeDuration(ctx, time.Since(invokeStart).Seconds(), tenantID, req.ToolId)

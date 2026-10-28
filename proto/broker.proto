@@ -1678,6 +1678,7 @@ message Agent {
   string preferred_provider = 12;
   string soul = 13;
   bool   gateway_enabled = 14;     // when true, agent is invokable via the external :8090 surface
+  bool   service_agent = 15;       // AG-17: may run subject-less (external key, no user)
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }

@@ -146,6 +146,7 @@ export function agentJson(a: Agent) {
     preferredProvider: a.preferredProvider ?? "",
     soul: a.soul ?? "",
     gatewayEnabled: a.gatewayEnabled ?? false,
+    serviceAgent: a.serviceAgent ?? false,
   };
 }
 
@@ -177,6 +178,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     // Soul is managed via the dedicated /agents/:id/soul endpoint; UpdateAgent does not write the soul column.
     soul: "",
     gatewayEnabled: b.gatewayEnabled ?? false,
+    serviceAgent: b.serviceAgent ?? false,
     usableBy: [],
     createdBy: "",
     createdAt: undefined,
@@ -220,6 +222,7 @@ export interface AgentBody {
   allowedProviders?: string[];
   preferredProvider?: string;
   gatewayEnabled?: boolean;
+  serviceAgent?: boolean;
 }
 
 interface SimulateBody {

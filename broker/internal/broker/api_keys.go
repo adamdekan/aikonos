@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/adamdekan/aikonos/broker/internal/apikey"
@@ -280,6 +281,35 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
 
+	// AG-17 S5: a key runs subject-less, so its agent must be a service agent.
+	// Every pre-S5 agent defaults to false, so identity.obo=audit logs the gap
+	// and proceeds (a DENY row per successful call would flood the audit
+	// chain); enforce refuses with a DENY event. ponytail: S6 relaxes this to
+	// "no service_agent and no user assertion"; dedupe the audit-mode log per
+	// key if it gets noisy.
+	if s.deps.Agents != nil {
+		a, aerr := s.deps.Agents.Get(ctx, k.TenantID.String(), k.AgentID.String())
+		if errors.Is(aerr, db.ErrAgentNotFound) {
+			return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+		}
+		if aerr != nil {
+			return nil, status.Errorf(codes.Internal, "get agent: %v", aerr)
+		}
+		if !a.ServiceAgent {
+			mode, cerr := s.cfg().GetString(ctx, k.TenantID.String(), "identity.obo")
+			if cerr != nil {
+				s.emitApiKeyDenied(ctx, k, "settings_check_failed", "")
+				return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+			}
+			if mode == "enforce" {
+				s.emitApiKeyDenied(ctx, k, "service_agent_required", mode)
+				return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
+			}
+			s.deps.Logger.Warn("ResolveAgentApiKey: key for non-service agent (identity.obo=audit)",
+				zap.String("agent_id", k.AgentID.String()), zap.String("key_id", k.ID.String()))
+		}
+	}
+
 	ownerGrant, mintErr := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
 		// No subject: Grant.Owner() yields the same svc-<agent> owner as before.
 		TenantID: k.TenantID.String(), Actor: k.AgentID.String(), Kind: gatewaygrant.KindExternal, GrantID: k.ID.String(),
@@ -303,6 +333,29 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// emitApiKeyDenied records a DENY for a refused key resolution (fire-and-forget).
+func (s *SandboxService) emitApiKeyDenied(ctx context.Context, k *db.StoredApiKey, reason, mode string) {
+	if s.deps.Audit == nil {
+		return
+	}
+	c, _ := structpb.NewStruct(map[string]any{
+		"reason": reason, "mode": mode, "agent_id": k.AgentID.String(), "key_id": k.ID.String(),
+	})
+	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+		EventId:      ids.EventID(),
+		TenantId:     k.TenantID.String(),
+		OccurredAt:   timestampNow(),
+		ActorUserId:  "svc-" + k.AgentID.String(),
+		ActorAgentId: k.AgentID.String(),
+		EventType:    "aikonos.broker.apikey.denied",
+		ResourceRef:  "agent:" + k.AgentID.String(),
+		Decision:     auditv1.PolicyDecision_DENY,
+		Context:      c,
+	}); err != nil {
+		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.apikey.denied")
+	}
+}
 
 func toProtoApiKey(k *db.StoredApiKey) *brokerv1.AgentApiKey {
 	pk := &brokerv1.AgentApiKey{
