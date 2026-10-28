@@ -104,6 +104,20 @@ describe("Chat.vue — transcript rendering", () => {
     expect(w.exists()).toBe(true);
   });
 
+  // AG-11: a chat started from an envelope names the sender and its limits.
+  it("shows the delegation banner for a chat started from an envelope", async () => {
+    usePromptStore().set("do it", "env-1", { from: "Alice Smith", scopes: ["siem:read"], maxCost: 50 });
+    const w = await mountChat();
+    const banner = w.find("[data-testid='delegation-banner']");
+    expect(banner.text()).toContain("Delegated by Alice Smith, limited to:");
+    expect(banner.text()).toContain("siem:read");
+  });
+
+  it("shows no delegation banner for an ordinary chat", async () => {
+    const w = await mountChat("hello");
+    expect(w.find("[data-testid='delegation-banner']").exists()).toBe(false);
+  });
+
   it("consumes promptStore.pending on mount and clears it", async () => {
     const ps = usePromptStore();
     ps.set("auto prompt");

@@ -131,6 +131,25 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		}
 	}
 
+	// AG-11: a delegated task works within the sender's attenuated scopes. The
+	// recipient's own authority is still checked per step below, so a step
+	// must clear both: the intersection of the two.
+	if violation := delegationScopeViolation(s.toolReg(), task, plan); violation != "" {
+		s.recordPlanDecision(ctx, traceID, tenantID, req, task, auditv1.PolicyDecision_DENY, decisionRecord{
+			Kind:     decisionKindDelegationScope,
+			Outcome:  decisionOutcome{Decision: "deny", DecidedBy: "broker:delegation_scope", Reason: violation},
+			Settings: map[string]any{"delegated_scopes": task.DelegatedScopes},
+		})
+		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+			"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
+		})
+		return &planv1.PlanValidationResult{
+			PlanId:     plan.PlanId,
+			Outcome:    planv1.ValidationOutcome_DENIED,
+			Violations: []string{violation},
+		}, nil
+	}
+
 	// 1. Whole-plan structural validation (aikonos/plan_validation).
 	planDec, err := policyEng.DecidePlan(ctx, plan, policy.PlanContext{
 		CostBudget:          task.CostBudget,
@@ -779,4 +798,22 @@ func (s *SandboxService) southTask(ctx context.Context, reqTenant, taskID string
 		return nil, "", status.Error(codes.PermissionDenied, "tenant_id does not match the task's tenant")
 	}
 	return t, tenant, nil
+}
+
+// delegationScopeViolation returns "" when every step's required scope is in
+// the task's delegated scopes, or when the task carries no delegation limit
+// (DelegatedScopes nil). A tool with no registered scope is outside any
+// delegation (fail closed). AG-11.
+func delegationScopeViolation(reg *toolregistry.Registry, task *db.Task, plan *planv1.Plan) string {
+	if task.DelegatedScopes == nil {
+		return ""
+	}
+	for _, step := range plan.Steps {
+		scope, ok := reg.RequiredScope(step.ToolId)
+		if !ok || !slices.Contains(task.DelegatedScopes, scope) {
+			return fmt.Sprintf("step %d: tool %s needs scope %q, outside the delegation (allowed: %s)",
+				step.Seq, step.ToolId, scope, strings.Join(task.DelegatedScopes, ", "))
+		}
+	}
+	return ""
 }

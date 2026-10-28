@@ -151,3 +151,34 @@ func TestTaskRepo_OBOColumns_RoundTrip(t *testing.T) {
 		t.Errorf("round trip: got %+v, want %+v", o, want)
 	}
 }
+
+// TestTaskRepo_DelegationLimits_RoundTrip: envelope_id and delegated_scopes
+// (migration 059, AG-11) survive Create/Get; an empty grant stays non-nil and
+// an undelegated task reads back nil (no limit).
+func TestTaskRepo_DelegationLimits_RoundTrip(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID, envID := uuid.New(), uuid.New()
+
+	for name, scopes := range map[string][]string{"scoped": {"siem:read", "slack:write"}, "empty": {}, "none": nil} {
+		taskID := uuid.New()
+		task := &Task{TaskID: taskID, TenantID: tenantID, OwnerUserID: "bob@example.com", Prompt: "p", CostBudget: 10, DelegatedScopes: scopes}
+		if scopes != nil {
+			task.EnvelopeID = &envID
+		}
+		if err := repo.Create(ctx, task); err != nil {
+			t.Fatalf("%s: Create: %v", name, err)
+		}
+		got, err := repo.Get(ctx, tenantID.String(), taskID.String())
+		if err != nil {
+			t.Fatalf("%s: Get: %v", name, err)
+		}
+		if (got.DelegatedScopes == nil) != (scopes == nil) || len(got.DelegatedScopes) != len(scopes) {
+			t.Errorf("%s: scopes = %#v, want %#v", name, got.DelegatedScopes, scopes)
+		}
+		if scopes != nil && got.OnBehalfOf().EnvelopeID != envID.String() {
+			t.Errorf("%s: envelope_id = %q", name, got.OnBehalfOf().EnvelopeID)
+		}
+	}
+}

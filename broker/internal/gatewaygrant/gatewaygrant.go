@@ -50,6 +50,9 @@ const (
 	KindExternal    = "external"
 	KindWorkflow    = "workflow"
 	KindLegacy      = "legacy"
+	// KindDelegated stamps a task run on a delegation envelope (AG-11); it is a
+	// task obo_kind only, never a grant kind.
+	KindDelegated = "delegated"
 )
 
 // Grant is the on-behalf-of context a token carries. Subject is the human the

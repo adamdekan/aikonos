@@ -418,8 +418,11 @@ func envelopeTaskFromSpec(spec map[string]any) *brokerv1.EnvelopeTask {
 }
 
 func delegationMaxCost(e *db.Envelope) int64 {
-	if v, ok := e.DelegationSpec["max_cost_units"].(float64); ok {
+	switch v := e.DelegationSpec["max_cost_units"].(type) {
+	case float64: // JSON-decoded from the row
 		return int64(v)
+	case int64: // in-memory envelope on SendEnvelope's auto-accept path
+		return v
 	}
 	return 0
 }

@@ -747,7 +747,7 @@ func (s *SandboxService) emitRateLimitDenied(ctx context.Context, req *brokerv1.
 		"agent_id":   req.AgentId,
 		"tool_id":    req.ToolId,
 	})
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TenantId:    tenantID,
 		OccurredAt:  timestampNow(),
@@ -756,7 +756,7 @@ func (s *SandboxService) emitRateLimitDenied(ctx context.Context, req *brokerv1.
 		ResourceRef: "aikonos:tool:" + req.ToolId,
 		Decision:    auditv1.PolicyDecision_DENY,
 		Context:     ctxStruct,
-	}); err != nil {
+	}, oboTask(ctx))); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.rate_limit.enforced")
 	}
 }

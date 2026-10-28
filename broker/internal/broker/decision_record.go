@@ -29,10 +29,11 @@ const PolicyDecisionEvent = "aikonos.broker.policy.decision"
 
 // Decision record kinds.
 const (
-	decisionKindToolInvocation = "tool_invocation"
-	decisionKindPlanValidation = "plan_validation"
-	decisionKindEnvelopeSend   = "envelope_send"
-	decisionKindAgentSkills    = "agent_skill_boundary"
+	decisionKindToolInvocation  = "tool_invocation"
+	decisionKindPlanValidation  = "plan_validation"
+	decisionKindEnvelopeSend    = "envelope_send"
+	decisionKindAgentSkills     = "agent_skill_boundary"
+	decisionKindDelegationScope = "delegation_scope"
 )
 
 // decisionRecord is the context of a PolicyDecisionEvent.
