@@ -58,6 +58,8 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // AG-06 authorized addition: POST /admin/members/:subject/block +
 // POST /admin/members/:subject/revoke-sessions +
 // POST /admin/agents/:id/revoke-sessions — user block and revoke-all.
+// AG-05 authorized addition: GET + POST /admin/agents/:id/public-keys +
+// DELETE /admin/agents/:id/public-keys/:keyId — external-agent key pairs.
 // AG-03 authorized addition: POST /admin/agents/:id/status — agent lifecycle
 // (activate / suspend / retire; broker-enforced, gateway evicts children).
 // CP2 authorized
@@ -72,6 +74,7 @@ import type { JwksResolver } from "../src/auth/verify.js";
 const EXPECTED_ROUTES = [
   "DELETE /admin/agents/:id",
   "DELETE /admin/agents/:id/keys/:keyId",
+  "DELETE /admin/agents/:id/public-keys/:keyId",
   "DELETE /admin/m365",
   "DELETE /admin/mcp/:id",
   "DELETE /admin/providers/:id",
@@ -88,6 +91,7 @@ const EXPECTED_ROUTES = [
   "GET /",
   "GET /admin/agents",
   "GET /admin/agents/:id/keys",
+  "GET /admin/agents/:id/public-keys",
   "GET /admin/alerts",
   "GET /admin/assignments",
   "GET /admin/audit/evidence/:eventId",
@@ -145,6 +149,7 @@ const EXPECTED_ROUTES = [
   "PATCH /schedules/:id",
   "POST /admin/agents",
   "POST /admin/agents/:id/keys",
+  "POST /admin/agents/:id/public-keys",
   "POST /admin/agents/:id/revoke-sessions",
   "POST /admin/agents/:id/status",
   "POST /admin/assignments",

@@ -15,7 +15,7 @@ replays it on every call via `history`. That is the entire multi-turn protocol.
 
 1. The target agent must have **external access enabled** (`gateway_enabled: true`) — otherwise every call returns 403.
 2. The agent's **approval mode must be `auto`** — agents requiring human approval are not externally drivable (409). Tool calls are still authorized per-call by the broker (OPA + OpenFGA + capability tokens); `auto` only removes the human-in-the-loop prompt.
-3. Mint an **agent API key** in the webui: Admin → Agents → API keys. Keys look like `tk_…`, are shown once, are bound to exactly one agent, and expire after the lifetime chosen at minting (at most the tenant's `api_keys.max_ttl_days`, default 90 days). Mint a replacement before the old key expires.
+3. Mint an **agent API key** in the webui: Admin → Agents → API keys. Keys look like `tk_…`, are shown once, are bound to exactly one agent, and expire after the lifetime chosen at minting (at most the tenant's `api_keys.max_ttl_days`, default 90 days). Mint a replacement before the old key expires. Or, preferred, use a key pair (see "Key-pair authentication" below).
 4. If the client is a browser app, its origin must be in `AIKONOS_EXTERNAL_CORS_ORIGINS` (comma-separated; empty = no CORS, same-origin only).
 
 Base URL: `http://<gateway-host>:8090` (compose publishes `8090:8090`).
@@ -71,7 +71,7 @@ Closing the connection early aborts the run server-side (no orphaned token burn)
 | Code | Cause |
 |------|-------|
 | 400 | malformed `history` (bad shape, >100 turns, >200 KiB content) |
-| 401 | missing/invalid/revoked/expired API key |
+| 401 | missing/invalid/revoked/expired API key, or a rejected client assertion |
 | 403 | agent not `gateway_enabled` |
 | 409 | agent not `approvalMode:auto`, or URL id ≠ key-resolved agent |
 | 413 | prompt > 16 KiB, or body > 256 KiB |
@@ -79,6 +79,35 @@ Closing the connection early aborts the run server-side (no orphaned token burn)
 | 502 | agent spec unavailable (broker unreachable) |
 
 Runs also time out server-side after 180 s (surfaced as an `error` frame).
+
+## Key-pair authentication (AG-05)
+
+Instead of a `tk_` key, the agent can hold a private key and send a short-lived
+signed JWT client assertion (RFC 7523) as the bearer:
+
+```
+Authorization: Bearer <header>.<claims>.<signature>
+```
+
+1. Generate a P-256 (ES256) or Ed25519 (EdDSA) key pair and register the public
+   key (PEM or JWK) under Admin → Agents → Public keys. Note the `kid` shown.
+2. The gateway must have `AIKONOS_EXTERNAL_AUDIENCE` set; that value is the `aud`.
+3. Per request, sign: header `{alg, kid}`; claims `iss` = `sub` = agent id,
+   `aud`, `iat`, `exp` (at most five minutes ahead) and a fresh `jti`. A `jti`
+   is accepted once. `scripts/sign-agent-assertion.mjs` does this with no
+   dependencies:
+
+   ```bash
+   TOKEN=$(node scripts/sign-agent-assertion.mjs agent.pem "$AGENT_ID" "$AUDIENCE" "$KID")
+   curl -N -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -d '{"prompt":"hi"}' "http://localhost:8090/v1/agents/$AGENT_ID/invoke"
+   ```
+
+Any rejected assertion (bad `aud`, expired, `exp` too far ahead, replayed `jti`,
+unknown `kid`, retired or expired key, bad signature) is a 401; the reason is in
+the audit log (`aikonos.broker.agentkey.assertion_denied`). Everything else
+(`X-Aikonos-Subject-Token`, service-agent rule, agent status) works as with a
+`tk_` key. Rotate by registering the new key first, then retiring the old one.
 
 ## Building the conversation loop
 

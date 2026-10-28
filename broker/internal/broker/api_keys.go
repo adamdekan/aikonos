@@ -8,6 +8,8 @@
 // South-bound (SandboxService): ResolveAgentApiKey
 //
 //	— SPIFFE gateway-peer gated; returns valid=false on miss/revoke/expiry/cross-tenant.
+//	  With client_assertion set it verifies a key-pair assertion instead
+//	  (agent_public_keys.go, AG-05).
 //
 // Pepper invariant: both mint and resolve return FailedPrecondition when the
 // pepper is empty — there is no unpeppered fallback.
@@ -274,6 +276,9 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 	if err := s.requireGatewayPeer(ctx); err != nil {
 		return nil, err
 	}
+	if req.ClientAssertion != "" { // AG-05: key pair instead of a tk_ key
+		return s.resolveClientAssertion(ctx, req)
+	}
 	if s.deps.ApiKeys == nil {
 		return nil, status.Error(codes.FailedPrecondition, "api keys disabled")
 	}
@@ -306,7 +311,12 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 	if req.TenantId != "" && k.TenantID.String() != req.TenantId {
 		return &brokerv1.ResolveAgentApiKeyResponse{Valid: false}, nil
 	}
+	return s.resolveAgentCredential(ctx, k, req.UserAssertion)
+}
 
+// resolveAgentCredential runs the agent checks shared by tk_ keys and client
+// assertions (AG-05) on a verified credential and mints the owner grant.
+func (s *SandboxService) resolveAgentCredential(ctx context.Context, k *db.StoredApiKey, userAssertion string) (*brokerv1.ResolveAgentApiKeyResponse, error) {
 	// AG-06: a key minted before the agent's revoke-all is void, like a
 	// revoked one. A state read failure refuses rather than resolves.
 	if st, rerr := s.deps.Revocation.Agent(ctx, k.TenantID.String(), k.AgentID.String()); rerr != nil {
@@ -322,9 +332,9 @@ func (s *SandboxService) ResolveAgentApiKey(ctx context.Context, req *brokerv1.R
 	// AG-17 S6: an optional user assertion names the person the agent acts
 	// for. A bad one refuses the key outright, never falls back to svc-.
 	var subject string
-	if req.UserAssertion != "" {
+	if userAssertion != "" {
 		var reason string
-		if subject, reason = s.verifyUserAssertion(ctx, k, req.UserAssertion); reason != "" {
+		if subject, reason = s.verifyUserAssertion(ctx, k, userAssertion); reason != "" {
 			s.emitApiKeyDenied(ctx, k, reason, "")
 			// The key itself is valid, so say why (unknown keys stay Valid:false).
 			return nil, status.Error(codes.PermissionDenied, "user assertion rejected: "+reason)

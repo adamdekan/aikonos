@@ -225,6 +225,9 @@ type Deps struct {
 	// ApiKeyPepper is the HMAC pepper for at-rest key hashing. Empty → mint/resolve
 	// return FailedPrecondition (fail closed, no unpeppered fallback).
 	ApiKeyPepper string
+	// PublicKeys backs external-agent key-pair auth (AG-05). Nil ⇒ the public
+	// key RPCs and client assertions fail closed.
+	PublicKeys PublicKeyStore
 
 	// GatewayGrantKey is the 32-byte HMAC key used to mint and verify owner-grant
 	// tokens (broker/internal/gatewaygrant). Populated at startup from Vault
@@ -436,6 +439,8 @@ type SandboxService struct {
 	// (C5 phase 1).
 	policy      planPolicyEngine
 	skillPolicy skillGatePolicy
+
+	jtis jtiCache // AG-05 client assertion replay cache
 }
 
 func NewSandboxService(deps Deps) *SandboxService {

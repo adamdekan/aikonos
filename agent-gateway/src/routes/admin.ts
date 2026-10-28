@@ -12,6 +12,7 @@ import {
   type M365Connection,
   type WebSearchConfig,
   type AgentApiKey,
+  type AgentPublicKey,
 } from "../../gen/ts/proto/broker";
 import { PolicyDecision } from "../../gen/ts/proto/audit";
 import { EffectClass } from "../../gen/ts/proto/plan";
@@ -40,6 +41,17 @@ export function apiKeyView(k: AgentApiKey) {
     id: k.id,
     keyPrefix: k.keyPrefix,
     label: k.label,
+    expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
+    lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
+  };
+}
+
+// publicKeyView is the webui shape of an agent public key (AG-05).
+export function publicKeyView(k: AgentPublicKey) {
+  return {
+    id: k.id,
+    kid: k.kid,
+    alg: k.alg,
     expiresAt: k.expiresAt ? k.expiresAt.toISOString() : null,
     lastUsedAt: k.lastUsedAt ? k.lastUsedAt.toISOString() : null,
   };
@@ -1793,6 +1805,66 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
             agentId: req.params.id,
             keyId: req.params.keyId,
           },
+          principal.token,
+        );
+        reply.send({ success: resp.success });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: { success: false } });
+      }
+    },
+  );
+
+  // ── AG-05: external-agent public keys ──────────────────────────────────────
+
+  app.post<{ Params: { id: string }; Body: { publicKey?: string; kid?: string; ttlDays?: number } }>(
+    "/admin/agents/:id/public-keys",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.registerAgentPublicKey(
+          {
+            tenantId: principal.tenant,
+            userId: principal.sub,
+            agentId: req.params.id,
+            publicKey: String(req.body?.publicKey ?? ""),
+            kid: String(req.body?.kid ?? ""),
+            ttlDays: Number(req.body?.ttlDays) || 0, // 0 → broker InvalidArgument
+          },
+          principal.token,
+        );
+        reply.send({ key: resp.key ? publicKeyView(resp.key) : null });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/admin/agents/:id/public-keys",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.listAgentPublicKeys(
+          { tenantId: principal.tenant, userId: principal.sub, agentId: req.params.id },
+          principal.token,
+        );
+        reply.send({ keys: (resp.keys ?? []).map(publicKeyView), maxTtlDays: resp.maxTtlDays });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string; keyId: string } }>(
+    "/admin/agents/:id/public-keys/:keyId",
+    async (req, reply) => {
+      const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
+      if (!principal) return;
+      try {
+        const resp = await clients.north.retireAgentPublicKey(
+          { tenantId: principal.tenant, userId: principal.sub, agentId: req.params.id, keyId: req.params.keyId },
           principal.token,
         );
         reply.send({ success: resp.success });

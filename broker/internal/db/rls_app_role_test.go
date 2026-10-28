@@ -219,3 +219,46 @@ func TestRLS_KillSwitches_TenantIsolated(t *testing.T) {
 		t.Fatalf("tenant A: blocked=%v err=%v", blocked, err)
 	}
 }
+
+// AG-05: public keys are tenant-scoped under the app role: the owning tenant
+// creates, reads, retires and lists; another tenant sees nothing; a kid is
+// unique per agent even after retirement.
+func TestRLS_AgentPublicKeys_TenantScoped(t *testing.T) {
+	pool := openAppTestPool(t)
+	ctx := context.Background()
+	tenant, agentID := uuid.New(), uuid.New()
+	if err := NewAgentRepo(pool, zap.NewNop()).Create(ctx, &Agent{
+		ID: agentID, TenantID: tenant, Name: "rls-pk-agent", LLMModel: "claude-opus-4-8",
+		ApprovalMode: "auto", CreatedBy: "test@example.com",
+	}); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	keys := NewAgentPublicKeyRepo(pool, zap.NewNop())
+	k := &StoredPublicKey{
+		ID: uuid.New(), TenantID: tenant, AgentID: agentID, Kid: "k1", Alg: "ES256",
+		PublicKey: "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----\n", CreatedBy: "test@example.com",
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := keys.Create(ctx, k); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got, err := keys.Get(ctx, tenant.String(), agentID.String(), "k1"); err != nil || got.Status != "active" {
+		t.Fatalf("same-tenant Get: %+v %v", got, err)
+	}
+	if _, err := keys.Get(ctx, uuid.NewString(), agentID.String(), "k1"); !errors.Is(err, ErrPublicKeyNotFound) {
+		t.Fatalf("cross-tenant Get: got %v, want ErrPublicKeyNotFound", err)
+	}
+	if err := keys.Retire(ctx, tenant.String(), agentID.String(), k.ID.String()); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if got, err := keys.Get(ctx, tenant.String(), agentID.String(), "k1"); err != nil || got.Status != "retired" || got.RetiredAt == nil {
+		t.Fatalf("Get after retire: %+v %v", got, err)
+	}
+	if list, err := keys.ListByAgent(ctx, tenant.String(), agentID.String()); err != nil || len(list) != 0 {
+		t.Fatalf("ListByAgent after retire: %v %v, want empty", list, err)
+	}
+	k.ID = uuid.New()
+	if err := keys.Create(ctx, k); !errors.Is(err, ErrPublicKeyExists) {
+		t.Fatalf("re-register retired kid: got %v, want ErrPublicKeyExists", err)
+	}
+}

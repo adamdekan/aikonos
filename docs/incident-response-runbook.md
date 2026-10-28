@@ -197,7 +197,7 @@ Or query the reader directly — `broker/internal/audit/reader.go` loads the cha
 1. Review agent plan depth limits and loop detection configuration.
 2. Set appropriate RPM/TPM ceilings for the subject via Admin → Settings → Rate Limits.
 3. If loop detection failed: file a bug; add a `parent_task_id` chain depth check to the OPA `plan_validation.rego` if not already present.
-4. Revoke the agent API key if the agent is deemed malicious: Admin → Agents → Keys → Revoke. Keys also expire on their own (at most `api_keys.max_ttl_days`, default 90); the key list shows each key's expiry and last use, so check for keys still in use that should not be.
+4. Revoke the agent API key if the agent is deemed malicious: Admin → Agents → Keys → Revoke. Keys also expire on their own (at most `api_keys.max_ttl_days`, default 90); the key list shows each key's expiry and last use, so check for keys still in use that should not be. For an agent on key pairs (AG-05), retire its public key under Admin → Agents → Public keys: the next assertion signed with it is refused (audit event `aikonos.broker.agentkey.assertion_denied`, reason `key_retired`). Retiring a key does not end runs already started; suspend the agent to stop them.
 
 ---
 

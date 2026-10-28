@@ -53,6 +53,12 @@ import type {
   ListAgentApiKeysResponse,
   RevokeAgentApiKeyRequest,
   RevokeAgentApiKeyResponse,
+  RegisterAgentPublicKeyRequest,
+  RegisterAgentPublicKeyResponse,
+  ListAgentPublicKeysRequest,
+  ListAgentPublicKeysResponse,
+  RetireAgentPublicKeyRequest,
+  RetireAgentPublicKeyResponse,
   CreateScheduledRunRequest,
   CreateScheduledRunResponse,
   ListScheduledRunsRequest,
@@ -693,6 +699,19 @@ export class NorthClient {
     token?: string,
   ): Promise<RevokeAgentApiKeyResponse> {
     return unary((r, m, o, cb) => this.client.revokeAgentApiKey(r, m, o, cb), req, bearer(token));
+  }
+
+  // AG-05: external-agent public keys (key-pair auth).
+  registerAgentPublicKey(req: RegisterAgentPublicKeyRequest, token?: string): Promise<RegisterAgentPublicKeyResponse> {
+    return unary((r, m, o, cb) => this.client.registerAgentPublicKey(r, m, o, cb), req, bearer(token));
+  }
+
+  listAgentPublicKeys(req: ListAgentPublicKeysRequest, token?: string): Promise<ListAgentPublicKeysResponse> {
+    return unary((r, m, o, cb) => this.client.listAgentPublicKeys(r, m, o, cb), req, bearer(token));
+  }
+
+  retireAgentPublicKey(req: RetireAgentPublicKeyRequest, token?: string): Promise<RetireAgentPublicKeyResponse> {
+    return unary((r, m, o, cb) => this.client.retireAgentPublicKey(r, m, o, cb), req, bearer(token));
   }
 
   upsertAgentSkill(

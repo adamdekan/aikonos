@@ -99,6 +99,20 @@ export function revokeAgentApiKey(agentId, keyId) {
   return del(`/admin/agents/${agentId}/keys/${keyId}`);
 }
 
+// ── Per-agent public keys (AG-05 key-pair auth) ───────────────────────────────
+
+export function registerAgentPublicKey(agentId, publicKey, kid = "", ttlDays) {
+  return post(`/admin/agents/${agentId}/public-keys`, { body: { publicKey, kid, ttlDays } });
+}
+
+export function listAgentPublicKeys(agentId) {
+  return get(`/admin/agents/${agentId}/public-keys`);
+}
+
+export function retireAgentPublicKey(agentId, keyId) {
+  return del(`/admin/agents/${agentId}/public-keys/${keyId}`);
+}
+
 // ── Skills vocabulary ─────────────────────────────────────────────────────────
 
 export function listSkills() {

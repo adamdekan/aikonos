@@ -95,6 +95,9 @@ export interface Config {
   externalCorsOrigins: string[];
   // Max requests per minute per IP on the external surface.
   externalRateLimit: number;
+  // AG-05: the aud an external agent's client assertion must carry. Empty ⇒
+  // key-pair auth is off and only tk_ keys are accepted.
+  externalAudience?: string;
   // Idle TTL for persistent thread sessions (ms). A session not used for this
   // long is evicted so its OIDC bearer becomes GC-eligible. Default 30 minutes.
   threadTtlMs: number;
@@ -188,6 +191,7 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
       .map((s) => s.trim())
       .filter(Boolean),
     externalRateLimit: parsePositiveInt(env, "AIKONOS_EXTERNAL_RATE_LIMIT", "60"),
+    externalAudience: get(env, "AIKONOS_EXTERNAL_AUDIENCE", "").trim(),
     threadTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_THREAD_TTL_MS", "1800000"),
     maxChildren: parsePositiveInt(env, "AIKONOS_GATEWAY_MAX_CHILDREN", "32"),
     childTtlMs: parsePositiveInt(env, "AIKONOS_GATEWAY_CHILD_TTL_MS", "1800000"),

@@ -98,7 +98,7 @@ task-row binding idiom and add the regression test pattern already used in
 ### Broker identity/authz — Low / Info
 - L-01 OIDC: token with no `exp` accepted; JWKS refreshed only on unknown `kid`; refresh holds the write lock across HTTP (DoS via random kids); discovery `issuer` not compared (`auth/oidc.go:128-137,192-270`).
 - L-02 Subject-claim fallback (`oid` → `sub`) silently changes the principal (`oidc.go:139-150`). Reject instead.
-- L-03 API keys: no expiry, `last_used_at` not updated on resolve (`api_keys.go:249-300`). **Fixed (AG-15):** `expires_at` is mandatory (migration 052, tenant cap `api_keys.max_ttl_days`, default and ceiling 90), expired keys resolve like revoked ones (401), and `last_used_at` is updated on resolve and shown in the key list.
+- L-03 API keys: no expiry, `last_used_at` not updated on resolve (`api_keys.go:249-300`). **Fixed (AG-15):** `expires_at` is mandatory (migration 052, tenant cap `api_keys.max_ttl_days`, default and ceiling 90), expired keys resolve like revoked ones (401), and `last_used_at` is updated on resolve and shown in the key list. **Follow-up (AG-05):** external agents can drop the bearer key for a registered public key and five-minute signed client assertions with single-use `jti`.
 - L-04 Gateway grant not bound to agent/session; 1h multi-use (`gatewaygrant/`). Design note.
 
 ---

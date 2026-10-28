@@ -96,6 +96,17 @@ External agent API keys (`tk_…`) always expire. Lower the tenant setting
 `api_keys.max_ttl_days` (default and ceiling 90) to force faster rotation, and
 watch the key list for keys about to expire or unused for a long time.
 
+Prefer key pairs to `tk_` keys for external agents (AG-05). Register the
+agent's public key (P-256 or Ed25519) under Admin → Agents → Public keys; the
+agent then sends a signed JWT client assertion (RFC 7523, `iss` = `sub` =
+agent id, `aud` = `AIKONOS_EXTERNAL_AUDIENCE`, `exp` at most five minutes
+ahead, single-use `jti`) instead of a bearer secret. The private key never
+leaves the agent. Public keys expire under the same `api_keys.max_ttl_days`
+cap; rotate by registering the new key before retiring the old one. Key-pair
+auth is off until the gateway's `AIKONOS_EXTERNAL_AUDIENCE` is set. The
+`jti` replay cache is held in the broker process: run one broker replica, or
+accept that a restart reopens a replay window of at most five minutes.
+
 To cut a person or an agent off before their tokens expire, block the user or
 revoke all sessions of the user or agent in the admin UI (Access Control →
 Members, Agents). Both take effect within 30 seconds on every broker replica;

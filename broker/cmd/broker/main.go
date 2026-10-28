@@ -472,6 +472,7 @@ func main() {
 	alertRepo := db.NewAlertRepo(pool, log)
 	agentRepo := db.NewAgentRepo(pool, log)
 	apiKeyRepo := db.NewAgentApiKeyRepo(pool, log)
+	publicKeyRepo := db.NewAgentPublicKeyRepo(pool, log)
 	llmProviderRepo := db.NewLlmProviderRepo(pool, log)
 	configRepo := db.NewPlatformConfigRepo(pool, log)
 	configStore := config.New(configRepo).WithLogger(log)
@@ -986,6 +987,7 @@ func main() {
 		AlertRepo:                alertRepo,
 		Agents:                   agentRepo,
 		ApiKeys:                  apiKeyRepo,
+		PublicKeys:               publicKeyRepo,
 		ApiKeyPepper:             viper.GetString("api_key.pepper"),
 		Providers:                llmProviderRepo,
 		AllowProviderTestPrivate: viper.GetBool("toolproxy.web_fetch.allow_private"),
@@ -1080,6 +1082,7 @@ func main() {
 		ToolRegistry:         toolReg,
 		Agents:               agentRepo,
 		ApiKeys:              apiKeyRepo,
+		PublicKeys:           publicKeyRepo,
 		ApiKeyPepper:         viper.GetString("api_key.pepper"),
 		Secrets:              secretsProvider,
 		Providers:            llmProviderRepo,

@@ -30,6 +30,9 @@ vi.mock("../api/admin.js", () => ({
   mintAgentApiKey:      vi.fn(),
   listAgentApiKeys:     vi.fn(),
   revokeAgentApiKey:    vi.fn(),
+  registerAgentPublicKey: vi.fn(),
+  listAgentPublicKeys:  vi.fn(),
+  retireAgentPublicKey: vi.fn(),
   revokeAgentSessions:  vi.fn(),
   setAgentStatus:       vi.fn(),
   listLlmProviders:     vi.fn(),
@@ -76,6 +79,7 @@ describe("Agents.vue", () => {
     adminApi.listMcpConnections.mockResolvedValue({ connections: [] });
     adminApi.listLlmProviders.mockResolvedValue({ providers: SAMPLE_PROVIDERS });
     adminApi.listAgentApiKeys.mockResolvedValue({ keys: [] });
+    adminApi.listAgentPublicKeys.mockResolvedValue({ keys: [] });
     adminApi.listSkills.mockResolvedValue({ skills: [] });
     agentsApi.getAgentSoul.mockResolvedValue({ soul: "" });
     agentsApi.setAgentSoul.mockResolvedValue({ soul: "" });
@@ -393,6 +397,46 @@ describe("Agents.vue", () => {
     document.querySelector("[data-testid='mint-key-btn']").click();
     await flushPromises();
     expect(adminApi.mintAgentApiKey).toHaveBeenCalledWith("a1", "", 30);
+    w.unmount();
+  });
+
+  // AG-05: public keys are listed with kid, alg, expiry and last use; the
+  // form registers a pasted key and each row retires its key.
+  it("lists, registers and retires agent public keys", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [SAMPLE_AGENT] });
+    adminApi.listAgentPublicKeys.mockResolvedValue({
+      maxTtlDays: 30,
+      keys: [{ id: "p1", kid: "k1", alg: "ES256", expiresAt: new Date(Date.now() + 20 * 86400000).toISOString(), lastUsedAt: null }],
+    });
+    adminApi.registerAgentPublicKey.mockResolvedValue({ key: {} });
+    adminApi.retireAgentPublicKey.mockResolvedValue({ success: true });
+    const w = await openEditModal();
+
+    expect(document.querySelectorAll("[data-testid='public-key-row']").length).toBe(1);
+    expect(document.querySelector("[data-testid='public-key-kid']").textContent).toBe("k1");
+    expect(document.querySelector("[data-testid='public-key-alg']").textContent).toBe("ES256");
+    expect(document.querySelector("[data-testid='public-key-last-used']").textContent).toBe("Never used");
+    expect(document.querySelector("[data-testid='public-key-ttl']").value).toBe("30");
+
+    // Empty paste is refused client-side.
+    document.querySelector("[data-testid='register-public-key-btn']").click();
+    await flushPromises();
+    expect(adminApi.registerAgentPublicKey).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-testid='public-key-error']").textContent).toMatch(/Paste/);
+
+    const ta = document.querySelector("[data-testid='public-key-input']");
+    ta.value = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----";
+    ta.dispatchEvent(new Event("input"));
+    const kid = document.querySelector("[data-testid='public-key-kid-input']");
+    kid.value = "k2";
+    kid.dispatchEvent(new Event("input"));
+    document.querySelector("[data-testid='register-public-key-btn']").click();
+    await flushPromises();
+    expect(adminApi.registerAgentPublicKey).toHaveBeenCalledWith("a1", "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----", "k2", 30);
+
+    document.querySelector("[data-testid='retire-public-key-p1']").click();
+    await flushPromises();
+    expect(adminApi.retireAgentPublicKey).toHaveBeenCalledWith("a1", "p1");
     w.unmount();
   });
 
