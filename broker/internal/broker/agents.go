@@ -39,7 +39,8 @@ func sanitizeSoul(raw string) (string, error) {
 }
 
 // requireAgentOwnerOrAdmin allows the caller iff they are a tenant admin OR
-// hold owner_user on agent:<agentID>. Fails closed on any FGA transport error.
+// an owner of agent:<agentID> (owner_user, or a member of an owner_group).
+// Fails closed on any FGA transport error.
 func (s *BrokerService) requireAgentOwnerOrAdmin(ctx context.Context, user, agentID string) error {
 	isAdmin, err := s.deps.Policy.CheckFGA(ctx, "user:"+user, "admin", s.fgaTenantObject())
 	if err != nil {
@@ -48,7 +49,7 @@ func (s *BrokerService) requireAgentOwnerOrAdmin(ctx context.Context, user, agen
 	if isAdmin {
 		return nil
 	}
-	isOwner, err := s.deps.Policy.CheckFGA(ctx, "user:"+user, "owner_user", "agent:"+agentID)
+	isOwner, err := s.deps.Policy.CheckFGA(ctx, "user:"+user, "owner", "agent:"+agentID)
 	if err != nil {
 		return status.Error(codes.Internal, "authorization check failed")
 	}
@@ -299,22 +300,87 @@ func (s *BrokerService) ListAgents(ctx context.Context, req *brokerv1.ListAgents
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list agents: %v", err)
 	}
+	// AG-04: the orphan flag rests on AG-06 block status, a security state, so
+	// a read failure fails the listing rather than showing "not orphaned".
+	var blocks map[string]db.UserBlock
+	if s.deps.Revocation != nil {
+		if blocks, err = s.deps.Revocation.UserBlocks(ctx, tenant); err != nil {
+			return nil, status.Errorf(codes.Internal, "list user blocks: %v", err)
+		}
+	}
 	out := make([]*brokerv1.Agent, 0, len(rows))
 	for _, row := range rows {
 		pa := toProtoAgent(row)
-		// Populate usable_by subjects from FGA (best-effort; FGA-disabled → empty).
-		rels, rerr := s.deps.Policy.ReadTuples(ctx, policy.ReadFilter{
-			Relation: "usable_by",
-			Object:   "agent:" + row.ID.String(),
-		})
-		if rerr == nil {
+		// Populate usable_by subjects and the orphan flag from FGA (best-effort;
+		// FGA disabled or unreadable → empty, not flagged).
+		rels, rerr := s.deps.Policy.ReadTuples(ctx, policy.ReadFilter{Object: "agent:" + row.ID.String()})
+		if rerr == nil && s.deps.Policy.FGAEnabled() {
 			for _, r := range rels {
-				pa.UsableBy = append(pa.UsableBy, r.User)
+				if r.Relation == "usable_by" {
+					pa.UsableBy = append(pa.UsableBy, r.User)
+				}
 			}
+			pa.Orphaned = agentOrphaned(agentOwnerRefs(rels), blocks)
 		}
 		out = append(out, pa)
 	}
 	return &brokerv1.ListAgentsResponse{Agents: out}, nil
+}
+
+// agentOrphaned reports an agent that no one is left to answer for (AG-04): it
+// has no owner, or every owner is a user blocked under AG-06.
+// AG-03 hooks here: activation needs a non-orphaned agent, and the orphan sweep
+// suspends an agent that stays orphaned past a grace period.
+// ponytail: a group owner counts as live without expanding its members; expand
+// when groups whose members are all blocked turn up.
+func agentOrphaned(owners []string, blocks map[string]db.UserBlock) bool {
+	for _, o := range owners {
+		subject, isUser := strings.CutPrefix(o, "user:")
+		if !isUser {
+			return false
+		}
+		if _, blocked := blocks[subject]; !blocked {
+			return false
+		}
+	}
+	return true
+}
+
+// BackfillAgentOwners grants owner_user to the creator of every agent that has
+// no owner tuple (AG-04). The creator grant is written at creation only since
+// F9, so older agents may have none. Idempotent (agents with any owner are
+// skipped); main runs it once at startup. Each grant is audited as
+// aikonos.broker.agent.owner.added. Returns the number of grants written.
+func (s *BrokerService) BackfillAgentOwners(ctx context.Context, tenant string) (int, error) {
+	if !s.agentsEnabled() || !s.deps.Policy.FGAEnabled() {
+		return 0, nil
+	}
+	rows, err := s.deps.Agents.List(ctx, tenant)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, a := range rows {
+		if a.CreatedBy == "" {
+			continue // nobody to backfill; ListAgents flags it orphaned
+		}
+		obj := "agent:" + a.ID.String()
+		rels, err := s.deps.Policy.ReadTuples(ctx, policy.ReadFilter{Object: obj})
+		if err != nil {
+			return n, err
+		}
+		if len(agentOwnerRefs(rels)) > 0 {
+			continue
+		}
+		t := &brokerv1.RoleTuple{User: "user:" + a.CreatedBy, Relation: "owner_user", Object: obj}
+		if err := s.deps.Policy.WriteRelations(ctx, relationOf(t)); err != nil {
+			return n, err
+		}
+		n++
+		s.emitAdminAudit(ctx, "", tenant, "system:owner-backfill",
+			"aikonos.broker.agent.owner.added", t, auditv1.PolicyDecision_ALLOW)
+	}
+	return n, nil
 }
 
 func (s *BrokerService) UpdateAgent(ctx context.Context, req *brokerv1.UpdateAgentRequest) (*brokerv1.UpdateAgentResponse, error) {

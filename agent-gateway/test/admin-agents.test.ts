@@ -72,10 +72,12 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     gatewayEnabled: false,
     serviceAgent: false,
     sessionsRevokedAt: "",
+    orphaned: true,
   };
 
   const json = agentJson(agent);
 
+  assert.equal(json.orphaned, true); // AG-04 flag passes through
   assert.deepEqual(json.allowedProviders, ["openai", "anthropic"]);
   assert.equal(json.preferredProvider, "openai");
 });
@@ -98,6 +100,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     gatewayEnabled: false,
     serviceAgent: false,
     sessionsRevokedAt: "",
+    orphaned: false,
   };
 
   const json = agentJson(agent);

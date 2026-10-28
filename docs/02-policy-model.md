@@ -108,7 +108,11 @@ type agent
   relations
     define spawned_by: [user, agent]
     define owner_user: [user]
+    define owner_group: [group#member]
+    define owner: owner_user or owner_group
+    define usable_by: [user, group#member]
     define can_delegate_to_user: owner_user
+    define can_use: usable_by or owner
 ```
 
 **Example checks**:

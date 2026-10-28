@@ -1026,6 +1026,16 @@ func main() {
 		northDeps.Workspace.Graph = oneDriveGraph
 	}
 	northSvc := brokersvc.NewBrokerService(northDeps)
+	// AG-04: grant the creator owner_user on agents that have no owner tuple.
+	// Idempotent; off the startup path so an FGA outage does not delay serving.
+	go func() {
+		n, err := northSvc.BackfillAgentOwners(ctx, viper.GetString("tenant_id"))
+		if err != nil {
+			log.Warn("agent owner backfill failed", zap.Int("granted", n), zap.Error(err))
+		} else if n > 0 {
+			log.Info("agent owner backfill: granted creator ownership", zap.Int("granted", n))
+		}
+	}()
 	brokerv1.RegisterBrokerServiceServer(northServer, northSvc)
 	reflection.Register(northServer)
 

@@ -98,6 +98,7 @@ var manageableRules = []manageRule{
 	{"permitted_group", "skill", groupOnly, brokerv1.AssignmentSection_SKILL_ACCESS},
 	{"can_use", "agentskill", groupOnly, brokerv1.AssignmentSection_SKILL_ACCESS},
 	{"owner_user", "agent", userOnly, brokerv1.AssignmentSection_AGENT_RELATION},
+	{"owner_group", "agent", groupOnly, brokerv1.AssignmentSection_AGENT_RELATION},
 	{"spawned_by", "agent", userOrAgent, brokerv1.AssignmentSection_AGENT_RELATION},
 	{"usable_by", "agent", userOrGroup, brokerv1.AssignmentSection_AGENT_RELATION},
 	{"permitted_agent", "mcp_connector", agentOnly, brokerv1.AssignmentSection_MCP_ACCESS},
@@ -308,8 +309,12 @@ func (s *BrokerService) AssignRole(ctx context.Context, req *brokerv1.AssignRole
 	if err := s.deps.Policy.WriteRelations(ctx, relationOf(req.Tuple)); err != nil {
 		return nil, status.Errorf(codes.Internal, "assign failed: %v", err)
 	}
+	eventType := "aikonos.broker.admin.role.assigned"
+	if isAgentOwnerTuple(req.Tuple) {
+		eventType = "aikonos.broker.agent.owner.added"
+	}
 	s.emitAdminAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"aikonos.broker.admin.role.assigned", req.Tuple, auditv1.PolicyDecision_ALLOW)
+		eventType, req.Tuple, auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.AssignRoleResponse{Success: true}, nil
 }
 
@@ -330,12 +335,59 @@ func (s *BrokerService) RevokeRole(ctx context.Context, req *brokerv1.RevokeRole
 	if err := s.validateRevocable(req.Tuple); err != nil {
 		return nil, err
 	}
+	eventType := "aikonos.broker.admin.role.revoked"
+	if isAgentOwnerTuple(req.Tuple) {
+		eventType = "aikonos.broker.agent.owner.removed"
+		if err := s.refuseLastAgentOwner(ctx, req.Tuple); err != nil {
+			if status.Code(err) == codes.FailedPrecondition {
+				s.emitAdminAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
+					eventType, req.Tuple, auditv1.PolicyDecision_DENY)
+			}
+			return nil, err
+		}
+	}
 	if err := s.deps.Policy.DeleteRelations(ctx, relationOf(req.Tuple)); err != nil {
 		return nil, status.Errorf(codes.Internal, "revoke failed: %v", err)
 	}
 	s.emitAdminAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"aikonos.broker.admin.role.revoked", req.Tuple, auditv1.PolicyDecision_ALLOW)
+		eventType, req.Tuple, auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.RevokeRoleResponse{Success: true}, nil
+}
+
+// isAgentOwnerTuple reports whether t grants or names an owner of an agent
+// (AG-04): owner changes get their own audit events and the last-owner guard.
+func isAgentOwnerTuple(t *brokerv1.RoleTuple) bool {
+	return strings.HasPrefix(t.Object, "agent:") && (t.Relation == "owner_user" || t.Relation == "owner_group")
+}
+
+// agentOwnerRefs returns the owner subjects (owner_user and owner_group) among
+// tuples read for one agent object.
+func agentOwnerRefs(rels []policy.Relation) []string {
+	var out []string
+	for _, r := range rels {
+		if r.Relation == "owner_user" || r.Relation == "owner_group" {
+			out = append(out, r.User)
+		}
+	}
+	return out
+}
+
+// refuseLastAgentOwner refuses to remove the only remaining owner of an agent
+// (AG-04): every agent keeps an accountable person or group. Fails closed when
+// the owners cannot be read. Removing a tuple that is not an owner of record
+// is left to DeleteRelations (a no-op delete).
+// ponytail: read-then-delete, so two concurrent removals of the last two owners
+// can both pass; ListAgents then flags the agent orphaned.
+func (s *BrokerService) refuseLastAgentOwner(ctx context.Context, t *brokerv1.RoleTuple) error {
+	rels, err := s.deps.Policy.ReadTuples(ctx, policy.ReadFilter{Object: t.Object})
+	if err != nil {
+		return status.Error(codes.Internal, "read agent owners failed")
+	}
+	owners := agentOwnerRefs(rels)
+	if len(owners) == 1 && owners[0] == t.User {
+		return status.Error(codes.FailedPrecondition, "cannot remove the last owner of an agent; add another owner first")
+	}
+	return nil
 }
 
 func relationOf(t *brokerv1.RoleTuple) policy.Relation {

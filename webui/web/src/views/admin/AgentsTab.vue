@@ -2,20 +2,15 @@
 import { ref, computed, inject } from "vue";
 import { deriveAgent } from "./access-derive.js";
 import { ACCESS_CTX } from "./useAccessControl.js";
-import { assignRole, revokeRole } from "../../api/admin.js";
-import { subjectRef } from "../../sections.js";
-import { useToast } from "../../components/ui/useToast.js";
 
 const ctx = inject(ACCESS_CTX);
 const {
   loading, tuples, agents, mcpConnections,
   userPrincipals, derivedGroups,
-  userName, mutating, mutError,
-  doAssign, doRevoke, load,
+  userName, mutating,
+  doAssign, doRevoke,
   selectedAgent,
 } = ctx;
-
-const { push: toast } = useToast();
 
 // ── tab-local state ───────────────────────────────────────────────────────────
 
@@ -40,39 +35,39 @@ const selAgentData = computed(() => {
   return deriveAgent(`agent:${selectedAgent.value.id}`, tuples.value);
 });
 
-// ── owner reassign ────────────────────────────────────────────────────────────
+// ── owners (AG-04): add and remove users and groups; never the last one ──────
 
 const agentOwnerDropSearch = ref("");
-const agentOwnerMutating   = ref(false);
+
+const agentOwners = computed(() => selAgentData.value?.owners ?? []);
 
 const agentOwnerOptions = computed(() => {
   const q = agentOwnerDropSearch.value.toLowerCase();
-  const current = selAgentData.value?.owner;
-  return userPrincipals.value
-    .filter((p) => p.id !== current)
-    .filter((p) => !q || userName(p.id).toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
+  const existing = new Set(agentOwners.value);
+  const users = userPrincipals.value
+    .filter((p) => !existing.has(p.id))
+    .filter((p) => !q || userName(p.id).toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
+    .map((p) => ({ ref: p.id, label: userName(p.id) }));
+  const groups = derivedGroups.value
+    .filter((g) => !existing.has(`group:${g.name}#member`))
+    .filter((g) => !q || g.name.toLowerCase().includes(q))
+    .map((g) => ({ ref: `group:${g.name}#member`, label: `group:${g.name}` }));
+  return [...users, ...groups].sort((a, b) => a.label < b.label ? -1 : 1);
 });
 
-async function reassignAgentOwner(newOwnerRef) {
+function ownerRelation(subj) {
+  return subj.startsWith("group:") ? "owner_group" : "owner_user";
+}
+
+async function addAgentOwner(subj) {
   if (!selectedAgent.value) return;
-  agentOwnerMutating.value = true;
-  const agentRef = `agent:${selectedAgent.value.id}`;
-  const current  = selAgentData.value?.owner;
-  try {
-    // Revoke old owner first; abort before assigning if revoke fails (mirrors setTenantRole pattern)
-    if (current) {
-      await revokeRole({ user: subjectRef(current), relation: "owner_user", object: agentRef });
-    }
-    await assignRole({ user: subjectRef(newOwnerRef), relation: "owner_user", object: agentRef });
-    toast("ok", "Agent owner updated.");
-    await load();
-    const refreshed = agents.value.find((a) => a.id === selectedAgent.value?.id);
-    if (refreshed) selectedAgent.value = refreshed;
-  } catch (e) {
-    mutError.value = e.message;
-  } finally {
-    agentOwnerMutating.value = false;
-  }
+  await doAssign(subj, ownerRelation(subj), `agent:${selectedAgent.value.id}`);
+}
+
+async function removeAgentOwner(subj) {
+  // The broker refuses removing the last owner too; this only saves the round trip.
+  if (!selectedAgent.value || agentOwners.value.length <= 1) return;
+  await doRevoke(subj, ownerRelation(subj), `agent:${selectedAgent.value.id}`);
 }
 
 // ── usable_by: combined user+group dropdown ───────────────────────────────────
@@ -148,7 +143,10 @@ async function removeAgentMcp(connId) {
         :data-testid="`agent-row-${a.id}`"
         @click="selectAgent(a)"
       >
-        <span class="item-name">{{ a.name ?? a.id }}</span>
+        <span class="item-name">
+          {{ a.name ?? a.id }}
+          <span v-if="a.orphaned" class="orphan-tag" :data-testid="`agent-list-orphaned-${a.id}`">orphaned</span>
+        </span>
         <span class="item-sub mono">{{ a.id }}</span>
       </div>
       <div v-if="!loading && filteredAgents.length === 0" class="list-empty">No agents.</div>
@@ -165,25 +163,38 @@ async function removeAgentMcp(connId) {
           </div>
         </div>
 
-        <!-- Owner -->
+        <!-- Owners (AG-04) -->
         <div class="detail-section">
-          <div class="section-label">Owner</div>
-          <div class="chips-row">
-            <span v-if="selAgentData?.owner" class="chip chip-tenant">
-              {{ userName(selAgentData.owner) }}
+          <div class="section-label">Owners</div>
+          <div class="chips-row" data-testid="agent-owners">
+            <span
+              v-for="subj in agentOwners"
+              :key="subj"
+              class="chip chip-tenant"
+              :title="subj"
+              :data-testid="`agent-owner-${subj}`"
+            >
+              {{ subj.startsWith("user:") ? userName(subj) : subj.replace(/#member$/, "") }}
+              <button
+                class="chip-x"
+                :disabled="mutating || agentOwners.length <= 1"
+                :title="agentOwners.length <= 1 ? 'An agent needs at least one owner' : 'Remove owner'"
+                :data-testid="`agent-owner-remove-${subj}`"
+                @click="removeAgentOwner(subj)"
+              >×</button>
             </span>
-            <span v-else class="no-items">No owner assigned.</span>
+            <span v-if="agentOwners.length === 0" class="no-items" data-testid="agent-no-owner">No owner assigned.</span>
           </div>
           <div class="add-row">
             <select
               class="dropdown"
-              :disabled="mutating || agentOwnerMutating"
-              @change="(e) => { if (e.target.value) { reassignAgentOwner(e.target.value); e.target.value = ''; } }"
+              :disabled="mutating"
+              @change="(e) => { if (e.target.value) { addAgentOwner(e.target.value); e.target.value = ''; } }"
               data-testid="agent-owner-select"
             >
-              <option value="">{{ selAgentData?.owner ? 'Reassign owner…' : 'Assign owner…' }}</option>
-              <option v-for="p in agentOwnerOptions" :key="p.id" :value="p.id" :data-testid="`agent-owner-opt-${p.id}`">
-                {{ p.displayName ?? p.email ?? p.id }}
+              <option value="">Add owner (user or group)…</option>
+              <option v-for="opt in agentOwnerOptions" :key="opt.ref" :value="opt.ref" :data-testid="`agent-owner-opt-${opt.ref}`">
+                {{ opt.label }}
               </option>
             </select>
           </div>
@@ -289,6 +300,7 @@ async function removeAgentMcp(connId) {
 .list-item:hover { background: var(--bg-hover); }
 .list-item.active { background: var(--bg-active); }
 .item-name { display: block; font-size: 13px; font-weight: 500; }
+.orphan-tag { font-size: 11px; font-weight: 500; color: var(--danger); margin-left: 4px; }
 .item-sub  { display: block; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
 
 .detail-pane {

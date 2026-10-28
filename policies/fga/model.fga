@@ -72,9 +72,13 @@ type agent
   relations
     define spawned_by: [user, agent]
     define owner_user: [user]
+    # AG-04: a group can own an agent too, so ownership survives one person
+    # leaving. `owner` is either kind; delegation stays with named users.
+    define owner_group: [group#member]
+    define owner: owner_user or owner_group
     define usable_by: [user, group#member]
     define can_delegate_to_user: owner_user
-    define can_use: usable_by or owner_user
+    define can_use: usable_by or owner
 
 # ── Document and artifact sharing ────────────────────────────────────────────
 

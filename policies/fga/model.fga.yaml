@@ -1,0 +1,43 @@
+# OpenFGA model tests: `fga model test --tests policies/fga/model.fga.yaml`
+name: aikonos model tests
+model_file: ./model.fga
+tuples:
+  - user: user:alice
+    relation: owner_user
+    object: agent:a1
+  - user: group:ops#member
+    relation: owner_group
+    object: agent:a1
+  - user: user:bob
+    relation: member
+    object: group:ops
+  - user: user:carol
+    relation: usable_by
+    object: agent:a1
+tests:
+  # AG-04: user and group owners both own and may use the agent; only a named
+  # user owner may delegate; a plain user of the agent owns nothing.
+  - name: agent owners
+    check:
+      - user: user:alice
+        object: agent:a1
+        assertions:
+          owner: true
+          can_use: true
+          can_delegate_to_user: true
+      - user: user:bob
+        object: agent:a1
+        assertions:
+          owner: true
+          can_use: true
+          can_delegate_to_user: false
+      - user: user:carol
+        object: agent:a1
+        assertions:
+          owner: false
+          can_use: true
+      - user: user:dave
+        object: agent:a1
+        assertions:
+          owner: false
+          can_use: false

@@ -1738,6 +1738,7 @@ message Agent {
   bool   gateway_enabled = 14;     // when true, agent is invokable via the external :8090 surface
   bool   service_agent = 15;       // AG-17: may run subject-less (external key, no user)
   string sessions_revoked_at = 16; // AG-06: RFC3339 revocation epoch; empty if never
+  bool   orphaned = 17;            // AG-04: no owner, or every owner blocked (read-only, ListAgents)
 }
 
 message CreateAgentRequest { string tenant_id = 1; string user_id = 2; Agent agent = 3; }

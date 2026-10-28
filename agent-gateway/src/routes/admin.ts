@@ -160,6 +160,7 @@ export function agentJson(a: Agent) {
     gatewayEnabled: a.gatewayEnabled ?? false,
     serviceAgent: a.serviceAgent ?? false,
     sessionsRevokedAt: a.sessionsRevokedAt ?? "",
+    orphaned: a.orphaned ?? false,
   };
 }
 
@@ -193,6 +194,7 @@ export function agentInputFromBody(id: string, b: AgentBody) {
     gatewayEnabled: b.gatewayEnabled ?? false,
     serviceAgent: b.serviceAgent ?? false,
     sessionsRevokedAt: "", // read-only (AG-06); UpdateAgent ignores it
+    orphaned: false, // read-only (AG-04); UpdateAgent ignores it
     usableBy: [],
     createdBy: "",
     createdAt: undefined,

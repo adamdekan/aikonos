@@ -100,3 +100,7 @@ To cut a person or an agent off before their tokens expire, block the user or
 revoke all sessions of the user or agent in the admin UI (Access Control →
 Members, Agents). Both take effect within 30 seconds on every broker replica;
 see `docs/user-lifecycle.md`.
+
+Give every agent more than one owner, or a group owner, so it keeps an
+accountable owner when a person leaves. Admin → Agents marks an agent
+*orphaned* when it has no owner or all its owners are blocked.

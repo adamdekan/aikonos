@@ -33,9 +33,10 @@ tasks:
       - go test ./broker/...
 
   policy:test:
-    desc: Run OPA policy unit tests
+    desc: Run OPA policy and OpenFGA model tests
     cmds:
       - opa test policies/opa/ -v
+      - fga model test --tests policies/fga/model.fga.yaml
 
   gateway:test:
     desc: Run agent-gateway unit tests (needs npm ci'd agent-gateway/node_modules and gen/ts stubs — run `task proto:gen` first if gen/ts is missing)

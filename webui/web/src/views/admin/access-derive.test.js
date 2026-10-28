@@ -339,6 +339,7 @@ describe("deriveAgent", () => {
   const AGENT_TUPLES = [
     // owner
     { user: "user:alice@example.com", relation: "owner_user",    object: "agent:alice-agent" },
+    { user: "group:sec#member",      relation: "owner_group",   object: "agent:alice-agent" },
     // usable_by — direct user
     { user: "user:bob@example.com",   relation: "usable_by",     object: "agent:alice-agent" },
     // usable_by — group member-set
@@ -350,14 +351,14 @@ describe("deriveAgent", () => {
     { user: "user:bob@example.com",   relation: "owner_user",    object: "agent:bob-agent" },
   ];
 
-  it("returns null owner when no owner_user tuple for agent", () => {
+  it("returns no owners when no owner tuple for agent", () => {
     const d = deriveAgent("agent:ghost", AGENT_TUPLES);
-    expect(d.owner).toBeNull();
+    expect(d.owners).toEqual([]);
   });
 
-  it("returns owner userRef", () => {
+  it("returns user and group owners sorted (AG-04)", () => {
     const d = deriveAgent("agent:alice-agent", AGENT_TUPLES);
-    expect(d.owner).toBe("user:alice@example.com");
+    expect(d.owners).toEqual(["group:sec#member", "user:alice@example.com"]);
   });
 
   it("returns usableBy sorted", () => {
@@ -384,7 +385,7 @@ describe("deriveAgent", () => {
 
   it("does not include other agent tuples", () => {
     const d = deriveAgent("agent:bob-agent", AGENT_TUPLES);
-    expect(d.owner).toBe("user:bob@example.com");
+    expect(d.owners).toEqual(["user:bob@example.com"]);
     expect(d.usableBy).toEqual([]);
   });
 

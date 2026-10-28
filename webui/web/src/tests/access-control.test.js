@@ -798,32 +798,69 @@ describe("AccessControl.vue — Agents tab", () => {
     expect(detail.text()).toContain("mcp-conn-1");
   });
 
-  it("reassign owner revokes old then assigns new", async () => {
+  // AG-04: owners are added and removed, not swapped; the last one stays.
+  it("add owner (user) assigns owner_user without revoking the current owner", async () => {
     const w = await mountAC();
     await goAgents(w);
     await w.find("[data-testid='agent-row-agent-1']").trigger("click");
 
-    const select = w.find("[data-testid='agent-owner-select']");
-    // Bob is not current owner (alice is), so bob should appear in options
-    await select.setValue("user:bob@example.com");
+    await w.find("[data-testid='agent-owner-select']").setValue("user:bob@example.com");
     await flushPromises();
 
-    // Revoke old owner (alice)
-    expect(adminApi.revokeRole).toHaveBeenCalledWith(
-      expect.objectContaining({
-        user:     "user:alice@example.com",
-        relation: "owner_user",
-        object:   "agent:agent-1",
-      }),
-    );
-    // Assign new owner (bob)
     expect(adminApi.assignRole).toHaveBeenCalledWith(
-      expect.objectContaining({
-        user:     "user:bob@example.com",
-        relation: "owner_user",
-        object:   "agent:agent-1",
-      }),
+      expect.objectContaining({ user: "user:bob@example.com", relation: "owner_user", object: "agent:agent-1" }),
     );
+    expect(adminApi.revokeRole).not.toHaveBeenCalled();
+  });
+
+  it("add owner (group) assigns owner_group", async () => {
+    const w = await mountAC();
+    await goAgents(w);
+    await w.find("[data-testid='agent-row-agent-1']").trigger("click");
+
+    await w.find("[data-testid='agent-owner-select']").setValue("group:security-team#member");
+    await flushPromises();
+
+    expect(adminApi.assignRole).toHaveBeenCalledWith(
+      expect.objectContaining({ user: "group:security-team#member", relation: "owner_group", object: "agent:agent-1" }),
+    );
+  });
+
+  it("the last owner cannot be removed", async () => {
+    const w = await mountAC();
+    await goAgents(w);
+    await w.find("[data-testid='agent-row-agent-1']").trigger("click");
+
+    const x = w.find("[data-testid='agent-owner-remove-user:alice@example.com']");
+    expect(x.attributes("disabled")).toBeDefined();
+    await x.trigger("click");
+    expect(adminApi.revokeRole).not.toHaveBeenCalled();
+  });
+
+  it("removes one of several owners", async () => {
+    adminApi.listAssignments.mockResolvedValue({
+      ...makeAssignmentsResp(),
+      tuples: [...TUPLES,
+        { user: "group:security-team#member", relation: "owner_group", object: "agent:agent-1" }],
+    });
+    const w = await mountAC();
+    await goAgents(w);
+    await w.find("[data-testid='agent-row-agent-1']").trigger("click");
+
+    await w.find("[data-testid='agent-owner-remove-group:security-team#member']").trigger("click");
+    await flushPromises();
+
+    expect(adminApi.revokeRole).toHaveBeenCalledWith(
+      expect.objectContaining({ user: "group:security-team#member", relation: "owner_group", object: "agent:agent-1" }),
+    );
+  });
+
+  it("flags an orphaned agent in the list", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [{ ...AGENTS[0], orphaned: true }, AGENTS[1]] });
+    const w = await mountAC();
+    await goAgents(w);
+    expect(w.find("[data-testid='agent-list-orphaned-agent-1']").exists()).toBe(true);
+    expect(w.find("[data-testid='agent-list-orphaned-agent-2']").exists()).toBe(false);
   });
 
   it("add usable_by (user) calls assignRole(userRef, 'usable_by', 'agent:<id>')", async () => {

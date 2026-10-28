@@ -117,6 +117,20 @@ describe("Agents.vue", () => {
     w.unmount();
   });
 
+  // AG-04: ListAgents flags an agent whose owners are all blocked (or gone).
+  it("shows the orphaned badge only on orphaned agents", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [
+      { ...SAMPLE_AGENT, orphaned: true },
+      { ...SAMPLE_AGENT, id: "a2", name: "owned" },
+    ] });
+    const router = makeRouter();
+    await router.push("/admin/agents");
+    const w = mount(Agents, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(w.find("[data-testid='agent-orphaned-a1']").exists()).toBe(true);
+    expect(w.find("[data-testid='agent-orphaned-a2']").exists()).toBe(false);
+  });
+
   it("opens create modal when New Agent button is clicked", async () => {
     adminApi.listAgents.mockResolvedValue({ agents: [] });
     const router = makeRouter();
