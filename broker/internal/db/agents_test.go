@@ -100,6 +100,28 @@ func TestAgentRepo_ServiceAgentRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAgentRepo_McpToolsRoundTrip pins AG-08: a new agent has no MCP tool,
+// and the allowlist round-trips through Update.
+func TestAgentRepo_McpToolsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAgentRepo(openTestPool(t), zap.NewNop())
+	a := &Agent{ID: uuid.New(), TenantID: uuid.New(), Name: "m", ApprovalMode: "auto", McpServers: []string{"c1"}}
+	if err := repo.Create(ctx, a); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := repo.Get(ctx, a.TenantID.String(), a.ID.String())
+	if err != nil || len(got.McpTools) != 0 {
+		t.Fatalf("Get after create: mcp_tools=%v err=%v, want empty", got, err)
+	}
+	a.McpTools = []string{"mcp:c1:read"}
+	if err := repo.Update(ctx, a); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got, err = repo.Get(ctx, a.TenantID.String(), a.ID.String()); err != nil || len(got.McpTools) != 1 || got.McpTools[0] != "mcp:c1:read" {
+		t.Fatalf("Get after update: mcp_tools=%v err=%v", got.McpTools, err)
+	}
+}
+
 // TestAgentRepo_DefaultAgent pins AG-01: EnsureDefault creates one default
 // agent per tenant (idempotent), Delete refuses it, and the per-user setting
 // round-trips, clears, and cascades away with its agent.

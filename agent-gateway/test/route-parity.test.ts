@@ -71,6 +71,8 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // Decision replay authorized addition: GET /admin/audit/evidence/:eventId —
 // one decision record plus the archived policy it names, the input to
 // scripts/replay-decision.sh (broker-enforced, tenant-admin gated).
+// AG-08 authorized addition: GET /admin/mcp/:id/tools — discovered MCP tools
+// with their effect class, for the admin confirm step and the agent editor.
 const EXPECTED_ROUTES = [
   "DELETE /admin/agents/:id",
   "DELETE /admin/agents/:id/keys/:keyId",
@@ -101,6 +103,7 @@ const EXPECTED_ROUTES = [
   "GET /admin/decisions/:taskId",
   "GET /admin/m365",
   "GET /admin/mcp",
+  "GET /admin/mcp/:id/tools",
   "GET /admin/members",
   "GET /admin/network",
   "GET /admin/observability",

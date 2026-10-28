@@ -13,6 +13,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/effectclass"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
@@ -144,45 +145,49 @@ func TestSubmitPlan_FU2_CorrectlyDeclaredUnchanged(t *testing.T) {
 	}
 }
 
-// TestSubmitPlan_FU2_MCPKeepsPlanDeclared verifies that an MCP tool's plan-declared
-// class is kept unchanged (the broker has no ground truth for MCP semantics).
-func TestSubmitPlan_FU2_MCPKeepsPlanDeclared(t *testing.T) {
-	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
-	svc := newSandboxSvcForPlan(taskStore, &opaLikePolicyEngine{}, nil)
-
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
-		TaskId: validTaskUUID(),
-		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
-			// MCP tool declared as write_external.
-			makeStepWithClass(1, "mcp:conn-abc:some-tool", planv1.EffectClass_WRITE_EXTERNAL),
-		}),
-	})
-	if err != nil {
-		t.Fatalf("SubmitPlan: %v", err)
+// TestSubmitPlan_AG08_McpFloor: an MCP tool's plan-declared class is floored
+// with the broker's class (H-11). Unconfirmed, a read_only declaration routes
+// at McpUnconfirmedClass; once the tenant admin confirms read_only (overlay
+// row), the same step is auto-approved, and an admin-confirmed write_external
+// still beats a read_only declaration.
+func TestSubmitPlan_AG08_McpFloor(t *testing.T) {
+	const tool = "mcp:conn-abc:query_rows" // a "read verb" name: no longer trusted
+	cases := []struct {
+		name      string
+		confirmed planv1.EffectClass // UNSPECIFIED = no overlay row
+		wantRoute planv1.EffectClass
+		want      planv1.ValidationOutcome
+	}{
+		{"unconfirmed", planv1.EffectClass_EFFECT_CLASS_UNSPECIFIED, toolregistry.McpUnconfirmedClass, planv1.ValidationOutcome_NEEDS_STEP_UP},
+		{"confirmed read_only", planv1.EffectClass_READ_ONLY, planv1.EffectClass_READ_ONLY, planv1.ValidationOutcome_APPROVED},
+		{"confirmed write_external", planv1.EffectClass_WRITE_EXTERNAL, planv1.EffectClass_WRITE_EXTERNAL, planv1.ValidationOutcome_NEEDS_HUMAN},
 	}
-
-	// MCP tools have no broker-side authoritative class, so the plan-declared
-	// write_external is routed unchanged. The opaLike engine routes
-	// write_external to approval, so the outcome must be NEEDS_HUMAN — proving
-	// the declared class actually reached DecideToolCall (not silently dropped
-	// to UNSPECIFIED/deny).
-	if result.Outcome != planv1.ValidationOutcome_NEEDS_HUMAN {
-		t.Errorf("MCP outcome = %v, want NEEDS_HUMAN (write_external routes to approval)", result.Outcome)
-	}
-
-	if len(taskStore.insertedRecords) != 1 {
-		t.Fatalf("expected 1 inserted record, got %d", len(taskStore.insertedRecords))
-	}
-	rec := taskStore.insertedRecords[0]
-
-	if rec.DecisionTrace != nil {
-		if _, hasOverride := rec.DecisionTrace["effect_class_override"]; hasOverride {
-			t.Error("MCP tool must not have effect_class_override in trace")
-		}
-	}
-
-	// Persisted class must be what the planner declared.
-	if rec.EffectClass != planv1.EffectClass_WRITE_EXTERNAL.String() {
-		t.Errorf("MCP persisted EffectClass = %q, want WRITE_EXTERNAL (plan-declared)", rec.EffectClass)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+			svc := newSandboxSvcForPlan(taskStore, &opaLikePolicyEngine{}, nil)
+			svc.deps.ToolRegistry = toolregistry.NewRegistry()
+			if tc.confirmed != planv1.EffectClass_EFFECT_CLASS_UNSPECIFIED {
+				svc.deps.ToolRegistry.SetTenantOverlay(testTenantUUID, []toolregistry.OverlayRow{
+					{ToolID: tool, Enabled: true, EffectClass: tc.confirmed, ExecutorKind: "mcp"},
+				})
+			}
+			result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+				TaskId: validTaskUUID(),
+				Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStepWithClass(1, tool, planv1.EffectClass_READ_ONLY)}),
+			})
+			if err != nil {
+				t.Fatalf("SubmitPlan: %v", err)
+			}
+			if result.Outcome != tc.want {
+				t.Errorf("outcome = %v, want %v", result.Outcome, tc.want)
+			}
+			if len(taskStore.insertedRecords) != 1 {
+				t.Fatalf("expected 1 inserted record, got %d", len(taskStore.insertedRecords))
+			}
+			if got := taskStore.insertedRecords[0].EffectClass; got != tc.wantRoute.String() {
+				t.Errorf("persisted EffectClass = %q, want %q", got, tc.wantRoute.String())
+			}
+		})
 	}
 }

@@ -106,7 +106,7 @@ task-row binding idiom and add the regression test pattern already used in
 ## 3. Broker: policy and execution
 
 ### H-11 (Medium in stock deployment) MCP tools take the plan-declared effect class
-- **Status:** open
+- **Status:** fixed (AG-08). `AuthoritativeEffectClass` returns `destructive` for every `mcp:` id, so `Stricter` floors the plan's class; a tenant admin confirms the real class per tool (Admin → MCP → Tools, stored as a `skill_overlay` row, which then wins). Agents also need each MCP tool in `agents.mcp_tools` (SubmitPlan and InvokeTool). The gateway heuristic is left in place but no longer decides routing.
 - **Where:** `service_plan.go:151-155` (`Stricter` only when `authKnown`), `toolregistry/authoritative.go:58-72` (ok=false for `mcp:`), `overlay.go:93-102,150-152`, `policies/opa/tool_invocation.rego:8,24-28`; class set by `agent-gateway/src/broker/mapping.ts:121-134` (name-prefix heuristic + server `readOnlyHint` from `pi/mcp-tools.ts:78`)
 - **What:** No broker-side floor for unknown MCP tools. The gateway classifies READ_ONLY (auto-approved, no human) when the third-party MCP server sets `readOnlyHint=true` or the tool name starts with get/list/search/read/fetch/describe/lookup/query/find. Nothing re-derives the class at execution.
 - **Exploit:** A malicious/compromised MCP server advertises a destructive tool as read-only, or names it `query_…`; it runs with no approval. A compromised gateway/sandbox can declare any class.

@@ -62,6 +62,7 @@ test("agentJson — includes allowedProviders and preferredProvider from Agent",
     approvalMode: "auto",
     skills: [],
     mcpServers: [],
+    mcpTools: [],
     usableBy: [],
     createdBy: "admin",
     createdAt: undefined,
@@ -95,6 +96,7 @@ test("agentJson — allowedProviders defaults to [] and preferredProvider defaul
     approvalMode: "needs_approval",
     skills: [],
     mcpServers: [],
+    mcpTools: [],
     usableBy: [],
     createdBy: "admin",
     createdAt: undefined,
@@ -126,6 +128,7 @@ test("agentInputFromBody — POST path: id is empty string, provider fields forw
     approvalMode: "auto",
     skills: [],
     mcpServers: [],
+    mcpTools: [],
     allowedProviders: ["openai", "anthropic"],
     preferredProvider: "anthropic",
   };
@@ -190,4 +193,12 @@ test("requireUser — no bearer → sets 401 and returns null", async () => {
 
   assert.equal(principal, null);
   assert.equal(reply.statusCode, 401);
+});
+
+// AG-08: the per-agent MCP tool allowlist passes through both directions.
+test("agentInputFromBody / agentJson — mcpTools forwarded, defaults to []", () => {
+  const input = agentInputFromBody("a1", { name: "x", mcpServers: ["c1"], mcpTools: ["mcp:c1:read"] });
+  assert.deepEqual(input.mcpTools, ["mcp:c1:read"]);
+  assert.deepEqual(agentInputFromBody("a1", { name: "x" }).mcpTools, []);
+  assert.deepEqual(agentJson({ ...input, mcpTools: ["mcp:c1:read"] } as Agent).mcpTools, ["mcp:c1:read"]);
 });

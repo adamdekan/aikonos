@@ -216,10 +216,9 @@ func TestSkillBoundary_NullAgentID_Unaffected(t *testing.T) {
 }
 
 // newSvcWithAgentMcp builds a SandboxService whose seeded agent carries the
-// given Skills and McpServers — used to exercise the mcp: branch of
-// checkAgentSkills (attaching an MCP server, not listing an mcp: skill, is the
-// grant).
-func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore, pol planPolicyEngine) *SandboxService {
+// given Skills, McpServers and the AG-08 McpTools allowlist — used to exercise
+// the mcp: branch of checkAgentSkills.
+func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore, pol planPolicyEngine, mcpTools ...string) *SandboxService {
 	t.Helper()
 	em, err := audit.NewEmitter(context.Background(), audit.Config{})
 	if err != nil {
@@ -232,6 +231,7 @@ func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore,
 			Name:       "test-agent",
 			Skills:     skills,
 			McpServers: mcpServers,
+			McpTools:   mcpTools,
 		},
 	}
 	return &SandboxService{deps: Deps{
@@ -244,10 +244,10 @@ func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore,
 }
 
 // TestSkillBoundary_McpAttached_Approved: an mcp: step whose connector is in the
-// agent's mcp_servers is within the boundary even though no mcp: skill is listed.
+// agent's mcp_servers and whose tool is in its McpTools is within the boundary.
 func TestSkillBoundary_McpAttached_Approved(t *testing.T) {
 	store := agentBoundTask()
-	svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol())
+	svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol(), "mcp:conn-1:search")
 
 	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
@@ -318,4 +318,29 @@ func containsTool(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestSkillBoundary_AG08_McpToolNotAllowed_Denied: attaching the connector is
+// not enough; a tool the admin did not pick is outside the boundary, for a
+// named agent and for the tenant default agent alike.
+func TestSkillBoundary_AG08_McpToolNotAllowed_Denied(t *testing.T) {
+	for _, isDefault := range []bool{false, true} {
+		store := agentBoundTask()
+		svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol(), "mcp:conn-1:search")
+		svc.deps.Agents.(*fakeAgentStoreForSkill).agent.IsDefault = isDefault
+
+		result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+			TaskId: validTaskUUID(),
+			Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:conn-1:delete_all", nil)}),
+		})
+		if err != nil {
+			t.Fatalf("default=%v: SubmitPlan unexpected error: %v", isDefault, err)
+		}
+		if result.Outcome != planv1.ValidationOutcome_DENIED {
+			t.Errorf("default=%v: tool not in mcp_tools: want DENIED, got %s", isDefault, result.Outcome)
+		}
+		if len(result.Violations) == 0 || !containsTool(result.Violations[0], "mcp:conn-1:delete_all") {
+			t.Errorf("default=%v: violations = %v, want one naming the tool", isDefault, result.Violations)
+		}
+	}
 }

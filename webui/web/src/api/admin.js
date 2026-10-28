@@ -60,6 +60,12 @@ export function deleteMcpConnection(id) {
   return del(`/admin/mcp/${id}`);
 }
 
+// AG-08: a connection's discovered tools, each with the broker's effect class
+// (effectClassConfirmed=false → the unconfirmed floor). Confirm via upsertSkill.
+export function listMcpServerTools(id) {
+  return get(`/admin/mcp/${encodeURIComponent(id)}/tools`);
+}
+
 // ── Admin scheduled-run oversight ─────────────────────────────────────────────
 
 export function listAdminRuns(owner) {

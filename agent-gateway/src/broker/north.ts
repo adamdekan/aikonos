@@ -101,6 +101,8 @@ import type {
   DeleteMcpConnectionResponse,
   ListAccessibleMcpServersRequest,
   ListAccessibleMcpServersResponse,
+  ListMcpServerToolsRequest,
+  ListMcpServerToolsResponse,
   QueryAuditRequest,
   QueryAuditResponse,
   VerifyAuditChainRequest,
@@ -532,6 +534,13 @@ export class NorthClient {
     token?: string,
   ): Promise<ListAccessibleMcpServersResponse> {
     return unary((r, m, o, cb) => this.client.listAccessibleMcpServers(r, m, o, cb), req, bearer(token));
+  }
+
+  listMcpServerTools(
+    req: ListMcpServerToolsRequest,
+    token?: string,
+  ): Promise<ListMcpServerToolsResponse> {
+    return unary((r, m, o, cb) => this.client.listMcpServerTools(r, m, o, cb), req, bearer(token));
   }
 
   queryAudit(req: QueryAuditRequest, token?: string): Promise<QueryAuditResponse> {

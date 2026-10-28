@@ -52,7 +52,7 @@ func submitUserBound(t *testing.T, owner, toolID, mode string, serviceAgent bool
 	task.AgentID = &aid
 	agents := &fakeAgentStoreForSkill{agent: &db.Agent{
 		ID: aid, TenantID: uuid.MustParse(testTenantUUID), Name: "test-agent",
-		Skills: []string{"web.fetch"}, McpServers: []string{ubConn}, ServiceAgent: serviceAgent,
+		Skills: []string{"web.fetch"}, McpServers: []string{ubConn}, McpTools: []string{"mcp:" + ubConn + ":echo"}, ServiceAgent: serviceAgent,
 	}}
 	sp := &fakeSkillPolicy{enabled: true, granted: false}
 	em, sub := buildAuditBus(t, testTenantUUID)
@@ -204,7 +204,7 @@ func invokeUserBound(t *testing.T, owner, mode string, userGrant, serviceAgent b
 		ToolProxy: toolproxy.New(toolproxy.Config{McpConnections: repo, AllowMcpPrivate: true}, zap.NewNop()),
 		Mcp:       McpDeps{Connections: repo}, TenantID: "aikonos-dev", Tasks: tasks,
 		Config: userBoundCfg(mode),
-		Agents: &fakeAgentStoreForSkill{agent: &db.Agent{ID: agentID, ServiceAgent: serviceAgent}},
+		Agents: &fakeAgentStoreForSkill{agent: &db.Agent{ID: agentID, ServiceAgent: serviceAgent, McpTools: []string{"mcp:" + ubConn + ":echo"}}},
 	})
 	raw, err := m.Mint("spiffe://test/agent", "task-ub-1", tasks.task.OnBehalfOf(), []string{"mcp:" + ubConn})
 	if err != nil {

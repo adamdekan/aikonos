@@ -21,7 +21,9 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
+	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
+	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 	"github.com/google/uuid"
 )
 
@@ -125,6 +127,9 @@ func buildMcpSandboxSvc(
 		Mcp:        McpDeps{Connections: repo},
 		TenantID:   "aikonos-dev",
 		Tasks:      &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, AgentID: &agentID, CostBudget: 100}},
+		Agents: &fakeAgentStoreForSkill{agent: &db.Agent{
+			ID: agentID, McpServers: []string{connID}, McpTools: []string{"mcp:" + connID + ":echo"},
+		}},
 	})
 	return svc, m
 }
@@ -213,6 +218,27 @@ func TestInvokeTool_MCP_AllowedAgent_RoutesToHandler(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %s", resp.Error)
+	}
+}
+
+// AG-08: the agent's connector grant holds, but the tool is not in its
+// McpTools allowlist → PermissionDenied before the MCP server is reached.
+func TestInvokeTool_MCP_AG08_ToolNotAllowed_Denied(t *testing.T) {
+	mcpSrv := fakeMCPSrvSimple(t)
+	connID := uuid.New().String()
+
+	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* allowed */)
+	svc.deps.Agents.(*fakeAgentStoreForSkill).agent.McpTools = []string{"mcp:" + connID + ":other"}
+
+	tok := mintMcpToken(t, m, connID, "task-mcp-1")
+	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId:          "task-mcp-1",
+		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
+		CapabilityToken: tok,
+		TenantId:        testTenantUUID,
+	})
+	if status.Code(err) != codes.PermissionDenied || !strings.Contains(err.Error(), "allowed MCP tools") {
+		t.Fatalf("tool outside mcp_tools: want PermissionDenied (allowed MCP tools), got %v", err)
 	}
 }
 
@@ -417,6 +443,23 @@ func TestListMcpServerTools_ReturnsTools(t *testing.T) {
 	}
 	if resp.Tools[0].Name != "echo" {
 		t.Errorf("tool name = %q, want %q", resp.Tools[0].Name, "echo")
+	}
+	// AG-08: no admin confirmation yet → the floor, unconfirmed.
+	if resp.Tools[0].EffectClass != "destructive" || resp.Tools[0].EffectClassConfirmed {
+		t.Errorf("unconfirmed tool = (%q,%v), want (destructive,false)", resp.Tools[0].EffectClass, resp.Tools[0].EffectClassConfirmed)
+	}
+	// An admin-confirmed overlay row is reported as confirmed.
+	reg := toolregistry.NewRegistry()
+	reg.SetTenantOverlay(testTenantUUID, []toolregistry.OverlayRow{
+		{ToolID: "mcp:" + connID + ":echo", Enabled: true, EffectClass: planv1.EffectClass_READ_ONLY, ExecutorKind: "mcp"},
+	})
+	svc.deps.ToolRegistry = reg
+	resp, err = svc.ListMcpServerTools(ctx, &brokerv1.ListMcpServerToolsRequest{ConnectorId: connID})
+	if err != nil {
+		t.Fatalf("ListMcpServerTools: %v", err)
+	}
+	if resp.Tools[0].EffectClass != "read_only" || !resp.Tools[0].EffectClassConfirmed {
+		t.Errorf("confirmed tool = (%q,%v), want (read_only,true)", resp.Tools[0].EffectClass, resp.Tools[0].EffectClassConfirmed)
 	}
 }
 

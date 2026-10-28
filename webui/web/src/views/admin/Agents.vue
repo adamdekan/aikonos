@@ -8,6 +8,7 @@ import {
   assignRole,
   revokeRole,
   listMcpConnections,
+  listMcpServerTools,
   mintAgentApiKey,
   listAgentApiKeys,
   revokeAgentApiKey,
@@ -52,6 +53,9 @@ const fModelPair           = ref("");
 const fApproval            = ref("needs_approval");
 const fSkills              = ref([]);
 const fMcpServers          = ref([]);
+// AG-08: attaching a connector grants no tool; fMcpTools lists each one.
+const fMcpTools            = ref([]);
+const mcpToolsByConn       = ref({}); // connector id → discovered tools
 const fAllowedProviders    = ref([]);
 const fSoul                = ref("");
 const soulBytes            = computed(() => new Blob([fSoul.value]).size);
@@ -198,6 +202,7 @@ function openCreate() {
   fApproval.value          = "needs_approval";
   fSkills.value            = [];
   fMcpServers.value        = [];
+  fMcpTools.value          = [];
   fAllowedProviders.value  = [];
   fSoul.value              = "";
   fGatewayEnabled.value    = false;
@@ -219,6 +224,7 @@ async function openEdit(agent) {
   fApproval.value          = agent.approvalMode ?? agent.approval_mode ?? "needs_approval";
   fSkills.value            = [...(agent.skills ?? [])];
   fMcpServers.value        = [...(agent.mcpServers ?? agent.mcp_servers ?? [])];
+  fMcpTools.value          = [...(agent.mcpTools ?? agent.mcp_tools ?? [])];
   fAllowedProviders.value  = [...(agent.allowedProviders ?? agent.allowed_providers ?? [])];
   {
     const storedModel    = agent.llmModel ?? agent.llm_model ?? "";
@@ -268,8 +274,51 @@ function toggleSkill(id) {
 
 function toggleMcp(id) {
   const idx = fMcpServers.value.indexOf(id);
-  if (idx >= 0) fMcpServers.value.splice(idx, 1);
-  else fMcpServers.value.push(id);
+  if (idx >= 0) {
+    fMcpServers.value.splice(idx, 1);
+    // A detached connector takes its tools with it.
+    fMcpTools.value = fMcpTools.value.filter(t => !t.startsWith(`mcp:${id}:`));
+  } else fMcpServers.value.push(id);
+}
+
+function toggleMcpTool(id) {
+  const idx = fMcpTools.value.indexOf(id);
+  if (idx >= 0) fMcpTools.value.splice(idx, 1);
+  else fMcpTools.value.push(id);
+}
+
+// Discover the tools of every attached connector once per modal session.
+watch(fMcpServers, async (ids) => {
+  for (const id of ids) {
+    if (mcpToolsByConn.value[id]) continue;
+    mcpToolsByConn.value = { ...mcpToolsByConn.value, [id]: [] };
+    try {
+      const data = await listMcpServerTools(id);
+      mcpToolsByConn.value = { ...mcpToolsByConn.value, [id]: data.tools ?? [] };
+    } catch {
+      // unreachable server: no tools offered; already-selected ids are kept
+    }
+  }
+}, { deep: true });
+
+function mcpConnName(id) {
+  return mcpOptions.value.find(m => m.id === id)?.name ?? id;
+}
+
+function mcpToolItems(connId) {
+  return (mcpToolsByConn.value[connId] ?? []).map(t => ({
+    id: t.toolId,
+    label: `${t.name} (${t.effectClassConfirmed ? t.effectClass : "unconfirmed"})`,
+  }));
+}
+
+// Read-only preset: exactly the tools an admin confirmed as read_only.
+function applyReadOnlyPreset(connId) {
+  const prefix = `mcp:${connId}:`;
+  const ro = (mcpToolsByConn.value[connId] ?? [])
+    .filter(t => t.effectClassConfirmed && t.effectClass === "read_only")
+    .map(t => t.toolId);
+  fMcpTools.value = [...fMcpTools.value.filter(t => !t.startsWith(prefix)), ...ro];
 }
 
 async function loadKeys(agentId) {
@@ -379,6 +428,7 @@ async function submit() {
     approvalMode:      fApproval.value,
     skills:            fSkills.value,
     mcpServers:        fMcpServers.value,
+    mcpTools:          fMcpTools.value.filter(t => fMcpServers.value.some(c => t.startsWith(`mcp:${c}:`))),
     allowedProviders:  fAllowedProviders.value,
     preferredProvider: providerId,
     gatewayEnabled:    fGatewayEnabled.value,
@@ -814,6 +864,29 @@ const TABLE_COLS = [
               :searchable="true"
               empty-text="No MCP connections configured."
               @toggle="toggleMcp"
+            />
+          </FormField>
+
+          <FormField
+            v-for="connId in fMcpServers"
+            :key="connId"
+            :label="`Tools on ${mcpConnName(connId)}`"
+          >
+            <button
+              type="button"
+              class="btn-secondary-sm"
+              :data-testid="`mcp-preset-readonly-${connId}`"
+              @click="applyReadOnlyPreset(connId)"
+            >
+              Read-only preset
+            </button>
+            <CheckList
+              :items="mcpToolItems(connId)"
+              :selected="fMcpTools"
+              testid-prefix="mcptool-"
+              :searchable="true"
+              empty-text="No tools discovered."
+              @toggle="toggleMcpTool"
             />
           </FormField>
         </FormSection>
