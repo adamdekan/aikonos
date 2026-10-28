@@ -201,3 +201,54 @@ func TestDismissEnvelope_AlreadyTerminal(t *testing.T) {
 		t.Fatalf("terminal envelope: want FailedPrecondition, got %v", err)
 	}
 }
+
+// fakeAcceptStore captures the task spawned by an accepted envelope.
+type fakeAcceptStore struct {
+	stubTaskStore
+	envelope *db.Envelope
+	created  *db.Task
+}
+
+func (s *fakeAcceptStore) GetEnvelope(_ context.Context, _, _ string) (*db.Envelope, error) {
+	return s.envelope, nil
+}
+
+func (s *fakeAcceptStore) RespondEnvelope(_ context.Context, _, _, _ string, _ bool) (db.EnvelopeState, error) {
+	return db.EnvelopeAccepted, nil
+}
+
+func (s *fakeAcceptStore) Create(_ context.Context, t *db.Task) error {
+	s.created = t
+	return nil
+}
+
+// TestRespondToEnvelope_Accept_RecordsDelegatedBy pins AG-17 S7: the task an
+// accepted envelope spawns is owned by the recipient and names the sender as
+// delegated_by in its on-behalf-of chain.
+func TestRespondToEnvelope_Accept_RecordsDelegatedBy(t *testing.T) {
+	const (
+		tenantID   = testTenantUUID
+		envelopeID = "44444444-4444-4444-4444-444444444444"
+		userID     = "bob@example.com"
+	)
+	store := &fakeAcceptStore{envelope: deliveredEnvelope(tenantID, envelopeID, userID)}
+	svc := NewBrokerService(testDismissDeps(t, store))
+
+	if _, err := svc.RespondToEnvelope(ctxWithIdentity(tenantID, userID), &brokerv1.RespondToEnvelopeRequest{
+		EnvelopeId: envelopeID, UserId: userID, TenantId: tenantID, Accepted: true,
+	}); err != nil {
+		t.Fatalf("RespondToEnvelope: %v", err)
+	}
+	if store.created == nil {
+		t.Fatal("accepted envelope did not spawn a task")
+	}
+	if store.created.OwnerUserID != userID {
+		t.Errorf("owner = %q, want %q", store.created.OwnerUserID, userID)
+	}
+	if d := store.created.DelegatedByUserID; d == nil || *d != "alice@example.com" {
+		t.Errorf("delegated_by_user_id = %v, want alice@example.com", d)
+	}
+	if got := store.created.OnBehalfOf().DelegatedBy; got != "alice@example.com" {
+		t.Errorf("OnBehalfOf().DelegatedBy = %q, want alice@example.com", got)
+	}
+}

@@ -133,6 +133,12 @@ func (p *Proxy) Tools() []string {
 // routed to invokeMCP when no static handler is found. ErrUnknownTool is
 // returned for any other unregistered id.
 func (p *Proxy) Invoke(ctx context.Context, req Request) (*Result, error) {
+	// AG-17: every downstream call (web.search, mcp:*, ...) names its chain.
+	// Never log req.Args or credentials here.
+	p.logger.Info("toolproxy: call",
+		zap.String("tool_id", req.ToolID), zap.String("task_id", req.TaskID),
+		zap.String("subject", req.OBO.Subject), zap.String("actor", req.OBO.Actor),
+		zap.String("delegated_by", req.OBO.DelegatedBy), zap.Bool("service_run", req.OBO.ServiceRun))
 	h, ok := p.handlers[req.ToolID]
 	if !ok {
 		// Dynamic MCP routing: any mcp:-prefixed id that has no static handler.

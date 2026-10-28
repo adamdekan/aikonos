@@ -2,6 +2,9 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
@@ -21,7 +24,13 @@ import (
 // Deps.Tasks.
 type trackingEnvelopeStore struct {
 	stubTaskStore
-	count int
+	count   int
+	created []*db.Task
+}
+
+func (s *trackingEnvelopeStore) Create(_ context.Context, t *db.Task) error {
+	s.created = append(s.created, t)
+	return nil
 }
 
 func (s *trackingEnvelopeStore) CreateEnvelope(_ context.Context, _ *db.Envelope, _ db.EnvelopeState) (uuid.UUID, error) {
@@ -382,5 +391,51 @@ func TestListInboxEnvelopes_BindsIdentity(t *testing.T) {
 	}
 	if store.gotUser != "bob@example.com" {
 		t.Fatalf("dev mode ListInbox user = %q, want bob@example.com", store.gotUser)
+	}
+}
+
+// TestSendEnvelope_AutoAccept_RecordsDelegatedBy pins AG-17 S7 on the
+// auto-accept path: each spawned recipient task names the sender as
+// delegated_by.
+func TestSendEnvelope_AutoAccept_RecordsDelegatedBy(t *testing.T) {
+	f := &fakeFGA{
+		listObjectsResultByUser: map[string][]string{
+			"user:alice@example.com": {"group:alpha"},
+			"user:bob@example.com":   {"group:alpha"},
+		},
+		reads: map[string][]fgaKey{
+			"group:alpha": {
+				memberTuple("alice@example.com", "group:alpha"),
+				memberTuple("bob@example.com", "group:alpha"),
+			},
+		},
+	}
+	fgaSrv := f.server(t)
+	defer fgaSrv.Close()
+	opaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"allow": true, "auto_accept": true}})
+	}))
+	defer opaSrv.Close()
+
+	store := &trackingEnvelopeStore{}
+	deps := testEnvelopeDeps(t, fgaSrv.URL, opaSrv.URL)
+	deps.Tasks = store
+	svc := NewBrokerService(deps)
+
+	if _, err := svc.SendEnvelope(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.SendEnvelopeRequest{
+		TenantId:   testTenantUUID,
+		FromUserId: "alice@example.com",
+		Recipient:  &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_GroupId{GroupId: "group:alpha"}},
+		Task:       &brokerv1.EnvelopeTask{Intent: "auto"},
+		Delegation: &brokerv1.EnvelopeDelegation{},
+	}); err != nil {
+		t.Fatalf("SendEnvelope: %v", err)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("want 1 auto-accepted task, got %d", len(store.created))
+	}
+	task := store.created[0]
+	if task.OwnerUserID != "bob@example.com" || task.OnBehalfOf().DelegatedBy != "alice@example.com" {
+		t.Errorf("owner=%q delegated_by=%q, want bob@example.com / alice@example.com", task.OwnerUserID, task.OnBehalfOf().DelegatedBy)
 	}
 }
