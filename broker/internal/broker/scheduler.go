@@ -351,7 +351,7 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 		return nil, status.Errorf(codes.Internal, "load created run: %v", err)
 	}
 	schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"aikonos.scheduler.run.created", id.String(), auditv1.PolicyDecision_ALLOW)
+		"aikonos.scheduler.run.created", id.String(), auditv1.PolicyDecision_ALLOW, runOBO(stored))
 	return &brokerv1.CreateScheduledRunResponse{Run: toProtoScheduledRun(stored)}, nil
 }
 
@@ -653,7 +653,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	out := make([]*brokerv1.DueRun, 0, len(due))
 	traceID := span.SpanContext().TraceID().String()
 	for _, r := range due {
-		obo := &db.Task{OwnerUserID: r.OwnerUserID, AgentID: r.ActorAgentID, GrantID: &r.ScheduledRunID}
+		obo := runOBO(r)
 		// ClaimDue parked a revoked/expired delegation instead of advancing it.
 		// ponytail: the subject-block (AG-06) and suspended-actor (AG-03) checks
 		// belong here; neither a user block nor an agent status exists yet.
@@ -728,7 +728,13 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 		decision = auditv1.PolicyDecision_DENY
 	}
 	traceID := span.SpanContext().TraceID().String()
-	schedulerAudit(s.deps, ctx, traceID, req.TenantId, "", event, req.Id, decision)
+	// Stamp the run's owner and actor like run.fired; a failed lookup still audits.
+	run, getErr := s.deps.Scheduled.Get(ctx, req.TenantId, req.Id)
+	if getErr == nil && run != nil {
+		schedulerAudit(s.deps, ctx, traceID, req.TenantId, run.OwnerUserID, event, req.Id, decision, runOBO(run))
+	} else {
+		schedulerAudit(s.deps, ctx, traceID, req.TenantId, "", event, req.Id, decision)
+	}
 
 	// Best-effort: write the session file when the gateway sends one.
 	// Any failure here is logged and swallowed — the result report is the primary job.
@@ -740,7 +746,6 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 				zap.String("run_id", req.Id),
 			)
 		} else {
-			run, getErr := s.deps.Scheduled.Get(ctx, req.TenantId, req.Id)
 			if getErr != nil {
 				s.deps.Logger.Warn("ReportScheduledRunResult: failed to look up run for session file write",
 					zap.String("run_id", req.Id),
@@ -767,6 +772,12 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 	}
 
 	return &brokerv1.ReportScheduledRunResultResponse{}, nil
+}
+
+// runOBO is the on-behalf-of chain a run's audit events carry: owner, actor
+// agent, and the schedule as the grant.
+func runOBO(r *db.ScheduledRun) *db.Task {
+	return &db.Task{OwnerUserID: r.OwnerUserID, AgentID: r.ActorAgentID, GrantID: &r.ScheduledRunID}
 }
 
 // schedulerAudit emits a scheduler audit event (shared by the north and south

@@ -1038,6 +1038,7 @@ func main() {
 
 	sandboxSvc := brokersvc.NewSandboxService(brokersvc.Deps{
 		Logger:          log,
+		Config:          configStore, // identity.obo and other tenant settings on south paths
 		Tasks:           taskRepo,
 		Policy:          policyEngine,
 		Audit:           auditEmitter,

@@ -434,6 +434,11 @@ func NewSandboxService(deps Deps) *SandboxService {
 	if deps.OverlayLoader == nil && deps.SkillOverlay != nil && deps.ToolRegistry != nil {
 		deps.OverlayLoader = newSkillOverlayLoader(deps.ToolRegistry, deps.SkillOverlay)
 	}
+	// Without Config every south identity.obo check silently reads the
+	// default "audit"; say so at startup instead.
+	if deps.Config == nil && deps.Logger != nil {
+		deps.Logger.Warn("SandboxService: Deps.Config is nil; tenant settings (identity.obo) read as defaults")
+	}
 	return &SandboxService{deps: deps}
 }
 

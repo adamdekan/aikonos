@@ -87,6 +87,20 @@ test("south throws (gRPC error) → 401", async () => {
   assert.equal(result.status, 401);
 });
 
+test("south PERMISSION_DENIED (AG-17 refusal) → 403 with the broker reason", async () => {
+  const south = makeSouth(async () => {
+    throw Object.assign(new Error("7 PERMISSION_DENIED: user assertion rejected: assertion_invalid"), {
+      code: 7,
+      details: "user assertion rejected: assertion_invalid",
+    });
+  });
+  const result = await authenticateApiKey(`Bearer ${RAW_KEY}`, TENANT, south, undefined, "tok");
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.status, 403);
+  assert.equal(result.message, "user assertion rejected: assertion_invalid");
+});
+
 test("sha256 is computed before sending to south (south never sees raw key)", async () => {
   let capturedHashHex = "";
   const south = makeSouth(async (req) => {

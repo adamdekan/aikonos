@@ -1,8 +1,10 @@
 // API-key authentication for the external surface.
 // Reads `Authorization: Bearer tk_…`, sha256-hashes the raw key (node crypto),
 // calls south.resolveAgentApiKey with the hex digest, and returns the resolved
-// principal or a 401 error. The raw key never leaves this module.
+// principal or a 401 error (403 when the broker refuses a valid key on AG-17
+// grounds). The raw key never leaves this module.
 import { createHash } from "node:crypto";
+import { status } from "@grpc/grpc-js";
 import type { SouthClient } from "../broker/south.js";
 import type { Logger } from "../log.js";
 
@@ -14,7 +16,7 @@ export interface ResolvedPrincipal {
 }
 
 type AuthOk = { ok: true; principal: ResolvedPrincipal };
-type AuthFail = { ok: false; status: 401; message: string };
+type AuthFail = { ok: false; status: 401 | 403; message: string };
 export type AuthResult = AuthOk | AuthFail;
 
 function fail(message: string): AuthFail {
@@ -59,6 +61,12 @@ export async function authenticateApiKey(
       },
     };
   } catch (err) {
+    // The key is valid but the broker refused it (bad user assertion, or
+    // identity.obo=enforce); its details are a short safe reason.
+    const e = err as { code?: unknown; details?: unknown };
+    if (e?.code === status.PERMISSION_DENIED) {
+      return { ok: false, status: 403, message: typeof e.details === "string" && e.details ? e.details : "forbidden" };
+    }
     log?.warn({ err: String(err) }, "external auth: key resolution failed");
     return fail("key resolution failed");
   }
