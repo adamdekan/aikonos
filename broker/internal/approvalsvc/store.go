@@ -86,4 +86,4 @@ type StepScope struct {
 // existing mintStepTokens(*capability.Minter, *toolregistry.Registry, ...)
 // helper, which stays where it is — this package never needs to know how a
 // capability.Minter or toolregistry.Registry is constructed.
-type Minter func(holder, taskID string, steps []StepScope) (map[int32]string, error)
+type Minter func(holder, taskID string, obo db.OnBehalfOf, steps []StepScope) (map[int32]string, error)

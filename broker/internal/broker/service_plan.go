@@ -374,7 +374,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		for _, step := range plan.Steps {
 			scopes = append(scopes, stepScope{Seq: step.Seq, ToolID: step.ToolId})
 		}
-		if capTokens, err = mintStepTokens(s.deps.Capability, s.toolReg(), req.SandboxSpiffeId, req.TaskId, scopes); err != nil {
+		if capTokens, err = mintStepTokens(s.deps.Capability, s.toolReg(), req.SandboxSpiffeId, req.TaskId, task.OnBehalfOf(), scopes); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to mint capability tokens: %v", err)
 		}
 	case planv1.ValidationOutcome_NEEDS_HUMAN, planv1.ValidationOutcome_NEEDS_STEP_UP:

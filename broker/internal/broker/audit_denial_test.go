@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -171,7 +172,11 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		Tasks:      tasks,
 	})
 
-	tok := mintMcpToken(t, m, connID, "task-mcp-deny-1")
+	raw, err := m.Mint("spiffe://test/agent", "task-mcp-deny-1", tasks.task.OnBehalfOf(), []string{"mcp:" + connID})
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	tok := base64.StdEncoding.EncodeToString(raw)
 	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
 		TaskId:          "task-mcp-deny-1",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),

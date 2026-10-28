@@ -367,7 +367,23 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 		}
 		// The token is bound to req.TaskId (H-03): a token for another task, a
 		// task-less delegation record, or an expired token is denied here.
-		if err := s.deps.Capability.Authorize(raw, scope, req.TaskId); err != nil {
+		err = s.deps.Capability.Authorize(raw, scope, req.TaskId, task.OnBehalfOf())
+		// AG-17: the token is otherwise valid but names another subject/actor.
+		// identity.obo=audit records it and proceeds; enforce denies. The
+		// setting is read only here, off the hot path.
+		if errors.Is(err, capability.ErrOBOMismatch) {
+			mode, cerr := s.cfg().GetString(ctx, tenantID, "identity.obo")
+			if cerr != nil {
+				s.emitToolDenied(ctx, req, scope, "settings_check_failed", cerr, nil)
+				return nil, status.Error(codes.Unavailable, "tenant settings could not be read")
+			}
+			s.emitToolDenied(ctx, req, scope, "obo_context_mismatch", err, map[string]any{"mode": mode})
+			if mode == "enforce" {
+				return nil, status.Errorf(codes.PermissionDenied, "capability token is not bound to this task's subject and actor")
+			}
+			err = nil
+		}
+		if err != nil {
 			// A datalog runtime-limit error means evaluation never reached a
 			// decision, so the call still fails closed but is reported as a
 			// transient fault: emitting tool.denied here would write a policy

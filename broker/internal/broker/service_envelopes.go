@@ -455,7 +455,7 @@ func (s *BrokerService) buildDelegationToken(recipient, parentB64 string, attenu
 		// never presented to InvokeTool (Authorize rejects an empty task). The
 		// recipient's spawned task gets its own step tokens at approval. Lives
 		// as long as the envelope, not as long as a step token.
-		if minted, err = s.deps.Capability.MintTTL(recipient, "", senderScopes, envelopeTTL); err == nil {
+		if minted, err = s.deps.Capability.MintTTL(recipient, "", db.OnBehalfOf{Subject: recipient}, senderScopes, envelopeTTL); err == nil {
 			raw, err = capability.Attenuate(minted, attenuated)
 		}
 	}

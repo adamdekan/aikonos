@@ -179,7 +179,7 @@ func fakeMCPSrvSimple(t *testing.T) *httptest.Server {
 // mintMcpToken mints a Biscuit scoped to mcp:<connID>, bound to taskID.
 func mintMcpToken(t *testing.T, m *capability.Minter, connID, taskID string) string {
 	t.Helper()
-	raw, err := m.Mint("spiffe://test/agent", taskID, []string{"mcp:" + connID})
+	raw, err := m.Mint("spiffe://test/agent", taskID, db.OnBehalfOf{}, []string{"mcp:" + connID})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}

@@ -99,7 +99,7 @@ func (f *fakeInvokeAudit) Emit(_ context.Context, e *auditv1.AuditEvent) error {
 
 func mintForScope(t *testing.T, m *capability.Minter, scope string) string {
 	t.Helper()
-	raw, err := m.Mint("agent@example.com", "task-1", []string{scope})
+	raw, err := m.Mint("agent@example.com", "task-1", db.OnBehalfOf{}, []string{scope})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -1287,23 +1287,29 @@ func TestInvokeTool_CapabilityTokenBinding(t *testing.T) {
 		wantReason string // "" = allowed
 	}{
 		"matching task, fresh": {
-			mint:   func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			mint: func(m *capability.Minter) ([]byte, error) {
+				return m.Mint("sb", "task-1", db.OnBehalfOf{}, []string{"web:read"})
+			},
 			taskID: "task-1",
 		},
 		"token for T1 used on T2": {
-			mint:       func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			mint: func(m *capability.Minter) ([]byte, error) {
+				return m.Mint("sb", "task-1", db.OnBehalfOf{}, []string{"web:read"})
+			},
 			taskID:     "task-2",
 			wantReason: "capability_task_mismatch",
 		},
 		"task-less delegation token": {
 			mint: func(m *capability.Minter) ([]byte, error) {
-				return m.MintTTL("bob", "", []string{"web:read"}, envelopeTTL)
+				return m.MintTTL("bob", "", db.OnBehalfOf{}, []string{"web:read"}, envelopeTTL)
 			},
 			taskID:     "task-1",
 			wantReason: "capability_task_mismatch",
 		},
 		"expired": {
-			mint:       func(m *capability.Minter) ([]byte, error) { return m.Mint("sb", "task-1", []string{"web:read"}) },
+			mint: func(m *capability.Minter) ([]byte, error) {
+				return m.Mint("sb", "task-1", db.OnBehalfOf{}, []string{"web:read"})
+			},
 			advance:    capability.DefaultTTL,
 			taskID:     "task-1",
 			wantReason: "capability_expired",
@@ -1364,5 +1370,52 @@ func TestEmitStatus_ForeignTenantDenied(t *testing.T) {
 	}
 	if len(store.transitions) != 0 {
 		t.Fatalf("a foreign tenant must not move the task, got %+v", store.transitions)
+	}
+}
+
+// ── AG-17 S3: capability subject/actor facts vs the task row ────────────────
+
+// oboMismatchCall invokes memory.write on a task owned by "Y" with a token
+// minted for subject "X", under the given identity.obo setting ("" = default).
+func oboMismatchCall(t *testing.T, mode string) (ran bool, err error) {
+	t.Helper()
+	var got toolproxy.Request
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "Y"}}
+	svc, m, aud := newMemorySvc(t, "memory.write", tasks, &got)
+	if mode != "" {
+		cfg := newFakeConfigStore()
+		cfg.values[svc.resolveTenant(context.Background(), "")+":identity.obo"] = mode
+		svc.deps.Config = cfg
+	}
+	raw, merr := m.Mint("sb", "task-1", db.OnBehalfOf{Subject: "X"}, []string{"memory:write"})
+	if merr != nil {
+		t.Fatalf("Mint: %v", merr)
+	}
+	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: base64.StdEncoding.EncodeToString(raw),
+		Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
+	})
+	for _, ev := range aud.events {
+		if ev.EventType == "aikonos.broker.tool.denied" &&
+			ev.Context.Fields["reason"].GetStringValue() == "obo_context_mismatch" &&
+			ev.Decision == auditv1.PolicyDecision_DENY {
+			return got.ToolID != "", err
+		}
+	}
+	t.Fatalf("no obo_context_mismatch DENY event in %v", aud.events)
+	return false, nil
+}
+
+func TestInvokeTool_OBOMismatchAuditOnly(t *testing.T) {
+	ran, err := oboMismatchCall(t, "")
+	if err != nil || !ran {
+		t.Fatalf("audit mode must allow the call: err=%v ran=%v", err, ran)
+	}
+}
+
+func TestInvokeTool_OBOMismatchEnforce(t *testing.T) {
+	ran, err := oboMismatchCall(t, "enforce")
+	if status.Code(err) != codes.PermissionDenied || ran {
+		t.Fatalf("enforce mode must deny before the tool runs: err=%v ran=%v", err, ran)
 	}
 }

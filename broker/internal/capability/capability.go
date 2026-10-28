@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/adamdekan/aikonos/broker/internal/db"
+
 	biscuit "github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/biscuit-auth/biscuit-go/v2/datalog"
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
@@ -54,6 +56,11 @@ var ErrExpired = errors.New("capability token expired")
 // ErrTaskMismatch reports a token whose authority `task` fact is not the task
 // the call is made for (including a task-less delegation token). A denial.
 var ErrTaskMismatch = errors.New("capability token not bound to this task")
+
+// ErrOBOMismatch reports a token whose `subject`/`actor` facts differ from the
+// task's on-behalf-of chain (AG-17). Authorize returns it only when the token
+// is otherwise valid, so a caller in audit mode may record it and proceed.
+var ErrOBOMismatch = errors.New("capability token subject/actor does not match task")
 
 // DefaultTTL is the lifetime Mint gives a token when the Minter's TTL is unset.
 const DefaultTTL = 30 * time.Minute
@@ -97,10 +104,10 @@ func GenerateMinter() (*Minter, error) {
 func (m *Minter) PublicKey() ed25519.PublicKey { return m.pub }
 
 // Mint creates a root capability token granting `scopes` to `holder` for
-// `taskID`, valid for the Minter's TTL. An empty scope list is rejected — a
+// `taskID` on behalf of `obo`, valid for the Minter's TTL. An empty scope list is rejected — a
 // token that grants nothing is a programming error, not a valid capability.
-func (m *Minter) Mint(holder, taskID string, scopes []string) ([]byte, error) {
-	return m.MintTTL(holder, taskID, scopes, m.TTL)
+func (m *Minter) Mint(holder, taskID string, obo db.OnBehalfOf, scopes []string) ([]byte, error) {
+	return m.MintTTL(holder, taskID, obo, scopes, m.TTL)
 }
 
 // MintTTL is Mint with an explicit lifetime (a delegation token lives as long
@@ -110,8 +117,9 @@ func (m *Minter) Mint(holder, taskID string, scopes []string) ([]byte, error) {
 // `check if time($t), $t < <exp>`, so the token refuses itself at any verifier
 // that supplies time(). `holder` is minted for audit only and is NOT enforced:
 // the holder is the sandbox SPIFFE id, and binding it needs the sandbox pool
-// wired to the verified peer (deferred, see H-03).
-func (m *Minter) MintTTL(holder, taskID string, scopes []string, ttl time.Duration) ([]byte, error) {
+// wired to the verified peer (deferred, see H-03). `subject` and `actor` carry
+// obo.Subject/obo.Actor ("" when absent) and are checked by Authorize.
+func (m *Minter) MintTTL(holder, taskID string, obo db.OnBehalfOf, scopes []string, ttl time.Duration) ([]byte, error) {
 	if len(scopes) == 0 {
 		return nil, errors.New("cannot mint a capability with no scopes")
 	}
@@ -139,6 +147,12 @@ func (m *Minter) MintTTL(holder, taskID string, scopes []string, ttl time.Durati
 	}
 	if err := b.AddAuthorityFact(stringFact("task", taskID)); err != nil {
 		return nil, fmt.Errorf("add task fact: %w", err)
+	}
+	if err := b.AddAuthorityFact(stringFact("subject", obo.Subject)); err != nil {
+		return nil, fmt.Errorf("add subject fact: %w", err)
+	}
+	if err := b.AddAuthorityFact(stringFact("actor", obo.Actor)); err != nil {
+		return nil, fmt.Errorf("add actor fact: %w", err)
 	}
 	for _, s := range dedupe(scopes) {
 		if err := b.AddAuthorityFact(stringFact("right", s)); err != nil {
@@ -190,12 +204,14 @@ func Attenuate(parent []byte, subset []string) ([]byte, error) {
 // every attenuation block in the chain permits this scope). A non-nil error
 // means the request is denied — by failed signature, a missing right, an
 // attenuation, ErrExpired or ErrTaskMismatch — except for ErrAuthorizeTimeout,
-// which means no decision was reached at all.
+// which means no decision was reached at all, and ErrOBOMismatch, which is
+// returned only for an otherwise authorized token whose subject/actor facts
+// differ from obo (the caller decides audit vs enforce).
 //
 // Only authority and authorizer facts are visible to the checks below (block
 // facts live in per-block worlds), so an appended block cannot forge task()
 // or expires().
-func (m *Minter) Authorize(token []byte, requestedScope, taskID string) error {
+func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.OnBehalfOf) error {
 	if requestedScope == "" {
 		return errors.New("empty requested scope")
 	}
@@ -237,37 +253,44 @@ func (m *Minter) Authorize(token []byte, requestedScope, taskID string) error {
 		// A runtime-limit error is not a denial — the engine ran out of budget
 		// before deciding. Reported separately so the caller can fail the call
 		// without writing a policy decision that was never made.
-		if errors.Is(err, datalog.ErrWorldRunLimitTimeout) ||
-			errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) ||
-			errors.Is(err, datalog.ErrWorldRunLimitMaxIterations) {
+		if isRunLimit(err) {
 			return fmt.Errorf("%w: scope %q: %v", ErrAuthorizeTimeout, requestedScope, err)
 		}
 		return fmt.Errorf("scope %q denied: %w", requestedScope, denialReason(authz, now, taskID, err))
 	}
+	// Read back rather than `check if subject(...)`: a token minted before
+	// AG-17 has no fact and must still pass, and only an absent fact may.
+	// ponytail: absent facts pass; S8 (strict) treats absence as a mismatch.
+	for pred, want := range map[string]string{"subject": obo.Subject, "actor": obo.Actor} {
+		terms, err := queryFacts(authz, pred)
+		if err != nil {
+			if isRunLimit(err) {
+				return fmt.Errorf("%w: read %s fact: %v", ErrAuthorizeTimeout, pred, err)
+			}
+			return fmt.Errorf("read %s fact: %w", pred, err)
+		}
+		for _, t := range terms {
+			if s, ok := t.(biscuit.String); !ok || string(s) != want {
+				return fmt.Errorf("%w: %s %v, task has %q", ErrOBOMismatch, pred, t, want)
+			}
+		}
+	}
 	return nil
+}
+
+func isRunLimit(err error) bool {
+	return errors.Is(err, datalog.ErrWorldRunLimitTimeout) ||
+		errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) ||
+		errors.Is(err, datalog.ErrWorldRunLimitMaxIterations)
 }
 
 // denialReason refines a failed authorization into ErrExpired/ErrTaskMismatch
 // by reading the authority facts back; otherwise it returns err unchanged. It
 // only labels the denial — the decision was already made by Authorize.
 func denialReason(authz biscuit.Authorizer, now time.Time, taskID string, err error) error {
-	query := func(pred string) []biscuit.Term {
-		rule, perr := parser.FromStringRule(fmt.Sprintf(`q($x) <- %s($x)`, pred))
-		if perr != nil {
-			return nil
-		}
-		facts, qerr := authz.Query(rule)
-		if qerr != nil {
-			return nil
-		}
-		out := make([]biscuit.Term, 0, len(facts))
-		for _, f := range facts {
-			out = append(out, f.IDs[0])
-		}
-		return out
-	}
 	live := false
-	for _, t := range query("expires") {
+	expires, _ := queryFacts(authz, "expires")
+	for _, t := range expires {
 		if d, ok := t.(biscuit.Date); ok && now.Before(time.Time(d)) {
 			live = true
 		}
@@ -275,7 +298,8 @@ func denialReason(authz biscuit.Authorizer, now time.Time, taskID string, err er
 	if !live {
 		return fmt.Errorf("%w: %v", ErrExpired, err)
 	}
-	for _, t := range query("task") {
+	tasks, _ := queryFacts(authz, "task")
+	for _, t := range tasks {
 		if s, ok := t.(biscuit.String); ok && string(s) == taskID {
 			return err
 		}
@@ -291,6 +315,24 @@ func (m *Minter) now() time.Time {
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
+
+// queryFacts returns the first term of every `pred(...)` fact in authz's
+// world (authority + authorizer facts).
+func queryFacts(authz biscuit.Authorizer, pred string) ([]biscuit.Term, error) {
+	rule, err := parser.FromStringRule(fmt.Sprintf(`q($x) <- %s($x)`, pred))
+	if err != nil {
+		return nil, err
+	}
+	facts, err := authz.Query(rule)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]biscuit.Term, 0, len(facts))
+	for _, f := range facts {
+		out = append(out, f.IDs[0])
+	}
+	return out, nil
+}
 
 func stringFact(name, value string) biscuit.Fact {
 	return biscuit.Fact{Predicate: biscuit.Predicate{

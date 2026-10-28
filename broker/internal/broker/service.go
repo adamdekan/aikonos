@@ -501,7 +501,7 @@ type stepScope struct {
 // when the minter is disabled, mirroring the InvokeTool gate (which is a no-op
 // when Capability == nil). The round-trip is symmetric with InvokeTool:
 // mint(scope) → base64 → InvokeTool base64-decodes → Authorize(raw, scope).
-func mintStepTokens(m *capability.Minter, reg *toolregistry.Registry, holder, taskID string, steps []stepScope) (map[int32]string, error) {
+func mintStepTokens(m *capability.Minter, reg *toolregistry.Registry, holder, taskID string, obo db.OnBehalfOf, steps []stepScope) (map[int32]string, error) {
 	if m == nil || len(steps) == 0 {
 		return nil, nil
 	}
@@ -511,7 +511,7 @@ func mintStepTokens(m *capability.Minter, reg *toolregistry.Registry, holder, ta
 		if !ok {
 			continue
 		}
-		raw, err := m.Mint(holder, taskID, []string{scope})
+		raw, err := m.Mint(holder, taskID, obo, []string{scope})
 		if err != nil {
 			return nil, err
 		}
@@ -525,12 +525,12 @@ func mintStepTokens(m *capability.Minter, reg *toolregistry.Registry, holder, ta
 // toolregistry.Registry construction in this package — approvalsvc never
 // needs to know how either is built (CP4/C6).
 func approvalMinter(m *capability.Minter, reg *toolregistry.Registry) approvalsvc.Minter {
-	return func(holder, taskID string, steps []approvalsvc.StepScope) (map[int32]string, error) {
+	return func(holder, taskID string, obo db.OnBehalfOf, steps []approvalsvc.StepScope) (map[int32]string, error) {
 		scopes := make([]stepScope, len(steps))
 		for i, st := range steps {
 			scopes[i] = stepScope{Seq: st.Seq, ToolID: st.ToolID}
 		}
-		return mintStepTokens(m, reg, holder, taskID, scopes)
+		return mintStepTokens(m, reg, holder, taskID, obo, scopes)
 	}
 }
 

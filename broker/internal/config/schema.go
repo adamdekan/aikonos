@@ -221,6 +221,21 @@ var Schema = map[string]Key{
 			return nil
 		},
 	},
+	// identity.obo selects how InvokeTool treats a capability token whose
+	// subject/actor facts differ from the task (AG-17). Monotonic-stricter
+	// only: audit records the mismatch, enforce also denies.
+	"identity.obo": {
+		Name:    "identity.obo",
+		Kind:    KindString,
+		Default: "audit",
+		Doc:     "On-behalf-of check for capability tokens: audit (record a subject/actor mismatch, allow) or enforce (record and deny). Can only tighten.",
+		Validate: func(v string) error {
+			if v != "audit" && v != "enforce" {
+				return fmt.Errorf("identity.obo: must be audit or enforce, got %q", v)
+			}
+			return nil
+		},
+	},
 }
 
 // ParseList splits a comma-separated config string into trimmed, non-empty

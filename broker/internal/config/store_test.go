@@ -204,6 +204,7 @@ func TestSchema_ExactlyKnownConvenienceKeys(t *testing.T) {
 		"disabled_tools":        true,
 		"effect_class_routing":  true,
 		"llm_model":             true,
+		"identity.obo":          true, // audit|enforce: enforce only tightens InvokeTool
 	}
 
 	for name := range config.Schema {
@@ -378,5 +379,23 @@ func TestLLMModel_TooLong(t *testing.T) {
 	big := "a/b" + string(make([]byte, 130))
 	if err := s.Set(context.Background(), "t1", "llm_model", big, "admin"); err == nil {
 		t.Fatal("want validation error for >128 char value, got nil")
+	}
+}
+
+func TestIdentityOBO_Validate(t *testing.T) {
+	s := config.New(newFakeRepo())
+	ctx := context.Background()
+	if got, err := s.GetString(ctx, "t1", "identity.obo"); err != nil || got != "audit" {
+		t.Fatalf("default: want audit, got %q (err %v)", got, err)
+	}
+	for _, v := range []string{"audit", "enforce"} {
+		if err := s.Set(ctx, "t1", "identity.obo", v, "admin"); err != nil {
+			t.Fatalf("%q: want nil, got %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "off", "Enforce"} {
+		if err := s.Set(ctx, "t1", "identity.obo", v, "admin"); err == nil {
+			t.Fatalf("%q: want validation error, got nil", v)
+		}
 	}
 }
