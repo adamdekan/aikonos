@@ -206,7 +206,8 @@ func Attenuate(parent []byte, subset []string) ([]byte, error) {
 // attenuation, ErrExpired or ErrTaskMismatch — except for ErrAuthorizeTimeout,
 // which means no decision was reached at all, and ErrOBOMismatch, which is
 // returned only for an otherwise authorized token whose subject/actor facts
-// differ from obo (the caller decides audit vs enforce).
+// differ from obo or are missing (a pre-AG-17 token); the caller decides audit
+// vs enforce.
 //
 // Only authority and authorizer facts are visible to the checks below (block
 // facts live in per-block worlds), so an appended block cannot forge task()
@@ -259,8 +260,8 @@ func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.O
 		return fmt.Errorf("scope %q denied: %w", requestedScope, denialReason(authz, now, taskID, err))
 	}
 	// Read back rather than `check if subject(...)`: a token minted before
-	// AG-17 has no fact and must still pass, and only an absent fact may.
-	// ponytail: absent facts pass; S8 (strict) treats absence as a mismatch.
+	// AG-17 has no fact, and that absence is reported as ErrOBOMismatch too,
+	// so identity.obo=audit still lets it through and enforce denies it.
 	for pred, want := range map[string]string{"subject": obo.Subject, "actor": obo.Actor} {
 		terms, err := queryFacts(authz, pred)
 		if err != nil {
@@ -268,6 +269,9 @@ func (m *Minter) Authorize(token []byte, requestedScope, taskID string, obo db.O
 				return fmt.Errorf("%w: read %s fact: %v", ErrAuthorizeTimeout, pred, err)
 			}
 			return fmt.Errorf("read %s fact: %w", pred, err)
+		}
+		if len(terms) == 0 {
+			return fmt.Errorf("%w: token has no %s fact", ErrOBOMismatch, pred)
 		}
 		for _, t := range terms {
 			if s, ok := t.(biscuit.String); !ok || string(s) != want {

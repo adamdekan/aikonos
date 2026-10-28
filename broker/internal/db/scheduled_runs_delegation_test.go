@@ -52,7 +52,7 @@ func TestScheduledRun_ClaimSkipsDeadDelegation(t *testing.T) {
 		t.Fatalf("reactivate: %v", err)
 	}
 
-	due, err := repo.ClaimDue(ctx, tenant.String(), now, 10)
+	due, err := repo.ClaimDue(ctx, tenant.String(), now, 10, false)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}

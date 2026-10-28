@@ -45,7 +45,7 @@ func (stubScheduledStore) Delete(_ context.Context, _, _ string) error {
 	return nil
 }
 
-func (stubScheduledStore) ClaimDue(_ context.Context, _ string, _ time.Time, _ int) ([]*db.ScheduledRun, error) {
+func (stubScheduledStore) ClaimDue(_ context.Context, _ string, _ time.Time, _ int, _ bool) ([]*db.ScheduledRun, error) {
 	return nil, nil
 }
 

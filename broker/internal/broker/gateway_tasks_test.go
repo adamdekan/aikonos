@@ -672,6 +672,16 @@ func TestCreateGatewayTask_ScheduledGrantSetsGrantID(t *testing.T) {
 	if got.GrantID == nil || *got.GrantID != runID || got.OwnerUserID != "alice@example.com" || got.AgentID != nil {
 		t.Errorf("task = grant %v owner %q agent %v, want %s / alice / nil", got.GrantID, got.OwnerUserID, got.AgentID, runID)
 	}
+
+	// AG-17 S8: the same actorless grant, minted in audit, is refused in enforce.
+	cfg := newFakeConfigStore()
+	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
+	svc.deps.Config = cfg
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{
+		TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant, AgentId: "alice-agent",
+	}); status.Code(err) != codes.PermissionDenied || len(store.created) != 1 {
+		t.Fatalf("enforce: want PermissionDenied and no task, got %v (%d tasks)", err, len(store.created))
+	}
 }
 
 // v1Grant hand-builds a legacy v1 token (Mint only emits v2).
@@ -706,6 +716,21 @@ func TestCreateGatewayTask_V1Grant_GatedByAcceptV1(t *testing.T) {
 	}
 	if got := store.created[0].OwnerUserID; got != "alice@example.com" {
 		t.Errorf("owner = %q, want alice@example.com", got)
+	}
+
+	// AG-17 S8: identity.obo=enforce forces accept_v1 off for the tenant.
+	cfg := newFakeConfigStore()
+	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
+	svc.deps.Config = cfg
+	if _, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), req); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("accept_v1=true, enforce: want PermissionDenied, got %v", err)
+	}
+	ev = receiveAuditEvent(t, sub, "aikonos.broker.task.denied", 2*time.Second)
+	if r := ev.Context.Fields["reason"].GetStringValue(); r != "grant_v1_refused" {
+		t.Errorf("reason = %q, want grant_v1_refused", r)
+	}
+	if len(store.created) != 1 {
+		t.Errorf("enforce must not create a task, got %d", len(store.created))
 	}
 }
 

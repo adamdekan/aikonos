@@ -270,6 +270,7 @@ func main() {
 	// multi-step agent loop. Default 1h is documented as the reuse window.
 	viper.SetDefault("gateway_grant.ttl", "1h")
 	// AG-17: accept legacy v1 owner grants for one release, then remove.
+	// Ignored (forced off) for a tenant with identity.obo=enforce.
 	viper.SetDefault("gateway_grant.accept_v1", true)
 	// LLM provider seed file. Empty → skip seeding. The compose deployment
 	// sets AIKONOS_LLM_PROVIDERS_SEED_FILE and bind-mounts the file (CP5).

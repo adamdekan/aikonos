@@ -184,7 +184,12 @@ type fakeClaimDueStore struct {
 	runs []*db.ScheduledRun
 }
 
-func (f *fakeClaimDueStore) ClaimDue(_ context.Context, _ string, _ time.Time, _ int) ([]*db.ScheduledRun, error) {
+func (f *fakeClaimDueStore) ClaimDue(_ context.Context, _ string, _ time.Time, _ int, requireActor bool) ([]*db.ScheduledRun, error) {
+	for _, r := range f.runs {
+		if requireActor && r.ActorAgentID == nil && r.SkipReason == "" {
+			r.SkipReason = "actor_missing"
+		}
+	}
 	return f.runs, nil
 }
 
@@ -294,6 +299,44 @@ func TestClaimDue_SkipsExpiredRevoked(t *testing.T) {
 	}
 	if aud.events[0].Decision != auditv1.PolicyDecision_DENY {
 		t.Errorf("skip decision = %v, want DENY", aud.events[0].Decision)
+	}
+}
+
+// TestClaimDue_ActorMissingSkippedInEnforce: identity.obo=enforce parks an
+// actorless run instead of handing it to the gateway, and refuses to create
+// one (AG-17 S8); audit mode still fires it.
+func TestClaimDue_ActorMissingSkippedInEnforce(t *testing.T) {
+	runID := uuid.New()
+	for mode, want := range map[string]string{
+		"audit":   "aikonos.scheduler.run.fired",
+		"enforce": "aikonos.scheduler.run.skipped.actor_missing",
+	} {
+		cfg := newFakeConfigStore()
+		cfg.values[testTenantUUID+":identity.obo"] = mode
+		aud := &fakeInvokeAudit{}
+		svc := NewSandboxService(Deps{
+			Logger: zap.NewNop(), Audit: aud, Config: cfg, GatewaySpiffeID: testGWSpiffeID,
+			GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL,
+			Scheduled: &fakeClaimDueStore{runs: []*db.ScheduledRun{{ScheduledRunID: runID, OwnerUserID: "alice@example.com"}}},
+		})
+		resp, err := svc.ClaimDueScheduledRuns(
+			auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+			&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID},
+		)
+		if err != nil {
+			t.Fatalf("%s: ClaimDueScheduledRuns: %v", mode, err)
+		}
+		if fired := len(resp.Runs) == 1; fired != (mode == "audit") {
+			t.Errorf("%s: runs = %v", mode, resp.Runs)
+		}
+		if len(aud.events) != 1 || aud.events[0].EventType != want {
+			t.Errorf("%s: events = %v, want one %s", mode, aud.events, want)
+		}
+		// Create refuses an actorless schedule in enforce rather than parking it later.
+		_, err = (&BrokerService{deps: Deps{Config: cfg}}).scheduleActor(context.Background(), testTenantUUID, "alice@example.com", "")
+		if (status.Code(err) == codes.FailedPrecondition) != (mode == "enforce") {
+			t.Errorf("%s: scheduleActor(\"\") err = %v", mode, err)
+		}
 	}
 }
 

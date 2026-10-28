@@ -541,6 +541,8 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // agent:-prefixed for named agents, bare agentForUser id for the default.
     // Factored once here so supervisor.keyFor, getOrSpawn, runIdentity, and
     // selectRunApprover all reference the same value without drift.
+    // ponytail: agentForUser pseudo-id stays until AG-01 binds the actor to
+    // north tasks; then a default chat names the tenant default agent.
     const sessionAgentId = namedAgentId
       ? `agent:${namedAgentId}`
       : agentForUser(user, cfg.agentForUserOverrides);

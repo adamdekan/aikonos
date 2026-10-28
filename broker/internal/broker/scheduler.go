@@ -359,6 +359,17 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 // an agent of the tenant the caller may operate (can_use, tenant-admin fallback).
 func (s *BrokerService) scheduleActor(ctx context.Context, tenant, user, agentID string) (*uuid.UUID, error) {
 	if agentID == "" {
+		// AG-17 S8: enforce refuses an actorless schedule up front; ClaimDue
+		// would only park it.
+		if s.deps.Config != nil {
+			mode, err := s.deps.Config.GetString(ctx, tenant, "identity.obo")
+			if err != nil {
+				return nil, status.Errorf(codes.Unavailable, "tenant settings could not be read: %v", err)
+			}
+			if mode == "enforce" {
+				return nil, status.Error(codes.FailedPrecondition, "identity.obo=enforce: a schedule needs actor_agent_id")
+			}
+		}
 		return nil, nil
 	}
 	id, err := uuid.Parse(agentID)
@@ -614,7 +625,14 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 		limit = defaultClaimLimit
 	}
 
-	due, err := s.deps.Scheduled.ClaimDue(ctx, req.TenantId, now, limit)
+	// AG-17 S8: identity.obo=enforce parks actorless rows (the gateway would
+	// otherwise derive a pseudo agent). Read before claiming: on error nothing
+	// is consumed and the next tick retries.
+	mode, err := s.cfg().GetString(ctx, req.TenantId, "identity.obo")
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "tenant settings could not be read: %v", err)
+	}
+	due, err := s.deps.Scheduled.ClaimDue(ctx, req.TenantId, now, limit, mode == "enforce")
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "claim due: %v", err)
 	}
