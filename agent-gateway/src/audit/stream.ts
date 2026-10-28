@@ -10,11 +10,14 @@ import type { Logger } from "pino";
 import type { FastifyInstance } from "fastify";
 import { requireUser } from "../auth/require-user.js";
 import type { JwksResolver, VerifyOptions } from "../auth/verify.js";
+import type { NorthClient } from "../broker/north.js";
 
 const RING_CAP = 1000;
 const REPLAY_N = 200;
 const PING_MS  = 15_000;
 const RETRY_MS = 3_000;
+// H-07: live streams one principal may hold open at once.
+const MAX_STREAMS_PER_USER = 3;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -22,29 +25,34 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 // Exported so tests can drive the pure buffer/fan-out logic without NATS.
 export const buffer: object[] = [];
-// Maps each connected SSE client to its optional tenant filter (F44) —
-// undefined means unfiltered (today's behavior).
-const clients = new Map<import("node:http").ServerResponse, string | undefined>();
-
-// matchesTenant is the single tenant-scoping rule, used both by filterByTenant
-// (replay) and record() (live fan-out) so it lives in exactly one place.
-function matchesTenant(ev: object, tenant: string | undefined): boolean {
-  if (!tenant) return true;
-  return (ev as Record<string, unknown>).tenant_id === tenant;
+// What one reader may see: its tenant, and only its own events unless it is a
+// tenant admin (H-07). user undefined = the whole tenant.
+export interface AuditScope {
+  tenant: string;
+  user?: string;
 }
 
-// filterByTenant is the single replay-filter used both by the initial replay
-// on connect and (indirectly, per-client) by record()'s live fan-out.
-export function filterByTenant(events: object[], tenant: string | undefined): object[] {
-  return events.filter((e) => matchesTenant(e, tenant));
+// Maps each connected SSE client to its scope — undefined means unfiltered.
+const clients = new Map<import("node:http").ServerResponse, AuditScope | undefined>();
+const streamsPerUser = new Map<string, number>();
+
+// matchesScope is the single scoping rule, used by both the replay on
+// connect and record()'s live fan-out. An event is a member's own when they
+// acted or it was done on their behalf (context.obo.subject, AG-17).
+function matchesScope(ev: object, scope: AuditScope | undefined): boolean {
+  if (!scope) return true;
+  const e = ev as { tenant_id?: unknown; actor_user_id?: unknown; context?: { obo?: { subject?: unknown } } };
+  if (e.tenant_id !== scope.tenant) return false;
+  if (scope.user === undefined) return true;
+  return e.actor_user_id === scope.user || e.context?.obo?.subject === scope.user;
 }
 
 export function record(ev: object): void {
   buffer.push(ev);
   if (buffer.length > RING_CAP) buffer.shift();
   const line = `data: ${JSON.stringify(ev)}\n\n`;
-  for (const [res, tenant] of clients) {
-    if (!matchesTenant(ev, tenant)) continue;
+  for (const [res, scope] of clients) {
+    if (!matchesScope(ev, scope)) continue;
     // A slow client whose write() returns false is disconnected immediately
     // rather than allowed to accumulate an unbounded backlog — reconnection
     // relies on the SSE `retry:` hint + replay.
@@ -52,13 +60,28 @@ export function record(ev: object): void {
   }
 }
 
-export function fanOutClients(): Map<import("node:http").ServerResponse, string | undefined> {
+export function fanOutClients(): Map<import("node:http").ServerResponse, AuditScope | undefined> {
   return clients;
 }
 
 export interface AuditRoutesCtx {
   jwksResolver: JwksResolver;
   verifyOpts: VerifyOptions;
+  north: Pick<NorthClient, "getObservabilityInfo">;
+}
+
+// scopeFor gives tenant admins the whole tenant and everyone else their own
+// events (H-07). The probe is a cheap tenant-admin-gated broker RPC; any
+// error, not only PERMISSION_DENIED, falls back to the member scope.
+// ponytail: borrows GetObservabilityInfo's admin gate; a dedicated
+// "am I admin" RPC if a second caller needs one.
+async function scopeFor(ctx: AuditRoutesCtx, p: { tenant: string; sub: string; token: string }): Promise<AuditScope> {
+  try {
+    await ctx.north.getObservabilityInfo({}, p.token);
+    return { tenant: p.tenant };
+  } catch {
+    return { tenant: p.tenant, user: p.sub };
+  }
 }
 
 // The broker is single-tenant-per-deployment (callerIdentity forces `tenant`
@@ -73,9 +96,9 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
     async (req, reply) => {
       const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
       if (!principal) return;
-      const tenant = principal.tenant;
+      const scope  = await scopeFor(ctx, principal);
       const limit  = Number(req.query.limit ?? 200) || 200;
-      const src    = buffer.filter((e) => matchesTenant(e, tenant));
+      const src    = buffer.filter((e) => matchesScope(e, scope));
       reply.send({ events: src.slice(-limit).reverse() });
     },
   );
@@ -83,7 +106,25 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
   app.get<{ Querystring: { tenant?: string } }>("/api/audit/stream", async (req, reply) => {
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
-    const tenant = principal.tenant;
+    const open = streamsPerUser.get(principal.sub) ?? 0;
+    if (open >= MAX_STREAMS_PER_USER) {
+      reply.code(429).send({ error: "too many open audit streams" });
+      return;
+    }
+    // Count the stream and register its teardown before the admin probe
+    // awaits, so a parallel connect cannot slip past the cap and a client
+    // that leaves mid-probe is still released.
+    streamsPerUser.set(principal.sub, open + 1);
+    let ping: ReturnType<typeof setInterval> | undefined;
+    req.raw.on("close", () => {
+      clearInterval(ping);
+      clients.delete(reply.raw);
+      const n = (streamsPerUser.get(principal.sub) ?? 1) - 1;
+      if (n > 0) streamsPerUser.set(principal.sub, n);
+      else streamsPerUser.delete(principal.sub);
+    });
+    const scope = await scopeFor(ctx, principal);
+    if (req.raw.destroyed) return;
     reply.raw.writeHead(200, {
       "content-type":               "text/event-stream",
       "cache-control":              "no-cache",
@@ -91,18 +132,14 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
       "access-control-allow-origin": "*",
     });
     reply.raw.write("retry: 3000\n\n");
-    for (const ev of filterByTenant(buffer.slice(-REPLAY_N), tenant)) {
+    for (const ev of buffer.slice(-REPLAY_N).filter((e) => matchesScope(e, scope))) {
       reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
-    clients.set(reply.raw, tenant);
-    const ping = setInterval(() => {
+    clients.set(reply.raw, scope);
+    ping = setInterval(() => {
       if (reply.raw.destroyed) return;
       reply.raw.write(": ping\n\n");
     }, PING_MS);
-    req.raw.on("close", () => {
-      clearInterval(ping);
-      clients.delete(reply.raw);
-    });
   });
 }
 

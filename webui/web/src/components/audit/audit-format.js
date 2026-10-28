@@ -45,3 +45,17 @@ export function detail(ev) {
   const keys = Object.keys(c);
   return keys.length ? JSON.stringify(c).slice(0, 120) : "";
 }
+
+// chain is the event's actor chain (AG-12): the user acted for, the agent that
+// acted, the envelope sender and the external client. context.obo carries it
+// on task-scoped events; actor_agent_id is also set on agent events.
+export function chain(ev) {
+  const o = ev.context?.obo || {};
+  return {
+    subject:      o.subject || (o.service_run ? "service" : ""),
+    agent:        ev.actor_agent_id || o.actor || "",
+    serviceAgent: !!o.service_agent,
+    delegatedBy:  o.delegated_by || "",
+    client:       o.external_client_id || "",
+  };
+}

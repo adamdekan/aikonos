@@ -72,7 +72,7 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
     }
   });
 
-  registerAuditRoutes(app, { jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts });
+  registerAuditRoutes(app, { jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts, north: ctx.clients.north });
   app.get("/", async (_req, reply) => {
     // Read fresh each request so UI edits don't require a server restart.
     reply.type("text/html").send(readFileSync(UI_PATH, "utf8"));

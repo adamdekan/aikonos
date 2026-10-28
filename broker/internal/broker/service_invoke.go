@@ -56,6 +56,7 @@ func withOBO(ev *auditv1.AuditEvent, t *db.Task) *auditv1.AuditEvent {
 		"subject":            o.Subject,
 		"actor":              o.Actor,
 		"service_run":        o.ServiceRun,
+		"service_agent":      o.ServiceAgent,
 		"delegated_by":       o.DelegatedBy,
 		"envelope_id":        o.EnvelopeID,
 		"external_client_id": o.ExternalClientID,
@@ -64,6 +65,14 @@ func withOBO(ev *auditv1.AuditEvent, t *db.Task) *auditv1.AuditEvent {
 	})
 	ev.Context.Fields["obo"] = structpb.NewStructValue(obo)
 	return ev
+}
+
+// oboEmitter stamps the ctx task's chain (withOBOTask) on every event it
+// emits, for emitters handed to packages that cannot call withOBO.
+type oboEmitter struct{ auditEmitter }
+
+func (e oboEmitter) Emit(ctx context.Context, ev *auditv1.AuditEvent) error {
+	return e.auditEmitter.Emit(ctx, withOBO(ev, oboTask(ctx)))
 }
 
 // emitToolDenied fires a DENY audit event for an InvokeTool denial. It is

@@ -5,11 +5,14 @@
 // Pins: (a) an unauthenticated request is 401, never data; (b) a principal
 // only ever sees its own tenant's events; (c) an explicit ?tenant= for a
 // foreign tenant is ignored — the broker is single-tenant-per-deployment, so
-// there is no such thing as an authorized cross-tenant admin on this surface.
+// there is no such thing as an authorized cross-tenant admin on this surface;
+// (d) H-07: only a tenant admin sees the tenant stream, a member sees only
+// their own events, and a failed admin probe means member.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import Fastify from "fastify";
+import { status } from "@grpc/grpc-js";
 import { generateKeyPair, exportJWK, SignJWT, importJWK } from "jose";
 import type { JWK } from "jose";
 
@@ -53,14 +56,25 @@ async function mintToken(
     .sign(privateKey);
 }
 
-async function buildApp(opts: { tenantId?: string } = {}) {
+// Fake broker admin probe: an admin's GetObservabilityInfo succeeds, anyone
+// else's is PERMISSION_DENIED (or `probeErr` when given).
+function fakeNorth(admin: boolean, probeErr?: Error) {
+  return {
+    getObservabilityInfo: () =>
+      admin
+        ? Promise.resolve({ otelEndpoint: "", exportEnabled: false, exportedJob: "" })
+        : Promise.reject(probeErr ?? Object.assign(new Error("tenant admin required"), { code: status.PERMISSION_DENIED })),
+  };
+}
+
+async function buildApp(opts: { tenantId?: string; admin?: boolean; probeErr?: Error } = {}) {
   const { privateKey, jwk } = await makeKey();
   const jwksResolver = await localResolver(jwk);
   const tenantId = opts.tenantId ?? "tenant-a";
   const token = await mintToken(privateKey, tenantId);
 
   const app = Fastify({ logger: false });
-  registerAuditRoutes(app, { jwksResolver, verifyOpts: VERIFY_OPTS });
+  registerAuditRoutes(app, { jwksResolver, verifyOpts: VERIFY_OPTS, north: fakeNorth(opts.admin ?? true, opts.probeErr) });
 
   return { app, token, tenantId };
 }
@@ -196,6 +210,77 @@ test("GET /api/audit/stream — ?tenant= for a foreign tenant is ignored in the 
     assert.ok(body.includes(`"event_id":"mine"`), "own-tenant event must still be replayed");
     assert.ok(!body.includes(`"event_id":"other"`), "a foreign ?tenant= must never be honored");
   } finally {
+    app.server.closeAllConnections();
+    await app.close();
+  }
+});
+
+// ── H-07: admin-only tenant stream ───────────────────────────────────────────
+
+function seedMixed() {
+  record({ event_id: "own", tenant_id: "tenant-a", actor_user_id: "alice@example.com" });
+  record({ event_id: "obo", tenant_id: "tenant-a", actor_user_id: "approver@example.com", context: { obo: { subject: "alice@example.com" } } });
+  record({ event_id: "colleague", tenant_id: "tenant-a", actor_user_id: "bob@example.com" });
+}
+
+async function listIds(opts: { admin?: boolean; probeErr?: Error }) {
+  const { app, token } = await buildApp(opts);
+  await app.ready();
+  seedMixed();
+  const res = await app.inject({ method: "GET", url: "/api/audit", headers: { authorization: `Bearer ${token}` } });
+  await app.close();
+  assert.equal(res.statusCode, 200);
+  return (JSON.parse(res.body) as { events: { event_id: string }[] }).events.map((e) => e.event_id).sort();
+}
+
+test("GET /api/audit — a tenant admin sees every event in the tenant", async () => {
+  assert.deepEqual(await listIds({ admin: true }), ["colleague", "obo", "own"]);
+});
+
+test("GET /api/audit — a member sees only their own and on-behalf-of events", async () => {
+  assert.deepEqual(await listIds({ admin: false }), ["obo", "own"]);
+});
+
+test("GET /api/audit — a failed admin probe falls back to the member scope", async () => {
+  assert.deepEqual(await listIds({ admin: false, probeErr: new Error("broker unreachable") }), ["obo", "own"]);
+});
+
+test("GET /api/audit/stream — a member's replay omits colleagues' events", async () => {
+  const { app, token } = await buildApp({ admin: false });
+  seedMixed();
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+  try {
+    const { status: code, body } = await readSseSnippet(address.port, token, "/api/audit/stream");
+    assert.equal(code, 200);
+    assert.ok(body.includes(`"event_id":"own"`));
+    assert.ok(!body.includes(`"event_id":"colleague"`));
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+  }
+});
+
+test("GET /api/audit/stream — open streams per principal are capped (429)", async () => {
+  const { app, token } = await buildApp();
+  record({ event_id: "e", tenant_id: "tenant-a" });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+  const held: import("node:http").ClientRequest[] = [];
+  const open = () => new Promise<number>((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port: address.port, path: "/api/audit/stream", headers: { authorization: `Bearer ${token}` } },
+      (res) => resolve(res.statusCode ?? 0));
+    req.on("error", reject);
+    req.end();
+    held.push(req);
+  });
+  try {
+    for (let i = 0; i < 3; i++) assert.equal(await open(), 200);
+    assert.equal(await open(), 429);
+  } finally {
+    for (const r of held) r.destroy();
     app.server.closeAllConnections();
     await app.close();
   }

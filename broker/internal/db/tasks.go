@@ -105,6 +105,9 @@ type Task struct {
 	// step whose required scope is outside it.
 	EnvelopeID      *uuid.UUID `db:"envelope_id"`
 	DelegatedScopes []string   `db:"delegated_scopes"`
+	// ServiceAgent mirrors agents.service_agent for the bound agent (AG-12),
+	// read on load for the audit actor chain; never written.
+	ServiceAgent bool `db:"service_agent"`
 }
 
 // OnBehalfOf is who a task acts for (Subject) and as (Actor), plus how that
@@ -113,6 +116,7 @@ type OnBehalfOf struct {
 	Subject          string // human user id; "" for a service run
 	Actor            string // agent UUID; "" for an unbound task
 	ServiceRun       bool   // owner is svc-<agent>, so there is no human subject
+	ServiceAgent     bool   // the actor agent is flagged service_agent (AG-12)
 	DelegatedBy      string // sender user of an accepted envelope, else ""
 	EnvelopeID       string // envelope a delegated task came from (AG-11), else ""
 	ExternalClientID string // api_keys.id for an external REST run, else ""
@@ -124,7 +128,7 @@ type OnBehalfOf struct {
 // ponytail: the svc- owner prefix is the "no subject" encoding in v1; a
 // nullable subject column replaces it when a second subject-less producer appears.
 func (t *Task) OnBehalfOf() OnBehalfOf {
-	o := OnBehalfOf{Subject: t.OwnerUserID}
+	o := OnBehalfOf{Subject: t.OwnerUserID, ServiceAgent: t.ServiceAgent}
 	if strings.HasPrefix(t.OwnerUserID, "svc-") {
 		o.Subject, o.ServiceRun = "", true
 	}
@@ -223,7 +227,8 @@ func (r *TaskRepo) getByClientRequestID(ctx context.Context, conn *pgxpool.Conn,
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
 		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
-		       envelope_id, delegated_scopes
+		       envelope_id, delegated_scopes,
+		       EXISTS (SELECT 1 FROM agents a WHERE a.id = tasks.agent_id AND a.service_agent) AS service_agent
 		FROM tasks WHERE tenant_id = $1 AND client_request_id = $2`, tenantID, clientRequestID)
 	if err != nil {
 		return nil, fmt.Errorf("query task by client_request_id: %w", err)
@@ -250,7 +255,8 @@ func (r *TaskRepo) Get(ctx context.Context, tenantID, taskID string) (*Task, err
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
 		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
-		       envelope_id, delegated_scopes
+		       envelope_id, delegated_scopes,
+		       EXISTS (SELECT 1 FROM agents a WHERE a.id = tasks.agent_id AND a.service_agent) AS service_agent
 		FROM tasks WHERE task_id = $1`, taskID)
 		if err != nil {
 			return nil, fmt.Errorf("query task: %w", err)
@@ -339,7 +345,8 @@ func (r *TaskRepo) ListPending(ctx context.Context, tenantID, userID string) ([]
 		       trace_id, created_at, updated_at, deadline, completed_at,
 		       gateway_managed, agent_id, client_request_id,
 		       delegated_by_user_id, external_client_id, grant_id, obo_kind,
-		       envelope_id, delegated_scopes
+		       envelope_id, delegated_scopes,
+		       EXISTS (SELECT 1 FROM agents a WHERE a.id = tasks.agent_id AND a.service_agent) AS service_agent
 		FROM tasks
 		WHERE owner_user_id = $1
 		  AND state NOT IN ('COMPLETED','FAILED','DENIED','CANCELLED','TERMINATED','TIMEOUT')

@@ -13,6 +13,13 @@ vi.mock("../auth/oidc.js", () => ({
 
 import { getUser, login } from "../auth/oidc.js";
 
+// Admin probe: tests run as an admin unless they flip `adminProbe.admin`.
+const adminProbe = vi.hoisted(() => ({ admin: true }));
+vi.mock("../api/adminStatus.js", async () => {
+  const { useUserStore } = await import("../store/user.js");
+  return { refreshAdminStatus: vi.fn(async () => { useUserStore().isAdmin = adminProbe.admin; }) };
+});
+
 describe("router", () => {
   const EXPECTED_PATHS = [
     "/",
@@ -179,4 +186,21 @@ describe("router auth guard", () => {
     expect(login).not.toHaveBeenCalled();
     expect(router.currentRoute.value.path).toBe("/files");
   });
+
+  // H-07: a member who opens an admin URL (the audit stream among them) is
+  // sent to /chat; the probe decides, not the cached flag.
+  it("a non-admin navigating to /admin/audit lands on /chat", async () => {
+    setActivePinia(createPinia());
+    adminProbe.admin = false;
+    try {
+      getUser.mockResolvedValue({ expired: false, profile: { email: "u@test.dev", sub: "sub1" } });
+      const router = createRouter({ history: createWebHashHistory(), routes });
+      router.beforeEach(authGuard);
+      await router.push("/admin/audit");
+      await router.isReady();
+      expect(router.currentRoute.value.path).toBe("/chat");
+    } finally {
+      adminProbe.admin = true;
+    }
+  }, 30_000);
 });

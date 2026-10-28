@@ -6,8 +6,9 @@ import AuditHistory from "./AuditHistory.vue";
 import DecisionTrace from "./DecisionTrace.vue";
 import PolicySimulator from "./PolicySimulator.vue";
 import Alerts from "./Alerts.vue";
+import { authedEventSource } from "../../api/auditStream.js";
 
-const ESF = (url) => new EventSource(url);
+const ESF = authedEventSource;
 
 const TABS = Object.freeze([
   { key: "audit",      label: "Audit",         comp: markRaw(Audit) },

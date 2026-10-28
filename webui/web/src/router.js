@@ -21,6 +21,7 @@ import Skills from "./views/admin/Skills.vue";
 import SkillBundles from "./views/admin/SkillBundles.vue";
 import { getUser, login } from "./auth/oidc.js";
 import { useUserStore } from "./store/user.js";
+import { refreshAdminStatus } from "./api/adminStatus.js";
 
 export const routes = [
   // Public — no auth required; handles the Keycloak redirect.
@@ -92,6 +93,13 @@ export async function authGuard(to) {
         sub:   oidcUser.profile.sub,
         name:  oidcUser.profile.name,
       });
+    }
+    // H-07: admin views (the audit stream among them) are for tenant admins.
+    // The broker and gateway enforce this; the guard keeps members off pages
+    // that would only show errors or their own slice.
+    if (to.path.startsWith("/admin/")) {
+      if (!userStore.isAdmin) await refreshAdminStatus();
+      if (!userStore.isAdmin) return "/chat";
     }
     return true;
   }
