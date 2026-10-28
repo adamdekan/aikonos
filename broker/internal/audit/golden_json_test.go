@@ -30,6 +30,7 @@ func TestGoldenJSON_CanonicalShape(t *testing.T) {
 		ActorSpiffeId:  "spiffe://aikonos.com/broker",
 		ActorUserId:    "user-1",
 		ActorEmail:     "user@example.com",
+		ActorAgentId:   "agent-1",
 		EventType:      "aikonos.broker.task.created",
 		ResourceRef:    "aikonos:task:abc",
 		Decision:       auditv1.PolicyDecision_ALLOW,
@@ -80,7 +81,7 @@ func TestGoldenJSON_CanonicalShape(t *testing.T) {
 	// (a) snake_case field names, not protojson's lowerCamelCase.
 	for _, field := range []string{
 		`"event_id"`, `"trace_id"`, `"tenant_id"`, `"occurred_at"`,
-		`"actor_spiffe_id"`, `"actor_user_id"`, `"actor_email"`,
+		`"actor_spiffe_id"`, `"actor_user_id"`, `"actor_email"`, `"actor_agent_id"`,
 		`"event_type"`, `"resource_ref"`, `"decision"`, `"context"`,
 		`"prior_event_hash"`, `"signature"`, `"signing_key_version"`,
 	} {
@@ -131,6 +132,20 @@ func TestGoldenJSON_CanonicalShape(t *testing.T) {
 	}
 	if !proto.Equal(want, got) {
 		t.Errorf("round-trip mismatch:\n  want=%v\n  got=%v", want, got)
+	}
+}
+
+// TestGoldenJSON_ActorAgentIDOmittedWhenUnset pins AG-17's compatibility
+// claim: an unset actor_agent_id adds nothing to the canonical bytes, so
+// events emitted before the field existed hash and verify unchanged.
+func TestGoldenJSON_ActorAgentIDOmittedWhenUnset(t *testing.T) {
+	ev := &auditv1.AuditEvent{EventId: "e1", TenantId: "tenant-1", ActorUserId: "user-1"}
+	if s := string(canonicalBytes(ev)); strings.Contains(s, "actor_agent_id") {
+		t.Errorf("unset actor_agent_id must be omitted from canonical JSON: %s", s)
+	}
+	ev.ActorAgentId = "agent-1"
+	if s := string(canonicalBytes(ev)); !strings.Contains(s, `"actor_agent_id":"agent-1"`) {
+		t.Errorf("set actor_agent_id missing from canonical JSON: %s", s)
 	}
 }
 

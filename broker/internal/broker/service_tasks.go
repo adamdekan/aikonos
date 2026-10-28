@@ -166,7 +166,10 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		zap.String("new_status", respStatus.String()),
 	)
 
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	// Audit-only re-read for the on-behalf-of chain (AG-17), matching
+	// ApproveGatewayTask; a failed read just leaves the chain off the event.
+	task, _ := s.deps.Tasks.Get(ctx, tenant, req.TaskId)
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
 		TenantId:    tenant,
@@ -175,7 +178,7 @@ func (s *BrokerService) ApproveTask(ctx context.Context, req *brokerv1.ApproveTa
 		EventType:   eventType,
 		ResourceRef: "aikonos:task:" + req.TaskId,
 		Decision:    decision,
-	}); err != nil {
+	}, task)); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, eventType)
 	}
 

@@ -81,7 +81,7 @@ func persistManagedTask(
 		zap.Bool("gateway_managed", t.GatewayManaged),
 	)
 
-	if err := deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
 		TenantId:    t.TenantID.String(),
@@ -90,7 +90,7 @@ func persistManagedTask(
 		EventType:   "aikonos.broker.task.created",
 		ResourceRef: "aikonos:task:" + t.TaskID.String(),
 		Decision:    auditv1.PolicyDecision_ALLOW,
-	}); err != nil {
+	}, t)); err != nil {
 		audit.RecordEmitFailure(ctx, deps.Logger, err, "aikonos.broker.task.created")
 	}
 
@@ -241,7 +241,7 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 		zap.String("new_status", respStatus.String()),
 	)
 
-	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
+	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
 		TenantId:    req.TenantId,
@@ -250,7 +250,7 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 		EventType:   eventType,
 		ResourceRef: "aikonos:task:" + req.TaskId,
 		Decision:    decision,
-	}); err != nil {
+	}, task)); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, eventType)
 	}
 

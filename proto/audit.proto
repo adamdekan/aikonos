@@ -33,6 +33,11 @@ message AuditEvent {
   // actor_user_id remains the stable authz key. Empty for system/SPIFFE events.
   string actor_email = 13;
 
+  // Agent the action ran as (the task row's agent_id; AG-17). Empty for an
+  // unbound task or a non-task event. The rest of the on-behalf-of chain is
+  // in context.obo.
+  string actor_agent_id = 15;
+
   // Structured event type — dot-separated namespace
   // Examples:
   //   aikonos.broker.task.created

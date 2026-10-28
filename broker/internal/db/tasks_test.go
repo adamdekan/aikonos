@@ -124,3 +124,30 @@ func TestTaskRepo_Transition_RecordsOnSuccessOnly(t *testing.T) {
 		t.Fatalf("failed transition must not record a metric; got %d recorded: %+v", len(fake.transitions), fake.transitions)
 	}
 }
+
+// TestTaskRepo_OBOColumns_RoundTrip proves Create binds and Get reads back the
+// on-behalf-of columns (migration 048, AG-17) without swapping the two UUIDs.
+func TestTaskRepo_OBOColumns_RoundTrip(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+
+	tenantID, taskID, client, grant := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	sender := "bob@example.com"
+	if err := repo.Create(ctx, &Task{
+		TaskID: taskID, TenantID: tenantID, OwnerUserID: "alice@example.com",
+		Prompt: "p", CostBudget: 10,
+		DelegatedByUserID: &sender, ExternalClientID: &client, GrantID: &grant,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := repo.Get(ctx, tenantID.String(), taskID.String())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := OnBehalfOf{Subject: "alice@example.com", DelegatedBy: sender,
+		ExternalClientID: client.String(), GrantID: grant.String()}
+	if o := got.OnBehalfOf(); o != want {
+		t.Errorf("round trip: got %+v, want %+v", o, want)
+	}
+}

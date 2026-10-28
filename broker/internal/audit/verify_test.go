@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
 
@@ -133,5 +135,32 @@ func TestVerifyChain_UnsignedChain(t *testing.T) {
 	}
 	if len(report.Breaks) != 0 {
 		t.Errorf("want 0 breaks, got %d", len(report.Breaks))
+	}
+}
+
+// TestVerifyChain_MixedOldAndOBOEvents: an event without the AG-17 fields (as
+// emitted before they existed) and one carrying actor_agent_id and
+// context.obo chain and verify together.
+func TestVerifyChain_MixedOldAndOBOEvents(t *testing.T) {
+	e, err := NewEmitter(context.Background(), Config{SigningKey: "test-key"})
+	if err != nil {
+		t.Fatalf("NewEmitter: %v", err)
+	}
+	obo, _ := structpb.NewStruct(map[string]any{
+		"obo": map[string]any{"subject": "u-1", "actor": "a-1", "service_run": false, "kind": ""},
+	})
+	events := []*auditv1.AuditEvent{
+		{EventId: ids_for_test(0), TenantId: "tenant1", EventType: "aikonos.broker.tool.invoked", ActorUserId: "u-1"},
+		{EventId: ids_for_test(1), TenantId: "tenant1", EventType: "aikonos.broker.tool.invoked", ActorUserId: "u-1",
+			ActorAgentId: "a-1", Context: obo},
+	}
+	for i, ev := range events {
+		if err := e.Emit(context.Background(), ev); err != nil {
+			t.Fatalf("Emit[%d]: %v", i, err)
+		}
+	}
+	if report := VerifyChain(events, "test-key"); !report.OK || report.Total != 2 {
+		t.Errorf("want ok chain of 2, got ok=%v total=%d breaks=%v sig_failures=%v",
+			report.OK, report.Total, report.Breaks, report.SignatureFailures)
 	}
 }
