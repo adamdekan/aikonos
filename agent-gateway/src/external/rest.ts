@@ -58,6 +58,11 @@ export function registerExternalRoutes(
   log: Logger,
   supervisor: ChildSupervisor,
 ): void {
+  // F56: the per-agent bucket, on top of the per-client-IP one server.ts
+  // applies before auth. Built on first use: @fastify/rate-limit decorates
+  // createRateLimit only once the app has loaded its plugins.
+  let agentLimit: ReturnType<FastifyInstance["createRateLimit"]> | undefined;
+
   app.post<{ Params: InvokeParams; Body: InvokeBody }>(
     "/v1/agents/:id/invoke",
     async (req, reply) => {
@@ -78,6 +83,20 @@ export function registerExternalRoutes(
         return reply.code(409).send({
           error: `URL agent id '${req.params.id}' does not match key-resolved agent '${agentId}'`,
         });
+      }
+
+      // 2b. Per-agent rate limit (F56). Keyed on the URL id only now that it
+      //     is known to equal the key-resolved agent, so unauthenticated
+      //     traffic can never drain an agent's bucket.
+      agentLimit ??= app.createRateLimit({
+        max: cfg.externalRateLimit,
+        timeWindow: 60_000,
+        keyGenerator: (r) => `agent:${(r.params as InvokeParams).id}`,
+      });
+      const limit = await agentLimit(req);
+      if (!limit.isAllowed && limit.isExceeded) {
+        log.warn({ agentId, principal }, "external invoke refused: per-agent rate limit exceeded");
+        return reply.code(429).header("retry-after", String(limit.ttlInSeconds)).send({ error: "rate limit exceeded for this agent" });
       }
 
       // 3. Prompt size cap.
@@ -126,12 +145,20 @@ export function registerExternalRoutes(
         connection: "keep-alive",
       });
 
+      // F208: a client that leaves mid-stream aborts the run (and its token
+      // spend) instead of leaving it to finish or time out unattended.
+      const disconnected = new AbortController();
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableEnded) disconnected.abort();
+      });
+
       try {
         const iter = runAgentInvocation(agentId, principal, tenantId, agentSpec.skills, prompt, {
           clients,
           cfg,
           log,
           supervisor,
+          signal: disconnected.signal,
         }, agentSpec, ownerGrant, history);
         for await (const ev of iter) {
           reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);

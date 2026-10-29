@@ -574,3 +574,44 @@ test("CP1 runAgentInvocation: tool_end result stringification — string passthr
   assert.equal(toolEnds[1].result, JSON.stringify(null));
   assert.equal(toolEnds[1].ok, false);
 });
+
+// ── F208: client disconnect aborts the run ────────────────────────────────────
+
+test("F208 runAgentInvocation: an aborted signal stops a silent run at once (abortRun, generator ends)", async () => {
+  // WHY: return() on the generator queues behind the pending next(), so a long
+  // silent tool call kept running (and spending) until the 180 s timeout.
+  const { runAgentInvocation } = await import("../../src/external/core.js");
+  const { buffer } = await import("../../src/audit/stream.js");
+  const clients = { north: makeNorth(), south: makeSouth(["doc.read"]) } as unknown as import("../../src/broker/clients.js").BrokerClients;
+  const abortRunCalls: string[] = [];
+  const supervisor = {
+    keyFor: () => "__single__",
+    getOrSpawn: async () => ({
+      setRunContext: () => {},
+      clearRunContext: () => {},
+      abortRun: (runId: string) => { abortRunCalls.push(runId); },
+    }),
+    run: (): Promise<void> => new Promise(() => {}),
+  } as unknown as import("../../src/ipc/supervisor.js").ChildSupervisor;
+
+  const ac = new AbortController();
+  const gen = runAgentInvocation(AGENT_ID, `svc-${AGENT_ID}`, TENANT, ["doc.read"], "p",
+    { clients, cfg: baseCfg, log, supervisor, timeoutMs: 60_000, signal: ac.signal });
+  const next = gen.next();
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  ac.abort();
+
+  const res = await Promise.race([next, new Promise<"hung">((r) => setTimeout(() => r("hung"), 500))]);
+  assert.notEqual(res, "hung", "the pending next() must settle on abort, not wait for the run");
+  assert.equal((res as IteratorResult<unknown>).done, true);
+  assert.ok(abortRunCalls.length > 0, "abortRun must reach the child");
+
+  // F205: the invocation record uses the AuditEvent field names the audit
+  // stream's scope filter matches (tenant_id, actor_user_id).
+  const ev = buffer.at(-1) as Record<string, unknown>;
+  assert.equal(ev.event_type, "agent.external.invoked");
+  assert.equal(ev.tenant_id, TENANT);
+  assert.equal(ev.actor_user_id, `svc-${AGENT_ID}`);
+  assert.equal(ev.resource_ref, `agent:${AGENT_ID}`);
+  assert.deepEqual(ev.context, { status: "aborted" });
+});

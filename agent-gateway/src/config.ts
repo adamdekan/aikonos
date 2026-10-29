@@ -61,6 +61,19 @@ function parseNonNegativeInt(env: Record<string, string | undefined>, name: stri
   return n;
 }
 
+// F56: a hop count ("1"), "0"/"false" for none, or a comma-separated list of
+// proxy addresses/CIDRs. "true" is refused: see Config.externalTrustProxy.
+function parseTrustProxy(env: Record<string, string | undefined>, name: string, fallback: string): number | string[] | false {
+  const raw = (env[name] ?? fallback).trim();
+  if (raw === "0" || raw === "false") return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (raw === "true" || list.length === 0) {
+    throw new Error(`invalid ${name}="${raw}": expected a hop count, false, or proxy addresses/CIDRs`);
+  }
+  return list;
+}
+
 export interface Config {
   openrouterApiKey: string;
   llmModel: string;
@@ -77,7 +90,8 @@ export interface Config {
   // oidcJwksUrl is the container-facing JWKS endpoint (e.g. http://keycloak:8080/…).
   // oidcIssuer is the browser-facing issuer written into tokens (e.g. http://localhost:18080/…).
   // oidcAudience is the expected aud claim (aikonos-broker).
-  // When oidcIssuer is empty, verification is skipped (unit-test / dev passthrough).
+  // When oidcIssuer is empty, the iss check is skipped (unit-test / dev
+  // passthrough); server.ts refuses that outside AIKONOS_DEV_MODE (F63).
   oidcIssuer: string;
   oidcJwksUrl: string;
   oidcAudience: string;
@@ -93,8 +107,15 @@ export interface Config {
   // Comma-separated list of allowed CORS origins for the external surface.
   // Empty means no CORS is applied (same-origin only in practice).
   externalCorsOrigins: string[];
-  // Max requests per minute per IP on the external surface.
+  // Max requests per minute per client IP on the external surface, and again
+  // per authenticated agent (F56).
   externalRateLimit: number;
+  // F56: the proxy hops (a count) or proxy addresses/CIDRs (a list) whose
+  // X-Forwarded-For the external surface trusts for the client IP. Default 1:
+  // the on-prem and Azure overlays front :8090 with Traefik. Never `true` — a
+  // blanket trust lets any direct client choose its own rate-limit bucket.
+  // false = trust no proxy (req.ip is the socket peer).
+  externalTrustProxy?: number | string[] | false;
   // AG-05: the aud an external agent's client assertion must carry. Empty ⇒
   // key-pair auth is off and only tk_ keys are accepted.
   externalAudience?: string;
@@ -199,6 +220,7 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
       .map((s) => s.trim())
       .filter(Boolean),
     externalRateLimit: parsePositiveInt(env, "AIKONOS_EXTERNAL_RATE_LIMIT", "60"),
+    externalTrustProxy: parseTrustProxy(env, "AIKONOS_EXTERNAL_TRUST_PROXY", "1"),
     externalAudience: get(env, "AIKONOS_EXTERNAL_AUDIENCE", "").trim(),
     externalBaseUrl: get(env, "AIKONOS_EXTERNAL_BASE_URL", "").trim().replace(/\/+$/, ""),
     connectorsRedirectUri: get(env, "AIKONOS_CONNECTORS_REDIRECT_URI", "").trim(),
@@ -224,6 +246,20 @@ export function buildConfig(env: Record<string, string | undefined>): Config {
     subagentMaxWidth: parsePositiveInt(env, "AIKONOS_GATEWAY_SUBAGENT_MAX_WIDTH", "3"),
     subagentBranchTimeoutMs: parsePositiveInt(env, "AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS", "180000"),
   };
+}
+
+// F63: jose treats an empty issuer as "do not check iss", so a deployment that
+// forgot AIKONOS_OIDC_ISSUER would accept any token the JWKS signs (with a
+// shared-key IdP, another tenant's). The gateway refuses to start without an
+// issuer and a JWKS URL; AIKONOS_DEV_MODE=true is the explicit escape hatch
+// for local runs and tests. Called from server.ts, not buildConfig, so the CLI
+// tools and config tests keep accepting an empty issuer.
+export function assertOidcConfigured(cfg: Pick<Config, "oidcIssuer" | "oidcJwksUrl">, env: Record<string, string | undefined>): void {
+  if (cfg.oidcIssuer && cfg.oidcJwksUrl) return;
+  if (parseBool(env, "AIKONOS_DEV_MODE", "false")) return;
+  throw new Error(
+    "AIKONOS_OIDC_ISSUER and AIKONOS_OIDC_JWKS_URL must be set (bearer issuer check); set AIKONOS_DEV_MODE=true to run without them in development",
+  );
 }
 
 /** Loads and validates the gateway Config from process.env; throws with an actionable message on any missing or malformed value. */

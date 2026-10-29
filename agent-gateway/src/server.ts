@@ -6,7 +6,7 @@
 //   GET  /healthz     → liveness
 //   POST /agui        → run the agent for a prompt; streams AG-UI events (SSE)
 //   POST /approve/:id → resolve a pending human-in-the-loop approval
-import { loadConfig } from "./config";
+import { assertOidcConfigured, loadConfig } from "./config";
 import { log } from "./log";
 import { setUnaryDeadlineMs } from "./broker/unary.js";
 import { BrokerClients } from "./broker/clients";
@@ -25,6 +25,7 @@ import { buildApp } from "./app.js";
 import { installShutdownHandlers } from "./shutdown.js";
 
 const cfg = loadConfig();
+assertOidcConfigured(cfg, process.env);
 // Applies to every unary north/south RPC (src/broker/unary.ts) built anywhere
 // in this process, including src/external/server.ts which reuses `clients`
 // below. cli/agent-cli.ts and smoke-south.ts are separate entrypoints that
@@ -124,7 +125,8 @@ const supervisor: ChildSupervisor = new ChildSupervisor(
 );
 
 // Shared OIDC verify options; the JWKS set is cached at module scope inside
-// productionResolver. When oidcIssuer is empty we run in dev passthrough mode.
+// productionResolver. An empty oidcIssuer (dev passthrough) is only reachable
+// with AIKONOS_DEV_MODE=true — assertOidcConfigured above (F63).
 const jwksResolver = productionResolver(cfg);
 const verifyOpts = {
   issuer: cfg.oidcIssuer,

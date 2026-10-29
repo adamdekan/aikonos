@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildConfig } from "../src/config.js";
+import { assertOidcConfigured, buildConfig } from "../src/config.js";
 
 // Minimal valid env — all required vars at their sensible defaults.
 function validEnv(): Record<string, string> {
@@ -539,4 +539,27 @@ test("config: zero AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS is rejected (0 wou
       return true;
     },
   );
+});
+
+// ── F63: OIDC issuer guard (server startup) ──────────────────────────────────
+
+test("F63 config: startup refuses an empty issuer or JWKS URL outside dev mode", () => {
+  // WHY: jose treats an empty issuer as "skip the iss check" — a forgotten env
+  // var must stop the gateway, not silently accept any JWKS-signed token.
+  assert.throws(() => assertOidcConfigured({ oidcIssuer: "", oidcJwksUrl: "http://kc/certs" }, {}), /AIKONOS_OIDC_ISSUER/);
+  assert.throws(() => assertOidcConfigured({ oidcIssuer: "http://kc", oidcJwksUrl: "" }, { AIKONOS_DEV_MODE: "false" }), /AIKONOS_DEV_MODE/);
+  assert.doesNotThrow(() => assertOidcConfigured({ oidcIssuer: "", oidcJwksUrl: "" }, { AIKONOS_DEV_MODE: "true" }));
+  assert.doesNotThrow(() => assertOidcConfigured({ oidcIssuer: "http://kc", oidcJwksUrl: "http://kc/certs" }, {}));
+});
+
+// ── F56: external trust-proxy setting ────────────────────────────────────────
+
+test("F56 config: AIKONOS_EXTERNAL_TRUST_PROXY defaults to one hop and never accepts blanket true", () => {
+  assert.equal(buildConfig(validEnv()).externalTrustProxy, 1);
+  assert.equal(buildConfig({ ...validEnv(), AIKONOS_EXTERNAL_TRUST_PROXY: "0" }).externalTrustProxy, false);
+  assert.deepEqual(
+    buildConfig({ ...validEnv(), AIKONOS_EXTERNAL_TRUST_PROXY: "10.0.0.0/8, 172.18.0.2" }).externalTrustProxy,
+    ["10.0.0.0/8", "172.18.0.2"],
+  );
+  assert.throws(() => buildConfig({ ...validEnv(), AIKONOS_EXTERNAL_TRUST_PROXY: "true" }), /AIKONOS_EXTERNAL_TRUST_PROXY/);
 });
