@@ -3,7 +3,7 @@
 // characters, Unicode tag characters), line and paragraph separators, Hangul
 // fillers, the combining grapheme joiner and variation selectors. Newline and
 // tab stay, ArgsView shows them.
-const HIDDEN = /(?![\n\t])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}ᅟᅠㅤﾠ͏︀-️\u{E0100}-\u{E01EF}]/gu;
+const HIDDEN = /(?![\n\t])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u034F\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
 
 /**
  * Replaces every hidden character in s with a visible escape (\uXXXX, or
