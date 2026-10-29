@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
@@ -15,12 +17,23 @@ import (
 // by the Evaluator to the Notifier. It is read-only with respect to the audit
 // stream — errors from the Notifier are logged and never propagated.
 type Engine struct {
-	sub  notify.Subscription
-	ev   *Evaluator
-	n    Notifier
-	repo AlertRepo // nil → no persistence
-	log  *zap.Logger
+	sub     notify.Subscription
+	ev      *Evaluator
+	n       Notifier
+	repo    AlertRepo // nil → no persistence
+	log     *zap.Logger
+	queue   chan Alert
+	dropped atomic.Int64
 }
+
+// alertQueueSize bounds the alerts waiting for delivery (F34): Notify (an
+// SMTP send) and the persist Insert run on one worker off the audit consumer
+// loop, so a slow sink cannot stall it and a flood cannot spawn a goroutine
+// per alert. A full queue drops the alert and counts it.
+const alertQueueSize = 256
+
+// alertSinkTimeout bounds one Notify or Insert.
+const alertSinkTimeout = 30 * time.Second
 
 // NewEngine subscribes to subject on bus and returns a ready Engine.
 // subject must be an exact match understood by the bus implementation
@@ -37,13 +50,37 @@ func NewEngineWithRepo(bus notify.Bus, subject string, ev *Evaluator, n Notifier
 	if err != nil {
 		return nil, fmt.Errorf("alerting engine: subscribe %q: %w", subject, err)
 	}
-	return &Engine{sub: sub, ev: ev, n: n, repo: repo, log: log}, nil
+	return &Engine{sub: sub, ev: ev, n: n, repo: repo, log: log, queue: make(chan Alert, alertQueueSize)}, nil
 }
 
-// Start spawns the consumer goroutine. It returns when ctx is cancelled or the
-// subscription channel is closed.
+// Start spawns the consumer goroutine and the delivery worker. They return
+// when ctx is cancelled (the consumer also when the subscription closes).
 func (e *Engine) Start(ctx context.Context) {
 	go e.run(ctx)
+	go e.deliver(ctx)
+}
+
+// deliver sends queued alerts to the notifier and the repo, one at a time.
+func (e *Engine) deliver(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case a := <-e.queue:
+			nctx, cancel := context.WithTimeout(ctx, alertSinkTimeout)
+			if err := e.n.Notify(nctx, a); err != nil {
+				e.log.Warn("alerting: notifier error", zap.String("rule", a.Rule), zap.Error(err))
+			}
+			cancel()
+			if e.repo != nil {
+				pctx, cancel := context.WithTimeout(ctx, alertSinkTimeout)
+				if err := e.repo.Insert(pctx, alertToStored(ids.EventID(), a)); err != nil {
+					e.log.Warn("alerting: persist failed", zap.String("rule", a.Rule), zap.Error(err))
+				}
+				cancel()
+			}
+		}
+	}
 }
 
 func (e *Engine) run(ctx context.Context) {
@@ -68,17 +105,11 @@ func (e *Engine) handle(ctx context.Context, raw []byte) {
 	}
 
 	for _, a := range e.ev.Observe(&ev) {
-		if err := e.n.Notify(ctx, a); err != nil {
-			e.log.Warn("alerting: notifier error", zap.String("rule", a.Rule), zap.Error(err))
-		}
-		// Async persist — fire-and-forget like the audit MinIO sink.
-		if e.repo != nil {
-			go func(alert Alert) {
-				sa := alertToStored(ids.EventID(), alert)
-				if err := e.repo.Insert(context.Background(), sa); err != nil {
-					e.log.Warn("alerting: persist failed", zap.String("rule", alert.Rule), zap.Error(err))
-				}
-			}(a)
+		select {
+		case e.queue <- a:
+		default:
+			e.log.Warn("alerting: delivery queue full, alert dropped",
+				zap.String("rule", a.Rule), zap.Int64("dropped_total", e.dropped.Add(1)))
 		}
 	}
 }

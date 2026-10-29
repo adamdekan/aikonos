@@ -18,6 +18,14 @@ import (
 //   - OffHoursDestructiveCooldown 0 → disabled
 //   - MaxBaselineEntries 0 → treated as unlimited (no eviction)
 type Config struct {
+	// ── denial rule ──────────────────────────────────────────────────────────
+	// DenialCooldown ≤ 0 alerts on every DENY (prior behaviour). Otherwise
+	// each (tenant, actor) gets at most one "denial" alert per cooldown, and a
+	// tenant at most maxDenialAlertsPerCooldown across all its actors; the
+	// suppressed count rides on the next alert (F34). Suppression never
+	// touches the high_deny_rate or escalation bookkeeping below.
+	DenialCooldown time.Duration
+
 	// ── existing rule ────────────────────────────────────────────────────────
 	DenyRateThreshold int
 	DenyRateWindow    time.Duration
@@ -60,6 +68,11 @@ type Config struct {
 // broker lifetime.  The baseline is best-effort and in-memory only; it resets
 // on broker restart.
 type tenantState struct {
+	// denial: per-actor cooldown + suppressed count, and the tenant-wide
+	// fire times inside the current cooldown
+	denialFire   map[string]*denialBucket
+	denialAlerts []time.Time
+
 	// high_deny_rate
 	window       []time.Time
 	lastRateFire time.Time
@@ -79,6 +92,16 @@ type tenantState struct {
 	// actorEscFire to prevent aliasing when an actor id starts with "unusual:".
 	unusualFire map[string]time.Time
 }
+
+// denialBucket is one actor's denial-alert cooldown state.
+type denialBucket struct {
+	lastFire   time.Time
+	suppressed int
+}
+
+// maxDenialAlertsPerCooldown caps "denial" alerts per tenant per
+// DenialCooldown, so many distinct actors cannot flood the sinks either.
+const maxDenialAlertsPerCooldown = 10
 
 // Evaluator is a pure, concurrency-safe audit event consumer that emits Alerts
 // for security-relevant patterns (denials, high deny-rate, escalation pattern,
@@ -106,6 +129,7 @@ func (e *Evaluator) withClock(fn func() time.Time) {
 
 func newTenantState() *tenantState {
 	return &tenantState{
+		denialFire:   make(map[string]*denialBucket),
 		actorDenials: make(map[string][]time.Time),
 		actorEscFire: make(map[string]time.Time),
 		actorSeen:    make(map[string]map[string]time.Time),
@@ -136,16 +160,12 @@ func (e *Evaluator) Observe(ev *auditv1.AuditEvent) []Alert {
 
 	switch ev.Decision {
 	case auditv1.PolicyDecision_DENY:
-		// ── denial alert — always on DENY ────────────────────────────────────
-		alerts = append(alerts, Alert{
-			Rule:     "denial",
-			Severity: SeverityWarning,
-			TenantID: ev.TenantId,
-			Title:    ev.EventType,
-			Detail:   detail,
-			EventID:  ev.EventId,
-			FiredAt:  now,
-		})
+		// ── denial alert — rate-limited per actor and per tenant ─────────────
+		if a, ok := e.denialAlert(st, actor, now); ok {
+			a.TenantID, a.Title, a.EventID = ev.TenantId, ev.EventType, ev.EventId
+			a.Detail = detail + a.Detail
+			alerts = append(alerts, a)
+		}
 
 		// ── high_deny_rate window maintenance ────────────────────────────────
 		st.window = append(st.window, now)
@@ -181,7 +201,13 @@ func (e *Evaluator) Observe(ev *auditv1.AuditEvent) []Alert {
 			if _, exists := st.actorDenials[actor]; !exists {
 				capActorMap(st.actorDenials, e.cfg.MaxBaselineEntries)
 			}
-			st.actorDenials[actor] = append(st.actorDenials[actor], now)
+			denials := append(st.actorDenials[actor], now)
+			// Only the newest EscalationDenyCount denials can ever matter to
+			// the rule, so an actor who is only ever denied stays bounded.
+			if extra := len(denials) - e.cfg.EscalationDenyCount; extra > 0 {
+				denials = append(denials[:0], denials[extra:]...)
+			}
+			st.actorDenials[actor] = denials
 		}
 
 	case auditv1.PolicyDecision_ALLOW, auditv1.PolicyDecision_APPROVAL_REQUIRED:
@@ -373,6 +399,40 @@ func capActorMap[V any](m map[string]V, max int) {
 		delete(m, k)
 		return
 	}
+}
+
+// denialAlert decides whether this DENY by actor raises a "denial" alert. It
+// returns the alert's rule fields, with a suppressed-count suffix in Detail,
+// or false while actor or the tenant is inside its cooldown. Caller holds e.mu.
+func (e *Evaluator) denialAlert(st *tenantState, actor string, now time.Time) (Alert, bool) {
+	a := Alert{Rule: "denial", Severity: SeverityWarning, FiredAt: now}
+	cd := e.cfg.DenialCooldown
+	if cd <= 0 {
+		return a, true
+	}
+	b := st.denialFire[actor]
+	if b == nil {
+		capActorMap(st.denialFire, e.cfg.MaxBaselineEntries)
+		b = &denialBucket{}
+		st.denialFire[actor] = b
+	}
+	recent := st.denialAlerts[:0]
+	for _, t := range st.denialAlerts {
+		if now.Sub(t) < cd {
+			recent = append(recent, t)
+		}
+	}
+	st.denialAlerts = recent
+	if (!b.lastFire.IsZero() && now.Sub(b.lastFire) < cd) || len(recent) >= maxDenialAlertsPerCooldown {
+		b.suppressed++
+		return Alert{}, false
+	}
+	if b.suppressed > 0 {
+		a.Detail = fmt.Sprintf(" (+%d earlier denials suppressed)", b.suppressed)
+	}
+	b.lastFire, b.suppressed = now, 0
+	st.denialAlerts = append(st.denialAlerts, now)
+	return a, true
 }
 
 // isOffHours reports whether t falls outside business hours per the OPA

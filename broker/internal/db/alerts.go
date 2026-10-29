@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -86,5 +87,19 @@ func (r *AlertRepo) List(ctx context.Context, tenantID string, limit int) ([]ale
 			out = append(out, a)
 		}
 		return out, rows.Err()
+	})
+}
+
+// PruneBefore deletes every alert created strictly before cutoff and returns
+// the number removed — the retention sweep main.go's daily ticker drives
+// (F34). Cross-tenant like UsageEventRepo.PruneBefore, so it goes through the
+// SECURITY DEFINER function alerts_prune (migration 066).
+func (r *AlertRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	return withConnUnscoped(ctx, r.pool, func(conn *pgxpool.Conn) (int64, error) {
+		var removed int64
+		if err := conn.QueryRow(ctx, `SELECT alerts_prune($1)`, cutoff).Scan(&removed); err != nil {
+			return 0, fmt.Errorf("prune alerts: %w", err)
+		}
+		return removed, nil
 	})
 }

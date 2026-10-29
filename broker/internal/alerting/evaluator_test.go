@@ -1,6 +1,8 @@
 package alerting
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,4 +358,49 @@ func containsStr(s, sub string) bool {
 		}
 		return false
 	}())
+}
+
+// F34: with a denial cooldown a flood of DENY events from one actor yields one
+// "denial" alert per cooldown, the next one carries the suppressed count, and
+// many actors together are still capped per tenant — while high_deny_rate
+// keeps counting every DENY.
+func TestObserve_DenialCooldown(t *testing.T) {
+	now := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	e := NewEvaluator(Config{DenialCooldown: time.Minute, DenyRateThreshold: 1000, DenyRateWindow: time.Hour, DenyRateCooldown: time.Hour})
+	e.withClock(func() time.Time { return now })
+	deny := func(actor string) []Alert {
+		return e.Observe(&auditv1.AuditEvent{TenantId: "t1", ActorUserId: actor, EventType: "x", Decision: auditv1.PolicyDecision_DENY})
+	}
+	count := func(alerts []Alert, rule string) (n int) {
+		for _, a := range alerts {
+			if a.Rule == rule {
+				n++
+			}
+		}
+		return n
+	}
+
+	total := 0
+	for i := 0; i < 10000; i++ {
+		total += count(deny("mallory"), "denial")
+	}
+	if total != 1 {
+		t.Fatalf("10k denials in one cooldown -> %d denial alerts, want 1", total)
+	}
+	now = now.Add(time.Minute)
+	next := deny("mallory")
+	if count(next, "denial") != 1 || !strings.Contains(next[0].Detail, "+9999 earlier denials suppressed") {
+		t.Fatalf("after cooldown: %+v, want one alert carrying the suppressed count", next)
+	}
+
+	total = 0
+	for i := 0; i < 100; i++ {
+		total += count(deny(fmt.Sprintf("actor-%d", i)), "denial")
+	}
+	if total != maxDenialAlertsPerCooldown-1 { // mallory already used one slot
+		t.Fatalf("100 actors in one cooldown -> %d denial alerts, want %d", total, maxDenialAlertsPerCooldown-1)
+	}
+	if got := len(e.tenants["t1"].window); got != 10101 {
+		t.Fatalf("high_deny_rate window = %d, want every DENY counted", got)
+	}
 }

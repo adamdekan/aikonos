@@ -249,6 +249,11 @@ func main() {
 	// Empty string (default) → no extra gates (unchanged behaviour).
 	viper.SetDefault("policy.tool_gates", "")
 	viper.SetDefault("alerting.webhook_url", "")
+	// F34: at most one "denial" alert per (tenant, actor) per cooldown, with
+	// the suppressed count on the next; 0 alerts on every DENY. Alerts older
+	// than retention_days are pruned daily; 0 keeps them forever.
+	viper.SetDefault("alerting.denial_cooldown_seconds", 60)
+	viper.SetDefault("alerting.retention_days", 90)
 	viper.SetDefault("alerting.deny_rate_threshold", 25)
 	viper.SetDefault("alerting.deny_rate_window_seconds", 60)
 	viper.SetDefault("alerting.deny_rate_cooldown_seconds", 300)
@@ -745,6 +750,7 @@ func main() {
 		}
 		if len(alertSinks) > 0 && eventBus.Enabled() {
 			alertEv := alerting.NewEvaluator(alerting.Config{
+				DenialCooldown:              time.Duration(viper.GetInt("alerting.denial_cooldown_seconds")) * time.Second,
 				DenyRateThreshold:           viper.GetInt("alerting.deny_rate_threshold"),
 				DenyRateWindow:              time.Duration(viper.GetInt("alerting.deny_rate_window_seconds")) * time.Second,
 				DenyRateCooldown:            time.Duration(viper.GetInt("alerting.deny_rate_cooldown_seconds")) * time.Second,
@@ -1218,6 +1224,11 @@ func main() {
 	// AG-03: suspend agents orphaned past identity.orphan_grace_days.
 	go runOrphanSweepLoop(ctx, northSvc, viper.GetString("tenant_id"), log)
 
+	// F34: alert history retention.
+	if days := viper.GetInt("alerting.retention_days"); days > 0 {
+		go runAlertPruneLoop(ctx, alertRepo, days, log)
+	}
+
 	// Per-call LLM usage event retention.
 	if days := viper.GetInt("llm_usage.retention_days"); days > 0 {
 		go runLlmUsagePruneLoop(ctx, usageEventRepo, days, log)
@@ -1410,6 +1421,28 @@ func runLlmUsagePruneLoop(ctx context.Context, repo *db.UsageEventRepo, retentio
 			if removed > 0 {
 				log.Info("llm usage retention: pruned events",
 					zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
+			}
+		}
+	}
+}
+
+// runAlertPruneLoop deletes alerts older than retentionDays once a day (F34).
+func runAlertPruneLoop(ctx context.Context, repo *db.AlertRepo, retentionDays int, log *zap.Logger) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			cutoff := now.UTC().AddDate(0, 0, -retentionDays)
+			removed, err := repo.PruneBefore(ctx, cutoff)
+			if err != nil {
+				log.Warn("alert retention: prune failed", zap.Error(err))
+				continue
+			}
+			if removed > 0 {
+				log.Info("alert retention: pruned alerts", zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
 			}
 		}
 	}

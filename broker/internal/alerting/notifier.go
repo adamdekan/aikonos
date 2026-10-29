@@ -85,10 +85,16 @@ func (n *WebhookNotifier) Notify(ctx context.Context, a Alert) error {
 	return nil
 }
 
-// defaultSMTPTimeout is the dial+handshake deadline for SMTPNotifier when no
+// defaultSMTPTimeout is the TCP dial deadline for SMTPNotifier when no
 // explicit DialTimeout is set. smtp.SendMail has no timeout; a hung server
 // would block the fire-and-forget goroutine indefinitely without this.
 const defaultSMTPTimeout = 10 * time.Second
+
+// smtpSessionTimeout bounds the whole SMTP conversation after the dial
+// (greeting, STARTTLS, AUTH, DATA, QUIT) — F47: a server that accepts and
+// then stays silent must not hold the caller forever. A sooner ctx deadline
+// wins.
+const smtpSessionTimeout = 30 * time.Second
 
 // SMTPNotifier sends an Alert as a plain-text email over SMTP.
 // Username/Password are optional; omit both for unauthenticated relays.
@@ -109,7 +115,7 @@ type SMTPNotifier struct {
 
 // Notify composes an RFC 822 message and submits it via SMTP. The connection
 // is established fresh per call (fire-and-forget delivery; no connection pool).
-func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
+func (n *SMTPNotifier) Notify(ctx context.Context, a Alert) error {
 	if n.Host == "" || n.Port == "" {
 		return fmt.Errorf("alerting: SMTPNotifier: host and port are required")
 	}
@@ -124,6 +130,15 @@ func (n *SMTPNotifier) Notify(_ context.Context, a Alert) error {
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return fmt.Errorf("alerting: smtp dial: %w", err)
+	}
+	deadline := time.Now().Add(smtpSessionTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	// Survives StartTLS: tls.Client wraps this same conn.
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return fmt.Errorf("alerting: smtp deadline: %w", err)
 	}
 
 	c, err := smtp.NewClient(conn, n.Host)
