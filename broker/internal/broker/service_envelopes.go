@@ -399,6 +399,24 @@ func (s *BrokerService) RespondToEnvelope(ctx context.Context, req *brokerv1.Res
 	if kind, _ := env.TaskSpec["kind"].(string); kind == skillTransferEnvelopeKind {
 		return nil, status.Error(codes.FailedPrecondition, "a skill transfer envelope must be accepted via AcceptSkillTransfer")
 	}
+	if req.Accepted {
+		// F165: the sender's authority is checked at accept time, not only at
+		// send: an expired envelope, or one whose sender has since been
+		// blocked or revoked-all, spawns nothing. The DB update re-checks the
+		// expiry, so this is the clear error, not the guard.
+		if !env.ExpiresAt.IsZero() && !time.Now().Before(env.ExpiresAt) {
+			return nil, status.Errorf(codes.FailedPrecondition, "envelope %s has expired", req.EnvelopeId)
+		}
+		st, rerr := s.deps.Revocation.User(ctx, tenant, env.FromUserID)
+		if rerr != nil {
+			s.deps.Logger.Error("RespondToEnvelope: sender state read failed", zap.Error(rerr))
+			return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+		}
+		if st.Revoked(env.CreatedAt) {
+			s.emitEnvelopeAudit(ctx, traceID, tenant, user, "aikonos.broker.envelope.sender_revoked", auditv1.PolicyDecision_DENY, "")
+			return nil, status.Error(codes.PermissionDenied, "the sender's access was revoked after this envelope was sent")
+		}
+	}
 
 	newState, err := s.deps.Tasks.RespondEnvelope(ctx, tenant, req.EnvelopeId, user, req.Accepted)
 	if err != nil {

@@ -224,6 +224,24 @@ func TestCreateGatewayTask_RevokedOrBlockedGrantRefused(t *testing.T) {
 	}
 }
 
+// TestCreateGatewayTask_RevokeSurvivesTTLChange pins F244: the grant carries
+// its issue time, so lowering the grant TTL after minting does not move the
+// grant's apparent issue past a later revoke-all.
+func TestCreateGatewayTask_RevokeSurvivesTTLChange(t *testing.T) {
+	svc := newSandboxSvcForGatewayTest(t, &fakeCreateStore{}, nil)
+	rev := newFakeRevStore()
+	svc.deps.Revocation = revocation.New(rev)
+	svc.deps.GatewayGrantTTL = time.Hour
+	grant := mintTestGrant(t, testTenantUUID, "alice")
+
+	rev.userNB["alice"] = time.Now().Add(2 * time.Second) // revoke-all after the mint
+	svc.deps.GatewayGrantTTL = time.Minute                // restart with a tighter TTL
+	_, err := svc.CreateGatewayTask(gatewaySpiffeCtx(), &brokerv1.CreateGatewayTaskRequest{TenantId: testTenantUUID, Prompt: "p", OwnerGrant: grant})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("grant minted before the revoke-all: want PermissionDenied, got %v", err)
+	}
+}
+
 // AG-06: InvokeTool stops a blocked subject at the next tool call and refuses a
 // capability token issued before the actor's revoke-all, without waiting for
 // the token to expire.

@@ -80,6 +80,9 @@ func Resolve(
 		if errors.Is(err, db.ErrVoterNotInApproverSet) {
 			return 0, nil, "", 0, status.Errorf(codes.PermissionDenied, "approver not in the approver set for task %s", taskID)
 		}
+		if errors.Is(err, db.ErrApprovalAlreadyResolved) { // another vote won; it transitions and mints
+			return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "approval for task %s was already resolved", taskID)
+		}
 		logger.Error("approvalsvc.Resolve: resolve failed", zap.Error(err))
 		return 0, nil, "", 0, status.Errorf(codes.Internal, "failed to record approval")
 	}

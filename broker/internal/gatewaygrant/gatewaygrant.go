@@ -9,10 +9,12 @@
 // Token format: base64url(payload) + "." + base64url(HMAC_SHA256(key, payload))
 // Payload (canonical, pipe-joined):
 //
-//	v2|<tenant>|<subject>|<actor>|<kind>|<grantID>|<expiresUnix>
+//	v3|<tenant>|<subject>|<actor>|<kind>|<grantID>|<issuedUnix>|<expiresUnix>
 //
-// Legacy v1|<tenantID>|<ownerUserID>|<expiresUnix> is accepted by Verify only
-// when acceptV1 is set (AG-17 rollout window).
+// v2 (the same without issuedUnix) is still verified, with IssuedAt unset, so
+// grants minted before the upgrade live out their TTL. Legacy
+// v1|<tenantID>|<ownerUserID>|<expiresUnix> is accepted by Verify only when
+// acceptV1 is set (AG-17 rollout window).
 package gatewaygrant
 
 import (
@@ -67,6 +69,9 @@ type Grant struct {
 	GrantID  string
 	// Expires is set by Verify from the token; Mint ignores it.
 	Expires time.Time
+	// IssuedAt is set by Verify from a v3 token (zero for v1/v2): the
+	// revocation epoch is compared against it (AG-06).
+	IssuedAt time.Time
 }
 
 // Owner is the task owner_user_id this grant binds: Subject, or svc-<actor>
@@ -92,8 +97,8 @@ func Mint(key []byte, g Grant, ttl time.Duration) (string, error) {
 			return "", fmt.Errorf("gatewaygrant: Mint: field contains delimiter")
 		}
 	}
-	expires := nowFn().Add(ttl).Unix()
-	payload := []byte(fmt.Sprintf("v2|%s|%s|%s|%s|%s|%d", g.TenantID, g.Subject, g.Actor, g.Kind, g.GrantID, expires))
+	now := nowFn()
+	payload := []byte(fmt.Sprintf("v3|%s|%s|%s|%s|%s|%d|%d", g.TenantID, g.Subject, g.Actor, g.Kind, g.GrantID, now.Unix(), now.Add(ttl).Unix()))
 	mac := computeMAC(key, payload)
 	return base64.RawURLEncoding.EncodeToString(payload) + "." +
 		base64.RawURLEncoding.EncodeToString(mac), nil
@@ -133,6 +138,12 @@ func Verify(key []byte, token string, acceptV1 bool) (Grant, error) {
 	parts := strings.Split(string(payloadBytes), "|")
 	var g Grant
 	switch {
+	case len(parts) == 8 && parts[0] == "v3":
+		iat, err := strconv.ParseInt(parts[6], 10, 64)
+		if err != nil {
+			return Grant{}, ErrMalformed
+		}
+		g = Grant{TenantID: parts[1], Subject: parts[2], Actor: parts[3], Kind: parts[4], GrantID: parts[5], IssuedAt: time.Unix(iat, 0)}
 	case len(parts) == 7 && parts[0] == "v2":
 		g = Grant{TenantID: parts[1], Subject: parts[2], Actor: parts[3], Kind: parts[4], GrantID: parts[5]}
 	case len(parts) == 4 && parts[0] == "v1" && acceptV1:
