@@ -98,7 +98,7 @@ func (m *minioStore) get(ctx context.Context, key string) ([]byte, error) {
 // Reader reads audit events from the MinIO object store.  When the store is
 // nil (logging-only mode) every Query call returns ok=false.
 type Reader struct {
-	store  objectStore // nil in logging-only mode
+	store  chainStore // nil in logging-only mode
 	cfg    Config
 	logger *zap.Logger
 }
@@ -139,15 +139,10 @@ func (r *Reader) Query(ctx context.Context, tenant string, f QueryFilter) ([]*au
 	}
 
 	prefix := tenant + "/"
-	metas, err := r.store.list(ctx, prefix)
+	metas, err := r.listNewest(ctx, prefix, prefix, f, nil)
 	if err != nil {
 		r.logger.Warn("audit reader: list objects failed", zap.String("tenant", tenant), zap.Error(err))
 		return nil, "", true, err
-	}
-
-	// Limit the total number of objects scanned.
-	if len(metas) > maxScanObjects {
-		metas = metas[:maxScanObjects]
 	}
 
 	var events []*auditv1.AuditEvent
@@ -166,6 +161,54 @@ func (r *Reader) Query(ctx context.Context, tenant string, f QueryFilter) ([]*au
 
 	page, next := filterAndPage(events, f)
 	return page, next, true, nil
+}
+
+// listNewest collects up to maxScanObjects object keys under prefix, walking
+// the <tenant>/YYYY/MM/DD/ date directories newest-first and skipping those
+// outside f's time range, so the scan cap drops the oldest events rather than
+// the newest. Within a directory, keys (UUIDv7 event ids) go newest-first.
+func (r *Reader) listNewest(ctx context.Context, root, prefix string, f QueryFilter, out []objMeta) ([]objMeta, error) {
+	dirs, objs, err := r.store.listLevel(ctx, prefix)
+	if err != nil {
+		return out, err
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
+	for _, d := range dirs {
+		if len(out) >= maxScanObjects {
+			return out, nil
+		}
+		if dateDirOutside(strings.TrimSuffix(strings.TrimPrefix(d, root), "/"), f) {
+			continue
+		}
+		if out, err = r.listNewest(ctx, root, d, f, out); err != nil {
+			return out, err
+		}
+	}
+	sort.Slice(objs, func(i, j int) bool { return objs[i].key > objs[j].key })
+	for _, o := range objs {
+		if len(out) >= maxScanObjects {
+			break
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// dateDirOutside reports whether the date directory rel ("YYYY", "YYYY/MM" or
+// "YYYY/MM/DD", relative to the tenant) lies wholly outside f's time range.
+// Anything not shaped like a date directory is never pruned.
+func dateDirOutside(rel string, f QueryFilter) bool {
+	const layout = "2006/01/02"
+	if n := len(rel); n != 4 && n != 7 && n != 10 {
+		return false
+	}
+	if _, err := time.Parse(layout[:len(rel)], rel); err != nil {
+		return false
+	}
+	if !f.StartTime.IsZero() && rel < f.StartTime.UTC().Format(layout)[:len(rel)] {
+		return true
+	}
+	return !f.EndTime.IsZero() && rel > f.EndTime.UTC().Format(layout)[:len(rel)]
 }
 
 // filterAndPage is the pure, unit-tested helper that applies all QueryFilter
