@@ -159,7 +159,8 @@ describe("Chat.vue — history sent with submit", () => {
 });
 
 // AG-17: an inbox delegation ("Send to agent" auto-submit, "New session"
-// prefill) sends its envelopeId on the chat's first run only.
+// prefill) sends its envelopeId on every run of that chat (AG-11 limits hold
+// for follow-ups).
 describe("Chat.vue — inbox envelopeId", () => {
   let router;
 
@@ -201,13 +202,33 @@ describe("Chat.vue — inbox envelopeId", () => {
     return ids;
   }
 
-  it("Send to agent: the auto-submitted run carries envelopeId, the next does not", async () => {
+  it("Send to agent: the auto-submitted run and the follow-up both carry envelopeId", async () => {
     const ids = await mountAndSendTwice((p) => p.set("fetch market data", "env-1"));
-    expect(ids).toEqual(["env-1", undefined]);
+    expect(ids).toEqual(["env-1", "env-1"]);
   });
 
-  it("New session: the first sent run carries envelopeId, the next does not", async () => {
+  it("New session: the first sent run and the follow-up both carry envelopeId", async () => {
     const ids = await mountAndSendTwice((p) => p.setPrefill("fetch market data", "env-1"));
+    expect(ids).toEqual(["env-1", "env-1"]);
+  });
+
+  it("switching to another session drops the delegation", async () => {
+    const ids = captureRuns();
+    usePromptStore().setPrefill("fetch market data", "env-1");
+    await router.push("/chat");
+    const w = mount(Chat, { global: { plugins: [router] } });
+    await flushPromises();
+    await w.find("textarea").setValue("first");
+    await w.find("form").trigger("submit");
+    await flushPromises();
+    const chatStore = useChatStore();
+    chatStore.activeSessionId = "s-1";
+    await flushPromises();
+    chatStore.activeSessionId = "s-2";
+    await flushPromises();
+    await w.find("textarea").setValue("elsewhere");
+    await w.find("form").trigger("submit");
+    await flushPromises();
     expect(ids).toEqual(["env-1", undefined]);
   });
 

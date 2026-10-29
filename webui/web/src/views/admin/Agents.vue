@@ -346,7 +346,7 @@ async function mintKey(agentId) {
     toast("ok", "API key minted — copy it now.");
     await loadKeys(agentId);
   } catch (e) {
-    keysError.value = e.message;
+    keysError.value = `Could not mint the key: ${e.message}`;
   }
 }
 
@@ -365,6 +365,7 @@ function lastUsedText(key) {
 }
 
 async function revokeKey(agentId, keyId) {
+  if (!confirm("Revoke this API key? Clients using it are refused at once. This cannot be undone.")) return;
   keysError.value = "";
   newRawKey.value = "";
   try {
@@ -397,11 +398,12 @@ async function registerPubKey(agentId) {
     toast("ok", "Public key registered.");
     await loadPubKeys(agentId);
   } catch (e) {
-    pubKeysError.value = e.message;
+    pubKeysError.value = `Could not register the key: ${e.message}`;
   }
 }
 
 async function retirePubKey(agentId, keyId) {
+  if (!confirm("Retire this public key? Clients signing with it are refused at once. This cannot be undone.")) return;
   pubKeysError.value = "";
   try {
     await retireAgentPublicKey(agentId, keyId);

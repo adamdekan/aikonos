@@ -44,8 +44,9 @@ const agentOwners = computed(() => selAgentData.value?.owners ?? []);
 const agentOwnerOptions = computed(() => {
   const q = agentOwnerDropSearch.value.toLowerCase();
   const existing = new Set(agentOwners.value);
+  // An owner is a named principal: the broker refuses the wildcard user:*.
   const users = userPrincipals.value
-    .filter((p) => !existing.has(p.id))
+    .filter((p) => p.id !== "user:*" && !existing.has(p.id))
     .filter((p) => !q || userName(p.id).toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
     .map((p) => ({ ref: p.id, label: userName(p.id) }));
   const groups = derivedGroups.value

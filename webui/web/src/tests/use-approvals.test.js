@@ -125,7 +125,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     await flushPromises();
 
     // Exactly one /approvals GET (the one-shot safety check) — no recurring poll.
-    const approvalsCalls = clientMod.get.mock.calls.filter(([url]) => url === "/approvals");
+    const approvalsCalls = clientMod.get.mock.calls.filter(([url]) => url.startsWith("/approvals"));
     expect(approvalsCalls.length).toBe(1);
     expect(w.findAll(CARD).length).toBe(0);
 
@@ -151,7 +151,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     vi.advanceTimersByTime(2000);
     await flushPromises();
 
-    expect(clientMod.get).toHaveBeenCalledWith("/approvals");
+    expect(clientMod.get).toHaveBeenCalledWith(expect.stringMatching(/^\/approvals\?threadId=./));
 
     vi.useRealTimers();
     resolveStream();
@@ -293,7 +293,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
     // Continuous polling should now be running too (escalated by the one-shot).
     vi.advanceTimersByTime(2000);
     await flushPromises();
-    expect(clientMod.get).toHaveBeenCalledWith("/approvals");
+    expect(clientMod.get).toHaveBeenCalledWith(expect.stringMatching(/^\/approvals\?threadId=./));
 
     vi.useRealTimers();
     resolveStream();
@@ -319,7 +319,7 @@ describe("F37 — conditional, queue-aware approval polling", () => {
 
     // The one-shot must have been cancelled on run end — no /approvals fetch,
     // no modal ever appears.
-    expect(clientMod.get).not.toHaveBeenCalledWith("/approvals");
+    expect(clientMod.get).not.toHaveBeenCalledWith(expect.stringMatching(/^\/approvals/));
     expect(w.findAll(CARD).length).toBe(0);
 
     vi.useRealTimers();

@@ -46,7 +46,7 @@ const discoveryFailed = computed(() =>
   Object.values(discoveryStore.errors).some((e) => e !== null)
 );
 
-const { approvals, addApproval, removeApproval, onApprovalRequest, onApprovalResolved, scheduleOneShotPoll, stopPolling, resetApprovals } = useApprovals();
+const { approvals, addApproval, removeApproval, onApprovalRequest, onApprovalResolved, scheduleOneShotPoll, stopPolling, resetApprovals } = useApprovals(threadId);
 
 const {
   soulEditable, showSoulModal, soulDraft, soulDraftBytes, soulError, soulSaving,
@@ -63,11 +63,20 @@ const { addUser, addAssistant, currentAssistant, findTool } = createMessageHelpe
 // composable to avoid a circular construction order (useDelegation needs draft +
 // addUser; useAguiRun needs pendingDelegation from useDelegation).
 const draft = ref("");
-// Inbox delegation this chat handles (AG-17) — seeded from promptStore on mount,
-// consumed by the first run.
+// Inbox delegation this chat handles (AG-17) — seeded from promptStore on mount
+// and sent with every run of this chat, so its limits (AG-11) bind follow-ups too.
 const pendingEnvelopeId = ref("");
 // Sender and limits of that delegation (AG-11) — shown as a banner for the chat.
 const delegation = ref(null);
+// Leaving the delegated session (another session, a new chat) ends the
+// delegation for this view. The first send promotes the draft (no id → id),
+// which keeps it.
+watch(() => chatStore.activeSessionId, (id, prev) => {
+  if (prev && id !== prev) {
+    pendingEnvelopeId.value = "";
+    delegation.value = null;
+  }
+});
 
 const { pendingDelegation, cancelDelegate, confirmDelegate } = useDelegation({
   draft,

@@ -8,7 +8,7 @@ import FormField from "../../components/ui/FormField.vue";
 import Spinner from "../../components/ui/Spinner.vue";
 import DecisionBadge from "../../components/audit/DecisionBadge.vue";
 import EventDetail from "../../components/audit/EventDetail.vue";
-import { fmtTimeHistory, actor } from "../../components/audit/audit-format.js";
+import { fmtTimeHistory, actor, normalizeEvent } from "../../components/audit/audit-format.js";
 import { toJson, toCsv } from "./auditExport.js";
 
 // ── Search form state ─────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ async function search() {
     const qs   = lastParams ? `?${lastParams}` : "";
     const resp = await get(`/admin/audit/query${qs}`);
     if (resp.forbidden) { forbidden.value = true; return; }
-    events.value     = resp.events     ?? [];
+    events.value     = (resp.events ?? []).map(normalizeEvent);
     nextCursor.value = resp.nextCursor ?? "";
   } finally {
     loading.value = false;
@@ -78,7 +78,7 @@ async function loadMore() {
     const qs     = `?${base}cursor=${encodeURIComponent(nextCursor.value)}`;
     const resp   = await get(`/admin/audit/query${qs}`);
     if (resp.forbidden) { forbidden.value = true; return; }
-    events.value     = [...events.value, ...(resp.events ?? [])];
+    events.value     = [...events.value, ...(resp.events ?? []).map(normalizeEvent)];
     nextCursor.value = resp.nextCursor ?? "";
   } finally {
     loading.value = false;
