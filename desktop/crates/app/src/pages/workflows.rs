@@ -582,9 +582,12 @@ fn input_kind(input: &WorkflowInput) -> &'static str {
 
 /// Whether a streamed run that failed to start may be retried as the
 /// blocking run: only when the server answered with a refusal. A transport
-/// error can come after the server began the run.
+/// error can come after the server began the run. A 2xx JSON answer arrives
+/// as 502 (`stream_rejection`): a server that ignored `stream=1` has already
+/// run it. A real 502 means the gateway or broker is down, and the blocking
+/// run would fail as well.
 fn may_run_blocking(err: &ApiError) -> bool {
-    err.status().is_some()
+    err.status().is_some_and(|status| status != 502)
 }
 
 fn step_label(kind: Option<&str>, skill: Option<&str>) -> String {
@@ -1461,14 +1464,21 @@ mod tests {
 
     #[test]
     fn only_a_refused_stream_falls_back_to_the_blocking_run() {
-        // The gateway refused it, or an older one answered with JSON.
+        // The gateway refused it before the run began.
         assert!(may_run_blocking(&ApiError::Forbidden(None)));
         assert!(may_run_blocking(&ApiError::Status {
-            status: 502,
-            message: "stream=1 not supported".into(),
+            status: 409,
+            message: "workflow is not published".into(),
             body: serde_json::Value::Null,
         }));
         // The request may have reached the server, which then runs it.
         assert!(!may_run_blocking(&ApiError::Transport("connection reset".into())));
+        // An older gateway ignored stream=1 and answered with the finished
+        // run's JSON; stream_rejection reports that as 502.
+        assert!(!may_run_blocking(&ApiError::Status {
+            status: 502,
+            message: r#"{"ok":true,"steps":[]}"#.into(),
+            body: serde_json::json!({"ok": true, "steps": []}),
+        }));
     }
 }
