@@ -347,3 +347,53 @@ EXECUTING write, not a missing edge.
   strictly no worse.
 - Per ADR-010's closing note and the map's own comment, this entry is the record
   for the `isValidTransition` edit.
+
+---
+
+## ADR-013 — Explicit on-behalf-of context: broker-held subject and actor
+
+**Date**: 2026-10
+**Status**: Proposed
+
+**Context**: Every agent action in aikonOS is done *for* a person *by* an agent,
+but neither party is stated explicitly. The task row has an owner string and a
+nullable agent id; the HMAC owner grant names tenant, owner and expiry only
+(`broker/internal/gatewaygrant/gatewaygrant.go:10`); capability tokens carry
+`task` and `right` facts and no party (`broker/internal/capability/capability.go:124-146`);
+audit events carry `actor_user_id` and no agent. Interactive and scheduled runs
+send a `<localpart>-agent` pseudo-id that the broker coerces to NULL, so most
+tasks have no actor at all. Scheduled runs re-mint a one-hour grant at every
+claim with no standing, visible or revocable delegation behind it. External
+runs are `svc-<agentId>` and cannot act for a named person. AG-01, AG-02,
+AG-06, AG-09, AG-11 and AG-12 in `docs/research/agent-identity-improvements.md`
+each need the same answer to "who is this for, and who is doing it".
+
+**Decision**: Every task, owner grant and capability token carries an explicit
+`subject` (the human, or none for a pure service run) and `actor` (the registered
+agent), modelled on the RFC 8693 `act` claim with one hop of delegation in v1
+(`delegated_by`). The binding stays broker-held: the agent process never holds
+the subject's identity token or any downstream token; the broker derives the
+context from the task row at every tool call and mints short-lived per-call
+downstream tokens for the subject. Authority is *subject ∩ actor ∩ tool*. Standing
+delegation is explicit: a scheduled run holds a visible, expiring, revocable
+grant (subject → actor, scope, expiry) re-checked at each claim; the HMAC grant
+becomes a short run ticket derived from it. Service runs are allowed only for
+agents flagged `service_agent`. Audit events carry the full chain. Existing
+structures are extended (task columns, grant payload v2, Biscuit facts, audit
+`context.obo` plus one `actor_agent_id` field); no new service and no new
+token format. Work package: `docs/research/ag-17-on-behalf-of-spec.md`.
+
+**Consequences**:
+- AG-01 (bind every task), AG-02 (user ∩ agent), AG-06 (epoch and block),
+  AG-09/AG-10 (per-subject downstream tokens), AG-11 (envelope limits) and
+  AG-12 (chain in audit) read one structure instead of each re-deriving identity.
+- `svc-` remains the v1 encoding of "no subject"; a nullable `subject_user_id`
+  is the upgrade path when a second subject-less producer appears.
+- Grant v2 is a wire change between broker and gateway; v1 is accepted for one
+  release behind `gateway_grant.accept_v1`, and enforcement is gated by a tenant
+  flag `identity.obo = audit | enforce` so the context can be audited before it
+  denies anything.
+- The schedule row is the delegation grant; a separate `delegation_grants`
+  table is deferred until a second standing-delegation producer exists.
+- Adding `actor_agent_id` to `AuditEvent` must leave the canonical bytes of old
+  events unchanged, or the field moves into `context.obo` only.
