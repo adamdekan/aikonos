@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +50,16 @@ type WorkflowRow struct {
 	// nil = personal workflow. Lineage-immutable: only a brand-new lineage takes
 	// it from the request — edits/proposals/forks inherit it.
 	BoundAgentID *uuid.UUID
+}
+
+// WorkflowDefinitionSHA256 is the hex sha256 of a stored definition as read
+// back from the jsonb column (Postgres' canonical text form), so it matches
+// migration 062's backfill hash. A workflow schedule pins it (F18): versions
+// are append-only, but PublishVersion rewrites the published version's
+// definition in place.
+func WorkflowDefinitionSHA256(def []byte) string {
+	sum := sha256.Sum256(def)
+	return hex.EncodeToString(sum[:])
 }
 
 // WorkflowRepo persists workflows and version pins. Every method acquires a

@@ -89,6 +89,21 @@ func (f *fakeWorkflowPinStore) addVersion(row db.WorkflowRow) {
 	f.versions[lid][row.Version] = &r
 }
 
+// GetCurrent returns the lineage's highest approved version — the row Pin's
+// access gate (F17) reads owner and visibility from.
+func (f *fakeWorkflowPinStore) GetCurrent(_ context.Context, _ string, lineageID uuid.UUID) (*db.WorkflowRow, error) {
+	var cur *db.WorkflowRow
+	for _, r := range f.versions[lineageID.String()] {
+		if r.ApprovalState == "approved" && (cur == nil || r.Version > cur.Version) {
+			cur = r
+		}
+	}
+	if cur == nil {
+		return nil, fmt.Errorf("workflow lineage %s not found", lineageID)
+	}
+	return cur, nil
+}
+
 func (f *fakeWorkflowPinStore) GetVersion(_ context.Context, _ string, lineageID uuid.UUID, version int) (*db.WorkflowRow, error) {
 	byLid, ok := f.versions[lineageID.String()]
 	if !ok {
@@ -404,7 +419,7 @@ func TestPinCore_ApprovedVersion_SetsCalled(t *testing.T) {
 			LineageId: lineageID.String(),
 			Version:   2,
 		},
-		store, em, zap.NewNop(),
+		store, nil, em, zap.NewNop(),
 	)
 	if err != nil {
 		t.Fatalf("pin approved: unexpected error: %v", err)
@@ -423,6 +438,14 @@ func TestPinCore_ProposedVersion_FailedPrecondition(t *testing.T) {
 	store.addVersion(db.WorkflowRow{
 		ID:            uuid.New(),
 		LineageID:     lineageID,
+		Version:       1,
+		TenantID:      uuid.MustParse(testWFTenant),
+		OwnerUserID:   testWFOwner,
+		ApprovalState: "approved",
+	})
+	store.addVersion(db.WorkflowRow{
+		ID:            uuid.New(),
+		LineageID:     lineageID,
 		Version:       3,
 		TenantID:      uuid.MustParse(testWFTenant),
 		OwnerUserID:   testWFOwner,
@@ -437,7 +460,7 @@ func TestPinCore_ProposedVersion_FailedPrecondition(t *testing.T) {
 			LineageId: lineageID.String(),
 			Version:   3,
 		},
-		store, em, zap.NewNop(),
+		store, nil, em, zap.NewNop(),
 	)
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("proposed version: want FailedPrecondition, got %v", err)
@@ -460,7 +483,7 @@ func TestPinCore_VersionNotFound_NotFound(t *testing.T) {
 			LineageId: uuid.New().String(),
 			Version:   1,
 		},
-		store, em, zap.NewNop(),
+		store, nil, em, zap.NewNop(),
 	)
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("version not found: want NotFound, got %v", err)

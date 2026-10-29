@@ -323,6 +323,36 @@ func TestSendSkillTransfer_DirectToUngrantedRecipient_FailLoudAndGCs(t *testing.
 	}
 }
 
+// TestSendSkillTransfer_NoDelegationEdge_PermissionDenied (F191): a direct
+// transfer takes SendEnvelope's ReBAC gate — a granted recipient the sender has
+// no can_delegate_to_user edge to, and shares no delegatable group with, is
+// refused, audited, and the snapshot is GC'd.
+func TestSendSkillTransfer_NoDelegationEdge_PermissionDenied(t *testing.T) {
+	const dave = "dave@example.com" // granted, but outside xferGroup
+	root := t.TempDir()
+	store := newMemEnvelopeStore()
+	deps, em := xferDeps(t, xferGrantedFGA(t, xferAlice, dave), root, store)
+	svc := NewBrokerService(deps)
+	writeXferSkillMd(t, deps.Workspace.Local, testTenantUUID, xferAlice, "demo")
+
+	_, err := svc.SendSkillTransfer(ctxWithIdentity(testTenantUUID, xferAlice), &brokerv1.SendSkillTransferRequest{
+		TenantId: testTenantUUID, UserId: xferAlice, Name: "demo",
+		Recipient: &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_UserId{UserId: dave}},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("send without a delegation edge: want PermissionDenied, got %v", err)
+	}
+	if len(store.envs) != 0 {
+		t.Errorf("no envelope should be created, got %d", len(store.envs))
+	}
+	if dirs := xferStagingDirs(t, root, testTenantUUID); len(dirs) != 0 {
+		t.Errorf("staging must be GC'd on a denied send, found %v", dirs)
+	}
+	if em.has("aikonos.skill.transfer.denied") == nil {
+		t.Error("denied transfer must be audited")
+	}
+}
+
 // TestSendSkillTransfer_OwnershipRequired verifies FailedPrecondition when
 // the sender has no valid Skills/<name>/.
 func TestSendSkillTransfer_OwnershipRequired(t *testing.T) {

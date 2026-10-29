@@ -120,17 +120,63 @@ func (s *BrokerService) workflowCallerNorth(ctx context.Context, tenantID, owner
 // (south/SPIFFE) path: requireGatewayPeer, owner-grant presence, gatewaygrant.Verify,
 // grant-tenant match, then checkWorkflowSkill(ctx, grantOwner).
 func (s *SandboxService) workflowCallerSouth(ctx context.Context, tenantID, ownerGrant string) (tenant, user string, err error) {
-	if err := s.requireGatewayPeer(ctx); err != nil {
-		return "", "", err
-	}
-	grant, err := s.verifyOwnerGrant(ctx, tenantID, ownerGrant)
+	grant, err := s.workflowGrantSouth(ctx, tenantID, ownerGrant)
 	if err != nil {
 		return "", "", err
 	}
-	if err := s.checkWorkflowSkill(ctx, grant.Owner()); err != nil {
-		return "", "", err
-	}
 	return grant.TenantID, grant.Owner(), nil
+}
+
+// workflowGrantSouth is workflowCallerSouth returning the verified grant
+// itself, for the one wrapper (GetWorkflow) that needs its kind and id.
+func (s *SandboxService) workflowGrantSouth(ctx context.Context, tenantID, ownerGrant string) (gatewaygrant.Grant, error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return gatewaygrant.Grant{}, err
+	}
+	grant, err := s.verifyOwnerGrant(ctx, tenantID, ownerGrant)
+	if err != nil {
+		return gatewaygrant.Grant{}, err
+	}
+	if err := s.checkWorkflowSkill(ctx, grant.Owner()); err != nil {
+		return gatewaygrant.Grant{}, err
+	}
+	return grant, nil
+}
+
+// workflowAP is deps.Policy as a workflowsvc.AccessPolicy: a genuinely nil
+// interface when unwired (a typed-nil *policy.Engine would not compare nil
+// inside the workflowsvc gates).
+func workflowAP(deps Deps) workflowsvc.AccessPolicy {
+	if deps.Policy == nil {
+		return nil
+	}
+	return deps.Policy
+}
+
+// scheduledWorkflowPin returns the version a workflow schedule pinned (F18)
+// when grant is that schedule's fire fetching its own lineage, so both of the
+// gateway's fetches (approver derivation and the run) get exactly the version
+// the owner confirmed. Any other grant, or another lineage, gets nil (normal
+// resolution). A schedule row that cannot be read fails closed.
+func (s *SandboxService) scheduledWorkflowPin(ctx context.Context, grant gatewaygrant.Grant, lineageID string) (*workflowsvc.SchedulePin, error) {
+	if grant.Kind != gatewaygrant.KindScheduled || s.deps.Scheduled == nil {
+		return nil, nil
+	}
+	lid, err := uuid.Parse(lineageID)
+	if err != nil {
+		return nil, nil // Get answers InvalidArgument
+	}
+	run, err := s.deps.Scheduled.Get(ctx, grant.TenantID, grant.GrantID)
+	if err != nil || run == nil {
+		return nil, status.Error(codes.FailedPrecondition, "scheduled run not found")
+	}
+	if run.WorkflowLineageID == nil || *run.WorkflowLineageID != lid {
+		return nil, nil
+	}
+	if run.WorkflowVersion == nil || run.WorkflowDefinitionSHA256 == "" {
+		return nil, status.Error(codes.FailedPrecondition, "workflow schedule has no confirmed version; the schedule owner must re-confirm it")
+	}
+	return &workflowsvc.SchedulePin{Version: *run.WorkflowVersion, DefinitionSHA256: run.WorkflowDefinitionSHA256}, nil
 }
 
 // ── South handlers (SandboxService — SPIFFE-gated, owner from grant) ─────────
@@ -152,16 +198,29 @@ func (s *SandboxService) SaveWorkflow(ctx context.Context, req *brokerv1.SaveWor
 
 // GetWorkflow fetches the definition for a workflow lineage.
 // SPIFFE-gated to the gateway SVID. Owner identity is verified from owner_grant.
+// A scheduled fire of a workflow schedule is served the schedule's pinned
+// version (F18); a changed workflow refuses the fire and is audited.
 func (s *SandboxService) GetWorkflow(ctx context.Context, req *brokerv1.GetWorkflowRequest) (*brokerv1.GetWorkflowResponse, error) {
 	ctx, span := tracer.Start(ctx, "broker.workflow.get")
 	defer span.End()
 
-	tenant, user, err := s.workflowCallerSouth(ctx, req.TenantId, req.OwnerGrant)
+	grant, err := s.workflowGrantSouth(ctx, req.TenantId, req.OwnerGrant)
 	if err != nil {
 		return nil, err
 	}
-
-	return workflowsvc.Get(ctx, tenant, user, req, s.deps.Workflows, s.deps.Logger)
+	pin, err := s.scheduledWorkflowPin(ctx, grant, req.LineageId)
+	if err == nil {
+		resp, gerr := workflowsvc.Get(ctx, grant.TenantID, grant.Owner(), req, s.deps.Workflows, workflowAP(s.deps), pin, s.deps.Audit, s.deps.Logger)
+		if gerr == nil || pin == nil {
+			return resp, gerr
+		}
+		err = gerr
+	}
+	if status.Code(err) == codes.FailedPrecondition {
+		schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), grant.TenantID, grant.Owner(),
+			"aikonos.scheduler.run.skipped.workflow_changed", grant.GrantID, auditv1.PolicyDecision_DENY)
+	}
+	return nil, err
 }
 
 // ListWorkflows returns the current version of every workflow owned by the
@@ -214,7 +273,7 @@ func (s *BrokerService) GetWorkflow(ctx context.Context, req *brokerv1.GetWorkfl
 		return nil, err
 	}
 
-	return workflowsvc.Get(ctx, tenant, user, req, s.deps.Workflows, s.deps.Logger)
+	return workflowsvc.Get(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), nil, s.deps.Audit, s.deps.Logger)
 }
 
 // ListWorkflows (north) lists workflows owned by an interactive OIDC-bearer
@@ -249,7 +308,7 @@ func (s *SandboxService) RateWorkflowRun(ctx context.Context, req *brokerv1.Rate
 		return nil, err
 	}
 
-	return workflowsvc.Rate(ctx, tenant, user, req, s.deps.Workflows, s.deps.Audit, s.deps.Logger)
+	return workflowsvc.Rate(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ProposeWorkflowVersion (south) inserts a proposed version and notifies the
@@ -297,7 +356,7 @@ func (s *BrokerService) RateWorkflowRun(ctx context.Context, req *brokerv1.RateW
 		return nil, err
 	}
 
-	return workflowsvc.Rate(ctx, tenant, user, req, s.deps.Workflows, s.deps.Audit, s.deps.Logger)
+	return workflowsvc.Rate(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ProposeWorkflowVersion (north) inserts a proposed version and notifies the
@@ -423,7 +482,7 @@ func (s *SandboxService) SetWorkflowVersionPin(ctx context.Context, req *brokerv
 		return nil, err
 	}
 
-	return workflowsvc.Pin(ctx, tenant, user, req, s.deps.Workflows, s.deps.Audit, s.deps.Logger)
+	return workflowsvc.Pin(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ClearWorkflowVersionPin (south) removes the caller's pin for a lineage.
@@ -473,7 +532,7 @@ func (s *BrokerService) SetWorkflowVersionPin(ctx context.Context, req *brokerv1
 		return nil, err
 	}
 
-	return workflowsvc.Pin(ctx, tenant, user, req, s.deps.Workflows, s.deps.Audit, s.deps.Logger)
+	return workflowsvc.Pin(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ClearWorkflowVersionPin (north) removes the caller's pin. Owner identity from
@@ -498,12 +557,12 @@ func (s *SandboxService) ListWorkflowVersions(ctx context.Context, req *brokerv1
 	ctx, span := tracer.Start(ctx, "broker.workflow.listversions")
 	defer span.End()
 
-	tenant, _, err := s.workflowCallerSouth(ctx, req.TenantId, req.OwnerGrant)
+	tenant, user, err := s.workflowCallerSouth(ctx, req.TenantId, req.OwnerGrant)
 	if err != nil {
 		return nil, err
 	}
 
-	return workflowsvc.ListVersions(ctx, tenant, req, s.deps.Workflows, s.deps.Logger)
+	return workflowsvc.ListVersions(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ListWorkflowVersions (north) lists all versions of a lineage.
@@ -512,12 +571,12 @@ func (s *BrokerService) ListWorkflowVersions(ctx context.Context, req *brokerv1.
 	ctx, span := tracer.Start(ctx, "broker.workflow.listversions.north")
 	defer span.End()
 
-	tenant, _, err := s.workflowCallerNorth(ctx, req.TenantId, req.OwnerUserId)
+	tenant, user, err := s.workflowCallerNorth(ctx, req.TenantId, req.OwnerUserId)
 	if err != nil {
 		return nil, err
 	}
 
-	return workflowsvc.ListVersions(ctx, tenant, req, s.deps.Workflows, s.deps.Logger)
+	return workflowsvc.ListVersions(ctx, tenant, user, req, s.deps.Workflows, workflowAP(s.deps), s.deps.Audit, s.deps.Logger)
 }
 
 // ── DeleteWorkflow ────────────────────────────────────────────────────────────

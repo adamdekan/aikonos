@@ -46,6 +46,21 @@ func (f *fakeWorkflowVersionsStore) addRow(row db.WorkflowRow) {
 	f.rows[lid] = append(f.rows[lid], &r)
 }
 
+// GetCurrent serves the lineage's newest approved row: ListVersions' access
+// gate (F190) reads owner and visibility from it.
+func (f *fakeWorkflowVersionsStore) GetCurrent(_ context.Context, _ string, lineageID uuid.UUID) (*db.WorkflowRow, error) {
+	var cur *db.WorkflowRow
+	for _, r := range f.rows[lineageID.String()] {
+		if r.ApprovalState == "approved" && (cur == nil || r.Version > cur.Version) {
+			cur = r
+		}
+	}
+	if cur == nil {
+		return nil, fmt.Errorf("lineage %s not found", lineageID)
+	}
+	return cur, nil
+}
+
 func (f *fakeWorkflowVersionsStore) ListVersions(_ context.Context, _ string, lineageID uuid.UUID, _, _ int) ([]*db.WorkflowRow, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -199,15 +214,19 @@ func TestSouthListWorkflowVersions_Allow_ReturnsVersions(t *testing.T) {
 // WHY: listWorkflowVersionsCore must surface store failures so callers know the
 // list is incomplete rather than silently treating an error as "no versions".
 func TestSouthListWorkflowVersions_StoreError_Internal(t *testing.T) {
+	lineageID := uuid.New()
 	store := newFakeVersionsStore()
+	for _, r := range makeVersionRows(lineageID) {
+		store.addRow(*r)
+	}
 	store.err = fmt.Errorf("db connection lost")
 	svc := newSandboxSvcForVersions(t, store, true /* skill granted */)
 
-	// Use a lineage that is not in the store so the err path is hit.
+	// The lineage passes the access gate; the ListVersions read then fails.
 	_, err := svc.ListWorkflowVersions(gatewayCtxForWorkflow(), &brokerv1.ListWorkflowVersionsRequest{
 		TenantId:   testWFTenant,
 		OwnerGrant: mintWFGrant(t),
-		LineageId:  uuid.New().String(),
+		LineageId:  lineageID.String(),
 	})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("store error: want Internal, got %v", err)
@@ -259,5 +278,28 @@ func TestNorthListWorkflowVersions_Allow_ReturnsVersions(t *testing.T) {
 	}
 	if resp.Items[0].Version != 2 {
 		t.Errorf("items[0].version: want 2, got %d", resp.Items[0].Version)
+	}
+}
+
+// TestSouthListWorkflowVersions_NonOwnerPrivate_NotFound (F190): a private
+// lineage's versions are the owner's; another user gets the same NotFound a
+// missing lineage gets, so the call is no existence oracle.
+func TestSouthListWorkflowVersions_NonOwnerPrivate_NotFound(t *testing.T) {
+	lineageID := uuid.New()
+	store := newFakeVersionsStore()
+	for _, r := range makeVersionRows(lineageID) {
+		r.OwnerUserID = "someone-else@example.com"
+		r.VisibilityKind = "private"
+		store.addRow(*r)
+	}
+	svc := newSandboxSvcForVersions(t, store, true)
+
+	_, err := svc.ListWorkflowVersions(gatewayCtxForWorkflow(), &brokerv1.ListWorkflowVersionsRequest{
+		TenantId:   testWFTenant,
+		OwnerGrant: mintWFGrant(t),
+		LineageId:  lineageID.String(),
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("non-owner private lineage: want NotFound, got %v", err)
 	}
 }

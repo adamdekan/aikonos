@@ -105,7 +105,10 @@ per user; each needs a reason):
 - **Revoke sessions** moves the user's revocation epoch ("not before") to now:
   every IdP token (`iat`), owner grant and capability token issued before it is void,
   so the user must sign in again (`Unauthenticated`, audit `auth.token.revoked`). The
-  user is not blocked; a new sign-in works at once.
+  user is not blocked; a new sign-in works at once. Their schedules whose delegation
+  was granted before the epoch are parked at the next claim (`subject_revoked`,
+  audit `aikonos.scheduler.run.skipped.subject_revoked`); after signing in again the
+  owner extends the delegation and resumes them.
 
 **Admin → Agents → Revoke sessions** does the same for an agent: its outstanding
 capability tokens (refused as `capability_revoked`) and owner grants (`grant_revoked`)

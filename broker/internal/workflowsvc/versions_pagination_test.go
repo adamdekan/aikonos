@@ -25,6 +25,12 @@ type fakeVersionsStore struct {
 	rows []*db.WorkflowRow
 }
 
+// GetCurrent serves an own row so ListVersions' access gate (F190) admits
+// testWFOwner.
+func (f *fakeVersionsStore) GetCurrent(_ context.Context, _ string, _ uuid.UUID) (*db.WorkflowRow, error) {
+	return &db.WorkflowRow{OwnerUserID: testWFOwner, VisibilityKind: "private"}, nil
+}
+
 // ListVersions simulates the SQL keyset+LIMIT bounding: f.rows is version-DESC,
 // so it drops rows with version >= beforeVersion (the cursor) then caps at limit.
 func (f *fakeVersionsStore) ListVersions(_ context.Context, _ string, _ uuid.UUID, beforeVersion, limit int) ([]*db.WorkflowRow, error) {
@@ -57,7 +63,7 @@ func TestListVersions_LimitZero_ReturnsEverything(t *testing.T) {
 	store := &fakeVersionsStore{rows: threeVersionRows(lineageID)}
 	req := &brokerv1.ListWorkflowVersionsRequest{LineageId: lineageID.String()}
 
-	resp, err := ListVersions(context.Background(), testWFTenant, req, store, zap.NewNop())
+	resp, err := ListVersions(context.Background(), testWFTenant, testWFOwner, req, store, nil, nil, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +82,7 @@ func TestListVersions_LimitGreaterThanZero_FirstPageHasNextCursor(t *testing.T) 
 	store := &fakeVersionsStore{rows: threeVersionRows(lineageID)}
 	req := &brokerv1.ListWorkflowVersionsRequest{LineageId: lineageID.String(), Limit: 2}
 
-	resp, err := ListVersions(context.Background(), testWFTenant, req, store, zap.NewNop())
+	resp, err := ListVersions(context.Background(), testWFTenant, testWFOwner, req, store, nil, nil, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,16 +103,16 @@ func TestListVersions_CursorContinues_NoOverlapOrGap(t *testing.T) {
 	lineageID := uuid.New()
 	store := &fakeVersionsStore{rows: threeVersionRows(lineageID)}
 
-	page1, err := ListVersions(context.Background(), testWFTenant,
+	page1, err := ListVersions(context.Background(), testWFTenant, testWFOwner,
 		&brokerv1.ListWorkflowVersionsRequest{LineageId: lineageID.String(), Limit: 2},
-		store, zap.NewNop())
+		store, nil, nil, zap.NewNop())
 	if err != nil || len(page1.Items) != 2 || page1.NextCursor == "" {
 		t.Fatalf("setup: items=%d cursor=%q err=%v", len(page1.Items), page1.NextCursor, err)
 	}
 
-	page2, err := ListVersions(context.Background(), testWFTenant,
+	page2, err := ListVersions(context.Background(), testWFTenant, testWFOwner,
 		&brokerv1.ListWorkflowVersionsRequest{LineageId: lineageID.String(), Limit: 2, Cursor: page1.NextCursor},
-		store, zap.NewNop())
+		store, nil, nil, zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +133,7 @@ func TestListVersions_InvalidCursor_InvalidArgument(t *testing.T) {
 	store := &fakeVersionsStore{rows: threeVersionRows(lineageID)}
 	req := &brokerv1.ListWorkflowVersionsRequest{LineageId: lineageID.String(), Cursor: "not-a-version"}
 
-	_, err := ListVersions(context.Background(), testWFTenant, req, store, zap.NewNop())
+	_, err := ListVersions(context.Background(), testWFTenant, testWFOwner, req, store, nil, nil, zap.NewNop())
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("malformed cursor: want InvalidArgument, got %v", err)
 	}

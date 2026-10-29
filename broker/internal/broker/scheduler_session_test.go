@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/auth"
@@ -19,10 +21,14 @@ import (
 // embedded stub).
 type fakeReportStore struct {
 	stubScheduledStore
-	runs map[string]*db.ScheduledRun // keyed by run-id string
+	runs       map[string]*db.ScheduledRun // keyed by run-id string
+	notClaimed bool                        // ReportResult answers as for a run with no outstanding claim
 }
 
 func (f *fakeReportStore) ReportResult(_ context.Context, _, _ string, _ bool, _ string) error {
+	if f.notClaimed {
+		return db.ErrScheduledRunNotClaimed
+	}
 	return nil
 }
 
@@ -167,5 +173,53 @@ func TestReportScheduledRunResult_BadSessionIDSkipsWrite(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("no file should be written for bad session_id, got %v", files)
+	}
+}
+
+// TestReportScheduledRunResult_UnclaimedRunRefused (F172): a report for a run
+// ClaimDue never handed out (or already reported) is refused, and its session
+// record is never written into the owner's workspace.
+func TestReportScheduledRunResult_UnclaimedRunRefused(t *testing.T) {
+	runID := uuid.New()
+	repo := &fakeReportStore{
+		runs:       map[string]*db.ScheduledRun{runID.String(): {ScheduledRunID: runID, OwnerUserID: "alice@example.com"}},
+		notClaimed: true,
+	}
+	wsRoot := t.TempDir()
+	svc := sandboxSvcForSessionTest(t, repo, wsRoot)
+
+	_, err := svc.ReportScheduledRunResult(gwReportCtx(), &brokerv1.ReportScheduledRunResultRequest{
+		TenantId:      testTenantUUID,
+		Id:            runID.String(),
+		Success:       true,
+		SessionId:     uuid.NewString(),
+		SessionRecord: []byte(`{"id":"forged"}`),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unclaimed run: want FailedPrecondition, got %v", err)
+	}
+	files, _ := workspacefs.New(wsRoot).List(context.Background(), testTenantUUID, "alice@example.com")
+	if len(files) != 0 {
+		t.Fatalf("no session file may be written for an unclaimed run, got %v", files)
+	}
+}
+
+// TestReportScheduledRunResult_NonJSONRecordSkipsWrite (F172): the broker signs
+// what it writes, so a record that is not JSON is never persisted.
+func TestReportScheduledRunResult_NonJSONRecordSkipsWrite(t *testing.T) {
+	runID := uuid.New()
+	repo := &fakeReportStore{runs: map[string]*db.ScheduledRun{runID.String(): {ScheduledRunID: runID, OwnerUserID: "alice@example.com"}}}
+	wsRoot := t.TempDir()
+	svc := sandboxSvcForSessionTest(t, repo, wsRoot)
+
+	if _, err := svc.ReportScheduledRunResult(gwReportCtx(), &brokerv1.ReportScheduledRunResultRequest{
+		TenantId: testTenantUUID, Id: runID.String(), Success: true,
+		SessionId: uuid.NewString(), SessionRecord: []byte("not json"),
+	}); err != nil {
+		t.Fatalf("a bad record must not fail the report: %v", err)
+	}
+	files, _ := workspacefs.New(wsRoot).List(context.Background(), testTenantUUID, "alice@example.com")
+	if len(files) != 0 {
+		t.Fatalf("non-JSON session record must not be written, got %v", files)
 	}
 }

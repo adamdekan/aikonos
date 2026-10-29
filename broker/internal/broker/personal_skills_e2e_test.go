@@ -59,6 +59,8 @@ func e2eGrantedFGA(t *testing.T) string {
 		checks: map[string]bool{
 			"user:" + e2eAlice + "|can_invoke|skill:personal-skills": true,
 			"user:" + e2eBob + "|can_invoke|skill:personal-skills":   true,
+			// F191: a direct transfer needs a delegation edge, as SendEnvelope does.
+			"user:" + e2eAlice + "|can_delegate_to_user|user:" + e2eBob: true,
 		},
 		listObjectsResultByUser: map[string][]string{
 			"user:" + e2eAlice: {e2eGroup},
