@@ -6,7 +6,13 @@
 #   - MinIO WORM audit bucket
 #   - workspace-data volume
 #   - obs-archive volume
-#   - vault-data volume (azure/onprem overlays only — skipped if absent, e.g. local dev)
+#   - vault-data volume (skipped if absent). Its init.env — the local-dev
+#     auto-unseal key and root token (deploy/compose/vault/vault-init.sh) — is
+#     left out: a restored local-dev Vault needs that file, kept apart from
+#     the backup, copied back into the volume, or a reset (`docker compose down -v`).
+#
+# The backup holds every tenant's data and the role password hashes, so it is
+# written with umask 077 into a 0700 directory, and backups/ is git-ignored.
 #
 # Usage:
 #   compose-backup.sh backup  [OUTPUT_DIR]
@@ -21,7 +27,7 @@
 #   3. Workspace volume third — agents read this at runtime, not at startup.
 #   4. obs-archive volume — no load-bearing order; read only by the (optional)
 #      obs profile, never by broker startup.
-#   5. vault-data volume (azure/onprem only) — restore before starting `vault`;
+#   5. vault-data volume — restore before starting `vault`;
 #      it comes back sealed and needs a manual unseal (docs/OPS-RUNBOOK.md)
 #      before the broker's Vault client can authenticate.
 #   Start broker + other apps only AFTER all steps complete.
@@ -39,6 +45,7 @@
 #   Useful when a pg_dump is not feasible, but does not give a consistent logical backup.
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -73,10 +80,10 @@ Subcommands:
 Environment (read from .env if present):
   COMPOSE_FILE        path to compose.yaml (default: repo-root/compose.yaml)
   POSTGRES_USER       (default: aikonos)
-  POSTGRES_PASSWORD   (default: dev-password-change-me)
+  POSTGRES_PASSWORD   (required)
   POSTGRES_DB         (default: aikonos)
-  MINIO_ROOT_USER     (default: minioadmin)
-  MINIO_ROOT_PASSWORD (default: minioadmin)
+  MINIO_ROOT_USER     (required)
+  MINIO_ROOT_PASSWORD (required)
   AIKONOS_AUDIT_BUCKET (default: aikonos-audit)
 EOF
   exit 1
@@ -104,11 +111,12 @@ load_dotenv() {
 config_defaults() {
   COMPOSE_FILE="${COMPOSE_FILE:-${REPO_ROOT}/compose.yaml}"
   PG_USER="${POSTGRES_USER:-aikonos}"
-  PG_PASSWORD="${POSTGRES_PASSWORD:-dev-password-change-me}"
+  # No credential defaults: a guessed default would only mask a missing .env.
+  PG_PASSWORD="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set (in the environment or .env)}"
   # PG_DB is not used directly: pg_dumpall captures all databases.
   # POSTGRES_DB is documented in .env.local.example for reference only.
-  MINIO_USER="${MINIO_ROOT_USER:-minioadmin}"
-  MINIO_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
+  MINIO_USER="${MINIO_ROOT_USER:?MINIO_ROOT_USER is not set (in the environment or .env)}"
+  MINIO_PASSWORD="${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is not set (in the environment or .env)}"
   AUDIT_BUCKET="${AIKONOS_AUDIT_BUCKET:-aikonos-audit}"
 }
 
@@ -124,6 +132,9 @@ dc() {
 cmd_backup() {
   local out_dir="${1:-${REPO_ROOT}/backups/$(date +%Y%m%dT%H%M%S)}"
   mkdir -p "${out_dir}"
+  # 0700 even for an existing OUTPUT_DIR: the containers below write the
+  # archives as root, ignoring this umask, so the directory is the guard.
+  chmod 700 "${out_dir}"
   out_dir="$(cd "${out_dir}" && pwd)"
 
   log "Backup destination: ${out_dir}"
@@ -144,17 +155,21 @@ cmd_backup() {
   local bucket_out="${out_dir}/minio-${AUDIT_BUCKET}"
   mkdir -p "${bucket_out}"
   # Run mc (MinIO client) as a one-shot container, sharing the network so it
-  # can reach the minio service by its compose service name.
+  # can reach the minio service by its compose service name. The credentials
+  # and bucket go in by environment name only, never into the docker argv (ps)
+  # or the sh -c string (a quote in a password would break out of it).
+  MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" AUDIT_BUCKET="${AUDIT_BUCKET}" \
   docker run --rm \
     --network "${COMPOSE_PROJECT_NAME:-aikonos}_backend" \
     -v "${bucket_out}:/out" \
     -e MC_ALIAS_LOCAL_URL="http://minio:9000" \
-    -e MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" \
-    -e MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" \
+    -e MC_ALIAS_LOCAL_ACCESS_KEY \
+    -e MC_ALIAS_LOCAL_SECRET_KEY \
+    -e AUDIT_BUCKET \
     --entrypoint /bin/sh \
     "${MC_IMAGE}" \
-    -c "mc alias set local http://minio:9000 \"${MINIO_USER}\" \"${MINIO_PASSWORD}\" --quiet && \
-           mc mirror --preserve local/${AUDIT_BUCKET} /out/ --quiet" \
+    -c 'mc alias set local http://minio:9000 "$MC_ALIAS_LOCAL_ACCESS_KEY" "$MC_ALIAS_LOCAL_SECRET_KEY" --quiet && \
+           mc mirror --preserve "local/$AUDIT_BUCKET" /out/ --quiet' \
     || die "MinIO mirror step failed — audit bucket backup is incomplete or empty; aborting to avoid a silent data-durability gap"
   log "  wrote ${bucket_out}/"
 
@@ -179,22 +194,23 @@ cmd_backup() {
     tar czf /out/obs-archive.tgz -C /src .
   log "  wrote ${out_dir}/obs-archive.tgz ($(du -sh "${out_dir}/obs-archive.tgz" | cut -f1))"
 
-  # -- 5. vault-data volume (azure/onprem overlays only) ---------------------
-  # Absent on local dev (Vault stays -dev/in-memory, no volume) — skip, not an
-  # error. Vault should be sealed or stopped for a consistent file-storage
-  # snapshot; this script does not stop it for you.
+  # -- 5. vault-data volume ---------------------------------------------------
+  # Absent only when Vault runs without a volume — skip, not an error. Vault
+  # should be sealed or stopped for a consistent file-storage snapshot; this
+  # script does not stop it for you. init.env (local-dev unseal key + root
+  # token) stays out of the archive: see the file header.
   local vault_vol="${COMPOSE_PROJECT_NAME:-aikonos}_vault-data"
   if docker volume inspect "${vault_vol}" >/dev/null 2>&1; then
-    log "Archiving vault-data volume..."
+    log "Archiving vault-data volume (without init.env)..."
     log "  (ensure Vault is sealed or stopped for a consistent snapshot)"
     docker run --rm \
       -v "${vault_vol}:/src:ro" \
       -v "${out_dir}:/out" \
       alpine \
-      tar czf /out/vault-data.tgz -C /src .
+      tar czf /out/vault-data.tgz --exclude=./init.env -C /src .
     log "  wrote ${out_dir}/vault-data.tgz ($(du -sh "${out_dir}/vault-data.tgz" | cut -f1))"
   else
-    log "vault-data volume not found (local dev or Vault dev-mode) — skipping."
+    log "vault-data volume not found — skipping."
   fi
 
   # -- Summary ---------------------------------------------------------------
@@ -255,17 +271,20 @@ cmd_restore() {
   local bucket_in="${backup_dir}/minio-${AUDIT_BUCKET}"
   if [[ -d "${bucket_in}" ]]; then
     log "Restoring MinIO audit bucket '${AUDIT_BUCKET}' from ${bucket_in}..."
+    # Credentials by environment name only, as in cmd_backup.
+    MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" AUDIT_BUCKET="${AUDIT_BUCKET}" \
     docker run --rm \
       --network "${COMPOSE_PROJECT_NAME:-aikonos}_backend" \
       -v "${bucket_in}:/src:ro" \
       -e MC_ALIAS_LOCAL_URL="http://minio:9000" \
-      -e MC_ALIAS_LOCAL_ACCESS_KEY="${MINIO_USER}" \
-      -e MC_ALIAS_LOCAL_SECRET_KEY="${MINIO_PASSWORD}" \
+      -e MC_ALIAS_LOCAL_ACCESS_KEY \
+      -e MC_ALIAS_LOCAL_SECRET_KEY \
+      -e AUDIT_BUCKET \
       --entrypoint /bin/sh \
       "${MC_IMAGE}" \
-      -c "mc alias set local http://minio:9000 \"${MINIO_USER}\" \"${MINIO_PASSWORD}\" --quiet && \
-             mc mb --ignore-existing local/${AUDIT_BUCKET} --quiet && \
-             mc mirror --preserve /src/ local/${AUDIT_BUCKET} --quiet" \
+      -c 'mc alias set local http://minio:9000 "$MC_ALIAS_LOCAL_ACCESS_KEY" "$MC_ALIAS_LOCAL_SECRET_KEY" --quiet && \
+             mc mb --ignore-existing "local/$AUDIT_BUCKET" --quiet && \
+             mc mirror --preserve /src/ "local/$AUDIT_BUCKET" --quiet' \
       || log "WARNING: MinIO restore step failed — check minio container is running."
     log "  MinIO restore complete."
   else
@@ -300,7 +319,7 @@ cmd_restore() {
     log "WARNING: obs-archive.tgz not found in ${backup_dir}, skipping."
   fi
 
-  # -- 5. vault-data volume restore (azure/onprem overlays only) ------------
+  # -- 5. vault-data volume restore ------------------------------------------
   local vault_tgz="${backup_dir}/vault-data.tgz"
   if [[ -f "${vault_tgz}" ]]; then
     log "Restoring vault-data volume from ${vault_tgz}..."
@@ -312,7 +331,7 @@ cmd_restore() {
     log "  vault-data restore complete. Vault will come back SEALED — see"
     log "  docs/OPS-RUNBOOK.md \"Vault operations\" to unseal before recreating the broker."
   else
-    log "vault-data.tgz not found in ${backup_dir} — skipping (expected for local dev)."
+    log "vault-data.tgz not found in ${backup_dir} — skipping."
   fi
 
   log "=== Restore complete. Reconcile AIKONOS_POLICY_OPENFGA_STORE_ID in .env, then start broker and other services. ==="
@@ -323,11 +342,10 @@ cmd_restore() {
 # ---------------------------------------------------------------------------
 
 load_dotenv
-config_defaults
 
 case "${1:-}" in
-  backup)  shift; cmd_backup  "$@" ;;
-  restore) shift; cmd_restore "$@" ;;
+  backup)  shift; config_defaults; cmd_backup  "$@" ;;
+  restore) shift; config_defaults; cmd_restore "$@" ;;
   --help|-h|help) usage ;;
   *)
     printf '[compose-backup] subcommand required: backup | restore\n' >&2

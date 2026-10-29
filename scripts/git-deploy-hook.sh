@@ -6,6 +6,10 @@
 # INSTALL (run once on the on-prem host):
 #   cp scripts/git-deploy-hook.sh ~/repos/aikonos.git/hooks/post-receive
 #   chmod +x ~/repos/aikonos.git/hooks/post-receive
+#   # Refuse force-pushes and branch deletes before the ref moves (this hook
+#   # runs after it has, so it can refuse the deploy but not the update):
+#   git -C ~/repos/aikonos.git config receive.denyNonFastForwards true
+#   git -C ~/repos/aikonos.git config receive.denyDeletes true
 #
 # FIRST-TIME SETUP (before the first push can succeed):
 #   mkdir -p ~/apps/aikonos
@@ -20,15 +24,19 @@
 # Override the deploy path:
 #   AIKONOS_DEPLOY_DIR=/custom/path git push ...
 #
-# SIGNED DEPLOYS (adoption path — see deploy/onprem/README.md "Signing setup"):
+# SIGNED DEPLOYS (see deploy/onprem/README.md "Signing setup"):
 #   Before checkout, the pushed ref's tip commit (or tag) is verified against an
-#   allowed-signers file. Until that file exists at AIKONOS_DEPLOY_ALLOWED_SIGNERS
-#   (default /etc/aikonos/allowed_signers), the hook warns loudly and deploys
-#   unverified — create the file to start enforcing.
+#   allowed-signers file at AIKONOS_DEPLOY_ALLOWED_SIGNERS (default
+#   /etc/aikonos/allowed_signers). Without that file the deploy is refused.
+#
+# FAST-FORWARD ONLY:
+#   The deploy-branch sha must descend from the last deployed commit (recorded in
+#   <bare repo>/aikonos-deployed), so an older signed commit cannot be replayed
+#   to roll the platform back.
 #
 #   AIKONOS_DEPLOY_ALLOWED_SIGNERS=/path/to/allowed_signers   # default: /etc/aikonos/allowed_signers
-#   AIKONOS_DEPLOY_REQUIRE_SIGNED=false   # skip verification entirely
-#   AIKONOS_DEPLOY_REQUIRE_SIGNED=true    # fail closed if the allowed-signers file is missing
+#   AIKONOS_DEPLOY_REQUIRE_SIGNED=false   # skip verification entirely (first-time setup only; logged)
+#   AIKONOS_DEPLOY_ALLOW_ROLLBACK=1       # deploy a sha that is not a fast-forward (deliberate rollback; logged)
 #   AIKONOS_DEPLOY_VERIFY_ONLY=1          # run verification only, skip checkout/build/deploy (testing)
 
 set -euo pipefail
@@ -37,7 +45,11 @@ DEPLOY_DIR="${AIKONOS_DEPLOY_DIR:-$HOME/apps/aikonos}"
 GIT_REPO_DIR="${GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"  # git sets GIT_DIR in hooks
 
 ALLOWED_SIGNERS_FILE="${AIKONOS_DEPLOY_ALLOWED_SIGNERS:-/etc/aikonos/allowed_signers}"
-REQUIRE_SIGNED="${AIKONOS_DEPLOY_REQUIRE_SIGNED:-}"
+# Fail closed: anything but an explicit "false" enforces signatures.
+REQUIRE_SIGNED="${AIKONOS_DEPLOY_REQUIRE_SIGNED:-true}"
+ALLOW_ROLLBACK="${AIKONOS_DEPLOY_ALLOW_ROLLBACK:-}"
+# Inside the bare repo, not the work tree: a pushed commit cannot write it.
+DEPLOYED_SHA_FILE="$GIT_REPO_DIR/aikonos-deployed"
 
 # The bare repo's symbolic HEAD (e.g. refs/heads/main) — the branch this hook
 # deploys. Falls back to refs/heads/main if HEAD is somehow not a symref.
@@ -58,24 +70,16 @@ verify_signed_ref() {
   fi
 
   if [ ! -f "$ALLOWED_SIGNERS_FILE" ]; then
-    if [ "$REQUIRE_SIGNED" = "true" ]; then
-      echo ""
-      echo "ERROR: [aikonos-deploy] AIKONOS_DEPLOY_REQUIRE_SIGNED=true but no allowed-signers"
-      echo "       file found at: $ALLOWED_SIGNERS_FILE"
-      echo ""
-      echo "  Create it (one line per trusted signer):"
-      echo "    <principal> ssh-ed25519 AAAA..."
-      echo ""
-      echo "  Or unset AIKONOS_DEPLOY_REQUIRE_SIGNED to fall back to the adoption warning path."
-      echo ""
-      return 1
-    fi
     echo ""
-    echo "WARNING: [aikonos-deploy] No allowed-signers file at $ALLOWED_SIGNERS_FILE —"
-    echo "         signature verification is NOT enforced; deploying $sha unverified."
-    echo "         Create the file to start enforcing signed deploys (see deploy/onprem/README.md)."
+    echo "ERROR: [aikonos-deploy] No allowed-signers file at $ALLOWED_SIGNERS_FILE —"
+    echo "       cannot verify $sha ($refname); deploy refused."
     echo ""
-    return 0
+    echo "  Create it (one line per trusted signer):"
+    echo "    <principal> ssh-ed25519 AAAA..."
+    echo ""
+    echo "  First-time setup only: AIKONOS_DEPLOY_REQUIRE_SIGNED=false deploys unverified."
+    echo ""
+    return 1
   fi
 
   local verify_out
@@ -120,6 +124,37 @@ verify_signed_ref() {
   return 0
 }
 
+# verify_fast_forward <git-dir> <old-sha> <new-sha>
+# Returns 0 when <new-sha> descends from the last deployed commit, 1 to refuse.
+# The baseline is DEPLOYED_SHA_FILE, else the ref's previous value <old-sha>
+# (a hook installed before the file existed), else nothing (first deploy).
+# Self-contained and callable standalone, like verify_signed_ref.
+verify_fast_forward() {
+  local git_dir="$1" old="$2" new="$3" base=""
+
+  if [ -s "$DEPLOYED_SHA_FILE" ]; then
+    base="$(head -n1 "$DEPLOYED_SHA_FILE")"
+  elif [ -n "$old" ] && [[ ! "$old" =~ ^0+$ ]]; then
+    base="$old"
+  fi
+  [ -n "$base" ] || return 0
+
+  if git --git-dir="$git_dir" merge-base --is-ancestor "$base" "$new" 2>/dev/null; then
+    return 0
+  fi
+  if [ "$ALLOW_ROLLBACK" = "1" ]; then
+    echo "==> [aikonos-deploy] AIKONOS_DEPLOY_ALLOW_ROLLBACK=1 — deploying $new, which does not descend from the deployed $base."
+    return 0
+  fi
+  echo ""
+  echo "ERROR: [aikonos-deploy] $new is not a fast-forward of the deployed commit $base — deploy refused."
+  echo ""
+  echo "  A signed older commit is still a rollback. To roll back on purpose, run the"
+  echo "  hook on the host with AIKONOS_DEPLOY_ALLOW_ROLLBACK=1 (deploy/onprem/README.md)."
+  echo ""
+  return 1
+}
+
 # unhealthy_services
 # Reads `docker compose ps -a --format '{{.Service}}|{{.State}}|{{.Status}}'` on
 # stdin and prints one line per service that should be up but is not. Empty
@@ -140,7 +175,8 @@ unhealthy_services() {
 # Reads post-receive stdin ("<old> <new> <refname>" per line — one per
 # updated ref) and verifies EVERY updated ref; a single unsigned/unverified
 # ref refuses the whole push (a signed decoy ref must never wave through an
-# unsigned deploy-branch update). Deleted refs (new sha is all zeros) are
+# unsigned deploy-branch update), and the deploy branch must also be a
+# fast-forward of the deployed commit (verify_fast_forward). Deleted refs (new sha is all zeros) are
 # skipped — nothing to verify, nothing to deploy from. Sets the global
 # DEPLOY_SHA to the deploy branch's new sha if the push touched it, else "".
 # Falls back to the deploy branch's current tip when stdin carries no lines
@@ -162,7 +198,11 @@ process_pushed_refs() {
       continue
     fi
     if [ "$refname" = "$deploy_ref" ]; then
-      DEPLOY_SHA="$new"
+      if verify_fast_forward "$GIT_REPO_DIR" "$old" "$new"; then
+        DEPLOY_SHA="$new"
+      else
+        failed=1
+      fi
     fi
   done
 
@@ -170,7 +210,8 @@ process_pushed_refs() {
     local head_sha
     head_sha="$(git --git-dir="$GIT_REPO_DIR" rev-parse "$deploy_ref" 2>/dev/null \
       || git --git-dir="$GIT_REPO_DIR" rev-parse HEAD)"
-    if verify_signed_ref "$GIT_REPO_DIR" "$head_sha" "$deploy_ref"; then
+    if verify_signed_ref "$GIT_REPO_DIR" "$head_sha" "$deploy_ref" \
+      && verify_fast_forward "$GIT_REPO_DIR" "" "$head_sha"; then
       DEPLOY_SHA="$head_sha"
     else
       failed=1
@@ -191,7 +232,7 @@ DEPLOY_BRANCH_REF="$(deploy_branch_ref "$GIT_REPO_DIR")"
 
 if ! process_pushed_refs "$DEPLOY_BRANCH_REF"; then
   echo ""
-  echo "ERROR: [aikonos-deploy] One or more pushed refs failed signature verification — push refused."
+  echo "ERROR: [aikonos-deploy] One or more pushed refs failed verification — deploy refused."
   echo ""
   exit 1
 fi
@@ -218,6 +259,8 @@ mkdir -p "$DEPLOY_DIR"
 # which must be bound to the sha we actually verified, not re-derived).
 # .env is not tracked in git, so it is never overwritten.
 GIT_WORK_TREE="$DEPLOY_DIR" GIT_DIR="$GIT_REPO_DIR" git checkout -f "$DEPLOY_SHA"
+# The baseline the next deploy must fast-forward from.
+printf '%s\n' "$DEPLOY_SHA" > "$DEPLOYED_SHA_FILE"
 
 cd "$DEPLOY_DIR"
 

@@ -13,7 +13,7 @@ audit) is out of scope — see the migration plan and `PROJECT-REVIEW-2026-06-10
 
 | Layer | Choice |
 |---|---|
-| Host | one Ubuntu VM in `rg-tiakon-dev-weu-001` (West Europe) |
+| Host | one Ubuntu VM in an existing resource group (`RG`, West Europe) |
 | Ingress | Traefik v3 (docker provider, ACME HTTP-01) on :80/:443 |
 | Tenant gate | oauth2-proxy (generic OIDC) → single-tenant Entra app |
 | App identity | Entra ID (single-tenant), app-native OIDC — broker validates the bearer |
@@ -33,9 +33,11 @@ Internet ─443─► Traefik ─forwardAuth─► oauth2-proxy ─OIDC─► En
 ```bash
 cd deploy/azure
 az login
-./provision.sh                      # prints the FQDN + ssh command when done
+SUBSCRIPTION_ID=<subscription-id> RG=<resource-group> ADMIN_IP=<your-public-ip> \
+  ./provision.sh                    # prints the FQDN + ssh command when done
 ```
-Overridable via env: `VM_SIZE`, `DNS_LABEL`, `ADMIN_IP` (SSH allow-list), `DATA_DISK_GB`, …
+`SUBSCRIPTION_ID`, `RG` and `ADMIN_IP` (the one IP allowed to SSH) are required.
+Overridable via env: `VM_SIZE`, `DNS_LABEL`, `DATA_DISK_GB`, …
 Default size `Standard_D8s_v5` (32 GB); minimum `Standard_D4s_v5` (16 GB).
 
 ### 2. Entra app registrations (run locally; needs app-registration rights)
@@ -43,7 +45,9 @@ Default size `Standard_D8s_v5` (32 GB); minimum `Standard_D4s_v5` (16 GB).
 ./entra-setup.sh <FQDN>             # the FQDN printed by provision.sh
 ```
 Copy the printed env values. If your tenant enforces admin consent, grant it once
-(the script prints the command).
+(the script prints the command). The edge gate (aikonos-oauth2-proxy) requires
+user assignment, so B2B guests and unassigned members cannot pass it: assign the
+users or groups who may sign in (the script prints where).
 
 ### 3. On the VM: repo + env
 ```bash

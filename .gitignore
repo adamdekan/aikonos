@@ -67,6 +67,8 @@ charts/*.tgz
 # hand-made backups of the above — .env itself is ignored, so a copy of it must
 # be too, or one `git add -A` publishes the credentials it holds.
 .env*.bak
+# scripts/compose-backup.sh output: database dumps, the audit bucket and Vault data.
+/backups/
 .vm/
 repos/
 

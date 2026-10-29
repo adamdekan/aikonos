@@ -150,3 +150,59 @@ class TestParseComposePs:
         names = [r["name"] for r in result]
         assert "broker" in names
         assert "nats"   in names
+
+
+# ── F117/F231: psql values are bound, never spliced; kill-switch tenant ──────
+
+
+def _run_main(argv: list[str]) -> MagicMock:
+    """Run main() with argv; return the subprocess.run mock."""
+    fake = MagicMock(returncode=0, stdout="", stderr="")
+    with patch.object(sys, "argv", ["aikonosctl", *argv]), \
+         patch("subprocess.run", return_value=fake) as mock_run:
+        aikonosctl.main()
+    return mock_run
+
+
+class TestPsqlBinding:
+    def test_task_get_binds_task_id(self):
+        tid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        mock_run = _run_main(["task", "get", tid])
+        argv = mock_run.call_args[0][0]
+        sql = mock_run.call_args[1]["input"]
+        assert f"task_id={tid}" in argv
+        assert ":'task_id'" in sql and tid not in sql
+
+    def test_task_id_injection_refused(self):
+        with pytest.raises(SystemExit):
+            _run_main(["task", "approve", "x'); DELETE FROM kill_switches;--"])
+
+    def test_kill_switch_user_requires_tenant(self, monkeypatch):
+        # No silent dev-tenant fallback, even with AIKONOS_TENANT_ID set.
+        monkeypatch.setenv("AIKONOS_TENANT_ID", "11111111-1111-1111-1111-111111111111")
+        with pytest.raises(SystemExit):
+            _run_main(["kill-switch", "user", "alice"])
+
+    def test_kill_switch_user_binds_tenant_and_subject(self):
+        tenant = "6c3b1e4a-0d2f-4a8e-9b7c-1f2e3d4c5b6a"
+        mock_run = _run_main(["kill-switch", "user", "--tenant", tenant, "alice@corp"])
+        argv = mock_run.call_args[0][0]
+        sql = mock_run.call_args[1]["input"]
+        assert f"tenant={tenant}" in argv and "subject=alice@corp" in argv
+        assert tenant not in sql and "alice@corp" not in sql
+
+    def test_kill_switch_user_subject_injection_refused(self):
+        with pytest.raises(SystemExit):
+            _run_main(["kill-switch", "user", "--tenant",
+                       "6c3b1e4a-0d2f-4a8e-9b7c-1f2e3d4c5b6a", "x'); DELETE FROM kill_switches;--"])
+
+    def test_kill_switch_tenant_requires_uuid(self):
+        with pytest.raises(SystemExit):
+            _run_main(["kill-switch", "tenant", "aikonos-dev"])
+
+
+class TestAuditVerifyCredentials:
+    def test_no_default_minio_credentials(self):
+        # printenv returns empty: refuse rather than fall back to minioadmin.
+        with pytest.raises(SystemExit):
+            _run_main(["audit", "verify"])

@@ -19,8 +19,8 @@ Usage:
   aikonosctl audit tail [--tenant aikonos-dev]
   aikonosctl audit verify                     (check MinIO audit object presence)
 
-  aikonosctl kill-switch user <user-id>
-  aikonosctl kill-switch tenant <tenant-id>
+  aikonosctl kill-switch user --tenant <tenant-uuid> <user-id>
+  aikonosctl kill-switch tenant <tenant-uuid>
   aikonosctl kill-switch status
 
   aikonosctl workspace create --user <user-id>
@@ -38,9 +38,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -63,15 +66,16 @@ def warn(msg: str)  -> None: print(f"\033[33m!\033[0m {msg}")
 def header(msg: str)-> None: print(f"\n── {msg} {'─' * (50 - len(msg))}")
 
 
-def compose_exec(service: str, *cmd: str, capture: bool = True) -> str:
+def compose_exec(service: str, *cmd: str, capture: bool = True, stdin: str | None = None) -> str:
     """Run `docker compose exec -T <service> <cmd...>` from the repo root.
 
     Non-zero exit prints the error and calls sys.exit(1).
     capture=False is for interactive commands (audit tail).
+    stdin is fed to the command (capture=True only).
     """
     argv = ["docker", "compose", "exec", "-T", service, *cmd]
     if capture:
-        result = subprocess.run(argv, capture_output=True, text=True, cwd=_REPO_ROOT)
+        result = subprocess.run(argv, capture_output=True, text=True, cwd=_REPO_ROOT, input=stdin)
         if result.returncode != 0:
             fail(f"compose exec error: {result.stderr.strip()}")
             sys.exit(1)
@@ -109,6 +113,32 @@ def parse_compose_ps(stdout: str) -> list[dict]:
     return result
 
 
+def psql(sql: str, **params: str) -> str:
+    """Run sql against the dev database with params bound as psql variables.
+
+    The SQL goes in on stdin, where psql interpolates :'name' as a quoted
+    literal (it does not inside -c before psql 15), so a value never becomes
+    SQL text.
+    """
+    variables = [a for k, v in params.items() for a in ("-v", f"{k}={v}")]
+    return compose_exec(
+        "postgres", "psql", "-U", "aikonos", "-d", "aikonos",
+        "-v", "ON_ERROR_STOP=1", *variables, "-f", "-", stdin=sql,
+    )
+
+
+def require_uuid(value: str, what: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        fail(f"{what} must be a UUID: {value!r}")
+        sys.exit(1)
+
+
+# Principal ids (OIDC sub, email-style dev ids): no quotes, spaces or SQL.
+_SUBJECT_RE = re.compile(r"^[A-Za-z0-9._@:-]+$")
+
+
 def opa(*args: str) -> str:
     result = subprocess.run(["opa", *args], capture_output=True, text=True)
     return result.stdout.strip()
@@ -142,18 +172,18 @@ def cmd_task_create(args: argparse.Namespace) -> None:
 
 def cmd_task_get(args: argparse.Namespace) -> None:
     header(f"Task {args.task_id}")
-    result = compose_exec(
-        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
-        f"SELECT task_id, state, cost_consumed, cost_budget, created_at FROM tasks WHERE task_id = '{args.task_id}';"
+    result = psql(
+        "SELECT task_id, state, cost_consumed, cost_budget, created_at FROM tasks WHERE task_id = :'task_id';",
+        task_id=require_uuid(args.task_id, "task id"),
     )
     print(result)
 
 
 def cmd_task_approve(args: argparse.Namespace) -> None:
     header(f"Approve Task {args.task_id}")
-    result = compose_exec(
-        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
-        f"UPDATE tasks SET state='APPROVED' WHERE task_id='{args.task_id}' AND state='AWAITING_APPROVAL';"
+    result = psql(
+        "UPDATE tasks SET state='APPROVED' WHERE task_id = :'task_id' AND state='AWAITING_APPROVAL';",
+        task_id=require_uuid(args.task_id, "task id"),
     )
     print(result)
     ok(f"Task {args.task_id} approved (dev direct-DB; bypasses broker state machine — dev only)")
@@ -188,10 +218,14 @@ def cmd_plan_validate(args: argparse.Namespace) -> None:
         "actor": {"user_id": args.user, "is_control_plane": False},
     }
 
-    input_file = "/tmp/aikonosctl-plan-input.json"
-    with open(input_file, "w") as f:
+    # A private, unpredictable name: a fixed /tmp path can be pre-planted as a symlink.
+    with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
         json.dump(opa_input, f)
+        f.flush()
+        _plan_validate_eval(f.name)
 
+
+def _plan_validate_eval(input_file: str) -> None:
     result = opa(
         "eval",
         "--input", input_file,
@@ -264,8 +298,12 @@ def cmd_audit_verify(args: argparse.Namespace) -> None:
     warn("Checking audit object presence only — HMAC chain verification: task compose:verify")
 
     # Fetch creds from the running container's env (never interpolate into sh -c).
-    user = compose_exec("minio", "printenv", "MINIO_ROOT_USER").strip() or "minioadmin"
-    pwd  = compose_exec("minio", "printenv", "MINIO_ROOT_PASSWORD").strip() or "minioadmin-secret-change-me"
+    # No fallback: a guessed default would only mask a misconfigured container.
+    user = compose_exec("minio", "printenv", "MINIO_ROOT_USER").strip()
+    pwd  = compose_exec("minio", "printenv", "MINIO_ROOT_PASSWORD").strip()
+    if not user or not pwd:
+        fail("MINIO_ROOT_USER / MINIO_ROOT_PASSWORD are not set in the minio container")
+        sys.exit(1)
     # Configure the mc alias with individual argv tokens — no shell quoting issues.
     compose_exec("minio", "mc", "alias", "set", "local",
                  "http://localhost:9000", user, pwd, "--api", "S3v4")
@@ -294,18 +332,24 @@ def cmd_kill_switch(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # The broker reads kill_switches per tenant (AG-06): a user block lives in
-    # the user's tenant (AIKONOS_TENANT_ID, the dev UUID by default) with the
-    # user's principal id as subject; a tenant block names the tenant itself.
-    tenant = subject if args.scope == "tenant" else os.environ.get(
-        "AIKONOS_TENANT_ID", "11111111-1111-1111-1111-111111111111")
+    # the user's tenant with the user's principal id as subject; a tenant block
+    # names the tenant itself. The user's tenant is never defaulted: a row in
+    # the wrong tenant blocks nobody while this command reports success.
+    if args.scope == "tenant":
+        tenant = subject = require_uuid(subject, "tenant id")
+    else:
+        tenant = require_uuid(args.tenant, "--tenant")
+        if not _SUBJECT_RE.match(subject):
+            fail(f"user id has unexpected characters: {subject!r}")
+            sys.exit(1)
     warn(f"Activating kill switch: scope={args.scope} subject={subject} tenant={tenant}")
-    compose_exec(
-        "postgres", "psql", "-U", "aikonos", "-d", "aikonos", "-c",
-        f"INSERT INTO kill_switches (tenant_id, scope, subject, activated_by, reason) "
-        f"VALUES ('{tenant}', '{args.scope}', '{subject}', 'aikonosctl', 'manual') "
-        f"ON CONFLICT DO NOTHING;"
+    psql(
+        "INSERT INTO kill_switches (tenant_id, scope, subject, activated_by, reason) "
+        "VALUES (:'tenant', :'scope', :'subject', 'aikonosctl', 'manual') "
+        "ON CONFLICT DO NOTHING;",
+        tenant=tenant, scope=args.scope, subject=subject,
     )
-    ok(f"Kill switch activated: {args.scope}/{subject}")
+    ok(f"Kill switch activated: {args.scope}/{subject} in tenant {tenant}")
     warn("Direct DB write — bypasses Broker API (dev only)")
 
 
@@ -412,6 +456,8 @@ def build_parser() -> argparse.ArgumentParser:
     ks = sub.add_parser("kill-switch")
     ks_sub = ks.add_subparsers(dest="scope")
     ks_user = ks_sub.add_parser("user")
+    # Required here, not the global --tenant: that one has a default.
+    ks_user.add_argument("--tenant", required=True, help="the user's tenant UUID")
     ks_user.add_argument("subject")
     ks_tenant = ks_sub.add_parser("tenant")
     ks_tenant.add_argument("subject")

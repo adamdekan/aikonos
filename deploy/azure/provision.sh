@@ -10,8 +10,10 @@
 set -euo pipefail
 
 # ── Config (override via env before running) ───────────────────────────────────
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-61d89240-3dd5-4707-9eea-59dfa38d72ea}"
-RG="${RG:-rg-tiakon-dev-weu-001}"
+# Required, no defaults: a committed default would aim every run at one
+# subscription.
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:?set SUBSCRIPTION_ID to the target Azure subscription id}"
+RG="${RG:?set RG to the existing resource group}"
 LOCATION="${LOCATION:-westeurope}"
 
 VNET="${VNET:-vnet-aikonos-dev-weu-001}"
@@ -30,8 +32,9 @@ ADMIN_SSH_KEY="${ADMIN_SSH_KEY:-$HOME/.ssh/id_rsa.pub}"
 OS_DISK_GB="${OS_DISK_GB:-64}"
 DATA_DISK_GB="${DATA_DISK_GB:-128}"
 
-# Restrict SSH to the IP you run this from. Override ADMIN_IP to set another.
-ADMIN_IP="${ADMIN_IP:-$(curl -fsS https://api.ipify.org)}"
+# SSH is allowed from this one IP only. Required, not looked up: a third-party
+# lookup through a proxy or VPN egress would allow that egress instead.
+ADMIN_IP="${ADMIN_IP:?set ADMIN_IP to the public IP allowed to SSH (e.g. from: curl -fsS https://api.ipify.org)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

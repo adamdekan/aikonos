@@ -17,6 +17,35 @@ allow if {
 # Each violation is a string returned to the agent for replanning.
 # Never include internal policy details in violation messages.
 
+# Fail closed on a malformed input: every rule below is simply undefined when
+# the field it reads is missing, so a missing or mistyped field must be a
+# violation of its own, never a silent allow.
+violations contains "Plan steps are missing or malformed." if {
+    not is_array(object.get(input, ["plan", "steps"], null))
+}
+
+violations contains "Task cost budget is missing or malformed." if {
+    not is_number(object.get(input, ["task", "cost_budget"], null))
+}
+
+violations contains "Task effect class ceiling is missing or malformed." if {
+    not is_string(object.get(input, ["task", "effect_class_ceiling"], null))
+}
+
+violations contains msg if {
+    some i, step in input.plan.steps
+    not is_number(object.get(step, "estimated_cost", null))
+    msg := sprintf("Step %d has a missing or malformed estimated cost.", [i + 1])
+}
+
+# A negative estimate would offset the others in the budget sum below. Numbered
+# by position, not step.seq: a step without seq must still be a violation.
+violations contains msg if {
+    some i, step in input.plan.steps
+    step.estimated_cost < 0
+    msg := sprintf("Step %d has a negative estimated cost.", [i + 1])
+}
+
 violations contains msg if {
     some step in input.plan.steps
     step.effect_class in ["destructive", "credential_access"]

@@ -64,6 +64,9 @@ PROXY_APP_ID="$(az ad app create --display-name aikonos-oauth2-proxy \
   --web-redirect-uris "https://$FQDN/oauth2/callback" \
   --query appId -o tsv)"
 az ad sp create --id "$PROXY_APP_ID" -o none 2>/dev/null || true
+# Only assigned users and groups pass the edge gate: without this every account
+# in the directory, B2B guests included, can sign in.
+az ad sp update --id "$PROXY_APP_ID" --set appRoleAssignmentRequired=true -o none
 PROXY_SECRET="$(az ad app credential reset --id "$PROXY_APP_ID" \
   --display-name oauth2-proxy --query password -o tsv)"
 
@@ -98,5 +101,9 @@ NOTE: if your tenant requires admin consent, an admin must grant it once for
 App A's access_as_user scope (Portal → App registrations → aikonos-webui → API
 permissions → Grant admin consent), or run:
   az ad app permission admin-consent --id $WEBUI_APP_ID
+
+The edge gate requires user assignment: nobody can sign in until you assign the
+users or groups who may (Portal → Enterprise applications → aikonos-oauth2-proxy
+→ Users and groups → Add user/group).
 ================================================================================
 OUT

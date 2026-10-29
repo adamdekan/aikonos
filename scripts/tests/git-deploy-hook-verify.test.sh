@@ -152,10 +152,11 @@ run_case "unsigned+file=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$ZE
 assert_contains "unsigned+file=refuse: FAILED message" "Signature verification FAILED"
 assert_contains "unsigned+file=refuse: sign-instructions block" "git config gpg.format ssh"
 
-echo "=== allowed-signers file absent -> warn and proceed ==="
-run_case "nofile=warn+proceed" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "$UNSIGNED_SHA")" \
+echo "=== allowed-signers file absent, REQUIRE_SIGNED unset -> refuse (fail closed by default) ==="
+run_case "nofile=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
   AIKONOS_DEPLOY_ALLOWED_SIGNERS="$WORKDIR/does-not-exist"
-assert_contains "nofile=warn+proceed: WARNING message" "WARNING"
+assert_contains "nofile=refuse: names the missing file" "No allowed-signers file at $WORKDIR/does-not-exist"
+assert_contains "nofile=refuse: names the explicit opt-out" "AIKONOS_DEPLOY_REQUIRE_SIGNED=false"
 
 echo "=== REQUIRE_SIGNED=false -> skip verification entirely ==="
 run_case "require-signed-false=skip" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "$UNSIGNED_SHA")" \
@@ -193,6 +194,41 @@ echo "=== (d) VERIFY_ONLY prints exactly the pushed deploy-branch sha ==="
 run_case "verify-only-sha-echo" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
   AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
 assert_contains "(d): printed deploy sha matches pushed sha" "Verified deploy sha: $SIGNED_SHA (refs/heads/main)"
+
+# --- Fast-forward only (rollback/replay of an older signed commit) -------
+# OTHER_SIGNED_SHA descends from SIGNED_SHA; both are validly signed.
+DEPLOYED="$GIT_DIR/aikonos-deployed"
+
+echo "=== (f) force-push of an older signed commit (no deployed record) -> REFUSED ==="
+run_case "rollback-by-old-ref=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$OTHER_SIGNED_SHA" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+assert_contains "(f): signature itself still verified" "Signature verified for $SIGNED_SHA"
+assert_contains "(f): refused as not a fast-forward" "is not a fast-forward of the deployed commit $OTHER_SIGNED_SHA"
+
+echo "=== (g) fast-forward of the previous ref -> pass ==="
+run_case "fast-forward-of-old-ref=pass" 0 "$(printf '%s %s refs/heads/main\n' "$SIGNED_SHA" "$OTHER_SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+assert_contains "(g): deploy sha printed" "Verified deploy sha: $OTHER_SIGNED_SHA"
+
+echo "=== (h) older signed commit vs the deployed record -> REFUSED, even as a new ref ==="
+# Delete-and-recreate (old = zeros) must not dodge the check: the deployed
+# record, not the pushed old value, is the baseline.
+printf '%s\n' "$OTHER_SIGNED_SHA" > "$DEPLOYED"
+run_case "rollback-vs-deployed=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+assert_contains "(h): refused against the deployed commit" "is not a fast-forward of the deployed commit $OTHER_SIGNED_SHA"
+
+echo "=== (i) AIKONOS_DEPLOY_ALLOW_ROLLBACK=1 -> deliberate rollback passes, logged ==="
+run_case "rollback-flag=pass" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS" \
+  AIKONOS_DEPLOY_ALLOW_ROLLBACK=1
+assert_contains "(i): rollback logged" "AIKONOS_DEPLOY_ALLOW_ROLLBACK=1 — deploying $SIGNED_SHA"
+
+echo "=== (j) re-deploying the deployed commit -> pass ==="
+printf '%s\n' "$SIGNED_SHA" > "$DEPLOYED"
+run_case "same-as-deployed=pass" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+rm -f "$DEPLOYED"
 
 echo "=== (e) unhealthy_services: which services count as a failed deploy ==="
 # WHY: a real deploy aborted mid-recreate and left the broker container in

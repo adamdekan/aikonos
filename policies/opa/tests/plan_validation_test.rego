@@ -145,3 +145,58 @@ test_infrastructure_from_non_control_plane_denied if {
     some v in violations
     contains(v, "infrastructure access")
 }
+
+# ── Fail closed on malformed input ────────────────────────────────────────────
+
+test_empty_input_denied if {
+    not plan_validation.allow with input as {}
+}
+
+test_missing_steps_denied if {
+    violations := plan_validation.violations with input as {"plan": {"plan_id": "p"}, "task": base_task, "actor": base_actor}
+    "Plan steps are missing or malformed." in violations
+}
+
+test_non_array_steps_denied if {
+    not plan_validation.allow with input as {"plan": {"steps": "x"}, "task": base_task, "actor": base_actor}
+}
+
+test_missing_cost_budget_denied if {
+    violations := plan_validation.violations with input as {"plan": clean_plan, "task": {"effect_class_ceiling": "write_local"}, "actor": base_actor}
+    "Task cost budget is missing or malformed." in violations
+}
+
+test_string_cost_budget_denied if {
+    not plan_validation.allow with input as {"plan": clean_plan, "task": {"cost_budget": "1000", "effect_class_ceiling": "write_local"}, "actor": base_actor}
+}
+
+test_missing_effect_class_ceiling_denied if {
+    violations := plan_validation.violations with input as {"plan": clean_plan, "task": {"cost_budget": 1000}, "actor": base_actor}
+    "Task effect class ceiling is missing or malformed." in violations
+}
+
+test_missing_step_cost_denied if {
+    bad_plan := json.patch(clean_plan, [{"op": "remove", "path": "/steps/1/estimated_cost"}])
+    violations := plan_validation.violations with input as {"plan": bad_plan, "task": base_task, "actor": base_actor}
+    "Step 2 has a missing or malformed estimated cost." in violations
+}
+
+test_negative_cost_cannot_offset_budget if {
+    # -1000000 + 1000100 sums to 100, under the 1000 budget: the negative step
+    # itself must be the violation.
+    netting_plan := json.patch(clean_plan, [
+        {"op": "replace", "path": "/steps/0/estimated_cost", "value": -1000000},
+        {"op": "replace", "path": "/steps/1/estimated_cost", "value": 1000100},
+    ])
+    violations := plan_validation.violations with input as {"plan": netting_plan, "task": base_task, "actor": base_actor}
+    "Step 1 has a negative estimated cost." in violations
+    not plan_validation.allow with input as {"plan": netting_plan, "task": base_task, "actor": base_actor}
+}
+
+test_negative_cost_without_seq_denied if {
+    no_seq := json.patch(clean_plan, [
+        {"op": "remove", "path": "/steps/0/seq"},
+        {"op": "replace", "path": "/steps/0/estimated_cost", "value": -1},
+    ])
+    not plan_validation.allow with input as {"plan": no_seq, "task": base_task, "actor": base_actor}
+}

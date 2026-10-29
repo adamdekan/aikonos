@@ -160,10 +160,10 @@ replica (immediately on the one that wrote it); see
 **Revoke sessions** on the same row ends every session without blocking.
 
 When the UI is not reachable, write the row directly (the subject is the
-user's principal id, i.e. the `oid`; the user's tenant comes from
-`AIKONOS_TENANT_ID`):
+user's principal id, i.e. the `oid`; `--tenant` is the user's tenant UUID and
+is required, so the row cannot land in a tenant the broker never reads):
 ```bash
-python3 scripts/aikonosctl kill-switch user <principal-id>
+python3 scripts/aikonosctl kill-switch user --tenant <tenant-uuid> <principal-id>
 ```
 `aikonosctl kill-switch tenant <tenant-id>` blocks every user of a tenant,
 including its admins; it has no UI and is lifted with the SQL below
@@ -499,13 +499,13 @@ Grafana if you don't want them; nothing refers to them.
 ## Incident response (top risks from threat model)
 
 ### L-02: Suspected prompt injection / exfil attempt
-1. Kill switch the affected user: `python3 scripts/aikonosctl kill-switch user <user>`
+1. Kill switch the affected user: `python3 scripts/aikonosctl kill-switch user --tenant <tenant-uuid> <user>`
 2. Pull their recent tasks from the audit log
 3. Check MinIO for any write_external events in the past hour
 4. If exfil confirmed: escalate, preserve evidence, contact legal
 
 ### D-01: Runaway agent loop (cost DoS)
-1. `python3 scripts/aikonosctl kill-switch user <user>` — stops new tasks
+1. `python3 scripts/aikonosctl kill-switch user --tenant <tenant-uuid> <user>` — stops new tasks
 2. Check cost_consumed vs cost_budget in Postgres
 3. Check NATS for queue depth on `<tenant>.outbound.<user>`
 4. After remediation: review per-task cost budget defaults
