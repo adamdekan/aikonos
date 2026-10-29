@@ -11,9 +11,19 @@ import {
   writeJobFile,
 } from './run-script.js';
 
+// A caller regex runs (Python `re`, no timeout) over a whole member, so
+// pattern length and op count are capped; catastrophic backtracking within
+// those is bounded by the job timeout. zip_edit.py caps member size and each
+// op's output length.
+export const MAX_OPS = 200;
+export const MAX_REGEX_LENGTH = 1024;
+
 function validateOps(ops) {
   if (!Array.isArray(ops) || ops.length === 0) {
     throw new HandlerInputError('params.ops must be a non-empty array');
+  }
+  if (ops.length > MAX_OPS) {
+    throw new HandlerInputError(`params.ops may hold at most ${MAX_OPS} ops`);
   }
   for (const op of ops) {
     if (!op || typeof op.member !== 'string' || !op.member) {
@@ -21,6 +31,9 @@ function validateOps(ops) {
     }
     if (typeof op.find !== 'string' || typeof op.replace !== 'string') {
       throw new HandlerInputError(`op on member "${op.member}" requires string "find" and "replace"`);
+    }
+    if (op.regex && op.find.length > MAX_REGEX_LENGTH) {
+      throw new HandlerInputError(`regex "find" on member "${op.member}" exceeds ${MAX_REGEX_LENGTH} characters`);
     }
   }
 }

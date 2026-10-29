@@ -15,14 +15,65 @@ import re
 import sys
 import zipfile
 
+# Decompressed-size caps, checked against each member's declared size before
+# anything is read: the 10 MiB upload cap bounds only the compressed bytes,
+# and a deflate bomb expands ~1000:1 inside the shared container. zipfile
+# stops at the declared size (and fails the CRC check on a lie), so the
+# header value is safe to trust here.
+MAX_MEMBER_BYTES = 50 << 20
+MAX_TOTAL_BYTES = 200 << 20
+# Length bound on a member after each op: an empty-match pattern (or empty
+# plain find) with a large replace grows the text multiplicatively.
+MAX_OUTPUT_CHARS = MAX_MEMBER_BYTES
 
-def apply_ops(text, ops):
+
+def check_sizes(infolist):
+    total = 0
+    for info in infolist:
+        if info.file_size > MAX_MEMBER_BYTES:
+            raise SystemExit(
+                f"member {info.filename} is {info.file_size} bytes uncompressed, "
+                f"over the {MAX_MEMBER_BYTES}-byte cap"
+            )
+        total += info.file_size
+    if total > MAX_TOTAL_BYTES:
+        raise SystemExit(f"archive is {total} bytes uncompressed, over the {MAX_TOTAL_BYTES}-byte cap")
+
+
+def too_long(member):
+    return SystemExit(f"edit on member {member} would grow it past {MAX_OUTPUT_CHARS} characters")
+
+
+def bounded_sub(pattern, replace, text, member):
+    # re.sub with a running length check: the result is refused while it is
+    # being built, never after it already filled memory.
+    out = []
+    size = 0
+    last = 0
+    for m in re.finditer(pattern, text, flags=re.DOTALL):
+        piece = text[last:m.start()] + m.expand(replace)
+        size += len(piece)
+        if size > MAX_OUTPUT_CHARS:
+            raise too_long(member)
+        out.append(piece)
+        last = m.end()
+    out.append(text[last:])
+    if size + len(text) - last > MAX_OUTPUT_CHARS:
+        raise too_long(member)
+    return "".join(out)
+
+
+def apply_ops(text, ops, member=""):
     for op in ops:
         find = op["find"]
         replace = op["replace"]
         if op.get("regex"):
-            text = re.sub(find, replace, text, flags=re.DOTALL)
+            text = bounded_sub(find, replace, text, member)
         else:
+            # str.replace is computed in one step, so project its length first.
+            grown = len(text) + text.count(find) * (len(replace) - len(find))
+            if grown > MAX_OUTPUT_CHARS:
+                raise too_long(member)
             text = text.replace(find, replace)
     return text
 
@@ -37,6 +88,7 @@ def main():
         by_member.setdefault(op["member"], []).append(op)
 
     with zipfile.ZipFile(input_path, "r") as zin:
+        check_sizes(zin.infolist())
         names = set(zin.namelist())
         missing = [m for m in by_member if m not in names]
         if missing:
@@ -46,7 +98,7 @@ def main():
             for info in zin.infolist():
                 data = zin.read(info.filename)
                 if info.filename in by_member:
-                    text = apply_ops(data.decode("utf-8"), by_member[info.filename])
+                    text = apply_ops(data.decode("utf-8"), by_member[info.filename], info.filename)
                     data = text.encode("utf-8")
                 zout.writestr(info, data)
 

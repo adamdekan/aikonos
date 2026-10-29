@@ -1,8 +1,11 @@
 // Per-job lifecycle: a unique tmpfs dir, a wall-clock timeout that kills any
-// subprocess group the handler spawned, and a guaranteed wipe of the dir.
-import { mkdtemp, rm } from 'node:fs/promises';
+// subprocess group the handler spawned, a post-job sweep of every process the
+// job left behind, and a guaranteed wipe of the dir.
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { spawn as nodeSpawn } from 'node:child_process';
 
 const JOB_DIR_PREFIX = 'office-job-';
@@ -17,7 +20,8 @@ export class JobTimeoutError extends Error {
 
 // Creates a job dir under root (default OS tmpdir, which is the tmpfs /tmp
 // mount in the container), runs fn(jobDir), and always wipes the dir after —
-// including when fn throws.
+// including when fn throws. mkdtemp creates it 0700, which keeps other uids
+// out but not a concurrent job's script: every job runs as the same uid.
 export async function withJobDir(fn, { root = tmpdir() } = {}) {
   const dir = await mkdtemp(join(root, JOB_DIR_PREFIX));
   try {
@@ -27,17 +31,71 @@ export async function withJobDir(fn, { root = tmpdir() } = {}) {
   }
 }
 
+// Only these keys of the worker's own environment reach a subprocess — the
+// worker's secrets (AIKONOS_OFFICE_WORKER_TOKEN) must not be handed to a
+// model-authored script. OPENBLAS_NUM_THREADS=1 keeps numpy's address-space
+// footprint independent of the host's core count, so run-script.js's
+// RLIMIT_AS fits on any host.
+const PASSTHROUGH_ENV = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'];
+const SWEEP_ROUNDS = 20;
+
+function jobEnv(extra, jobId) {
+  const env = { OPENBLAS_NUM_THREADS: '1' };
+  for (const key of PASSTHROUGH_ENV) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  return { ...env, ...extra, AIKONOS_JOB_ID: jobId };
+}
+
+// Pids of every live process whose environment carries tag. setsid/nohup
+// leave the job's process group, but they keep the environment they were
+// started with. Linux only: without /proc there is nothing to scan and the
+// tracked groups are the only kill.
+async function taggedPids(tag) {
+  let entries;
+  try {
+    entries = await readdir('/proc');
+  } catch {
+    return [];
+  }
+  const hits = await Promise.all(
+    entries
+      .filter((e) => /^\d+$/.test(e) && Number(e) !== process.pid)
+      .map(async (e) => {
+        try {
+          const env = (await readFile(`/proc/${e}/environ`)).toString('latin1').split('\0');
+          return env.includes(tag) ? Number(e) : null;
+        } catch {
+          return null; // exited, or another uid's process
+        }
+      })
+  );
+  return hits.filter((pid) => pid !== null);
+}
+
 // Runs handler({ spawn }) with a wall-clock timeout. handler must use the
 // injected `spawn` (not node:child_process directly) for any subprocess it
 // starts, so the runner can kill the whole process group on timeout — a
 // plain child.kill() leaves grandchildren (e.g. soffice's real worker
 // process) running.
+//
+// Every spawned process carries AIKONOS_JOB_ID=<random id> in its env. When
+// the job ends — success, error or timeout — the runner SIGKILLs every
+// tracked group and then every process whose environment still carries that
+// id, so a script's `setsid sleep &` cannot outlive the job and watch the
+// next tenant's documents. ponytail: env tagging, not a sandbox — a process
+// that clears its own environ (exec env -i, prctl non-dumpable) escapes the
+// sweep; a per-job PID namespace (bwrap/nsjail) is the upgrade path.
 export function createJobRunner({ timeoutMs }) {
   const children = new Set();
+  const jobId = randomUUID();
+  const tag = `AIKONOS_JOB_ID=${jobId}`;
 
-  function trackedSpawn(...args) {
-    const child = nodeSpawn(...withDetached(args));
+  function trackedSpawn(cmd, args, opts = {}) {
+    const child = nodeSpawn(cmd, args, { ...opts, detached: true, env: jobEnv(opts.env, jobId) });
     children.add(child);
+    // Dropped on exit so a recycled pid is never group-killed; anything the
+    // leader left running still carries the tag and the sweep finds it.
     child.once('exit', () => children.delete(child));
     return child;
   }
@@ -59,12 +117,28 @@ export function createJobRunner({ timeoutMs }) {
     }
   }
 
+  async function sweep() {
+    killAll();
+    // Repeat until a scan comes back empty: a process forked between a scan
+    // and its parent's kill still carries the tag and is caught next round.
+    for (let round = 0; round < SWEEP_ROUNDS; round++) {
+      const pids = await taggedPids(tag);
+      if (pids.length === 0) return;
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+      await sleep(10);
+    }
+  }
+
   async function run(handler) {
     let timer;
-    let timedOut = false;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
-        timedOut = true;
         killAll();
         reject(new JobTimeoutError(timeoutMs));
       }, timeoutMs);
@@ -73,14 +147,9 @@ export function createJobRunner({ timeoutMs }) {
       return await Promise.race([handler({ spawn: trackedSpawn }), timeout]);
     } finally {
       clearTimeout(timer);
-      if (timedOut) killAll();
+      await sweep();
     }
   }
 
   return { run };
-}
-
-function withDetached(args) {
-  const opts = { ...(args[2] || {}), detached: true };
-  return [args[0], args[1], opts];
 }

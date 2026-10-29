@@ -6,6 +6,8 @@ import { runXmlQuery } from './xml-query.js';
 import { HandlerInputError, readJobFile, runCommand, runNodeScript, writeJobFile } from './run-script.js';
 
 const DEFAULT_OUTPUT = 'output.docx';
+// pandoc's --track-changes values; anything else would ride into its argv.
+const TRACK_CHANGES = new Set(['accept', 'reject', 'all']);
 
 registerHandler('docx/create', async ({ jobDir, params, spawn }) => {
   if (!params.script) throw new HandlerInputError('params.script (docx-js source) is required');
@@ -34,7 +36,12 @@ registerHandler('docx/extract', async ({ jobDir, files, params, spawn }) => {
 
   const outputPath = join(jobDir, 'output.md');
   const args = ['-f', 'docx', '-t', 'markdown'];
-  if (params.track_changes) args.push(`--track-changes=${params.track_changes}`);
+  if (params.track_changes) {
+    if (!TRACK_CHANGES.has(params.track_changes)) {
+      throw new HandlerInputError('params.track_changes must be one of "accept", "reject", "all"');
+    }
+    args.push(`--track-changes=${params.track_changes}`);
+  }
   args.push(inputPath, '-o', outputPath);
   await runCommand({ spawn, cmd: 'pandoc', args, cwd: jobDir });
 

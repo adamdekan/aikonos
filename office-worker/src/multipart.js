@@ -143,6 +143,12 @@ export function parseMultipart(req, limits = {}) {
           reject(new InvalidParamsError(`invalid params JSON: ${err.message}`));
           return;
         }
+        // Every handler dereferences params.<key>; null/array/number would
+        // surface as a 500 TypeError instead of a 400.
+        if (!params || typeof params !== 'object' || Array.isArray(params)) {
+          reject(new InvalidParamsError('params must be a JSON object'));
+          return;
+        }
       }
       resolve({ files, params });
     });

@@ -3,6 +3,7 @@ package toolproxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -153,5 +154,72 @@ func TestOfficeClient_Call_SendsInputFileParts(t *testing.T) {
 	}
 	if len(gotFiles) != 1 || gotFiles[0].Filename != "report.docx" || string(gotFiles[0].Data) != "zipbytes" {
 		t.Fatalf("unexpected uploaded files: %+v", gotFiles)
+	}
+}
+
+// F84: the worker requires the shared secret; newOfficeClient picks it up
+// from the same env var the worker reads and sends it on every call.
+func TestOfficeClient_Call_SendsSharedSecretHeader(t *testing.T) {
+	t.Setenv(officeTokenEnv, "s3cret-token")
+	var got string
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get(officeTokenHeader)
+		writeOfficeTestResponse(t, w, nil, map[string]any{})
+	})
+	defer srv.Close()
+
+	c := newOfficeClient(Config{OfficeWorkerURL: srv.URL, OfficeHTTPClient: srv.Client()})
+	if _, err := c.call(context.Background(), "/v1/docx/create", nil, map[string]any{"script": "x"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if got != "s3cret-token" {
+		t.Fatalf("expected %s header from %s, got %q", officeTokenHeader, officeTokenEnv, got)
+	}
+}
+
+// F249: a worker that streams more parts than the contract allows is
+// refused instead of growing broker memory without bound.
+func TestOfficeClient_Call_RejectsTooManyResponseParts(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		files := make([]officeFile, officeMaxResponseParts+1)
+		for i := range files {
+			files[i] = officeFile{Field: "file", Filename: "x.jpg", Data: []byte("x")}
+		}
+		writeOfficeTestResponse(t, w, files, map[string]any{})
+	})
+	defer srv.Close()
+
+	c := &officeClient{baseURL: srv.URL, client: srv.Client()}
+	_, err := c.call(context.Background(), "/v1/pptx/thumbnail", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "parts") {
+		t.Fatalf("expected a part-count error, got %v", err)
+	}
+}
+
+// F249: the running total across parts is capped, not just each part.
+func TestOfficeClient_Call_RejectsOversizedResponseTotal(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		// Written by hand, errors ignored: the client hangs up mid-stream.
+		mw := multipart.NewWriter(w)
+		w.Header().Set("Content-Type", mw.FormDataContentType())
+		big := make([]byte, officeMaxResponseBytes-1)
+		for i := 0; i < 9; i++ {
+			part, err := mw.CreateFormFile("file", "split.pdf")
+			if err != nil {
+				return
+			}
+			if _, err := part.Write(big); err != nil {
+				return
+			}
+		}
+		_ = mw.Close()
+	})
+	defer srv.Close()
+
+	c := &officeClient{baseURL: srv.URL, client: srv.Client()}
+	_, err := c.call(context.Background(), "/v1/pdf/transform", nil, nil)
+	var tooLarge *http.MaxBytesError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("expected *http.MaxBytesError for an oversized response, got %v", err)
 	}
 }

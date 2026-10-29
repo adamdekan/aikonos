@@ -11,13 +11,13 @@ const MAX_OUTPUT = 5_000_000;
 // no committed multi-slide fixture needed.
 async function createSlides(baseUrl, count) {
   const script = `
-import PptxGenJS from 'pptxgenjs';
+const PptxGenJS = require('pptxgenjs');
 const pptx = new PptxGenJS();
 for (let i = 1; i <= ${count}; i++) {
   const slide = pptx.addSlide();
   slide.addText('Slide ' + i, { x: 1, y: 1, w: 4, h: 1, fontSize: 24 });
 }
-await pptx.writeFile({ fileName: 'output.pptx' });
+pptx.writeFile({ fileName: 'output.pptx' });
 `;
   const { contentType, body } = buildMultipartRequest([], { script, max_output_bytes: MAX_OUTPUT });
   const res = await post(baseUrl, '/v1/pptx/create', contentType, body);

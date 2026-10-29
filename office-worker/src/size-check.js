@@ -20,13 +20,17 @@ export class InvalidCapError extends Error {
   }
 }
 
+// Applied when a caller sends no max_output_bytes (the broker always sends
+// its 10 MiB workspace cap): no output is ever unbounded.
+export const DEFAULT_MAX_OUTPUT_BYTES = 50 << 20;
+
 // outputs: [{ filename, buffer, ... }]. maxBytes undefined/null means no cap
-// was supplied — nothing to check. Any other value must be a finite positive
-// number: a non-numeric or degenerate cap (e.g. a string, NaN, 0, negative)
-// must fail loud rather than silently comparing false forever and letting
-// every output through uncapped.
+// was supplied — DEFAULT_MAX_OUTPUT_BYTES applies. Any other value must be a
+// finite positive number: a non-numeric or degenerate cap (e.g. a string,
+// NaN, 0, negative) must fail loud rather than silently comparing false
+// forever and letting every output through uncapped.
 export function checkOutputSizes(outputs, maxBytes) {
-  if (maxBytes === undefined || maxBytes === null) return;
+  if (maxBytes === undefined || maxBytes === null) maxBytes = DEFAULT_MAX_OUTPUT_BYTES;
   if (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes <= 0) {
     throw new InvalidCapError(maxBytes);
   }

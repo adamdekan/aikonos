@@ -5,19 +5,49 @@
  * corpusRoot is captured from createApp closure — never re-read from env per call.
  */
 
-import express from 'express';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { listDocs, readDoc, searchDocs, CorpusError } from './corpus.js';
+import { listDocs, readDoc, searchDocs, CorpusError, MAX_QUERY_LENGTH } from './corpus.js';
+
+// Hostnames a request's Host header may name (port-agnostic). The server has
+// no auth and serves the docs corpus, so a browser on the operator's machine
+// must not reach it through DNS rebinding (attacker.example resolving to
+// 127.0.0.1): its Host header still says attacker.example. aikonos-docs-mcp
+// is the compose service name mesh callers dial.
+export const DEFAULT_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', 'aikonos-docs-mcp'];
+
+const LIST_PAGE_MAX = 200;
+
+function csv(value) {
+  return value ? value.split(',').map((v) => v.trim()).filter(Boolean) : undefined;
+}
+
+// MCP clients here are server-side (the broker); only a browser sends
+// Origin, so any Origin not explicitly allowed is refused.
+function originValidation(allowedOrigins) {
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !allowedOrigins.includes(origin)) {
+      process.stderr.write(`[docs-mcp] denied request with Origin ${JSON.stringify(origin)}\n`);
+      res.status(403).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Origin not allowed' }, id: null });
+      return;
+    }
+    next();
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Factory — exported so tests can mount on an ephemeral port.
 // ---------------------------------------------------------------------------
 
-export function createApp({ corpusRoot }) {
-  const app = express();
-  app.use(express.json());
+export function createApp({ corpusRoot, allowedHosts = DEFAULT_ALLOWED_HOSTS, allowedOrigins = [] }) {
+  // Host validation runs before the JSON body parser, so a rebinding request
+  // is refused (403) without its body being read.
+  const app = createMcpExpressApp({ allowedHosts });
+  app.disable('x-powered-by');
+  app.use(originValidation(allowedOrigins));
 
   // Health probe — Node socket connect in compose healthcheck (no curl in slim image).
   app.get('/healthz', (_req, res) => {
@@ -36,7 +66,7 @@ export function createApp({ corpusRoot }) {
           'Search aikonOS documentation by keyword. Returns ranked results with snippets. ' +
           'Use this to find docs relevant to a topic before reading them in full.',
         inputSchema: z.object({
-          query: z.string(),
+          query: z.string().max(MAX_QUERY_LENGTH),
           limit: z.number().int().min(1).max(20).optional(),
         }),
         annotations: { readOnlyHint: true },
@@ -62,13 +92,21 @@ export function createApp({ corpusRoot }) {
       {
         description:
           'List all Markdown documents available in the aikonOS documentation corpus. ' +
-          'Returns path and title for each file.',
-        inputSchema: z.object({}),
+          `Returns path and title for each file, at most ${LIST_PAGE_MAX} per call; ` +
+          'pass offset to page through a larger corpus.',
+        inputSchema: z.object({
+          offset: z.number().int().min(0).optional(),
+          limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional(),
+        }),
         annotations: { readOnlyHint: true },
       },
-      async () => {
+      async ({ offset = 0, limit = LIST_PAGE_MAX }) => {
         const docs = await listDocs(corpusRoot);
-        const text = docs.map((d) => `${d.path} — ${d.title}`).join('\n');
+        const page = docs.slice(offset, offset + limit);
+        let text = page.map((d) => `${d.path} — ${d.title}`).join('\n');
+        if (offset + limit < docs.length) {
+          text += `\n\n(${docs.length - offset - limit} more; call again with offset ${offset + limit})`;
+        }
         return { content: [{ type: 'text', text: text || 'No documents found.' }] };
       },
     );
@@ -138,8 +176,15 @@ export function createApp({ corpusRoot }) {
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const corpusRoot = process.env.CORPUS_ROOT ?? '/corpus';
   const port = parseInt(process.env.PORT ?? '8060', 10);
-  const app = createApp({ corpusRoot });
-  app.listen(port, () => {
-    process.stderr.write(`aikonos-docs-mcp listening on :${port} (corpus: ${corpusRoot})\n`);
+  // Loopback unless the deployment opts in (compose sets HOST=0.0.0.0 so
+  // mesh peers can dial aikonos-docs-mcp:8060).
+  const host = process.env.HOST || '127.0.0.1';
+  const app = createApp({
+    corpusRoot,
+    allowedHosts: csv(process.env.ALLOWED_HOSTS) ?? DEFAULT_ALLOWED_HOSTS,
+    allowedOrigins: csv(process.env.ALLOWED_ORIGINS) ?? [],
+  });
+  app.listen(port, host, () => {
+    process.stderr.write(`aikonos-docs-mcp listening on ${host}:${port} (corpus: ${corpusRoot})\n`);
   });
 }

@@ -55,6 +55,25 @@ function outputPart(filename, buffer) {
   return { name: 'file', filename, contentType: PDF_MIME, buffer };
 }
 
+// qpdf page-range syntax, allowlisted: n, rN (from the end), z (last page),
+// a-b ranges, an optional :even/:odd suffix, comma-separated. A caller value
+// reaches qpdf's argv, where a leading "@" is expanded as an argument file
+// (@input.pdf -> attacker-chosen qpdf options, e.g. --add-attachment of any
+// readable file) and a leading "-" is an option — neither can match.
+const PAGE = '(?:r?\\d+|z)';
+const PAGE_RANGE = `${PAGE}(?:-${PAGE})?(?::(?:even|odd))?`;
+const PAGE_RANGE_RE = new RegExp(`^${PAGE_RANGE}(?:,${PAGE_RANGE})*$`);
+const MAX_PAGE_RANGE_LENGTH = 256;
+// One qpdf run and one output part per range; matches pptx.thumbnail's page
+// cap so a response never carries more parts than the broker accepts.
+const MAX_SPLIT_RANGES = 50;
+
+function assertPageRange(value, paramName) {
+  if (typeof value !== 'string' || value.length > MAX_PAGE_RANGE_LENGTH || !PAGE_RANGE_RE.test(value)) {
+    throw new HandlerInputError(`${paramName} must be a qpdf page-range string (e.g. "1-2", "1,3,r1", "1-z:odd")`);
+  }
+}
+
 async function opMerge({ jobDir, files, params, spawn }) {
   if (!files.length) throw new HandlerInputError('pdf.transform "merge" requires one or more "file" parts');
   const outputFilename = params.output_filename || DEFAULT_OUTPUT;
@@ -80,14 +99,17 @@ async function opSplit({ jobDir, files, params, spawn }) {
   if (!Array.isArray(params.ranges) || params.ranges.length === 0) {
     throw new HandlerInputError('pdf.transform "split" requires a non-empty params.ranges array');
   }
+  if (params.ranges.length > MAX_SPLIT_RANGES) {
+    throw new HandlerInputError(`pdf.transform "split" accepts at most ${MAX_SPLIT_RANGES} ranges`);
+  }
+
+  // Validated up front, before qpdf runs for any range.
+  for (const [i, range] of params.ranges.entries()) assertPageRange(range?.pages, `params.ranges[${i}].pages`);
 
   const inputPath = await writeJobFile(jobDir, 'input.pdf', input.buffer);
   const outputs = [];
   const files_ = [];
   for (const [i, range] of params.ranges.entries()) {
-    if (typeof range.pages !== 'string' || !range.pages) {
-      throw new HandlerInputError(`params.ranges[${i}].pages must be a qpdf page-range string (e.g. "1-2")`);
-    }
     const outputFilename = range.output_filename || `split-${i + 1}.pdf`;
     const splitBasename = `split-${i}.pdf`;
     await runCommand({
@@ -116,6 +138,7 @@ async function opRotate({ jobDir, files, params, spawn }) {
     throw new HandlerInputError('params.angle must be one of 90, 180, 270, -90, -180, -270');
   }
   const pages = params.pages || '1-z';
+  assertPageRange(pages, 'params.pages');
   const outputFilename = params.output_filename || DEFAULT_OUTPUT;
 
   const inputPath = await writeJobFile(jobDir, 'input.pdf', input.buffer);
@@ -137,13 +160,20 @@ async function opDecrypt({ jobDir, files, params, spawn }) {
   if (typeof params.password !== 'string' || !params.password) {
     throw new HandlerInputError('params.password is required for pdf.transform "decrypt"');
   }
+  // qpdf reads only the first line of a password file.
+  if (/[\r\n]/.test(params.password)) {
+    throw new HandlerInputError('params.password must not contain a line break');
+  }
   const outputFilename = params.output_filename || DEFAULT_OUTPUT;
 
   const inputPath = await writeJobFile(jobDir, 'input.pdf', input.buffer);
+  // Via a file in the 0700 job dir, not argv: /proc/<pid>/cmdline is
+  // readable by every process in the container.
+  const passwordPath = await writeJobFile(jobDir, 'password.txt', params.password);
   await runCommand({
     spawn,
     cmd: QPDF_BIN,
-    args: [`--password=${params.password}`, '--decrypt', inputPath, join(jobDir, 'output.pdf')],
+    args: [`--password-file=${passwordPath}`, '--decrypt', inputPath, join(jobDir, 'output.pdf')],
     cwd: jobDir,
   });
 
