@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -533,6 +534,37 @@ func TestUpsertLlmProvider_StoredKeyNotRetargeted(t *testing.T) {
 	}
 	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p, ApiKey: "sk-new"}); err != nil {
 		t.Fatalf("new endpoint with a new key: %v", err)
+	}
+}
+
+// unreadableProviderStore fails every Get with a store error that is not
+// db.ErrProviderNotFound.
+type unreadableProviderStore struct{ *fakeLlmProviderStore }
+
+func (unreadableProviderStore) Get(context.Context, string, string) (db.Provider, error) {
+	return db.Provider{}, errors.New("postgres unreachable")
+}
+
+// TestUpsertLlmProvider_StoreReadErrorFailsClosed (M-14): a blank-key upsert
+// whose stored row cannot be read is Unavailable, never a new keyless
+// provider: has_key=false would hide a key that may still sit in Vault.
+func TestUpsertLlmProvider_StoreReadErrorFailsClosed(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	deps := testProviderDeps(t, srv.URL, nil)
+	store := unreadableProviderStore{newFakeLlmProviderStore()}
+	deps.Providers = store
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	p := validProvider()
+	p.Endpoint = "https://attacker.example/v1"
+	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("store read error: want Unavailable, got %v", err)
+	}
+	if len(store.upserts) != 0 {
+		t.Fatalf("an unverified row was written: %+v", store.upserts)
 	}
 }
 

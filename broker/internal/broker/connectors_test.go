@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"testing"
@@ -15,7 +16,10 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/connector"
 	"github.com/adamdekan/aikonos/broker/internal/connectorstore"
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
+	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -179,6 +183,73 @@ func TestCompleteConnectorAuth_UnknownStateRejected(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("want InvalidArgument for unknown state, got %v", err)
+	}
+}
+
+// fakeOrgSettingsStore is the Deps.OrgSettings double (Get only; Merge unused).
+type fakeOrgSettingsStore struct{ fakeOrgSettingsGetter }
+
+func (*fakeOrgSettingsStore) Merge(context.Context, string, map[string]any, string) (db.OrgSettings, error) {
+	return db.OrgSettings{}, errors.New("not used")
+}
+
+// onlyOneDriveAllowed is an A7 allowlist that excludes google_drive.
+func onlyOneDriveAllowed() db.OrgSettings {
+	on := true
+	return db.OrgSettings{ConnectorAllowlistEnabled: &on, ConnectorAllowlist: []string{string(connector.ProviderOneDrive)}}
+}
+
+// TestCompleteConnectorAuth_AllowlistNarrowedMidFlow (G5/G24): a flow begun
+// while google_drive was allowed does not complete once the admin drops it from
+// the org allowlist; the refusal is audited before any token exchange.
+func TestCompleteConnectorAuth_AllowlistNarrowedMidFlow(t *testing.T) {
+	deps := testConnectorDeps(t)
+	org := &fakeOrgSettingsStore{}
+	aud := &fakeInvokeAudit{}
+	deps.OrgSettings, deps.Audit = org, aud
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+	begin, err := svc.BeginConnectorAuth(ctx, &brokerv1.BeginConnectorAuthRequest{
+		UserId: "alice@example.com", Provider: brokerv1.ConnectorProvider_GOOGLE_DRIVE,
+	})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	org.settings = onlyOneDriveAllowed()
+	_, err = svc.CompleteConnectorAuth(ctx, &brokerv1.CompleteConnectorAuthRequest{
+		UserId: "alice@example.com", Code: "abc", State: begin.State,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	last := aud.events[len(aud.events)-1]
+	if last.EventType != "aikonos.broker.connector.denied" || last.Decision != auditv1.PolicyDecision_DENY {
+		t.Fatalf("want a connector.denied DENY audit, got %s %s", last.EventType, last.Decision)
+	}
+}
+
+// TestInvokeTool_ConnectorAllowlistAtTokenUse (G5/G24): a linked gdrive token
+// stops working once the org allowlist drops google_drive: the call is denied
+// and audited connector_not_permitted, and the tool never runs.
+func TestInvokeTool_ConnectorAllowlistAtTokenUse(t *testing.T) {
+	var got toolproxy.Request
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100}}
+	svc, m, aud := newMemorySvc(t, "gdrive.read", tasks, &got)
+	org := &fakeOrgSettingsStore{fakeOrgSettingsGetter{settings: onlyOneDriveAllowed()}}
+	svc.deps.OrgSettings = org
+	req := &brokerv1.InvokeToolRequest{
+		StepId: "1", TaskId: "task-1", ToolId: "gdrive.read", CapabilityToken: mintForScope(t, m, "gdrive:read"),
+		Args: memoryArgs(t, map[string]any{"file_id": "f1"}),
+	}
+
+	_, err := svc.InvokeTool(asGateway(context.Background()), req)
+	if status.Code(err) != codes.PermissionDenied || !memoryDeniedReason(aud, "connector_not_permitted") || got.ToolID != "" {
+		t.Fatalf("want a connector_not_permitted denial with no tool run, got %v (ran %q)", err, got.ToolID)
+	}
+	org.settings.ConnectorAllowlist = append(org.settings.ConnectorAllowlist, string(connector.ProviderGoogleDrive))
+	if _, err := svc.InvokeTool(asGateway(context.Background()), req); err != nil || got.ToolID != "gdrive.read" {
+		t.Fatalf("allowed connector: want the tool to run, got %v (ran %q)", err, got.ToolID)
 	}
 }
 

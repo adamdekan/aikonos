@@ -411,6 +411,44 @@ func TestTestLlmProvider_StoredKeyNotRetargeted(t *testing.T) {
 	}
 }
 
+// TestTestLlmProvider_KeylessRowNeverBorrowsVaultKey (M-14): a Vault key can
+// outlive its provider row (DeleteLlmProvider removes it best-effort), so a
+// re-created row with has_key=false at the same destination must not send it.
+// A row that cannot be read is Unavailable and sends nothing.
+func TestTestLlmProvider_KeylessRowNeverBorrowsVaultKey(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	deps := testProviderDeps(t, srv.URL, &storedKeySecrets{stored: "sk-orphaned"})
+	deps.AllowProviderTestPrivate = true
+	store := newFakeLlmProviderStore()
+	store.rows[testTenantUUID+"/openrouter"] = fakeLlmProviderRow{id: "openrouter", endpoint: upstream.URL, api: "openai-completions", hasKey: false}
+	deps.Providers = store
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	p := validProvider()
+	p.Endpoint = upstream.URL
+	resp, err := svc.TestLlmProvider(ctx, &brokerv1.TestLlmProviderRequest{Provider: p})
+	if err != nil || resp.Ok {
+		t.Errorf("keyless row: want a no-key result, got %+v %v", resp, err)
+	}
+	svc.deps.Providers = unreadableProviderStore{store}
+	if _, err := svc.TestLlmProvider(ctx, &brokerv1.TestLlmProviderRequest{Provider: p}); status.Code(err) != codes.Unavailable {
+		t.Errorf("store read error: want Unavailable, got %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("an orphaned Vault key reached the upstream %d times", hits)
+	}
+}
+
 // ── TestLlmProvider metering + budget gate ────────────────────────────────────
 
 // probeSvc wires a north service whose provider-test probe hits upstream, with

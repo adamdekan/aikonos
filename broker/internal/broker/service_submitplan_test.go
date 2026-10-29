@@ -9,6 +9,8 @@ package broker
 import (
 	"context"
 	"fmt"
+	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -649,6 +651,23 @@ func TestSubmitPlan_StepCap(t *testing.T) {
 	}
 	if pol.actor != "" || len(taskStore.transitions) != 0 {
 		t.Fatalf("an oversized plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
+	}
+}
+
+// TestArgsHash_NonFiniteNumbersStillBind (H-03): claimPlanStep lets a call
+// with no args claim a step stored with args_hash "", so non-empty args must
+// never hash to "". structpb encodes NaN/±Inf as strings, so json.Marshal in
+// argsHash cannot fail; this pins it against a protobuf upgrade.
+func TestArgsHash_NonFiniteNumbersStillBind(t *testing.T) {
+	noArgs := []string{"", argsHash(&structpb.Struct{})}
+	for _, n := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		args, err := structpb.NewStruct(map[string]any{"path": "x", "n": n, "nested": map[string]any{"n": n}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := argsHash(args); slices.Contains(noArgs, h) {
+			t.Fatalf("args with %v hash to %q, which a call with no args can claim", n, h)
+		}
 	}
 }
 
