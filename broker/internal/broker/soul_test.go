@@ -637,7 +637,7 @@ func TestSetAgentSoul_HappyPathEmitsAudit(t *testing.T) {
 func TestSetAgentSoul_StoreErrorNoAudit(t *testing.T) {
 	// Gate passes (admin), but SetSoul fails at the store → handler returns
 	// Internal and MUST NOT emit an audit event (emit only on success).
-	store := &fakeAgentStore{setSoulErr: errors.New("db down")}
+	store := &fakeAgentStore{setSoulErr: errors.New(`ERROR: violates constraint "agents_pkey" (postgres://db:5432)`)}
 	store.agents = []*db.Agent{makeSoulAgent(t)}
 	fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
 	rec := &recordingEmitter{}
@@ -652,6 +652,10 @@ func TestSetAgentSoul_StoreErrorNoAudit(t *testing.T) {
 	})
 	if code := status.Code(err); code != codes.Internal {
 		t.Errorf("want Internal on store error, got %v", code)
+	}
+	// F180: the backend's text (constraint names, hosts) stays in the log.
+	if msg := status.Convert(err).Message(); strings.Contains(msg, "postgres") || strings.Contains(msg, "agents_pkey") {
+		t.Errorf("backend error reflected to the caller: %q", msg)
 	}
 	if rec.count() != 0 {
 		t.Errorf("audit must NOT emit on store error, got %d events", rec.count())
