@@ -95,7 +95,9 @@ export async function callEmbeddingProvider(opts: CallEmbeddingProviderOptions):
   try {
     let response: Response;
     try {
-      response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+      // G3: redirect "error" — a 3xx would re-send the api-key / x-api-key
+      // header (undici strips only authorization) and the body to another host.
+      response = await fetch(url, { method: "POST", headers, body, signal: controller.signal, redirect: "error" });
     } catch {
       // Never interpolate the caught error into the message: some transport
       // errors echo back request details that could include the key.

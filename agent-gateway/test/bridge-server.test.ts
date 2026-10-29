@@ -32,6 +32,7 @@ import type {
   SpawnSubagentsRequest,
   SpawnSubagentsResult,
 } from "../src/ipc/protocol.js";
+import { TOOL_NAMES } from "../src/pi/tools.js";
 import { RemoteBridgeServer } from "../src/ipc/bridge-server.js";
 import type { BridgeLike } from "../src/ipc/bridge-server.js";
 
@@ -128,7 +129,9 @@ function makeWiredPair(bridge: BridgeLike): { server: RemoteBridgeServer; child:
   const [parentSide, childSide] = makePairedChannel();
   const parentLink = new ParentLink(parentSide);
   // Factory always returns the same spy bridge regardless of per-run identity.
-  const server = new RemoteBridgeServer(parentLink, (_identity, _approver) => bridge);
+  // F207: the membership backstop fails closed on an empty set, so the harness
+  // stores the full tool list the way a real plan would.
+  const server = new RemoteBridgeServer(parentLink, (_identity, _approver) => bridge, TOOL_NAMES);
   // Pre-seed a run context so test requests with TEST_RUN_ID are serviced.
   server.setRunContext(TEST_RUN_ID, {
     tenantId: "t1", userId: "u1", agentId: "a1",
@@ -173,7 +176,9 @@ test("CP2 gate: a gate request is routed to the bound bridge with the correct fi
   assert.equal(call.toolCallId, "tc-gate-1");
   assert.equal(call.toolName, "web_fetch");
   assert.deepEqual(call.input, { url: "https://example.com" });
-  assert.deepEqual(call.opts, { readOnlyHint: true });
+  // F68: the child's readOnlyHint is never forwarded — the parent-side name
+  // heuristic decides the declared effect class.
+  assert.equal(call.opts, undefined, "a child-chosen readOnlyHint must not reach the bridge");
 });
 
 test("CP2 gate: SECURITY — a message with injected owner/userId fields does not affect the bound bridge identity", async () => {
@@ -188,9 +193,9 @@ test("CP2 gate: SECURITY — a message with injected owner/userId fields does no
   // in the message and the parent-side bridge uses it to act on their behalf.
   //
   // How we prove it non-vacuously: gateRawArgs captures the *entire* args list
-  // passed to bridge.gate(). We assert exactly 4 args arrived. A server that
-  // did `bridge.gate(toolCallId, toolName, input, opts, msg.userId)` would pass
-  // 5 args — this assertion catches that. We also verify none of the 4 args
+  // passed to bridge.gate(). We assert exactly 3 args arrived. A server that
+  // did `bridge.gate(toolCallId, toolName, input, msg.userId)` would pass
+  // 4 args — this assertion catches that. We also verify none of the 3 args
   // equals or contains a forged identity value.
   const spy = makeSpyBridge();
   const { child } = makeWiredPair(spy);
@@ -231,16 +236,15 @@ test("CP2 gate: SECURITY — a message with injected owner/userId fields does no
   const rawArgs = spy.gateRawArgs[0];
   assert.ok(rawArgs, "raw args must be recorded");
 
-  // CRITICAL: exactly 4 positional args — no identity field was passed as a 5th arg.
-  // A server that did bridge.gate(toolCallId, toolName, input, opts, msg.userId)
-  // would fail this assertion.
-  assert.equal(rawArgs.length, 4, `bridge.gate must receive exactly 4 args, got ${rawArgs.length}`);
+  // CRITICAL: exactly 3 positional args — no identity field (and, F68, no
+  // child-chosen opts) was passed. A server that did
+  // bridge.gate(toolCallId, toolName, input, msg.userId) would fail this assertion.
+  assert.equal(rawArgs.length, 3, `bridge.gate must receive exactly 3 args, got ${rawArgs.length}`);
 
   // Verify the 4 args are the correct tool-call fields (not forged identity).
   assert.equal(rawArgs[0], "tc-forged", "arg[0] must be toolCallId");
   assert.equal(rawArgs[1], "web_fetch", "arg[1] must be toolName");
   assert.deepEqual(rawArgs[2], { url: "https://evil.example.com" }, "arg[2] must be input");
-  assert.equal(rawArgs[3], undefined, "arg[3] must be opts (undefined — not a forged value)");
 
   // None of the args contains a forged identity value.
   const serialised = JSON.stringify(rawArgs);
@@ -404,7 +408,9 @@ test("CP5 analyze-image: bridge.analyzeImage that THROWS → clean analyze-image
   );
 
   assert.equal(reply.ok, false);
-  assert.match(reply.error ?? "", /no vision provider assigned/);
+  // F66: an unexpected throw is trimmed the way HTTP routes trim it — the
+  // raw text (broker hosts, SQL, policy detail) never reaches the model.
+  assert.equal(reply.error, "internal error");
   assert.equal(reply.seq, seq);
 });
 
@@ -447,7 +453,7 @@ test("CP4 get-skill-body: bridge.getSkillBody that THROWS → clean get-skill-bo
   );
 
   assert.equal(reply.ok, false);
-  assert.match(reply.error ?? "", /NotFound/);
+  assert.equal(reply.error, "internal error", "F66: an unexpected throw is trimmed");
   assert.equal(reply.seq, seq);
 });
 
@@ -520,7 +526,7 @@ test("CP3 get-skill-file: bridge.getSkillFile that THROWS → clean get-skill-fi
   );
 
   assert.equal(reply.ok, false);
-  assert.match(reply.error ?? "", /NotFound/);
+  assert.equal(reply.error, "internal error", "F66: an unexpected throw is trimmed");
   assert.equal(reply.seq, seq);
 });
 
@@ -571,10 +577,7 @@ test("CP2 execute: bridge.execute that THROWS → clean execute-result {ok:false
   process.off("unhandledRejection", unhandledHandler);
 
   assert.equal(reply.ok, false);
-  assert.ok(
-    reply.error?.includes("unexpected broker RPC failure"),
-    `error must contain the thrown message, got: ${reply.error}`,
-  );
+  assert.equal(reply.error, "internal error", "F66: an unexpected throw is trimmed, not echoed");
   assert.equal(reply.seq, seq);
   assert.equal(unhandledFired, false, "bridge throw must not produce an unhandled rejection");
 });
@@ -644,10 +647,7 @@ test("CP2 delegate: bridge.delegate that THROWS → clean delegate-result {ok:fa
   process.off("unhandledRejection", unhandledHandler);
 
   assert.equal(reply.ok, false);
-  assert.ok(
-    reply.error?.includes("SendEnvelope RPC timeout"),
-    `error must contain thrown message, got: ${reply.error}`,
-  );
+  assert.equal(reply.error, "internal error", "F66: an unexpected throw is trimmed, not echoed");
   assert.equal(reply.seq, seq);
   assert.equal(unhandledFired, false, "bridge throw must not produce an unhandled rejection");
 });
@@ -684,10 +684,7 @@ test("CP2 gate: bridge.gate that THROWS → clean gate-result {allow:false, reas
   process.off("unhandledRejection", unhandledHandler);
 
   assert.equal(reply.allow, false);
-  assert.ok(
-    reply.reason?.includes("SubmitPlan RPC failed"),
-    `reason must contain thrown message, got: ${reply.reason}`,
-  );
+  assert.equal(reply.reason, "internal error", "F66: an unexpected throw is trimmed, not echoed");
   assert.equal(reply.seq, seq);
   assert.equal(unhandledFired, false, "bridge throw must not produce an unhandled rejection");
 });
@@ -792,7 +789,9 @@ test("CP5 spawn-subagents: bridge.spawnSubagents that THROWS → clean spawn-sub
   );
 
   assert.equal(reply.ok, false);
-  assert.match(reply.error ?? "", /spend cap breached/);
+  // F66: an unexpected throw is trimmed the way HTTP routes trim it — the
+  // raw text (broker hosts, SQL, policy detail) never reaches the model.
+  assert.equal(reply.error, "internal error");
   assert.equal(reply.seq, seq);
 });
 
@@ -817,4 +816,52 @@ test("CP5 spawn-subagents: a bridge with no spawnSubagents method (predates this
 
   assert.equal(reply.ok, false);
   assert.match(reply.error ?? "", /not supported/);
+});
+
+test("F53 field validation: a request with a wrong-typed or oversized field gets a failure reply and never reaches the bridge", async () => {
+  // WHY: the child's messages are only JSON-shaped; the request types are what a
+  // well-behaved child sends. A malformed field must be refused at the boundary.
+  const spy = makeSpyBridge();
+  const { child } = makeWiredPair(spy);
+  const replies: GateResult[] = [];
+  child.on("gate-result", (r) => replies.push(r));
+  const execReplies: ExecuteResult[] = [];
+  child.on("execute-result", (r) => execReplies.push(r));
+
+  child.send({ kind: "gate", seq: 1, runId: TEST_RUN_ID, toolCallId: 42, toolName: "web_fetch", input: {} });
+  child.send({ kind: "gate", seq: 2, runId: TEST_RUN_ID, toolCallId: "t", toolName: "web_fetch", input: "not-an-object" });
+  child.send({ kind: "gate", seq: 3, runId: TEST_RUN_ID, toolCallId: "x".repeat(10_000), toolName: "web_fetch", input: {} });
+  child.send({ kind: "execute", seq: 4, runId: { evil: true }, toolCallId: "t" });
+  child.send({ kind: "execute", seq: "5", runId: TEST_RUN_ID, toolCallId: "t" }); // no safe-integer seq: dropped
+  await flushAsync();
+
+  assert.deepEqual(replies.map((r) => [r.seq, r.allow, r.reason]), [
+    [1, false, "malformed request"],
+    [2, false, "malformed request"],
+    [3, false, "malformed request"],
+  ]);
+  assert.deepEqual(execReplies.map((r) => [r.seq, r.ok, r.error]), [[4, false, "malformed request"]]);
+  assert.equal(spy.gateCalls.length + spy.executeCalls.length, 0, "no malformed request reaches the bridge");
+});
+
+test("F66 error text: a gRPC infra error string in a bridge result is trimmed before it reaches the child", async () => {
+  // WHY: GovernanceBridge returns String(err) in its {ok:false, error} results,
+  // and that text lands in the model's context and the chat.
+  const spy = makeSpyBridge();
+  spy.onDelegate = async () => ({ ok: false, error: "Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090" });
+  const { child } = makeWiredPair(spy);
+  const infra = await withTimeout(
+    child.request<DelegateResult>({ kind: "delegate", seq: makeSeq()(), runId: TEST_RUN_ID, to: "a2", intent: "x" }, "delegate-result"),
+    500,
+    "delegate infra error",
+  );
+  assert.equal(infra.error, "upstream unavailable");
+
+  spy.onDelegate = async () => ({ ok: false, error: "Error: 7 PERMISSION_DENIED: no can_delegate grant" });
+  const caller = await withTimeout(
+    child.request<DelegateResult>({ kind: "delegate", seq: makeSeq()(), runId: TEST_RUN_ID, to: "a2", intent: "x" }, "delegate-result"),
+    500,
+    "delegate caller error",
+  );
+  assert.equal(caller.error, "no can_delegate grant", "a caller-class detail still reaches the model");
 });

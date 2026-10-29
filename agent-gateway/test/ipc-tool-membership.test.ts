@@ -280,26 +280,25 @@ test("CP2 membership: a gate for a tool that IS in the stored set passes through
   assert.equal(spy.gateCalls[0]?.toolName, "spawn_subagents", "the toolName must arrive unchanged");
 });
 
-// ── 3. Fail-open on an empty stored set ───────────────────────────────────────
+// ── 3. Fail-closed on an empty stored set ─────────────────────────────────────
 
-test("CP2 membership: an empty stored set allows every tool name (deliberate fail-open backstop)", async () => {
-  // WHY pinned: sessions that legitimately build no full plan — test harnesses,
-  // and any spawn path that constructs a bridge server without one — must not
-  // break. This check is defence-in-depth against a compromised child, not the
-  // primary authorization gate; that stays FGA/OPA/Biscuit at the broker, which
-  // still runs for every one of these calls.
+test("F207 membership: an empty stored set refuses every tool name (fail closed)", async () => {
+  // WHY: a session whose plan offers no tools (no grants, or a listUserSkills
+  // failure) must not reach the gate-then-bridge-direct ops — analyze_image
+  // and spawn_subagents have no prior gate decision, so this set is all that
+  // stands before them. Harnesses that build no plan pass their own list.
   const spy = makeSpyBridge();
-  const { child } = makeWiredPair(spy); // no stored set at all
+  const { child } = makeWiredPair(spy, []);
 
   for (const name of ["spawn_subagents", "doc_write", "anything_at_all"]) {
     const reply = await withTimeout(
       child.request<GateResult>(gateReq(makeSeq()(), name), "gate-result"),
       500,
-      `fail-open gate ${name}`,
+      `fail-closed gate ${name}`,
     );
-    assert.equal(reply.allow, true, `${name} must pass through when no set is stored`);
+    assert.equal(reply.allow, false, `${name} must be refused when no set is stored`);
   }
-  assert.equal(spy.gateCalls.length, 3, "every call must reach the bridge");
+  assert.equal(spy.gateCalls.length, 0, "no call may reach the bridge");
 });
 
 // ── 4. A branch child's stored set omits spawn_subagents ──────────────────────

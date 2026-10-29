@@ -569,6 +569,40 @@ test("CP1 unknown kind on ChildLink: same graceful handling in the child directi
   assert.equal(warnings.length, 1);
 });
 
+test("F53 malformed message: a non-object, null or kindless message is dropped without crashing the parent", async () => {
+  // WHY: a compromised child can process.send any JSON value. `"seq" in msg`
+  // on a string or null throws inside the 'message' listener — an uncaught
+  // exception that kills the parent and every user's runs.
+  const [parentSide, childSide] = makePairedChannel();
+  const parentLink = new ParentLink(parentSide);
+  const unknown: unknown[] = [];
+  parentLink.onUnknownKind((msg) => unknown.push(msg));
+  let gates = 0;
+  parentLink.on("gate", () => { gates++; });
+
+  for (const bad of ["x", null, 5, true, [], {}, { kind: 7 }]) childSide.send(bad);
+  childSide.send({ kind: "gate", seq: 1, runId: "r", toolCallId: "t", toolName: "web_fetch", input: {} });
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(unknown.length, 0, "malformed messages are dropped before kind routing");
+  assert.equal(gates, 1, "the link still serves well-formed messages afterwards");
+});
+
+test("F53 handler failure: a throwing or rejecting handler is contained to its message", async () => {
+  const [parentSide, childSide] = makePairedChannel();
+  const parentLink = new ParentLink(parentSide);
+  let after = 0;
+  parentLink.on("gate", () => { throw new TypeError("bad field"); });
+  parentLink.on("gate", (async () => { throw new TypeError("bad async field"); }) as unknown as () => void);
+  parentLink.on("execute", () => { after++; });
+
+  childSide.send({ kind: "gate", seq: 1, toolCallId: "t", toolName: "web_fetch", input: {} });
+  childSide.send({ kind: "execute", seq: 2, toolCallId: "t" });
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(after, 1, "a later message is still dispatched");
+});
+
 // ── dispatch routing ───────────────────────────────────────────────────────────
 
 test("CP1 dispatch: a message routes only to the handler registered for its kind", async () => {

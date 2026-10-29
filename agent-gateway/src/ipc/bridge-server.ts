@@ -23,12 +23,49 @@ import type { ParentLink } from "./protocol.js";
 import type { IpcMessage, GateResult, ExecuteResult, DelegateResult, SaveWorkflowResult, RunWorkflowResult, ListWorkflowsResult, PublishWorkflowResult, ProposeWorkflowResult, AnalyzeImageResult, ScheduleWorkflowResult, ScheduleRecurrence, GetSkillBodyResult, GetSkillFileResult, SpawnSubagentsResult, SpawnSubagentsBranch, SpawnSubagentsBranchResult } from "./protocol.js";
 import type { Approver, Identity } from "../broker/governance.js";
 import type { SubagentEventSink } from "../subagent/run.js";
+import { trimmedErrorMessage, trimmedErrorText } from "../http-errors.js";
 
 // okFalseError is the shared failure-reply shape for the 7 ops whose result is
 // a plain {ok, error} pair on failure. Only gate (allow/reason) and execute
 // (output:null) need a bespoke failureReply — see the registrations below.
 function okFalseError(error: string): { ok: false; error: string } {
   return { ok: false, error };
+}
+
+// ── Per-op field validators (F53) ─────────────────────────────────────────────
+//
+// The child is untrusted and its messages are only JSON-shaped, not typed: the
+// TypeScript request types are what a well-behaved child sends, nothing more.
+// Each registration below checks the fields it forwards before any bridge
+// call, so a wrong type or an oversized value is refused with a failure reply
+// instead of reaching the bridge.
+const MAX_ID_CHARS = 256; // runId, toolCallId, toolName, lineageId, name, ref, group ids
+const MAX_PATH_CHARS = 4096;
+const MAX_TEXT_CHARS = 64 * 1024; // intent, prompt, aggregator instruction, branch task
+const MAX_LIST_ITEMS = 100;
+
+function isStr(v: unknown, max: number): v is string {
+  return typeof v === "string" && v.length <= max;
+}
+
+function isOptStr(v: unknown, max: number): boolean {
+  return v === undefined || isStr(v, max);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isStrList(v: unknown, max: number): v is string[] {
+  return Array.isArray(v) && v.length <= MAX_LIST_ITEMS && v.every((x) => isStr(x, max));
+}
+
+function isBranchList(v: unknown): boolean {
+  return (
+    Array.isArray(v) &&
+    v.length <= MAX_LIST_ITEMS &&
+    v.every((b) => isPlainObject(b) && isStr(b.task, MAX_TEXT_CHARS) && isOptStr(b.role, MAX_ID_CHARS))
+  );
 }
 
 // RunIdentity is the per-run identity the parent binds when calling setRunContext.
@@ -169,7 +206,7 @@ export class RemoteBridgeServer {
     private readonly makeBridge: BridgeFactory,
     // The session plan's allowedToolNames, stored at fork time (supervisor.ts's
     // forkChild). Checked by dispatch for EVERY op that corresponds to a Pi tool
-    // — see toolAllowed below for the fail-open rationale.
+    // — see toolAllowed below (fail closed on an empty set).
     private readonly allowedToolNames: readonly string[] = [],
   ) {
     // Per-op table: each registration supplies (kind, field extraction,
@@ -177,11 +214,16 @@ export class RemoteBridgeServer {
     // dispatch() method below, which owns the shared bridge-lookup / fail-closed
     // / withPending / reply-send logic that used to be duplicated 9 times.
     this.link.on("gate", (msg) => {
-      const { seq, runId, toolCallId, toolName, input, opts } = msg;
+      // F68: the child's opts.readOnlyHint is NOT forwarded. A child-chosen hint
+      // would let the plan-declared effect class (and so the approval card and
+      // the OPA input) claim READ_ONLY for a destructive MCP tool; without it
+      // mapTool falls back to its parent-side name heuristic (fail closed).
+      const { seq, runId, toolCallId, toolName, input } = msg;
       this.dispatch<GateResult>(seq, runId, "gate-result",
-        (bridge) => bridge.gate(toolCallId, toolName, input, opts),
+        (bridge) => bridge.gate(toolCallId, toolName, input),
         (reason) => ({ allow: false, reason }),
         toolName,
+        isStr(toolCallId, MAX_ID_CHARS) && isStr(toolName, MAX_ID_CHARS) && isPlainObject(input),
       );
     });
     this.link.on("execute", (msg) => {
@@ -189,6 +231,8 @@ export class RemoteBridgeServer {
       this.dispatch<ExecuteResult>(seq, runId, "execute-result",
         (bridge) => bridge.execute(toolCallId),
         (error) => ({ ok: false, output: null, error }),
+        undefined,
+        isStr(toolCallId, MAX_ID_CHARS),
       );
     });
     this.link.on("delegate", (msg) => {
@@ -197,6 +241,7 @@ export class RemoteBridgeServer {
         (bridge) => bridge.delegate(to, intent, scopes),
         okFalseError,
         "delegate",
+        isStr(to, MAX_ID_CHARS) && isStr(intent, MAX_TEXT_CHARS) && (scopes === undefined || isStrList(scopes, MAX_ID_CHARS)),
       );
     });
     this.link.on("save-workflow", (msg) => {
@@ -205,6 +250,7 @@ export class RemoteBridgeServer {
         (bridge) => bridge.saveWorkflow(def),
         okFalseError,
         "workflow_save",
+        isPlainObject(def),
       );
     });
     this.link.on("run-workflow", (msg) => {
@@ -213,6 +259,7 @@ export class RemoteBridgeServer {
         (bridge) => bridge.runWorkflow(lineageId, inputs),
         okFalseError,
         "workflow_run",
+        isStr(lineageId, MAX_ID_CHARS) && isPlainObject(inputs),
       );
     });
     this.link.on("list-workflows", (msg) => {
@@ -229,6 +276,8 @@ export class RemoteBridgeServer {
         (bridge) => bridge.publishWorkflow(lineageId, groupIds, version),
         okFalseError,
         "workflow_publish",
+        isStr(lineageId, MAX_ID_CHARS) && isStrList(groupIds, MAX_ID_CHARS) &&
+          (version === undefined || Number.isSafeInteger(version)),
       );
     });
     this.link.on("propose-workflow", (msg) => {
@@ -237,6 +286,7 @@ export class RemoteBridgeServer {
         (bridge) => bridge.proposeWorkflow(lineageId, def),
         okFalseError,
         "workflow_propose",
+        isStr(lineageId, MAX_ID_CHARS) && isPlainObject(def),
       );
     });
     this.link.on("analyze-image", (msg) => {
@@ -250,6 +300,7 @@ export class RemoteBridgeServer {
         // literal a child holding neither skill:vision nor a workspace-read
         // grant has an FGA-free read primitive plus an unbounded spend channel.
         "analyze_image",
+        isStr(path, MAX_PATH_CHARS) && isOptStr(prompt, MAX_TEXT_CHARS),
       );
     });
     this.link.on("schedule-workflow", (msg) => {
@@ -258,6 +309,7 @@ export class RemoteBridgeServer {
         (bridge) => bridge.scheduleWorkflow(lineageId, inputs, recurrence),
         okFalseError,
         "workflow_schedule",
+        isStr(lineageId, MAX_ID_CHARS) && isPlainObject(inputs) && isPlainObject(recurrence),
       );
     });
     this.link.on("get-skill-body", (msg) => {
@@ -269,6 +321,8 @@ export class RemoteBridgeServer {
           ? bridge.getSkillBody(name)
           : Promise.resolve(okFalseError("getSkillBody not supported by this bridge")),
         okFalseError,
+        undefined,
+        isStr(name, MAX_ID_CHARS),
       );
     });
     this.link.on("get-skill-file", (msg) => {
@@ -278,6 +332,8 @@ export class RemoteBridgeServer {
           ? bridge.getSkillFile(ref, path)
           : Promise.resolve(okFalseError("getSkillFile not supported by this bridge")),
         okFalseError,
+        undefined,
+        isStr(ref, MAX_ID_CHARS) && isStr(path, MAX_PATH_CHARS),
       );
     });
     this.link.on("spawn-subagents", (msg) => {
@@ -291,6 +347,7 @@ export class RemoteBridgeServer {
         // tool executing bridge-direct. Naming it here is what stops a child
         // from skipping the gate round-trip to evade the membership check.
         "spawn_subagents",
+        isBranchList(branches) && isStr(aggregatorInstruction, MAX_TEXT_CHARS),
       );
     });
   }
@@ -339,14 +396,13 @@ export class RemoteBridgeServer {
   // can_invoke, skill:subagents) passes at depth 1 exactly as at depth 0, and
   // unbounded recursive fan-out follows.
   //
-  // FAIL-OPEN on an empty set, deliberately: this is defence-in-depth against a
-  // compromised child, NOT the primary authorization gate — that remains
-  // FGA/OPA/Biscuit at the broker, which still runs for every call that gets
-  // through here. Sessions that legitimately build no full plan (test harnesses,
-  // any spawn path constructing a bridge server without one) must keep working;
-  // failing closed on an absent set would break them for no security gain.
+  // FAIL-CLOSED on an empty set (F207): a session whose plan offers no tools
+  // (no skill grants, or a listUserSkills failure) must not reach the
+  // gate-then-bridge-direct ops — analyze_image and spawn_subagents run with
+  // no prior gate decision, so this membership test is all that stands before
+  // them. A bridge server built without a plan (test harnesses) passes its
+  // own list.
   private toolAllowed(toolName: string): boolean {
-    if (this.allowedToolNames.length === 0) return true;
     return this.allowedToolNames.includes(toolName);
   }
 
@@ -379,6 +435,10 @@ export class RemoteBridgeServer {
   // so a bridge-method invocation can only use the fields the caller's closure
   // explicitly destructured above. This preserves the "no identity field is
   // ever forwarded" invariant exactly as the former per-op methods did.
+  //
+  // fieldsOk is the op's own validator result (F53). A message whose seq is
+  // not a safe integer cannot be replied to and is dropped; one with a bad
+  // runId or field gets a failure reply and never reaches the bridge.
   private dispatch<R extends IpcMessage>(
     seq: number,
     runId: string,
@@ -386,8 +446,15 @@ export class RemoteBridgeServer {
     call: (bridge: BridgeLike) => Promise<Omit<R, "kind" | "seq">>,
     failureReply: (message: string) => Omit<R, "kind" | "seq">,
     toolName?: string,
+    fieldsOk = true,
   ): void {
     if (this.disposed) return;
+    if (!Number.isSafeInteger(seq)) return;
+
+    if (!fieldsOk || !isStr(runId, MAX_ID_CHARS)) {
+      this.link.send({ kind: replyKind, seq, ...failureReply("malformed request") });
+      return;
+    }
 
     if (toolName !== undefined && !this.toolAllowed(toolName)) {
       this.link.send({
@@ -406,13 +473,20 @@ export class RemoteBridgeServer {
       return;
     }
 
-    this.withPending(seq, call(bridge)).then(
+    // F66: error text reaches the model and the chat, so a gRPC infra error
+    // (broker hosts, SQL or policy text) is trimmed the way HTTP routes trim it.
+    // Bridge results carry it pre-flattened by String(err), hence the text form.
+    // Promise.resolve().then also turns a synchronous throw in call() into a
+    // rejection, so it gets a failure reply like any other.
+    this.withPending(seq, Promise.resolve().then(() => call(bridge))).then(
       (result) => {
-        this.link.send({ kind: replyKind, seq, ...result });
+        const r = result as { error?: unknown };
+        const safe = typeof r.error === "string" ? { ...result, error: trimmedErrorText(r.error) } : result;
+        this.link.send({ kind: replyKind, seq, ...safe });
       },
       (err: unknown) => {
         if (this.disposed) return; // child gone; nothing to reply to
-        this.link.send({ kind: replyKind, seq, ...failureReply(String(err)) });
+        this.link.send({ kind: replyKind, seq, ...failureReply(trimmedErrorMessage(err)) });
       },
     );
   }

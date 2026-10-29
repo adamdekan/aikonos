@@ -228,6 +228,21 @@ test("CP4 resolveSessionPlan: allowedToolNames reflects the user skill list from
   assert.ok(!plan.allowedToolNames.includes("email_draft"), "email_draft must not be in allowedToolNames");
 });
 
+test("F207 resolveSessionPlan: a ListUserSkills failure offers no registry tools (fail closed, not all tools)", async () => {
+  // WHY: an FGA outage must not widen the tool set — the next idle plan
+  // re-check restores the granted tools once the RPC succeeds again.
+  const south = {
+    ...makeSouth(),
+    listUserSkills: async () => {
+      throw new Error("14 UNAVAILABLE: fga down");
+    },
+  };
+  const plan = await resolveSessionPlan(TEST_IDENTITY, { south, cfg: BASE_CFG });
+  for (const name of ["web_fetch", "doc_write", "email_draft", "analyze_image", "spawn_subagents"]) {
+    assert.ok(!plan.allowedToolNames.includes(name), `${name} must not be offered when the grant list is unknown`);
+  }
+});
+
 test("resolveSessionPlan: agent-bound (agentSpec set) gates tools by agent.Skills, NOT ListUserSkills", async () => {
   // WHY: for agent-bound runs (external invoke) the agent's own configured skills
   // are authoritative — matching the broker's SubmitPlan enforcement. The service

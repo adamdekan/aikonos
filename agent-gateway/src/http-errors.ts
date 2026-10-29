@@ -100,6 +100,17 @@ export function trimmedErrorMessage(err: unknown): string {
       : "internal error";
 }
 
+// trimmedErrorText is trimmedErrorMessage for an error already flattened with
+// String(err) — the `error` field of a GovernanceBridge result, which reaches
+// the child (and so the model and the chat) over IPC. A gRPC-shaped string
+// ("Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090") gets the same
+// caller-class/infra-class treatment; any other text is gateway-authored and
+// passes through so the model can still act on it (F66).
+export function trimmedErrorText(text: string): string {
+  const m = /^(?:[A-Za-z]*Error: )?(\d+) [A-Z_]+: ([\s\S]*)$/.exec(text);
+  return m ? trimmedErrorMessage({ code: Number(m[1]), details: m[2] }) : text;
+}
+
 // AG-13: the broker refuses a yes on a step-up approval without a recent
 // multi-factor sign-in with PERMISSION_DENIED "step_up_required", and names the
 // tenant's acr (if any) in a trailer for the web UI's re-authentication.
