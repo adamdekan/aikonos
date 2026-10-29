@@ -113,7 +113,7 @@ func (s *SandboxService) GetPersonalSkillSouth(ctx context.Context, req *brokerv
 	}
 
 	// G17: refuse an over-cap SKILL.md from its listed size, without reading it.
-	if n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, personalskill.SkillMdPath(name)); ok && n > personalskill.MaxSkillMdBytes {
+	if n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, personalskill.SkillMdPath(name)); !ok || n > personalskill.MaxSkillMdBytes {
 		return nil, notFound
 	}
 	data, _, err := s.deps.Workspace.Local.Read(ctx, tenant, user, personalskill.SkillMdPath(name))
@@ -177,8 +177,13 @@ func (s *SandboxService) GetPersonalSkillFileSouth(ctx context.Context, req *bro
 			"file %q is %d bytes, exceeds the %d byte cap", relPath, n, personalskill.MaxSkillFileBytes)
 	}
 	filePath := personalskill.SkillDir(name) + "/" + relPath
-	// G17: an over-cap file is refused from its listed size, never read.
-	if n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, filePath); ok && n > personalskill.MaxSkillFileBytes {
+	// G17: an over-cap file is refused from its listed size, never read; an
+	// unlisted one (absent, or past a truncated listing) is not read either.
+	n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, filePath)
+	if !ok {
+		return nil, notFound
+	}
+	if n > personalskill.MaxSkillFileBytes {
 		return nil, tooBig(n)
 	}
 	data, _, err := s.deps.Workspace.Local.Read(ctx, tenant, user, filePath)

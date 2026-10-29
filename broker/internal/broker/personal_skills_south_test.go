@@ -8,6 +8,9 @@ package broker
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/personalskill"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/workspacefs"
+	"github.com/adamdekan/aikonos/broker/internal/workspacepath"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -493,5 +497,51 @@ func TestPersonalSkillSouth_OversizeNotRead(t *testing.T) {
 	}
 	if be.reads != 0 {
 		t.Fatalf("over-cap files were read %d times", be.reads)
+	}
+}
+
+// G17: a skill dir with more than workspacefs.MaxListEntries entries sorting
+// before SKILL.md truncates the size listing; the scan and both single-skill
+// reads must then refuse unread, not fall back to buffering the file.
+func TestPersonalSkillSouth_TruncatedListingNotRead(t *testing.T) {
+	root := t.TempDir()
+	deps := personalSkillsDeps(t, pskGrantedFGA(t), root)
+	// The list cap is max(MaxListEntries, entry quota) (p3b); with the entry
+	// quota off it is MaxListEntries, so the filler below truncates the listing.
+	deps.Workspace.Local.(*workspacefs.Store).SetQuota(workspacefs.DefaultQuotaBytes, 0)
+	ctx := context.Background()
+	if _, err := deps.Workspace.Local.Write(ctx, testTenantUUID, pskUser, "Skills/big/SKILL.md", make([]byte, personalskill.MaxSkillMdBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Workspace.Local.Write(ctx, testTenantUUID, pskUser, "Skills/big/Z.bin", make([]byte, personalskill.MaxSkillFileBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(workspacepath.Dir(root, testTenantUUID, pskUser), "Skills", "big")
+	for i := range workspacefs.MaxListEntries {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("A%04d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	be := &readCountingBackend{workspaceFS: deps.Workspace.Local}
+	deps.Workspace.Local = be
+	svc := NewSandboxService(deps)
+
+	if _, err := svc.ListPersonalSkillsSouth(gatewayCtxForWorkflow(), &brokerv1.ListPersonalSkillsSouthRequest{
+		TenantId: testTenantUUID, UserId: pskUser,
+	}); err != nil {
+		t.Fatalf("ListPersonalSkillsSouth: %v", err)
+	}
+	if _, err := svc.GetPersonalSkillSouth(gatewayCtxForWorkflow(), &brokerv1.GetPersonalSkillSouthRequest{
+		TenantId: testTenantUUID, UserId: pskUser, Name: "big",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("SKILL.md past a truncated listing: want NotFound, got %v", err)
+	}
+	if _, err := svc.GetPersonalSkillFileSouth(gatewayCtxForWorkflow(), &brokerv1.GetPersonalSkillFileSouthRequest{
+		TenantId: testTenantUUID, UserId: pskUser, Name: "big", Path: "Z.bin",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("file past a truncated listing: want NotFound, got %v", err)
+	}
+	if be.reads != 0 {
+		t.Fatalf("files past a truncated listing were read %d times", be.reads)
 	}
 }

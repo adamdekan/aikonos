@@ -128,11 +128,12 @@ func TestValidator_ValidToken(t *testing.T) {
 		TenantClaim: "tenant_id",
 	})
 
+	exp := time.Now().Add(time.Hour).Truncate(time.Second)
 	tok := idp.mint(t, jwt.Claims{
 		Issuer:   idp.srv.URL,
 		Subject:  "alice@example.com",
 		Audience: jwt.Audience{"aikonos-broker"},
-		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		Expiry:   jwt.NewNumericDate(exp),
 		IssuedAt: jwt.NewNumericDate(time.Now()),
 	}, map[string]any{
 		"email":     "alice@example.com",
@@ -152,6 +153,9 @@ func TestValidator_ValidToken(t *testing.T) {
 	}
 	if len(id.Scopes) != 3 {
 		t.Errorf("scopes = %v", id.Scopes)
+	}
+	if !id.ExpiresAt.Equal(exp) {
+		t.Errorf("expires_at = %v, want the token's exp %v", id.ExpiresAt, exp)
 	}
 }
 

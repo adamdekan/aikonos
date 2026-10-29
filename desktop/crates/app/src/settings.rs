@@ -431,6 +431,7 @@ impl MemoryPane {
         self.busy = true;
         cx.notify();
         let id = selected.meta.id.clone();
+        let content_sha256 = selected.content_sha256.clone();
         let scope = self.scope();
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -438,7 +439,10 @@ impl MemoryPane {
                 let id = id.clone();
                 runtime::spawn(async move {
                     match action {
-                        MemoryAction::Verify => connection.verify_concept(&scope, &id).await.map(|_| ()),
+                        MemoryAction::Verify => connection
+                            .verify_concept(&scope, &id, &content_sha256)
+                            .await
+                            .map(|_| ()),
                         MemoryAction::Deprecate => connection.deprecate_concept(&scope, &id).await.map(|_| ()),
                         MemoryAction::Delete => connection.delete_concept(&scope, &id).await,
                     }

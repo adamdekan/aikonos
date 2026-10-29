@@ -161,12 +161,13 @@ func (v *Validator) Validate(ctx context.Context, raw string) (*Identity, error)
 	}
 
 	id := &Identity{
-		Subject: std.Subject,
-		Email:   custom.Email,
-		Scopes:  splitScopes(custom.Scope),
-		ACR:     custom.ACR,
-		ACRS:    custom.ACRS,
-		AMR:     custom.AMR,
+		Subject:   std.Subject,
+		Email:     custom.Email,
+		Scopes:    splitScopes(custom.Scope),
+		ACR:       custom.ACR,
+		ACRS:      custom.ACRS,
+		AMR:       custom.AMR,
+		ExpiresAt: std.Expiry.Time(),
 	}
 	if std.IssuedAt != nil {
 		id.IssuedAt = std.IssuedAt.Time()

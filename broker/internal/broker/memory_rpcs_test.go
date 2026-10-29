@@ -509,7 +509,10 @@ func TestListMemoryConceptsSouth_UnionsUserGroupAndAgentBundles(t *testing.T) {
 	root := t.TempDir()
 	agentID := uuid.New()
 	f := &fakeFGA{
-		checks:                map[string]bool{"user:" + memUser + "|can_invoke|skill:memory.read": true},
+		checks: map[string]bool{
+			"user:" + memUser + "|can_invoke|skill:memory.read":      true,
+			"user:" + memUser + "|can_use|agent:" + agentID.String(): true,
+		},
 		listObjectsByRelation: map[string][]string{"member": {"group:" + memGroup}},
 	}
 	deps, _ := memoryDeps(t, memoryFGA(t, f), root)
@@ -725,7 +728,10 @@ func TestListMemoryConceptsSouth_CapsTheUnion(t *testing.T) {
 	root := t.TempDir()
 	agentID := uuid.New()
 	f := &fakeFGA{
-		checks: map[string]bool{"user:" + memUser + "|can_invoke|skill:memory.read": true},
+		checks: map[string]bool{
+			"user:" + memUser + "|can_invoke|skill:memory.read":      true,
+			"user:" + memUser + "|can_use|agent:" + agentID.String(): true,
+		},
 		// Deliberately reverse-ordered: sorted output proves the RPC sorts.
 		listObjectsByRelation: map[string][]string{"member": {"group:b-team", "group:a-team"}},
 	}

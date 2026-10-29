@@ -49,6 +49,9 @@ pub struct Concept {
     pub meta: ConceptMeta,
     #[serde(default)]
     pub body: String,
+    /// Hash of the content shown; verify sends it back (G19).
+    #[serde(default, rename = "contentSha256")]
+    pub content_sha256: String,
 }
 
 /// Whose memory: the user's own or one of their groups'.
@@ -73,6 +76,8 @@ struct ConceptRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     group_id: Option<&'a str>,
     id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_sha256: Option<&'a str>,
 }
 
 impl<'a> ConceptRef<'a> {
@@ -82,11 +87,13 @@ impl<'a> ConceptRef<'a> {
                 scope: "user",
                 group_id: None,
                 id,
+                content_sha256: None,
             },
             MemoryScope::Group(group) => Self {
                 scope: "group",
                 group_id: Some(group),
                 id,
+                content_sha256: None,
             },
         }
     }
@@ -126,12 +133,15 @@ impl Connection {
             .await
     }
 
-    /// Mark a concept as reviewed by a human.
-    pub async fn verify_concept(&self, scope: &MemoryScope, id: &str) -> ApiResult<ConceptMeta> {
-        Ok(self
-            .post::<_, MetaReply>("/memory/verify", &ConceptRef::new(scope, id))
-            .await?
-            .meta)
+    /// Mark a concept as reviewed by a human. `content_sha256` is the hash
+    /// `memory_concept` returned for the content the user reviewed; the broker
+    /// refuses the verify if the concept changed since (G19).
+    pub async fn verify_concept(&self, scope: &MemoryScope, id: &str, content_sha256: &str) -> ApiResult<ConceptMeta> {
+        let body = ConceptRef {
+            content_sha256: Some(content_sha256),
+            ..ConceptRef::new(scope, id)
+        };
+        Ok(self.post::<_, MetaReply>("/memory/verify", &body).await?.meta)
     }
 
     pub async fn deprecate_concept(&self, scope: &MemoryScope, id: &str) -> ApiResult<ConceptMeta> {

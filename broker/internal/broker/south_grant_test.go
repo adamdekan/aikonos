@@ -4,14 +4,17 @@ package broker
 // take that user from the session's owner grant, never from the gateway.
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
@@ -142,6 +145,42 @@ func TestListMemoryConceptsSouth_BlockedOwnerRefused(t *testing.T) {
 	}
 }
 
+// F171: the gateway names the recall agent, so its bundle follows the grant
+// owner's can_use: alice's grant with an agent she cannot use recalls none of
+// that agent's memory (audited agent_not_usable); with can_use it does.
+func TestListMemoryConceptsSouth_AgentBundleNeedsCanUse(t *testing.T) {
+	agentID := uuid.New()
+	for _, canUse := range []bool{false, true} {
+		f := &fakeFGA{checks: map[string]bool{
+			"user:" + memUser + "|can_invoke|skill:memory.read":      true,
+			"user:" + memUser + "|can_use|agent:" + agentID.String(): canUse,
+		}}
+		deps, _ := memoryDeps(t, memoryFGA(t, f), t.TempDir())
+		aud := &capturingAudit{}
+		deps.Audit, deps.DevMode, deps.GatewaySpiffeID = aud, false, testGWSpiffeID
+		deps.GatewayGrantKey, deps.GatewayGrantTTL = testGrantKey, testGrantTTL
+		deps.Agents = &memoryAgentStore{agent: &db.Agent{ID: agentID, Skills: []string{"memory.read"}}}
+		seedConcept(t, deps.Workspace.Local, testTenantUUID, "svc-"+agentID.String(), "facts/agent", slaSpec())
+
+		resp, err := NewSandboxService(deps).ListMemoryConceptsSouth(gatewaySpiffeCtx(), &brokerv1.ListMemoryConceptsRequest{
+			TenantId: testTenantUUID, AgentId: agentID.String(), OwnerGrant: mintTestGrant(t, testTenantUUID, memUser),
+		})
+		if err != nil {
+			t.Fatalf("can_use=%v: %v", canUse, err)
+		}
+		want := 0
+		if canUse {
+			want = 1
+		}
+		if len(resp.Concepts) != want {
+			t.Fatalf("can_use=%v: want %d agent concepts, got %+v", canUse, want, resp.Concepts)
+		}
+		if r := deniedReasons(aud); !canUse && (len(r) != 1 || r[0] != "agent_not_usable") {
+			t.Fatalf("want agent_not_usable audited, got %v", r)
+		}
+	}
+}
+
 // F129: a blocked user's run resolves no agent; the detail is exactly the
 // north RevocationInterceptor's, which the gateway maps to access revoked.
 func TestResolveRunAgent_BlockedUserRefused(t *testing.T) {
@@ -246,5 +285,26 @@ func TestMintSessionGrant_BindsCaller(t *testing.T) {
 	south := newGrantSouthSvc(&capturingAudit{})
 	if _, err := south.ListUserSkills(gatewaySpiffeCtx(), &brokerv1.ListUserSkillsRequest{TenantId: testTenantUUID, UserId: "alice", OwnerGrant: resp.OwnerGrant}); err != nil {
 		t.Fatalf("alice's session grant on her own read: %v", err)
+	}
+}
+
+// F171: a session grant never outlives the bearer it was minted from, and an
+// expired bearer (inside the validator's exp leeway) mints none.
+func TestMintSessionGrant_BoundedByBearerExpiry(t *testing.T) {
+	north := NewBrokerService(Deps{Logger: zap.NewNop(), GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL})
+	ctxExp := func(exp time.Time) context.Context {
+		return auth.WithIdentity(context.Background(), &auth.Identity{TenantID: testTenantUUID, Email: "alice", ExpiresAt: exp})
+	}
+	exp := time.Now().Add(5 * time.Minute)
+	resp, err := north.MintSessionGrant(ctxExp(exp), &brokerv1.MintSessionGrantRequest{TenantId: testTenantUUID})
+	if err != nil {
+		t.Fatalf("MintSessionGrant: %v", err)
+	}
+	g, err := gatewaygrant.Verify(testGrantKey, resp.OwnerGrant, false)
+	if err != nil || g.Expires.After(exp) {
+		t.Fatalf("grant expires %v (err=%v), want no later than the bearer's %v", g.Expires, err, exp)
+	}
+	if _, err := north.MintSessionGrant(ctxExp(time.Now().Add(-time.Second)), &brokerv1.MintSessionGrantRequest{TenantId: testTenantUUID}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expired bearer: want Unauthenticated, got %v", err)
 	}
 }

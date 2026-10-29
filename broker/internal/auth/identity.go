@@ -31,6 +31,9 @@ type Identity struct {
 	// IssuedAt is the token's `iat` (zero when absent), checked against the
 	// user's revocation epoch (AG-06).
 	IssuedAt time.Time
+	// ExpiresAt is the token's `exp`; a session grant minted from this
+	// identity never outlives it (F171).
+	ExpiresAt time.Time
 	// Sign-in strength (AG-13), read for step-up approvals: `acr`, Entra's
 	// authentication-context `acrs`, `amr` and `auth_time` (zero when absent).
 	ACR      string

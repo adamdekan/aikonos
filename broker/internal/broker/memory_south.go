@@ -100,8 +100,14 @@ func (s *SandboxService) ListMemoryConceptsSouth(ctx context.Context, req *broke
 		recall(memoryGroupSegPrefix+gid, "group", gid, "")
 	}
 
+	// F171: the gateway names the agent, so the broker re-checks that the grant
+	// owner may use it; an agent they cannot use recalls nothing (audited).
 	if agentID := req.GetAgentId(); agentOptedIntoRecall(ctx, s.deps.Agents, tenant, agentID) {
-		recall(memoryAgentSegPrefix+agentID, "agent", "", agentID)
+		if mayOperateActor(ctx, s.deps, user, agentID) {
+			recall(memoryAgentSegPrefix+agentID, "agent", "", agentID)
+		} else {
+			s.emitGrantDenied(ctx, tenant, user, "", "agent_not_usable", map[string]any{"agent_id": agentID})
+		}
 	}
 
 	return out, nil
