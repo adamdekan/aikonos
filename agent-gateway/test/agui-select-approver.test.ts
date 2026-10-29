@@ -7,7 +7,6 @@ import type { selectRunApprover } from "../src/routes/agui.js";
 import type { Approver } from "../src/broker/governance.js";
 import type { AgentSpec } from "../src/pi/session.js";
 import pino from "pino";
-import type { Config } from "../src/config.js";
 
 // Narrow south type matching resolveAutoApproveAllowlist's Pick constraint.
 import type { resolveAutoApproveAllowlist } from "../src/broker/auto-approve.js";
@@ -59,10 +58,9 @@ function makeSouth(
 
 // Minimal deps shape matching selectRunApprover's first argument.
 function makeDeps(south: AllowlistSouth, tenantId = "tenant-1"): Parameters<typeof selectRunApprover>[0] {
-  const cfg: Pick<Config, "defaultTenantId"> = { defaultTenantId: tenantId };
   return {
     south,
-    cfg,
+    tenantId,
     log: makeLog(),
     userId: "alice",
   };
@@ -88,7 +86,7 @@ test("selectRunApprover: auto agent + MCP tool granted only via mcp_servers → 
   const { approver: hitl } = makeHitlApprover();
   const deps = makeDeps(south);
 
-  const approver: Approver = await select(deps, spec, "agent:test-agent", hitl);
+  const { approver } = await select(deps, spec, "agent:test-agent", hitl);
 
   // MCP tool id in the same id space as ApprovalInfo.toolId.
   const grantedMcp = await approver({
@@ -131,7 +129,7 @@ test("selectRunApprover: non-auto spec (approvalMode needs_approval) → returns
   const { approver: hitl, calls } = makeHitlApprover();
   const deps = makeDeps(south);
 
-  const approver: Approver = await select(deps, spec, "agent:test-agent", hitl);
+  const { approver } = await select(deps, spec, "agent:test-agent", hitl);
 
   // The returned approver must be (or delegate to) the injected hitl.
   await approver({
@@ -157,7 +155,7 @@ test("selectRunApprover: spec undefined (default agent, no DB record) → return
   const { approver: hitl, calls } = makeHitlApprover();
   const deps = makeDeps(south);
 
-  const approver: Approver = await select(deps, undefined, "alice-agent", hitl);
+  const { approver } = await select(deps, undefined, "alice-agent", hitl);
 
   await approver({
     toolCallId: "tc-1",
@@ -190,7 +188,7 @@ test("selectRunApprover: A8 org master off → auto agent downgraded to hitl", a
   const deps = makeDeps(south);
 
   // unattendedAllowed = false → hitl regardless of approvalMode:auto.
-  const approver: Approver = await select(deps, spec, "agent:test-agent", hitl, false);
+  const { approver } = await select(deps, spec, "agent:test-agent", hitl, false);
 
   await approver({
     toolCallId: "tc-1",
@@ -220,7 +218,7 @@ test("selectRunApprover: A8 unattendedAllowed defaults true (omitted arg) → au
   const { approver: hitl } = makeHitlApprover();
   const deps = makeDeps(south);
 
-  const approver: Approver = await select(deps, spec, "agent:test-agent", hitl);
+  const { approver } = await select(deps, spec, "agent:test-agent", hitl);
   const granted = await approver({
     toolCallId: "tc-1",
     toolName: "web_fetch",
@@ -256,7 +254,7 @@ test("selectRunApprover: south RPC error during auto-approve → allowlist degra
   // Must not throw — degrade happens inside resolveAutoApproveAllowlist.
   let approver: Approver;
   await assert.doesNotReject(async () => {
-    approver = await select(deps, spec, "agent:test-agent", hitl);
+    approver = (await select(deps, spec, "agent:test-agent", hitl)).approver;
   }, "selectRunApprover must not throw when south is unreachable");
 
   // Skills-only allowlist: web.fetch must still be approved.
@@ -270,4 +268,24 @@ test("selectRunApprover: south RPC error during auto-approve → allowlist degra
     stepUp: false, argsDigest: "", requiresN: 1, approvals: 0, ownerMayApprove: true,
   });
   assert.equal(skillApproved, true, "skill in spec.skills must be auto-approved even when south fails");
+});
+
+test("selectRunApprover F51: preApproved is [] for a HITL run and the resolved allowlist for an auto agent", async () => {
+  // WHY: spawn_subagents branches inherit exactly this list. A HITL chat must
+  // hand them nothing to pre-approve; an auto agent hands them its own list.
+  const { selectRunApprover: select } = await import("../src/routes/agui.js");
+  const south = makeSouth([{ id: "conn1" }], { conn1: [{ name: "echo" }] });
+  const { approver: hitl } = makeHitlApprover();
+  const base: AgentSpec = { model: "m", approvalMode: "auto", skills: ["web.fetch", "scheduler"], preferredProvider: "", allowedProviders: [] };
+
+  const auto = await select(makeDeps(south), base, "agent:a", hitl);
+  assert.deepEqual(
+    [...auto.preApproved].sort(),
+    ["mcp:conn1:echo", "web.fetch"],
+    "an auto agent's list — never 'scheduler': a schedule always asks a human (F52)",
+  );
+
+  assert.deepEqual((await select(makeDeps(south), { ...base, approvalMode: "needs_approval" }, "agent:a", hitl)).preApproved, []);
+  assert.deepEqual((await select(makeDeps(south), undefined, "agent:a", hitl)).preApproved, []);
+  assert.deepEqual((await select(makeDeps(south), base, "agent:a", hitl, false)).preApproved, [], "org master off");
 });

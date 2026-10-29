@@ -46,6 +46,10 @@ export interface VisionProviderLike {
 export interface SpecLike {
   preferredProvider?: string;
   model?: string;
+  // F203: when non-empty, the ONLY providers this agent's calls may reach —
+  // every tier (assigned, tenant default, fallback) is filtered to it. Empty
+  // = unrestricted. preferredProvider stays a preference within that set.
+  allowedProviders?: string[];
 }
 
 export interface Candidate<P> {
@@ -82,13 +86,15 @@ function dedupe<P extends { id: string }>(tiers: (P | undefined)[]): P[] {
 
 // chatCandidates returns the ordered chain for a chat/text completion:
 // agent-assigned provider+model → tenant default → tenant fallback.
-// Only enabled providers carrying at least one model qualify. Empty result =
-// the tenant has nothing usable; the caller decides whether that throws.
+// Only enabled providers carrying at least one model qualify, and only those in
+// the agent's allowedProviders when it names any. Empty result = nothing usable;
+// the caller decides whether that throws (every caller fails closed on it).
 export function chatCandidates<P extends ChatProviderLike>(
   providers: P[],
   spec?: SpecLike,
 ): Candidate<P>[] {
-  const usable = providers.filter((p) => p.enabled && p.models.length > 0);
+  const allowed = spec?.allowedProviders?.length ? new Set(spec.allowedProviders) : undefined;
+  const usable = providers.filter((p) => p.enabled && p.models.length > 0 && (!allowed || allowed.has(p.id)));
   const assigned =
     spec?.preferredProvider && spec.model
       ? usable.find((p) => p.id === spec.preferredProvider && p.models.some((m) => m.id === spec.model))
@@ -106,9 +112,11 @@ export function chatCandidates<P extends ChatProviderLike>(
 // visionCandidates returns the ordered chain for an image call:
 // tenant default-vision → tenant fallback. Both must be visionCapable — a
 // fallback that can't take an image would fail by construction, so it is
-// skipped rather than tried. There is no agent-level vision override.
-export function visionCandidates<P extends VisionProviderLike>(providers: P[]): Candidate<P>[] {
-  const usable = providers.filter((p) => p.enabled && p.visionCapable && p.models.length > 0);
+// skipped rather than tried. There is no agent-level vision override, but an
+// agent's allowedProviders (F203) still bounds where its images may go.
+export function visionCandidates<P extends VisionProviderLike>(providers: P[], spec?: SpecLike): Candidate<P>[] {
+  const allowed = spec?.allowedProviders?.length ? new Set(spec.allowedProviders) : undefined;
+  const usable = providers.filter((p) => p.enabled && p.visionCapable && p.models.length > 0 && (!allowed || allowed.has(p.id)));
   return dedupe([
     usable.find((p) => p.isDefaultVision),
     usable.find((p) => p.isFallback),

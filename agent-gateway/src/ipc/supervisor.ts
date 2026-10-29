@@ -13,6 +13,7 @@
 //   "per-user" — default (F28). Key = "<tenantId> <userId> <agentId>".
 import { fork, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { status } from "@grpc/grpc-js";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { ParentLink } from "./protocol.js";
@@ -199,6 +200,18 @@ export class GatewayOverloadError extends Error {
   }
 }
 
+// F58: one user already holds maxEphemeralPerUser live subagent branch children.
+// A GatewayOverloadError so the fan-out rejects whole (reject-don't-queue), with
+// RESOURCE_EXHAUSTED so an HTTP surface maps it to 429, not the pool-wide 503.
+export class BranchQuotaError extends GatewayOverloadError {
+  readonly code = status.RESOURCE_EXHAUSTED;
+  constructor(limit: number) {
+    super();
+    this.message = `too many concurrent subagent branches for this user (limit ${limit}) — wait for running subtasks to finish`;
+    this.name = "BranchQuotaError";
+  }
+}
+
 // ── Ephemeral (subagent) pool keys ─────────────────────────────────────────────
 //
 // Subagent branch children are keyed synthetically rather than by identity, so
@@ -240,6 +253,9 @@ export interface SupervisorConfig {
   cbMaxCrashes: number;
   cbWindowMs: number;
   cbBlockMs: number;
+  // F58: live subagent branch children one (tenant, user) may hold at once, so
+  // one member's fan-outs cannot take the whole shared pool.
+  maxEphemeralPerUser: number;
 }
 
 // maxChildren/childTtlMs are no longer read from process.env here (F26) — they
@@ -260,6 +276,7 @@ export function defaultSupervisorConfig(): SupervisorConfig {
     cbMaxCrashes: 3,
     cbWindowMs: 10_000,
     cbBlockMs: 30_000,
+    maxEphemeralPerUser: 4,
   };
 }
 
@@ -303,6 +320,11 @@ export class ChildSupervisor {
   // have to defend against a handle-less member.
   private readonly reserved = new Set<string>();
   private readonly crashes = new Map<string, CrashRecord>();
+  // F58: live branch children per `${tenantId} ${userId}`.
+  private readonly ephemeralPerUser = new Map<string, number>();
+  // F60: run ids in flight per child. The LLM-call budget is reset only when a
+  // child goes from no run to one, so starting run B never zeroes live run A.
+  private readonly activeRuns = new WeakMap<ChildHandle, Set<string>>();
   private readonly config: SupervisorConfig;
   private readonly reaper: ReturnType<typeof setInterval>;
 
@@ -337,9 +359,9 @@ export class ChildSupervisor {
   // getOrSpawn returns an existing child for the key or forks a new one.
   // Throws GatewayOverloadError when the cap is exceeded and no idle child
   // can be evicted.
-  // agentSpec is optional — present for agent-bound runs (ticker, external) so
-  // the session plan can honour the agent's preferred provider/model. Absent for
-  // personal /agui runs (tenant-default path).
+  // agentSpec is optional — present for named-agent runs (/agui, ticker,
+  // external) so the session plan honours the agent's skills and provider pin
+  // (F203). Absent for a default-agent chat (the user's own grants).
   async getOrSpawn(key: string, identity: Identity, agentSpec?: AgentSpec): Promise<ChildHandle> {
     const existing = this.children.get(key);
     if (existing) {
@@ -434,25 +456,42 @@ export class ChildSupervisor {
     if (this.children.has(key)) {
       throw new Error(`ephemeral child key collision: "${key}" is already in the pool`);
     }
-    // No checkCircuitBreaker here: a synthetic key is single-use, so a breaker on
-    // it could never trip on a second attempt. For the same reason the crash
-    // record onChildExit writes for this key is unreadable dead weight — dropped
-    // below, or this.crashes would grow by one entry per branch ever spawned.
-    await this.enforceCapBefore(key);
-    onAdmitted?.();
-
-    // isSubagentBranch:true unconditionally — withEphemeralChild is the sole
-    // production entry point for subagent branch spawns; the ordinary pooled path (getOrSpawn) never
-    // calls spawn() with this flag set.
-    const handle = await this.spawn(key, identity, agentSpec, true);
-    this.markBusy(handle);
+    // F58: counted per identity, never per pool key — under "single" keying the
+    // pool key says nothing about who is asking. Taken before the cap check and
+    // released in the finally on every outcome, so a refused or failed spawn
+    // never leaks a count.
+    const owner = `${identity.tenantId} ${identity.userId}`;
+    const live = this.ephemeralPerUser.get(owner) ?? 0;
+    if (live >= this.config.maxEphemeralPerUser) {
+      log.warn({ tenantId: identity.tenantId, userId: identity.userId, live }, "subagent branch refused: per-user branch limit reached");
+      throw new BranchQuotaError(this.config.maxEphemeralPerUser);
+    }
+    this.ephemeralPerUser.set(owner, live + 1);
     try {
-      return await fn(handle);
+      // No checkCircuitBreaker here: a synthetic key is single-use, so a breaker on
+      // it could never trip on a second attempt. For the same reason the crash
+      // record onChildExit writes for this key is unreadable dead weight — dropped
+      // below, or this.crashes would grow by one entry per branch ever spawned.
+      await this.enforceCapBefore(key);
+      onAdmitted?.();
+
+      // isSubagentBranch:true unconditionally — withEphemeralChild is the sole
+      // production entry point for subagent branch spawns; the ordinary pooled path (getOrSpawn) never
+      // calls spawn() with this flag set.
+      const handle = await this.spawn(key, identity, agentSpec, true);
+      this.markBusy(handle);
+      try {
+        return await fn(handle);
+      } finally {
+        // Idempotent when the child already crashed (onChildExit removed it) — the
+        // one teardown implementation, so proxy-token release cannot drift.
+        this.evict(key, "ephemeral branch settled");
+        this.crashes.delete(key);
+      }
     } finally {
-      // Idempotent when the child already crashed (onChildExit removed it) — the
-      // one teardown implementation, so proxy-token release cannot drift.
-      this.evict(key, "ephemeral branch settled");
-      this.crashes.delete(key);
+      const left = (this.ephemeralPerUser.get(owner) ?? 1) - 1;
+      if (left > 0) this.ephemeralPerUser.set(owner, left);
+      else this.ephemeralPerUser.delete(owner);
     }
   }
 
@@ -503,13 +542,18 @@ export class ChildSupervisor {
     onEvent: (evt: TextDeltaEvent | ToolStartEvent | ToolEndEvent | UsageEvent | DoneEvent | ErrorEvent) => void,
   ): Promise<void> {
     this.markBusy(handle);
+    const { runId } = prompt;
     // The LLM-call budget is per RUN, but children are pooled and reused across
     // runs — without this reset the second run on a reused child would start
-    // already spent (see EgressProxy property 9).
-    this.proxy.resetRunBudget(handle.proxyToken);
+    // already spent (see EgressProxy property 9). F60 (M-23): only a child with
+    // no run in flight is reset; overlapping runs share and add up one budget,
+    // so a new run can never zero a live one's count.
+    const runs = this.activeRuns.get(handle) ?? new Set<string>();
+    this.activeRuns.set(handle, runs);
+    if (runs.size === 0) this.proxy.resetRunBudget(handle.proxyToken);
+    runs.add(runId);
 
     return new Promise<void>((resolve, reject) => {
-      const { runId } = prompt;
 
       type RunEvent = TextDeltaEvent | ToolStartEvent | ToolEndEvent | UsageEvent | DoneEvent | ErrorEvent;
       const eventKinds: Array<RunEvent["kind"]> = ["text_delta", "tool_start", "tool_end", "usage", "done", "error"];
@@ -538,6 +582,7 @@ export class ChildSupervisor {
         // long-lived shared child accumulates one dead exit handler per run,
         // triggering Node's MaxListenersExceededWarning after ~10 concurrent runs.
         handle.link.offExit(exitHandler);
+        runs.delete(runId);
         this.markIdle(handle);
         fn();
       };
@@ -623,6 +668,9 @@ export class ChildSupervisor {
   // Mirrors evictIdleForAgent's shape: walk `children`, match by key prefix
   // (every branch of runId shares branchKeyPrefix(runId), never a different
   // run's — sibling runs are untouched by construction of the key match).
+  // F62: the runId is client-chosen, so the match also requires the branch to
+  // belong to `owner` — another user who sends the same runId and hangs up
+  // evicts nothing of this one's.
   //
   // abortRun BEFORE evict, same order as a branch's own finally
   // (src/subagent/run.ts): tells the child to stop the LLM call immediately,
@@ -639,10 +687,10 @@ export class ChildSupervisor {
   // exitHandler already use for a crash. Blocking here on that would tie the
   // SSE close handler's own completion to a process-exit round trip it does
   // not need to wait for.
-  evictBranchesForRun(runId: string, reason: string): void {
+  evictBranchesForRun(runId: string, reason: string, owner: { tenantId: string; userId: string }): void {
     const prefix = branchKeyPrefix(runId);
     for (const [key, handle] of this.children) {
-      if (!key.startsWith(prefix)) continue;
+      if (!key.startsWith(prefix) || handle.tenantId !== owner.tenantId || handle.userId !== owner.userId) continue;
       handle.abortRun(runId);
       this.evict(key, reason);
     }

@@ -201,11 +201,11 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
   clients.south = south;
 
   const approvals = new ApprovalRegistry();
-  const drainCalls: Array<{ runId: string; ok: boolean }> = [];
+  const drainCalls: Array<{ runId: string; user: string; ok: boolean }> = [];
   const originalDrainForRun = ApprovalRegistry.prototype.drainForRun.bind(approvals);
-  approvals.drainForRun = (runId: string, ok = false) => {
-    drainCalls.push({ runId, ok });
-    originalDrainForRun(runId, ok);
+  approvals.drainForRun = (runId: string, user: string, ok = false) => {
+    drainCalls.push({ runId, user, ok });
+    originalDrainForRun(runId, user, ok);
   };
 
   const supervisor = new ChildSupervisor(
@@ -291,7 +291,11 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
       clearedIntervalIds.includes(pingIntervalIds[0]),
       "the ping interval must be cleared by the close handler's stream.stopHeartbeat() call",
     );
-    assert.deepEqual(drainCalls, [{ runId, ok: false }], "close handler must call approvals.drainForRun(runId, false)");
+    assert.deepEqual(
+      drainCalls,
+      [{ runId, user: USER_SUB, ok: false }],
+      "close handler must call approvals.drainForRun(runId, user, false) — scoped to THIS user (F62)",
+    );
     assert.deepEqual(abortRunCalls, [runId], "close handler must call handle.abortRun(runId)");
     assert.ok(clearRunContextCalls.includes(runId), "close handler must call handle.clearRunContext(runId)");
   } finally {
@@ -337,11 +341,11 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
   const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: DEFAULT_AGENT };
   await supervisor.getOrSpawn(supervisor.keyFor(identity), identity);
 
-  const evictBranchesForRunCalls: { runId: string; reason: string }[] = [];
+  const evictBranchesForRunCalls: { runId: string; reason: string; owner: { tenantId: string; userId: string } }[] = [];
   const originalEvictBranchesForRun = supervisor.evictBranchesForRun.bind(supervisor);
-  supervisor.evictBranchesForRun = (rid: string, reason: string) => {
-    evictBranchesForRunCalls.push({ runId: rid, reason });
-    originalEvictBranchesForRun(rid, reason);
+  supervisor.evictBranchesForRun = (rid: string, reason: string, owner: { tenantId: string; userId: string }) => {
+    evictBranchesForRunCalls.push({ runId: rid, reason, owner });
+    originalEvictBranchesForRun(rid, reason, owner);
   };
 
   const app = Fastify({ logger: false });
@@ -375,7 +379,7 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
 
     assert.deepEqual(
       evictBranchesForRunCalls,
-      [{ runId, reason: "run teardown" }],
+      [{ runId, reason: "run teardown", owner: { tenantId: TENANT_ID, userId: USER_SUB } }],
       "close handler must call supervisor.evictBranchesForRun scoped to THIS run's id, exactly once",
     );
   } finally {

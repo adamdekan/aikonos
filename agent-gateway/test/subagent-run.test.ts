@@ -355,24 +355,10 @@ interface SouthSpecCall {
 function makeSouth(
   specs: Record<string, { skills: string[]; llmModel?: string }> = {},
   providers: SubagentProviderLike[] = [provider()],
-  // MCP servers reachable by the caller's agent. resolveAutoApproveAllowlist
-  // unions their tool ids into the branch approver's allowlist, so a test that
-  // wants an mcp: id approved seeds it here rather than in callerSkills.
-  mcp: { id: string; tools: string[] }[] = [],
 ): { south: SubagentSouth; specCalls: SouthSpecCall[] } {
   const specCalls: SouthSpecCall[] = [];
   const south: SubagentSouth = {
     getLlmProviders: async () => ({ providers }),
-    getOrgSettings: async () => ({ settings: { unattendedAllowed: true } }),
-    listAccessibleMcpServersForAgent: async () => ({
-      connections: mcp.map((m) => ({ id: m.id, name: m.id })),
-    }),
-    listMcpServerToolsSouth: async (req) => ({
-      tools: (mcp.find((m) => m.id === req.connectorId)?.tools ?? []).map((name) => ({
-        name,
-        description: "",
-      })),
-    }),
     getAgentSpec: async (req) => {
       specCalls.push(req);
       const found = specs[req.agentId];
@@ -502,12 +488,15 @@ function makeReasoner(output = "SYNTHESIS"): { reasoner: Reasoner; instructions:
   return { reasoner, instructions };
 }
 
-function callerIdentity(): Identity {
+// preApproved is the parent run's own approver allowlist (F51) — the whole of
+// what a branch may pre-approve.
+function callerIdentity(preApproved: string[] = ["web.fetch", "doc.write"]): Identity {
   return {
     token: CALLER_TOKEN,
     tenantId: TENANT,
     userId: "user-alice",
     agentId: "alice-agent",
+    preApproved,
   };
 }
 
@@ -521,7 +510,6 @@ function makeDeps(rig: Rig, over: Partial<SubagentRunDeps> = {}): SubagentRunDep
     maxWidth: 3,
     rateLimitChecker: allowChecker().checker,
     branchTimeoutMs: 60_000,
-    callerSkills: ["web.fetch", "doc.write"],
     reasoner: makeReasoner().reasoner,
     aggregatorInstruction: "Combine the findings into one answer.",
     ...over,
@@ -899,7 +887,7 @@ test("CP4 approver: a branch gate call reaches the branch's OWN deny-fast approv
     const rig = makeRig({ bridgeFactory: bridge.factory });
     // The caller holds web.fetch only, so doc.write is off the auto-approve
     // surface and must be refused without ever asking a human.
-    const deps = makeDeps(rig, { callerSkills: ["web.fetch"] });
+    const deps = makeDeps(rig, { identity: callerIdentity(["web.fetch"]) });
 
     // A surviving sibling keeps the fan-out fail-soft rather than all-fail, so
     // the denied branch's own record is observable in the result.
@@ -954,23 +942,57 @@ test("CP4 approver: a branch gate call reaches the branch's OWN deny-fast approv
   }
 });
 
-test("CP4 approver: the allowlist is the CALLER's own auto-approve surface — reachable mcp: tools included, a role's extra skills never unioned in", async () => {
-  // WHY: the approver's allowlist must be resolveAutoApproveAllowlist over the
-  // caller's OWN skills. A role-bound branch narrows via AgentSpec (CP3) — its
-  // agent's skills must never widen what the branch may auto-approve.
+test("F51 approver: a human-in-the-loop parent (no preApproved) pre-approves nothing — a branch doc_write the user holds is refused, never voted", async () => {
+  // WHY: a default chat asks its user for doc.write (the rig's user holds it). A branch it spawns must
+  // not answer that card itself from the user's skills — before F51 the branch
+  // allowlist was every tool the user held, and the bridge then cast the user's
+  // approval vote with no human ever seeing a card.
+  const awaited: string[] = [];
+  mock.method(ApprovalRegistry.prototype, "await_", function (this: ApprovalRegistry, info: { toolId: string }) {
+    awaited.push(info.toolId);
+    return new Promise<boolean>(() => {});
+  });
+  try {
+    const bridge = approverBridgeFactory();
+    const rig = makeRig({ bridgeFactory: bridge.factory });
+    const { preApproved: _drop, ...hitlParent } = callerIdentity();
+    const deps = makeDeps(rig, { identity: hitlParent });
+
+    const fanOut = runSubagents([{ task: "write the doc" }, { task: "sibling" }], deps);
+    await flushAsync();
+    const child = rig.spawn.children[0];
+    assert.ok(child);
+    child.gate("run-1", "doc_write", 1);
+    await flushAsync();
+
+    assert.deepEqual(awaited, [], "no branch call may reach a human card");
+    assert.deepEqual(child.gateResults.map((r) => r.allow), [false], "the gated branch call must be refused");
+
+    child.finish("run-1", "nothing written");
+    rig.spawn.children[1]?.finish("run-1", "sibling output");
+    await flushAsync();
+    const result = await fanOut;
+    assert.equal(result.branches[0]?.failure, "denied");
+    assert.deepEqual(result.branches[0]?.deniedTools, ["doc.write"], "the refusal is reported to the aggregator");
+    rig.supervisor.dispose();
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("F51 approver: a branch inherits exactly the parent's pre-approval (auto parent) — a role's extra skills never unioned in", async () => {
+  // WHY: the approver's allowlist is the parent run's own (identity.preApproved).
+  // A role-bound branch narrows via AgentSpec (CP3) — its agent's skills must
+  // never widen what the branch may auto-approve.
   const bridge = approverBridgeFactory();
   const rig = makeRig({ bridgeFactory: bridge.factory, mcp: [{ id: "conn-1", tools: ["search"] }] });
   const north = makeNorth([{ id: "agent-writer", name: "Writer" }]);
-  // The agent holds email.draft; the caller does not.
-  const south = makeSouth(
-    { "agent-writer": { skills: ["email.draft"], llmModel: "writer-model" } },
-    [provider()],
-    [{ id: "conn-1", tools: ["search"] }],
-  );
+  // The agent holds email.draft; the parent's auto allowlist does not.
+  const south = makeSouth({ "agent-writer": { skills: ["email.draft"], llmModel: "writer-model" } });
   const deps = makeDeps(rig, {
     north: north.north,
     south: south.south,
-    callerSkills: ["web.fetch"],
+    identity: callerIdentity(["web.fetch", "mcp:conn-1:search"]),
   });
 
   const fanOut = runSubagents([{ task: "draft it", role: "writer" }, { task: "sibling" }], deps);
@@ -989,7 +1011,7 @@ test("CP4 approver: the allowlist is the CALLER's own auto-approve surface — r
   assert.deepEqual(
     child.gateResults.map((r) => r.allow),
     [true, false],
-    "a reachable mcp: tool is on the caller's auto-approve surface; the ROLE's own extra skill is not",
+    "a tool on the parent's pre-approval is approved; the ROLE's own extra skill is not",
   );
 
   child.finish("run-1", "drafted");
@@ -1101,7 +1123,7 @@ test(
     // Teardown fires WHILE branch 1 is genuinely in flight — well before its
     // own 200ms branchTimeoutMs could win the race on its own. The evicted
     // child never responds: no done/error, no exit.
-    rig.supervisor.evictBranchesForRun("run-1", "run teardown");
+    rig.supervisor.evictBranchesForRun("run-1", "run teardown", callerIdentity());
 
     // A ref'd guard (NOT unref()'d) races the fan-out: it keeps the event loop
     // alive long enough for branch 1's own unref()'d backstop timer to get a
@@ -1174,7 +1196,7 @@ test("CP4 markers: error, timeout and approval-denial are distinguishable, named
   // comfortably above ordinary scheduler/GC noise under a full-suite run.
   const deps = makeDeps(rig, {
     branchTimeoutMs: 200,
-    callerSkills: [],
+    identity: callerIdentity([]),
     reasoner: reasoner.reasoner,
   });
 
@@ -1446,7 +1468,7 @@ test("CP4 envelope: a forged tool id from a compromised child never reaches the 
   const bridge = approverBridgeFactory();
   const rig = makeRig({ bridgeFactory: bridge.factory });
   const reasoner = makeReasoner();
-  const deps = makeDeps(rig, { callerSkills: ["web.fetch"], reasoner: reasoner.reasoner });
+  const deps = makeDeps(rig, { identity: callerIdentity(["web.fetch"]), reasoner: reasoner.reasoner });
 
   // A surviving sibling keeps the fan-out fail-soft so the aggregator still runs.
   const fanOut = runSubagents([{ task: "hostile subtask" }, { task: "sibling" }], deps);
@@ -1565,7 +1587,7 @@ test("CP7 completed: success, error and timeout are each reported once, correlat
   // well before the assertions run.
   const deps = makeDeps(rig, {
     branchTimeoutMs: 200,
-    callerSkills: [],
+    identity: callerIdentity([]),
     reasoner: reasoner.reasoner,
     onBranchEvent: rec.onBranchEvent,
   });
@@ -1607,7 +1629,7 @@ test("CP7 completed: an approval-denied branch is reported with failure:'denied'
   const bridge = approverBridgeFactory();
   const rig = makeRig({ bridgeFactory: bridge.factory });
   const rec = recorder();
-  const deps = makeDeps(rig, { callerSkills: ["web.fetch"], onBranchEvent: rec.onBranchEvent });
+  const deps = makeDeps(rig, { identity: callerIdentity(["web.fetch"]), onBranchEvent: rec.onBranchEvent });
 
   const fanOut = runSubagents([{ task: "fetch and write" }, { task: "sibling" }], deps);
   await flushAsync();

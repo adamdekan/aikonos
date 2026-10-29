@@ -246,3 +246,63 @@ test("POST /agui: getOrSpawn rejection (spawn failure) settles the request with 
     supervisor.dispose();
   }
 });
+
+// ── F129 / F64: who the run is for ────────────────────────────────────────────
+
+// postAgui runs one POST /agui against the given south fake and config.
+async function postAgui(southFns: Record<string, unknown>, cfg: Config): Promise<{ status: number; body: string }> {
+  const { privateKey, jwk } = await makeKey();
+  const jwksResolver = await localResolver(jwk);
+  const token = await mintToken(privateKey);
+  const clients: BrokerClients = Object.create(BrokerClients.prototype);
+  const south: SouthClient = Object.create(SouthClient.prototype);
+  Object.assign(south, southFns);
+  clients.south = south;
+  const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => {
+    throw new Error("no bridge expected");
+  }, makeCountingSpawn().spawnFn, makeRejectingCredentials());
+  const app = Fastify({ logger: false });
+  try {
+    registerAgUiRoutes(app, {
+      clients, jwksResolver, verifyOpts: VERIFY_OPTS, approvals: new ApprovalRegistry(), supervisor, cfg,
+      log: pino({ level: "silent" }),
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+    return await postWithTimeout(address.port, token, { prompt: "hello", threadId: "t", runId: "r" }, 5000);
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+    supervisor.dispose();
+  }
+}
+
+test("F129: a user the broker refuses as blocked gets 403 and no chat — not a silently skipped skill/memory read", async () => {
+  // WHY: the south reads of a chat turn were treated as optional (warn and go
+  // on), so a blocked user with an unexpired token still got a conversation.
+  const blocked = Object.assign(new Error("7 PERMISSION_DENIED: user is blocked"), { code: 7, details: "user is blocked" });
+  const result = await postAgui({
+    listUserAgentSkills: async () => { throw blocked; },
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }),
+    getAgentSpec: async () => ({ found: false }),
+  }, fakeConfig());
+
+  assert.equal(result.status, 403);
+  assert.match(result.body, /user is blocked/);
+});
+
+test("F64: the run's south reads use the token's tenant, never the config default", async () => {
+  const seen: string[] = [];
+  await postAgui({
+    listUserAgentSkills: async (req: { tenantId: string }) => { seen.push(req.tenantId); return { bundles: [] }; },
+    resolveRunAgent: async (req: { tenantId: string }) => {
+      seen.push(req.tenantId);
+      return { agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true };
+    },
+    getAgentSpec: async () => ({ found: false }),
+  }, { ...fakeConfig(), defaultTenantId: "some-other-tenant" });
+
+  assert.ok(seen.length >= 2, "the turn must have reached its south reads");
+  assert.deepEqual([...new Set(seen)], [TENANT_ID]);
+});

@@ -58,6 +58,10 @@ const TOOLS: Record<string, ToolMapping> = {
   // children and calls the parent-side aggregator; every branch's own tool
   // call is separately gated through the ordinary path.
   spawn_subagents: { toolId: "subagents", effectClass: EffectClass.READ_ONLY },
+  // workflow_schedule (F52) is gated by the "scheduler" capability skill. It
+  // creates a standing consent to run tool steps unattended, so it is
+  // WRITE_EXTERNAL: OPA routes it to a human before any schedule exists.
+  workflow_schedule: { toolId: "scheduler", effectClass: EffectClass.WRITE_EXTERNAL },
   // Office document tools (office-worker backed). Effect classes mirror
   // broker/internal/toolregistry/authoritative.go: the four *.extract tools are
   // READ_ONLY, everything else writes to the workspace (WRITE_LOCAL). They
@@ -167,7 +171,7 @@ export function knownToolIds(): string[] {
 
 // Skills that resolve via mapTool (so their own tool_call gets real per-call
 // FGA gating) but are NOT valid workflow-step targets, because they have no
-// Tool Proxy registration to route to via InvokeTool at run time. The five
+// Tool Proxy registration to route to via InvokeTool at run time. The other
 // workflow_* tool names and "delegate" need no entry here — they're already
 // excluded by simply never appearing in TOOLS/TOOLS_BY_ID. "vision" is
 // different: analyze_image's toolId ("vision") deliberately lives in TOOLS so
@@ -178,8 +182,9 @@ export function knownToolIds(): string[] {
 // "subagents" is the same shape as "vision":
 // spawn_subagents' toolId resolves via mapTool for its own tool_call gating,
 // but workflow-level fan-out is an explicit spec non-goal, so a workflow step
-// must not be able to reference it either.
-const WORKFLOW_UNRESOLVABLE_SKILLS = new Set(["vision", "subagents"]);
+// must not be able to reference it either. "scheduler" (workflow_schedule's
+// toolId, F52) likewise: a workflow step must not create schedules.
+const WORKFLOW_UNRESOLVABLE_SKILLS = new Set(["vision", "subagents", "scheduler"]);
 
 // workflowResolvableToolIds returns the built-in aikonOS tool ids a workflow
 // step's `skill` field may legally reference — knownToolIds() minus the

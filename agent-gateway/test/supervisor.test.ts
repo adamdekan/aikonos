@@ -21,6 +21,7 @@ import type { BridgeLike } from "../src/ipc/bridge-server.js";
 import {
   ChildSupervisor,
   GatewayOverloadError,
+  BranchQuotaError,
   defaultSupervisorConfig,
   ephemeralKey,
   branchKeyPrefix,
@@ -1486,6 +1487,34 @@ test("run(): resets the child's LLM-call budget so a pooled child starts each ru
   );
 });
 
+test("F60 run(): starting run B while run A is in flight on the same child does not reset A's budget", async () => {
+  // WHY (M-23): runs multiplex on one pooled child and share its counter. A
+  // reset on every run() let a looping run A be kept alive forever by starting
+  // a new run B every <100 calls. Only a child with no run in flight resets.
+  const rig = makeTestRig();
+  const identity = makeIdentity("alice", "agent-a");
+  const handle = await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(identity), identity);
+  await flushAsync();
+  const rec = rig.spawnRecords[0];
+  assert.ok(rec);
+
+  const runA = rig.supervisor.run(handle, { runId: "run-a", threadId: "th", text: "a" }, () => {});
+  const runB = rig.supervisor.run(handle, { runId: "run-b", threadId: "th", text: "b" }, () => {});
+  await flushAsync();
+  assert.deepEqual(rig.proxy.budgetResets, [handle.proxyToken], "only the first run (idle child) resets");
+
+  rec.child.childLink.send({ kind: "done", runId: "run-a" });
+  rec.child.childLink.send({ kind: "done", runId: "run-b" });
+  await Promise.all([runA, runB]);
+
+  // Both settled: the child is idle again, so the next run starts fresh.
+  const runC = rig.supervisor.run(handle, { runId: "run-c", threadId: "th", text: "c" }, () => {});
+  await flushAsync();
+  rec.child.childLink.send({ kind: "done", runId: "run-c" });
+  await runC;
+  assert.deepEqual(rig.proxy.budgetResets, [handle.proxyToken, handle.proxyToken]);
+});
+
 test("bridge factory: each per-run bridge gets a budget consumer bound to its own child's proxy token", async () => {
   // WHY: GovernanceBridge.reason/analyzeImage bypass the egress proxy but bill the
   // same run. They must book against the same counter the child's proxied calls
@@ -2345,7 +2374,7 @@ test("CP6 evictBranchesForRun: evicts every branch child of runId (abortRun befo
   rec0.child.childLink.on("abort", (msg) => abortCalls.push(`0:${msg.runId}`));
   rec1.child.childLink.on("abort", (msg) => abortCalls.push(`1:${msg.runId}`));
 
-  rig.supervisor.evictBranchesForRun(runId, "run teardown");
+  rig.supervisor.evictBranchesForRun(runId, "run teardown", identity);
   await flushAsync();
 
   assert.deepEqual(abortCalls.sort(), [`0:${runId}`, `1:${runId}`], "both branch children must receive an abort for this run");
@@ -2387,7 +2416,7 @@ test("CP6 evictBranchesForRun: a sibling run's branch children are untouched —
   });
   await flushAsync();
 
-  rig.supervisor.evictBranchesForRun("run-ours", "run teardown");
+  rig.supervisor.evictBranchesForRun("run-ours", "run teardown", identity);
 
   assert.equal(rig.proxy.unregistered.length, 1, "exactly one branch (the matching run's) must be evicted");
 
@@ -2413,10 +2442,61 @@ test("CP6 evictBranchesForRun: a run with no fan-out is a clean no-op — ordina
 
   // No branch children exist for this (or any) run — this is what fires on
   // EVERY normal interactive chat close, not just a fan-out turn.
-  rig.supervisor.evictBranchesForRun("run-with-no-fanout", "run teardown");
+  rig.supervisor.evictBranchesForRun("run-with-no-fanout", "run teardown", identity);
 
   assert.equal(rig.proxy.unregistered.length, 0, "nothing may be evicted when the run spawned no branches");
   assert.equal(await rig.supervisor.getOrSpawn(pooledKey, identity), pooled, "the pooled child must be untouched");
+  rig.supervisor.dispose();
+});
+
+test("F62 evictBranchesForRun: another user who reuses this runId evicts none of this user's branches", async () => {
+  // WHY: the runId is client-chosen. A second user who POSTs /agui with the
+  // victim's runId and hangs up must not kill the victim's fan-out.
+  const rig = makeTestRig();
+  const victim = makeIdentity("user-victim");
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const branch = rig.supervisor.withEphemeralChild(ephemeralKey("run-shared", 0), victim, async () => {
+    await held;
+    return "ok";
+  });
+  await flushAsync();
+
+  rig.supervisor.evictBranchesForRun("run-shared", "run teardown", makeIdentity("user-attacker"));
+  assert.equal(rig.proxy.unregistered.length, 0, "the victim's branch must survive another user's teardown");
+
+  release();
+  assert.equal(await branch, "ok");
+  rig.supervisor.dispose();
+});
+
+test("F58 withEphemeralChild: one user's live branches are capped (429-class), another user still spawns", async () => {
+  // WHY: the pool is shared. Without a per-user cap a few fan-outs from one
+  // member take every slot and every other user gets 503 gateway_overloaded.
+  const rig = makeTestRig({ keying: "per-user", maxChildren: 8, maxEphemeralPerUser: 2 });
+  const alice = makeIdentity("alice");
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const live = [0, 1].map((i) =>
+    rig.supervisor.withEphemeralChild(ephemeralKey("run-a", i), alice, async () => { await held; return i; }),
+  );
+  await flushAsync();
+
+  await assert.rejects(
+    () => rig.supervisor.withEphemeralChild(ephemeralKey("run-a", 2), alice, async () => 2),
+    (err: unknown) => err instanceof BranchQuotaError && err instanceof GatewayOverloadError && err.code === 8,
+    "alice's third live branch must be refused with RESOURCE_EXHAUSTED",
+  );
+  assert.equal(
+    await rig.supervisor.withEphemeralChild(ephemeralKey("run-b", 0), makeIdentity("bob"), async () => "bob"),
+    "bob",
+    "another user is unaffected by alice's cap",
+  );
+
+  release();
+  await Promise.all(live);
+  // The count is released on settle: alice may spawn again.
+  assert.equal(await rig.supervisor.withEphemeralChild(ephemeralKey("run-a", 3), alice, async () => "again"), "again");
   rig.supervisor.dispose();
 });
 
@@ -2455,7 +2535,7 @@ test("CP6 the real risk — a hang, not a leak: evicting a branch mid-flight doe
   let settled = false;
   branch.then(() => { settled = true; }, () => { settled = true; });
 
-  rig.supervisor.evictBranchesForRun(runId, "run teardown");
+  rig.supervisor.evictBranchesForRun(runId, "run teardown", identity);
   await flushAsync();
 
   // Half 1: the leak is fixed immediately (synchronous), but the branch's own

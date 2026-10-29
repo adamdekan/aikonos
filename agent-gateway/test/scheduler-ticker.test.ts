@@ -12,7 +12,7 @@
 // src/external/core.ts's finally (abortRun before clearRunContext).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tick } from "../src/scheduler/ticker.js";
+import { actorAgentSpec, tick } from "../src/scheduler/ticker.js";
 import type { Config } from "../src/config.js";
 import type { Logger } from "../src/log.js";
 import type { BrokerClients } from "../src/broker/clients.js";
@@ -321,4 +321,26 @@ test("F30: tick() runs a batch with bounded concurrency — a fast run reports b
   );
 
   supervisor.dispose();
+});
+
+// F203: a scheduled run honours its actor agent's skills and provider pin, the
+// same rule /agui applies to a chat.
+test("actorAgentSpec: tenant default agent → no spec; named agent → its pin; missing spec → the run fails closed", async () => {
+  const named = {
+    resolveRunAgent: async () => ({ agentId: "a1", isDefault: false }),
+    getAgentSpec: async () => ({
+      found: true, llmModel: "m", approvalMode: "auto", skills: ["web.fetch"],
+      preferredProvider: "onprem", allowedProviders: ["onprem"], soul: "",
+    }),
+  } as unknown as Parameters<typeof actorAgentSpec>[0];
+  const spec = await actorAgentSpec(named, "t", "u", "a1");
+  assert.deepEqual(spec?.allowedProviders, ["onprem"]);
+  assert.equal(spec?.preferredProvider, "onprem");
+
+  const deflt = { resolveRunAgent: async () => ({ agentId: "d", isDefault: true }) } as unknown as Parameters<typeof actorAgentSpec>[0];
+  assert.equal(await actorAgentSpec(deflt, "t", "u", "d"), undefined);
+  assert.equal(await actorAgentSpec(deflt, "t", "u", ""), undefined, "no actor → no lookup");
+
+  const missing = { ...named, getAgentSpec: async () => ({ found: false }) } as unknown as Parameters<typeof actorAgentSpec>[0];
+  await assert.rejects(() => actorAgentSpec(missing, "t", "u", "a1"), /no spec/);
 });

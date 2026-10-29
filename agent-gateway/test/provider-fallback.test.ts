@@ -210,6 +210,31 @@ test("chatCandidates: a model with no declared budget reports 0, never undefined
   assert.equal(candidate.maxTokens, 0, "0 is the documented 'unset' signal the call sites branch on");
 });
 
+// F203: allowedProviders bounds every tier — never a silent fall-through to a
+// tenant default outside the agent's approved set.
+test("chatCandidates: allowedProviders filters the assigned, default and fallback tiers", () => {
+  const providers = [
+    chatProvider({ id: "onprem" }),
+    chatProvider({ id: "saas", isDefault: true }),
+    chatProvider({ id: "eu", isFallback: true }),
+  ];
+  const spec: SpecLike = { preferredProvider: "onprem", model: "onprem-m1", allowedProviders: ["onprem", "eu"] };
+  assert.deepEqual(ids(chatCandidates(providers, spec)), ["onprem", "eu"]);
+});
+
+test("chatCandidates: allowedProviders with nothing usable is empty (callers fail closed), not the tenant default", () => {
+  const providers = [chatProvider({ id: "saas", isDefault: true })];
+  assert.deepEqual(chatCandidates(providers, { allowedProviders: ["onprem"] }), []);
+});
+
+test("visionCandidates: allowedProviders bounds where an agent's images go", () => {
+  const providers = [
+    visionProvider({ id: "saas", visionCapable: true, isDefaultVision: true }),
+    visionProvider({ id: "eu", visionCapable: true, isFallback: true }),
+  ];
+  assert.deepEqual(ids(visionCandidates(providers, { allowedProviders: ["eu"] })), ["eu"]);
+});
+
 // ── visionCandidates ─────────────────────────────────────────────────────────
 
 test("visionCandidates: default-vision → vision-capable fallback", () => {

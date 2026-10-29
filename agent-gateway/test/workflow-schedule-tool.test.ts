@@ -70,10 +70,10 @@ test("workflow_schedule: present in TOOL_NAMES", () => {
   assert.ok(TOOL_NAMES.includes("workflow_schedule"), "workflow_schedule must be in TOOL_NAMES");
 });
 
-test("workflow_schedule: bridge-direct (gate-skipped) — it calls the broker RPC directly, not Tool Proxy", () => {
+test("workflow_schedule: gated (F52) — creating a standing schedule is a human decision, never gate-skipped", () => {
   assert.ok(
-    gateSkippedTools().has("workflow_schedule"),
-    "workflow_schedule must be in gateSkippedTools() — it never carries an approved-tools list of its own and is FGA-gated server-side",
+    !gateSkippedTools().has("workflow_schedule"),
+    "workflow_schedule must reach gate()'s JIT plan and approval card before it calls the broker RPC",
   );
 });
 

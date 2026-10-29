@@ -88,12 +88,19 @@ export async function* runAgentInvocation(
   const runId = randomUUID();
   const threadId = `ext-${agentId}-${runId}`;
 
+  // H-06: the org master for unattended pre-approval, read once per run.
+  const unattended = await unattendedAllowed(opts.clients.south, tenantId, log);
+
   const runIdentity: RunIdentity = {
     tenantId,
     userId: ownerUserId,
     agentId,
     token: undefined,
     ownerGrant,
+    // F51: subagent branches inherit the run's own standing list, never more.
+    preApproved: unattended && spec?.approvalMode === "auto" ? approvedTools : [],
+    // F203: parent-side LLM calls honour the agent's provider pin too.
+    ...(spec ? { agentSpec: spec } : {}),
   };
 
   // WHY externalApprover: the external surface must re-check approvalMode at
@@ -102,8 +109,6 @@ export async function* runAgentInvocation(
   const getApprovalMode = cachedApprovalMode(
     () => opts.clients.south.getAgentSpec({ agentId, tenantId }).then((r) => r.approvalMode),
   );
-  // H-06: the org master for unattended pre-approval, read once per run.
-  const unattended = await unattendedAllowed(opts.clients.south, tenantId, log);
   handle.setRunContext(runId, runIdentity, externalApprover(approvedTools, getApprovalMode, log, unattended));
 
   const queue = new EventQueue<InvocationEvent>();

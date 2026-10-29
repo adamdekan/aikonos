@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { status } from "@grpc/grpc-js";
 import pino from "pino";
-import { grpcToHttp, sendError, trimmedErrorMessage } from "../src/http-errors.js";
+import { grpcToHttp, isAccessRevoked, sendError, trimmedErrorMessage } from "../src/http-errors.js";
 
 function grpcErr(code: number, message = "boom"): { code: number; message: string; details: string } {
   return { code, message: `${code} X: ${message}`, details: message };
@@ -156,4 +156,12 @@ test("sendError: response body never leaks a 'Error:' / stack-shaped string", ()
   const serialized = JSON.stringify(reply.result.body);
   assert.doesNotMatch(serialized, /Error:/);
   assert.doesNotMatch(serialized, /at .+:\d+:\d+/);
+});
+
+test("isAccessRevoked (F129): a blocked user or a revoked session — not any other refusal", () => {
+  assert.equal(isAccessRevoked(grpcErr(status.PERMISSION_DENIED, "user is blocked")), true);
+  assert.equal(isAccessRevoked(grpcErr(status.PERMISSION_DENIED, "owner grant refused: user is blocked")), true);
+  assert.equal(isAccessRevoked(grpcErr(status.UNAUTHENTICATED, "session revoked; sign in again")), true);
+  assert.equal(isAccessRevoked(grpcErr(status.PERMISSION_DENIED, "tool not permitted")), false);
+  assert.equal(isAccessRevoked(new Error("boom")), false);
 });

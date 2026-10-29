@@ -102,3 +102,16 @@ test("execute() after a gate-then-bridge-direct gate fails loudly instead of inv
   assert.equal(res.ok, false);
   assert.match(res.error ?? "", /not authorized/);
 });
+
+test("F129: a gate the broker refuses as 'user is blocked' ends the run via identity.onAccessRevoked", async () => {
+  // WHY: the run's owner (the /agui stream, the ticker) must stop the child —
+  // a refused tool call alone let the model keep talking on the org's LLM.
+  const blocked = Object.assign(new Error("7 PERMISSION_DENIED: user is blocked"), { code: 7, details: "user is blocked" });
+  const clients = makeClients(ValidationOutcome.APPROVED);
+  (clients.north as unknown as { createTask: () => Promise<never> }).createTask = () => Promise.reject(blocked);
+  const revoked: unknown[] = [];
+  const bridge = new GovernanceBridge(cfg, clients, { ...identity, onAccessRevoked: (e) => revoked.push(e) }, async () => true, log);
+
+  await assert.rejects(() => bridge.gate("call-6", "web_fetch", { url: "https://example.test" }));
+  assert.deepEqual(revoked, [blocked]);
+});

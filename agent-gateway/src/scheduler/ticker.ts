@@ -25,6 +25,7 @@ import type { RunResult, StepOutcome } from "../workflow/run.js";
 import type { WorkflowDef } from "../workflow/author.js";
 import type { RunIdentity } from "../ipc/bridge-server.js";
 import { ChildSupervisor } from "../ipc/supervisor.js";
+import type { AgentSpec } from "../pi/session.js";
 import { buildScheduledSessionRecord } from "./session-record.js";
 import type { SessionEvent } from "./session-record.js";
 
@@ -92,6 +93,32 @@ export async function unattendedAllowed(
   }
 }
 
+// actorAgentSpec resolves the spec a scheduled run's actor agent imposes, the
+// same rule /agui applies to a chat (F203): the tenant default agent carries
+// none (the owner's own grants), any other agent's skills and provider pin
+// (preferredProvider/model, allowedProviders) apply. Fails closed: a broker
+// error or a missing spec fails the run rather than running it unpinned.
+export async function actorAgentSpec(
+  south: Pick<BrokerClients["south"], "resolveRunAgent" | "getAgentSpec">,
+  tenantId: string,
+  userId: string,
+  agentId: string,
+): Promise<AgentSpec | undefined> {
+  if (!agentId) return undefined;
+  const run = await south.resolveRunAgent({ tenantId, userId, agentId });
+  if (run.isDefault) return undefined;
+  const spec = await south.getAgentSpec({ tenantId, agentId });
+  if (!spec.found) throw new Error(`scheduled run: actor agent ${agentId} has no spec`);
+  return {
+    model: spec.llmModel ?? "",
+    approvalMode: spec.approvalMode ?? "needs_approval",
+    skills: spec.skills ?? [],
+    preferredProvider: spec.preferredProvider ?? "",
+    allowedProviders: spec.allowedProviders ?? [],
+    soul: spec.soul ?? "",
+  };
+}
+
 // SupervisorDeps is the injection seam for the supervisor used by tick().
 // Production callers (startScheduler via server.ts) pass the real supervisor.
 // Tests inject a fake supervisor to avoid real forks.
@@ -110,6 +137,7 @@ async function runViaChild(
   run: { id: string; ownerUserId: string; prompt: string; approvedTools: string[]; ownerGrant: string; actorAgentId: string; runId: string; runAt: string },
   timeoutMs: number,
   unattended: boolean,
+  agentSpec?: AgentSpec,
 ): Promise<RunOutcome> {
   const sessionAgentId = run.actorAgentId;
 
@@ -121,10 +149,11 @@ async function runViaChild(
   };
 
   const key = supervisor.keyFor(identity);
-  const handle = await supervisor.getOrSpawn(key, identity);
+  const handle = await supervisor.getOrSpawn(key, identity, agentSpec);
 
   const { runId, runAt } = run;
   const threadId = `sched-${run.id}`;
+  const preApproved = unattended ? run.approvedTools : [];
 
   const runIdentity: RunIdentity = {
     tenantId: cfg.defaultTenantId,
@@ -140,10 +169,15 @@ async function runViaChild(
     // per-call toolCallId in GovernanceBridge.gate) so a retried scheduled run
     // doesn't spawn duplicate gateway tasks for the same tool call.
     runId,
+    // F51: subagent branches inherit exactly the schedule's own standing list.
+    preApproved,
+    ...(agentSpec ? { agentSpec } : {}),
+    // F129: a blocked owner ends the run instead of letting it talk on.
+    onAccessRevoked: () => handle.abortRun(runId),
   };
 
   // L-25: no baseline — only the schedule's own explicit list is pre-approved.
-  handle.setRunContext(runId, runIdentity, unattendedApprover(unattended ? run.approvedTools : [], log), runId);
+  handle.setRunContext(runId, runIdentity, unattendedApprover(preApproved, log), runId);
 
   let text = "";
   const summaryTools: string[] = [];
@@ -299,6 +333,8 @@ async function runViaWorkflow(
   // Without it, this construction site silently used the permissive no-op
   // default and reason steps in a scheduled run were never rate-limited.
   rateLimitChecker?: RateLimitChecker,
+  // F203: the actor agent's provider pin, honoured by the run's reason steps.
+  agentSpec?: AgentSpec,
 ): Promise<RunOutcome> {
   // The whole fire — including the definition fetch used to derive the
   // approver, not just bridge.runWorkflow() — is bounded by timeoutMs. A hang
@@ -315,6 +351,7 @@ async function runViaWorkflow(
         agentId: run.actorAgentId,
         ownerGrant: run.ownerGrant,
         runId: run.runId,
+        ...(agentSpec ? { agentSpec } : {}),
       };
 
       // Fetched once here (not just inside bridge.runWorkflow) because the
@@ -449,6 +486,7 @@ async function runOneScheduledRun(
   let outcome: RunOutcome;
   try {
     const unattended = await unattendedAllowed(clients.south, cfg.defaultTenantId, log);
+    const agentSpec = await actorAgentSpec(clients.south, cfg.defaultTenantId, run.ownerUserId, run.actorAgentId ?? "");
     outcome = run.workflowLineageId
       ? await runViaWorkflow(
           cfg,
@@ -467,6 +505,7 @@ async function runOneScheduledRun(
           cfg.schedulerRunTimeoutMs,
           unattended,
           rateLimitChecker,
+          agentSpec,
         )
       : await runViaChild(cfg, supervisor, log, {
           id: run.id,
@@ -477,7 +516,7 @@ async function runOneScheduledRun(
           actorAgentId: run.actorAgentId ?? "",
           runId,
           runAt,
-        }, cfg.schedulerRunTimeoutMs, unattended);
+        }, cfg.schedulerRunTimeoutMs, unattended, agentSpec);
   } catch (err) {
     const summary = String(err).slice(0, MAX_SUMMARY);
     const finishedAt = new Date().toISOString();

@@ -107,6 +107,14 @@ export function isStepUpRequired(err: unknown): boolean {
   return grpcCode(err) === status.PERMISSION_DENIED && callerDetail(err) === "step_up_required";
 }
 
+// F129 / AG-06: the broker refuses a blocked user with PERMISSION_DENIED "…user
+// is blocked" and a revoked session with UNAUTHENTICATED. Either means the run's
+// user may no longer act, so the run ends rather than carrying on.
+export function isAccessRevoked(err: unknown): boolean {
+  const code = grpcCode(err);
+  return code === status.UNAUTHENTICATED || (code === status.PERMISSION_DENIED && callerDetail(err).endsWith("user is blocked"));
+}
+
 export function stepUpAcr(err: unknown): string {
   const md = (err as { metadata?: { get(key: string): unknown[] } })?.metadata;
   const v = md?.get?.("aikonos-step-up-acr")?.[0];
