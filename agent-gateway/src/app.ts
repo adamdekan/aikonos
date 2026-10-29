@@ -46,7 +46,11 @@ export interface AppCtx {
 }
 
 export function buildApp(ctx: AppCtx): FastifyInstance {
-  const app = Fastify({ logger: false });
+  // F57: bound how long one request may take to arrive (headers + body), so a
+  // slow-sent 14 MiB upload cannot hold a connection open indefinitely —
+  // Fastify's own default is no limit. Responses (the /agui SSE stream) are
+  // not affected.
+  const app = Fastify({ logger: false, requestTimeout: 120_000 });
 
   app.get("/healthz", async () => ({ ok: true }));
 

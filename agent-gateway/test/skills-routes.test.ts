@@ -154,11 +154,18 @@ type NorthCall =
 
 // failUploadOnCall (1-indexed) simulates an RPC failure partway through the
 // SKILL.md + extras write loop, to drive the mid-import cleanup path.
-function makeImportNorth(existingNames: string[] = [], opts: { failUploadOnCall?: number } = {}) {
+// unlistedDirs are Skills/<name>/ folders the capped listing does not return
+// (G15: a user past the 50-skill listing cap still owns them).
+function makeImportNorth(existingNames: string[] = [], opts: { failUploadOnCall?: number; unlistedDirs?: string[] } = {}) {
   const calls: NorthCall[] = [];
   let uploadCount = 0;
   return {
     calls,
+    async listWorkspaceFiles(req: { path: string }) {
+      const dir = req.path.replace(/^Skills\//, "");
+      const present = existingNames.includes(dir) || (opts.unlistedDirs ?? []).includes(dir);
+      return { files: present ? [{ path: `${req.path}/SKILL.md`, sizeBytes: 1, isDir: false }] : [] };
+    },
     async listPersonalSkills(req: ListPersonalSkillsRequest): Promise<ListPersonalSkillsResponse> {
       calls.push({ method: "listPersonalSkills", req });
       return {
@@ -399,6 +406,21 @@ test("handleSkillImport: existing dir → 409 with suggested_name, never overwri
   assert.ok(!north.calls.some((c) => c.method === "uploadWorkspaceFile"), "must never write when the name already exists");
 });
 
+test("G15 handleSkillImport: a skill past the 50-name listing cap is still never overwritten", async () => {
+  // WHY: listPersonalSkills stops after 50 names, so a 51st skill was invisible
+  // to the exists check and the import clobbered it.
+  const { jwksResolver, token } = await authFixture();
+  const listed = Array.from({ length: 50 }, (_, i) => `skill-${String(i).padStart(2, "0")}`);
+  const north = makeImportNorth(listed, { unlistedDirs: ["my-notes"] });
+  const reply = fakeReply();
+  await handleSkillImport(
+    { headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown" }, body: Buffer.from(BARE_SKILL_MD) },
+    reply, jwksResolver, VERIFY_OPTS, north as never,
+  );
+  assert.equal(reply.statusCode, 409);
+  assert.ok(!north.calls.some((c) => c.method === "uploadWorkspaceFile"), "must never write over the unlisted skill");
+});
+
 test("handleSkillImport: unsupported content type → 415", async () => {
   const { jwksResolver, token } = await authFixture();
   const north = makeImportNorth();
@@ -454,6 +476,9 @@ async function makeAppWithAuth() {
     },
     async uploadWorkspaceFile(): Promise<UploadWorkspaceFileResponse> {
       return { file: undefined };
+    },
+    async listWorkspaceFiles() {
+      return { files: [] };
     },
   };
 

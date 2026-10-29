@@ -356,3 +356,22 @@ test("POST run?stream=1: ctx.rateLimitChecker reaches the SSE bridge and denies 
   assert.equal(rateLimitCalls.length, 1, "the SSE-run bridge must invoke the injected rate-limit checker");
   await app.close();
 });
+
+test("F66 POST run?stream=1: a gRPC infra error in the result frame is trimmed, not echoed", async () => {
+  // WHY: the bridge returns String(err), and the raw text names broker hosts.
+  const { north, south } = runClients();
+  north.getWorkflow = () => Promise.reject(Object.assign(new Error("14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090"), { code: 14 }));
+  const { app, token } = await buildApp(north, south);
+  await app.ready();
+  const res = await app.inject({
+    method: "POST",
+    url: "/workflows/lin-1/run?stream=1",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    payload: { inputs: {} },
+  });
+  const result = parseSse(res.body).find((f) => f.event === "result");
+  assert.ok(result, "a result frame is written");
+  assert.doesNotMatch(res.body, /10\.0\.0\.5|ECONNREFUSED/);
+  assert.equal((result.data as { ok: boolean }).ok, false);
+  await app.close();
+});

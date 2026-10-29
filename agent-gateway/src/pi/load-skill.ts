@@ -37,9 +37,21 @@ function textResult(text: string) {
   return { content: [{ type: "text" as const, text }], details: {} };
 }
 
+// catalogField collapses whitespace and control characters to single spaces
+// and clips to max runes — the same treatment agui.ts's flat() gives recalled
+// memory fields (G13). A personal skill's name is a directory name and its
+// description a YAML block scalar, so either can carry newlines that would
+// otherwise forge extra catalog lines or instructions in the system prompt.
+function catalogField(s: string, max: number): string {
+  const collapsed = s.replace(/[\s\p{Cc}]+/gu, " ").trim();
+  const runes = [...collapsed];
+  return runes.length > max ? `${runes.slice(0, max).join("")}…` : collapsed;
+}
+
 // buildSkillCatalogText returns the catalog snippet injected into the system
 // prompt — names + descriptions of non-disable_model_invocation bundles only.
 // Returns "" when there is nothing to show (no injected section → no prompt bloat).
+// Each entry is one flattened line: name clipped to 64 runes, description to 300.
 export function buildSkillCatalogText(bundles: SkillBundleEntry[]): string {
   const visible = bundles.filter((b) => !b.disableModelInvocation);
   if (visible.length === 0) return "";
@@ -48,7 +60,9 @@ export function buildSkillCatalogText(bundles: SkillBundleEntry[]): string {
   // their name already carries the qualified "personal:<name>" activation
   // key, but the explicit suffix keeps the distinction readable even if that
   // naming convention ever changes.
-  const lines = visible.map((b) => `- ${b.name}: ${b.description}${b.origin === "personal" ? " (personal)" : ""}`);
+  const lines = visible.map(
+    (b) => `- ${catalogField(b.name, 64)}: ${catalogField(b.description, 300)}${b.origin === "personal" ? " (personal)" : ""}`,
+  );
   return `Available skills (call load_skill(name) to activate):\n${lines.join("\n")}`;
 }
 
