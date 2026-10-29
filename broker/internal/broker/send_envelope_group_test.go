@@ -3,8 +3,10 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -437,5 +439,71 @@ func TestSendEnvelope_AutoAccept_RecordsDelegatedBy(t *testing.T) {
 	task := store.created[0]
 	if task.OwnerUserID != "bob@example.com" || task.OnBehalfOf().DelegatedBy != "alice@example.com" {
 		t.Errorf("owner=%q delegated_by=%q, want bob@example.com / alice@example.com", task.OwnerUserID, task.OnBehalfOf().DelegatedBy)
+	}
+}
+
+// G48/F250: oversized envelope fields are refused before any delivery.
+func TestSendEnvelope_FieldCaps(t *testing.T) {
+	f := &fakeFGA{}
+	fgaSrv := f.server(t)
+	defer fgaSrv.Close()
+	opaSrv := opaAlwaysAllow(t)
+	defer opaSrv.Close()
+
+	store := &trackingEnvelopeStore{}
+	deps := testEnvelopeDeps(t, fgaSrv.URL, opaSrv.URL)
+	deps.Tasks = store
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+	bob := &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_UserId{UserId: "bob@example.com"}}
+
+	for name, task := range map[string]*brokerv1.EnvelopeTask{
+		"intent":          {Intent: strings.Repeat("a", maxPromptBytes+1)},
+		"payload_ref":     {Intent: "x", PayloadRef: strings.Repeat("a", maxEnvelopePayloadRefBytes+1)},
+		"required_skills": {Intent: "x", RequiredSkills: make([]string, maxEnvelopeListItems+1)},
+	} {
+		_, err := svc.SendEnvelope(ctx, &brokerv1.SendEnvelopeRequest{
+			TenantId: testTenantUUID, Recipient: bob, Task: task, Delegation: &brokerv1.EnvelopeDelegation{},
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("%s: got %v, want InvalidArgument", name, err)
+		}
+	}
+	if store.count != 0 {
+		t.Fatalf("an oversized envelope was stored")
+	}
+}
+
+// F250: a group send past maxEnvelopeFanOut members is refused outright.
+func TestSendEnvelope_GroupFanOutCap(t *testing.T) {
+	tuples := []fgaKey{memberTuple("alice@example.com", "group:big")}
+	for i := 0; i <= maxEnvelopeFanOut; i++ {
+		tuples = append(tuples, memberTuple(fmt.Sprintf("u%d@example.com", i), "group:big"))
+	}
+	f := &fakeFGA{
+		listObjectsResultByUser: map[string][]string{"user:alice@example.com": {"group:big"}},
+		reads:                   map[string][]fgaKey{"group:big": tuples},
+	}
+	fgaSrv := f.server(t)
+	defer fgaSrv.Close()
+	opaSrv := opaAlwaysAllow(t)
+	defer opaSrv.Close()
+
+	store := &trackingEnvelopeStore{}
+	deps := testEnvelopeDeps(t, fgaSrv.URL, opaSrv.URL)
+	deps.Tasks = store
+	svc := NewBrokerService(deps)
+
+	_, err := svc.SendEnvelope(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.SendEnvelopeRequest{
+		TenantId:   testTenantUUID,
+		Recipient:  &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_GroupId{GroupId: "group:big"}},
+		Task:       &brokerv1.EnvelopeTask{Intent: "fan this out"},
+		Delegation: &brokerv1.EnvelopeDelegation{},
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("got %v, want ResourceExhausted", err)
+	}
+	if store.count != 0 {
+		t.Fatalf("created %d envelopes past the fan-out cap", store.count)
 	}
 }

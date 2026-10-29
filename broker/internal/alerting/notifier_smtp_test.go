@@ -345,3 +345,37 @@ func TestSMTPNotifier_RequiresSTARTTLS(t *testing.T) {
 		}
 	}
 }
+
+// F47: a server that accepts and never sends its greeting fails the send at
+// the ctx deadline instead of blocking forever.
+func TestSMTPNotifier_SilentServerTimesOut(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // hold the connection open, say nothing
+		}
+	}()
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	n := &SMTPNotifier{Host: host, Port: port, From: "a@x", To: "b@x"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- n.Notify(ctx, Alert{Rule: "denial"}) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Notify to a silent server succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Notify blocked past its ctx deadline")
+	}
+}

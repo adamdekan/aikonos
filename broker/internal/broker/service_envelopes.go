@@ -38,6 +38,9 @@ func (s *BrokerService) SendEnvelope(ctx context.Context, req *brokerv1.SendEnve
 	if err != nil {
 		return nil, err
 	}
+	if err := validateEnvelopeFields(req); err != nil {
+		return nil, err
+	}
 
 	switch {
 	case req.GetRecipient().GetUserId() != "":
@@ -49,6 +52,42 @@ func (s *BrokerService) SendEnvelope(ctx context.Context, req *brokerv1.SendEnve
 	default:
 		return nil, status.Error(codes.InvalidArgument, "recipient must specify user_id, group_id, or role")
 	}
+}
+
+// Envelope caps (G48, F250): the task spec is stored as JSONB and the intent
+// is published to the recipient's inbox, and a group send repeats the whole
+// delivery per member.
+const (
+	maxEnvelopePayloadRefBytes = 512
+	maxEnvelopeListItems       = 64  // required_skills, attenuated_scopes
+	maxEnvelopeListItemBytes   = 256 // one skill or scope name
+	maxEnvelopeFanOut          = 50  // group members one send may reach
+)
+
+// validateEnvelopeFields bounds every caller-supplied envelope field once,
+// before the user/group switch, so both delivery paths are covered.
+func validateEnvelopeFields(req *brokerv1.SendEnvelopeRequest) error {
+	task := req.GetTask()
+	if len(task.GetIntent()) > maxPromptBytes {
+		return status.Errorf(codes.InvalidArgument, "intent longer than %d bytes", maxPromptBytes)
+	}
+	if len(task.GetPayloadRef()) > maxEnvelopePayloadRefBytes {
+		return status.Errorf(codes.InvalidArgument, "payload_ref longer than %d bytes", maxEnvelopePayloadRefBytes)
+	}
+	for name, list := range map[string][]string{
+		"required_skills":   task.GetRequiredSkills(),
+		"attenuated_scopes": req.GetDelegation().GetAttenuatedScopes(),
+	} {
+		if len(list) > maxEnvelopeListItems {
+			return status.Errorf(codes.InvalidArgument, "%s has more than %d entries", name, maxEnvelopeListItems)
+		}
+		for _, item := range list {
+			if len(item) > maxEnvelopeListItemBytes {
+				return status.Errorf(codes.InvalidArgument, "%s entry longer than %d bytes", name, maxEnvelopeListItemBytes)
+			}
+		}
+	}
+	return nil
 }
 
 // sendEnvelopeToUser delivers one envelope to a single recipient user. It is
@@ -236,6 +275,11 @@ func (s *BrokerService) sendEnvelopeToGroup(ctx context.Context, req *brokerv1.S
 	if err != nil {
 		s.deps.Logger.Warn("sendEnvelopeToGroup: groupMembersExcluding failed", zap.String("group", groupID), zap.Error(err))
 		return nil, status.Errorf(codes.PermissionDenied, "delegation denied: could not resolve group members")
+	}
+
+	if len(members) > maxEnvelopeFanOut {
+		s.emitEnvelopeAudit(ctx, traceID, tenant, from, "aikonos.broker.envelope.denied", auditv1.PolicyDecision_DENY, "")
+		return nil, status.Errorf(codes.ResourceExhausted, "group has %d members; one send reaches at most %d", len(members), maxEnvelopeFanOut)
 	}
 
 	delivered := 0

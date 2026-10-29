@@ -23,7 +23,10 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
 	// SPIFFE — workload identity
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
@@ -44,6 +47,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 
 	"github.com/spf13/viper"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -153,7 +157,11 @@ func main() {
 	// bundle_dir, archived per revision before OPA can load it. Empty → OPA
 	// loads its own policy and decisions carry no revision.
 	viper.SetDefault("policy.bundle_dir", "")
-	viper.SetDefault("policy.bundle_http_addr", ":9092")
+	// Empty → ":9092" (all interfaces) in dev mode, loopback otherwise (F37):
+	// the bundle is unauthenticated plaintext, so exposing it on every
+	// interface is an explicit choice. OPA in another container needs it set,
+	// e.g. AIKONOS_POLICY_BUNDLE_HTTP_ADDR=:9092 on a private network.
+	viper.SetDefault("policy.bundle_http_addr", "")
 	viper.SetDefault("policy.bundle_reload_seconds", 30)
 	viper.SetDefault("policy.fga_model_refresh_seconds", 30)
 	// OIDC north-bound auth. Empty issuer → validation disabled (local dev).
@@ -211,6 +219,14 @@ func main() {
 	// sidecar signing disabled (Write/Read/Move degrade to unsigned — same
 	// posture as an unsigned audit chain).
 	viper.SetDefault("workspace.session_signing_key", "")
+	// F40 migration switch: read session records that have no path-bound
+	// sidecar (written before F40 or with no key) instead of failing them
+	// closed, and allow unsigned session writes. Off by default; turn it on
+	// only until old sessions have been re-saved.
+	viper.SetDefault("workspace.allow_unsigned_sessions", false)
+	// F33: per-(tenant,user) workspace quota; 0 turns a dimension off.
+	viper.SetDefault("workspace.quota_bytes", int64(workspacefs.DefaultQuotaBytes))
+	viper.SetDefault("workspace.quota_entries", workspacefs.DefaultQuotaEntries)
 	// Skills directory. Manifests are loaded at startup from this path.
 	// Empty dir or absent dir → baseline only (no error). Conflict → fatal.
 	viper.SetDefault("skills.dir", "skills")
@@ -235,6 +251,11 @@ func main() {
 	// Empty string (default) → no extra gates (unchanged behaviour).
 	viper.SetDefault("policy.tool_gates", "")
 	viper.SetDefault("alerting.webhook_url", "")
+	// F34: at most one "denial" alert per (tenant, actor) per cooldown, with
+	// the suppressed count on the next; 0 alerts on every DENY. Alerts older
+	// than retention_days are pruned daily; 0 keeps them forever.
+	viper.SetDefault("alerting.denial_cooldown_seconds", 60)
+	viper.SetDefault("alerting.retention_days", 90)
 	viper.SetDefault("alerting.deny_rate_threshold", 25)
 	viper.SetDefault("alerting.deny_rate_window_seconds", 60)
 	viper.SetDefault("alerting.deny_rate_cooldown_seconds", 300)
@@ -650,6 +671,31 @@ func main() {
 	// CP4.2: shared by both Store instances below (north + south) so a session
 	// signed on one gRPC surface verifies on the other.
 	workspaceSessionKey := resolveWorkspaceSessionKey(ctx, viper.GetString("workspace.session_signing_key"), vaultClient, log)
+	// F199/F227: refuse placeholder or short HMAC keys outside dev mode. The
+	// audit key is checked even when empty (an unsigned chain is forgeable);
+	// an empty pepper or session key already fails closed where it is used.
+	{
+		auditKey, _ := auditKeySource.Current()
+		secrets := map[string]string{
+			"audit signing key": auditKey,
+			"gateway grant key": string(gatewayGrantKey),
+		}
+		if pepper := viper.GetString("api_key.pepper"); pepper != "" {
+			secrets["api key pepper"] = pepper
+		}
+		if len(workspaceSessionKey) > 0 {
+			secrets["workspace session signing key"] = string(workspaceSessionKey)
+		} else if raw := viper.GetString("workspace.session_signing_key"); raw != "" {
+			secrets["workspace session signing key"] = raw // set but undecodable, e.g. a "<...>" placeholder
+		}
+		weak, guardErr := secretsGuard(viper.GetBool("dev_mode"), secrets)
+		if guardErr != nil {
+			log.Fatal("startup guard", zap.Error(guardErr))
+		}
+		if len(weak) > 0 {
+			log.Warn("running in DEV_MODE with weak secrets", zap.Strings("weak", weak))
+		}
+	}
 	// Connector OAuth registry + state store + reference store. Wired only when
 	// Vault is enabled (a token store with nowhere to put tokens is useless).
 	var connRegistry *connector.Registry
@@ -714,6 +760,7 @@ func main() {
 		}
 		if len(alertSinks) > 0 && eventBus.Enabled() {
 			alertEv := alerting.NewEvaluator(alerting.Config{
+				DenialCooldown:              time.Duration(viper.GetInt("alerting.denial_cooldown_seconds")) * time.Second,
 				DenyRateThreshold:           viper.GetInt("alerting.deny_rate_threshold"),
 				DenyRateWindow:              time.Duration(viper.GetInt("alerting.deny_rate_window_seconds")) * time.Second,
 				DenyRateCooldown:            time.Duration(viper.GetInt("alerting.deny_rate_cooldown_seconds")) * time.Second,
@@ -817,6 +864,11 @@ func main() {
 	// exactly the same on-disk directory doc.write always wrote to.
 	sharedWorkspace := workspacefs.New(viper.GetString("toolproxy.workspace_root"))
 	sharedWorkspace.SetSessionSigningKey(workspaceSessionKey)
+	sharedWorkspace.SetAllowUnsignedSessions(viper.GetBool("workspace.allow_unsigned_sessions"))
+	sharedWorkspace.SetQuota(viper.GetInt64("workspace.quota_bytes"), viper.GetInt("workspace.quota_entries"))
+	if viper.GetBool("workspace.allow_unsigned_sessions") {
+		log.Warn("workspace.allow_unsigned_sessions is on — session records without a path-bound sidecar are read unverified (migration only)")
+	}
 	sharedWorkspaceRouter := &workspacefs.Router{Local: sharedWorkspace}
 	if workspacePrefResolver != nil {
 		sharedWorkspaceRouter.Remote = oneDriveRemoteBackend
@@ -844,6 +896,9 @@ func main() {
 	// disabled, so InvokeTool's `s.deps.Baseline != nil` nil-check still holds.
 	var baselineIface baseline.Recorder
 	if viper.GetBool("baseline.enabled") {
+		if err := baselineCfg.Validate(); err != nil {
+			log.Fatal("Invalid baseline config", zap.Error(err))
+		}
 		baselineRepo = db.NewAgentBaselineRepo(pool, log)
 		baselineRecorder = baseline.NewDBRecorder(baselineRepo, baselineCfg.WindowSize, log)
 		baselineLearner = baseline.NewLearner(baselineRepo, baselineCfg)
@@ -943,12 +998,13 @@ func main() {
 	// both services, so an admin write resets the interceptor's cache too.
 	revocationChecker := revocation.New(db.NewRevocationRepo(pool, log))
 
-	northServer := grpc.NewServer(
+	northServer := grpc.NewServer(append(serverLimits(),
 		grpc.Creds(northCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.MaxRecvMsgSize(maxMsgBytes),
 		grpc.MaxSendMsgSize(maxMsgBytes),
 		grpc.ChainUnaryInterceptor(
+			requestSizeInterceptor(maxRequestBytes, largeRequestMethods),
 			auth.OIDCInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
 			auth.TenantInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
 			auth.RevocationInterceptor(revocationChecker, auditEmitter, log),
@@ -963,7 +1019,7 @@ func main() {
 			auth.TenantStreamInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
 			auth.RevocationStreamInterceptor(revocationChecker, auditEmitter, log),
 		),
-	)
+	)...)
 
 	auditReader := audit.NewReader(audit.Config{
 		MinioEndpoint:    viper.GetString("audit.minio_endpoint"),
@@ -1090,14 +1146,14 @@ func main() {
 	southCreds := grpccredentials.MTLSServerCredentials(svidSrc, bundleSrc,
 		identity.SouthAuthorizer())
 
-	southServer := grpc.NewServer(
+	southServer := grpc.NewServer(append(serverLimits(),
 		grpc.Creds(southCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
 			auth.SPIFFEInterceptor(viper.GetString("spiffe.sandbox_path_prefix"), auditEmitter, viper.GetString("broker.tenant_id"), log),
 			auth.AuditInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
 		),
-	)
+	)...)
 
 	sandboxSvc := brokersvc.NewSandboxService(brokersvc.Deps{
 		Logger:          log,
@@ -1191,6 +1247,11 @@ func main() {
 	// AG-03: suspend agents orphaned past identity.orphan_grace_days.
 	go runOrphanSweepLoop(ctx, northSvc, viper.GetString("tenant_id"), log)
 
+	// F34: alert history retention.
+	if days := viper.GetInt("alerting.retention_days"); days > 0 {
+		go runAlertPruneLoop(ctx, alertRepo, days, log)
+	}
+
 	// Per-call LLM usage event retention.
 	if days := viper.GetInt("llm_usage.retention_days"); days > 0 {
 		go runLlmUsagePruneLoop(ctx, usageEventRepo, days, log)
@@ -1200,9 +1261,70 @@ func main() {
 	<-ctx.Done()
 	log.Info("Shutdown signal received")
 
-	northServer.GracefulStop()
-	southServer.GracefulStop()
+	stopGRPC(northServer, shutdownGrace)
+	stopGRPC(southServer, shutdownGrace)
 	log.Info("Broker stopped cleanly")
+}
+
+// ── gRPC server limits (G48, F200) ───────────────────────────────────────────
+
+// maxRequestBytes bounds every north request except largeRequestMethods; the
+// server-wide MaxRecvMsgSize stays 16 MiB only so those can carry file bytes.
+const maxRequestBytes = 4 << 20
+
+// largeRequestMethods are the north RPCs that legitimately carry more than
+// maxRequestBytes: a workspace file upload (10 MiB cap) and an admin skill
+// bundle (up to maxSkillBundleFiles files).
+var largeRequestMethods = map[string]bool{
+	brokerv1.BrokerService_UploadWorkspaceFile_FullMethodName: true,
+	brokerv1.BrokerService_UpsertAgentSkill_FullMethodName:    true,
+}
+
+// shutdownGrace is how long each server drains before its remaining streams
+// are cut, so a stuck StreamTaskEvents cannot hold exit (and the singleton
+// lock) forever.
+const shutdownGrace = 10 * time.Second
+
+// serverLimits are the connection limits both gRPC servers share: a stream cap
+// per connection, an idle-connection reaper, a ping-flood policy and a bound
+// on the TLS handshake. MaxConnectionAge is deliberately unset — it would cut
+// long-lived StreamTaskEvents streams.
+func serverLimits() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.MaxConcurrentStreams(100),
+		grpc.ConnectionTimeout(10 * time.Second),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 15 * time.Minute,
+			Time:              2 * time.Minute,
+			Timeout:           20 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Minute}),
+	}
+}
+
+// requestSizeInterceptor refuses a request over limit unless its method is in
+// exempt. It runs first in the chain, before authentication does any work.
+func requestSizeInterceptor(limit int, exempt map[string]bool) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if m, ok := req.(proto.Message); ok && !exempt[info.FullMethod] && proto.Size(m) > limit {
+			return nil, status.Errorf(codes.ResourceExhausted, "request larger than %d bytes", limit)
+		}
+		return handler(ctx, req)
+	}
+}
+
+// stopGRPC drains srv for up to grace, then stops it hard.
+func stopGRPC(srv *grpc.Server, grace time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(grace):
+		srv.Stop()
+	}
 }
 
 // runBaselineFlushDetectLoop ticks every baselineCfg.WindowSize, flushing the
@@ -1227,6 +1349,9 @@ func runBaselineFlushDetectLoop(
 		MinSampleWindows: cfg.MinSampleWindows,
 		DriftMultiplier:  cfg.DriftMultiplier,
 	}
+	evalErrors, _ := otel.Meter("github.com/adamdekan/aikonos/broker").Int64Counter(
+		"aikonos.broker.agent.baseline_eval_errors",
+		metric.WithDescription("Closed baseline windows skipped because the agent's baseline could not be loaded"))
 	for {
 		select {
 		case <-ctx.Done():
@@ -1236,9 +1361,15 @@ func runBaselineFlushDetectLoop(
 			for _, cw := range closedWindows {
 				b, err := repo.GetBaseline(ctx, cw.Tenant, cw.Agent)
 				if err != nil {
-					// Learning phase (no baseline yet) or a transient DB error —
-					// either way, monitoring is best-effort and must not block
-					// the next window's flush.
+					// Learning phase (no baseline yet) is expected and silent. Any
+					// other error loses this window's drift check (G39), so it is
+					// logged and counted; monitoring stays best-effort and never
+					// blocks the next window's flush.
+					if !errors.Is(err, db.ErrNotFound) {
+						log.Warn("baseline: drift check skipped, baseline load failed",
+							zap.String("tenant", cw.Tenant), zap.String("agent", cw.Agent), zap.Error(err))
+						evalErrors.Add(ctx, 1)
+					}
 					continue
 				}
 				window := baseline.WindowSummary{
@@ -1313,6 +1444,28 @@ func runLlmUsagePruneLoop(ctx context.Context, repo *db.UsageEventRepo, retentio
 			if removed > 0 {
 				log.Info("llm usage retention: pruned events",
 					zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
+			}
+		}
+	}
+}
+
+// runAlertPruneLoop deletes alerts older than retentionDays once a day (F34).
+func runAlertPruneLoop(ctx context.Context, repo *db.AlertRepo, retentionDays int, log *zap.Logger) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			cutoff := now.UTC().AddDate(0, 0, -retentionDays)
+			removed, err := repo.PruneBefore(ctx, cutoff)
+			if err != nil {
+				log.Warn("alert retention: prune failed", zap.Error(err))
+				continue
+			}
+			if removed > 0 {
+				log.Info("alert retention: pruned alerts", zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
 			}
 		}
 	}

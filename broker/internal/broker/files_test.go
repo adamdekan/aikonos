@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -422,26 +423,37 @@ func TestSessionFile_TamperedContentRefusedLoudly(t *testing.T) {
 	}
 }
 
-func TestSessionFile_LegacyNoSidecarAllowed(t *testing.T) {
+// F40: a session record with no sidecar now fails closed (FailedPrecondition,
+// audited like a tampered one) — it used to be served as "legacy".
+func TestSessionFile_LegacyNoSidecarRefused(t *testing.T) {
 	root := t.TempDir()
-	// Written with signing disabled (pre-CP4.2 posture), then read back with
-	// signing enabled — simulates a file persisted before the key existed.
-	unsignedSvc := filesSvc(t, root)
 	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
 	rel := ".agent/Sessions/abc.json"
-	if _, err := unsignedSvc.UploadWorkspaceFile(ctx, &brokerv1.UploadWorkspaceFileRequest{
-		Path: rel, Content: []byte(`{"id":"abc"}`),
-	}); err != nil {
-		t.Fatalf("upload: %v", err)
+	// Persisted with no sidecar, as before CP4.2.
+	full := filepath.Join(root, workspacepath.SanitizeSeg(testTenantUUID), workspacepath.SanitizeSeg("alice@example.com"), rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(`{"id":"abc"}`), 0o640); err != nil {
+		t.Fatal(err)
 	}
 
 	signedSvc := filesSvcSigned(t, root)
-	read, err := signedSvc.ReadWorkspaceFile(ctx, &brokerv1.ReadWorkspaceFileRequest{Path: rel})
-	if err != nil {
-		t.Fatalf("legacy (no sidecar) read should be allowed, got %v", err)
+	_, err := signedSvc.ReadWorkspaceFile(ctx, &brokerv1.ReadWorkspaceFileRequest{Path: rel})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unsigned session read should be FailedPrecondition, got %v", err)
 	}
-	if string(read.Content) != `{"id":"abc"}` {
-		t.Fatalf("content mismatch: %q", read.Content)
+}
+
+// F33: a full quota surfaces as ResourceExhausted; F41: an Internal error
+// carries no backend detail.
+func TestFileError_QuotaAndInternal(t *testing.T) {
+	if code := status.Code(fileError("upload", workspacefs.ErrQuota)); code != codes.ResourceExhausted {
+		t.Fatalf("ErrQuota -> %v, want ResourceExhausted", code)
+	}
+	err := fileError("upload", errors.New("rename /workspace/t/u/.upload-1 /workspace/t/u/x: permission denied"))
+	if status.Code(err) != codes.Internal || strings.Contains(err.Error(), "/workspace") {
+		t.Fatalf("Internal error leaked detail: %v", err)
 	}
 }
 
@@ -714,6 +726,7 @@ func TestFiles_ReservedPath_StaysLocal_NeverEnsuresOBO(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := workspacefs.New(t.TempDir())
+	local.SetSessionSigningKey([]byte("a-32-byte-test-key-aaaaaaaaaaaa!"))
 	remote := &fakeRemoteBackend{}
 	obo := &fakeOBOBroker{configured: true}
 	svc := NewBrokerService(Deps{

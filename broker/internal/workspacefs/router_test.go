@@ -226,6 +226,7 @@ func TestRouter_ListDir_EmptyAndDotRouteOnActiveBackend(t *testing.T) {
 // into the Remote listing.
 func TestRouter_ListDir_Root_OneDrive_MergesLocalReservedSubtrees(t *testing.T) {
 	local := New(t.TempDir())
+	local.SetSessionSigningKey([]byte(testSessionKey))
 	ctx := context.Background()
 	if _, err := local.Write(ctx, tenant, user, ".agent/Sessions/x.json", []byte("{}")); err != nil {
 		t.Fatal(err)
@@ -268,6 +269,7 @@ func TestRouter_ListDir_Root_OneDrive_MergesLocalReservedSubtrees(t *testing.T) 
 // the same name is the only one that survives, with no duplicate Path.
 func TestRouter_ListDir_Root_OneDrive_RemoteReservedNameFiltered(t *testing.T) {
 	local := New(t.TempDir())
+	local.SetSessionSigningKey([]byte(testSessionKey))
 	ctx := context.Background()
 	if _, err := local.Write(ctx, tenant, user, ".agent/Sessions/x.json", []byte("{}")); err != nil {
 		t.Fatal(err)
@@ -364,6 +366,7 @@ func TestRouter_ListDir_Root_OneDrive_RemoteSkillsNameFiltered_WarnsOnDrop(t *te
 // stays Remote-only.
 func TestRouter_ListDir_NonRootOneDrive_NoLocalMerge(t *testing.T) {
 	local := New(t.TempDir())
+	local.SetSessionSigningKey([]byte(testSessionKey))
 	ctx := context.Background()
 	if _, err := local.Write(ctx, tenant, user, ".agent/Sessions/x.json", []byte("{}")); err != nil {
 		t.Fatal(err)
@@ -400,6 +403,7 @@ func TestRouter_Move_CrossBackendRejectedWhenRemoteActive(t *testing.T) {
 
 func TestRouter_Move_MixedButLocalActive_RoutesLocal(t *testing.T) {
 	local := New(t.TempDir())
+	local.SetSessionSigningKey([]byte(testSessionKey))
 	if _, err := local.Write(context.Background(), tenant, user, "draft.txt", []byte("x")); err != nil {
 		t.Fatal(err)
 	}

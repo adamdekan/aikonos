@@ -3,6 +3,7 @@ package workspacefs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -419,6 +420,7 @@ func TestSizeCap(t *testing.T) {
 //	.agent/Sessions/s1.json
 func seedListDirTree(t *testing.T, s *Store) {
 	t.Helper()
+	s.SetSessionSigningKey([]byte(testSessionKey))
 	for path, data := range map[string]string{
 		"notes.txt":               "hello",
 		"reports/q1.csv":          "a,b,c",
@@ -607,12 +609,18 @@ func TestWrite_SessionPathCreatesSidecar(t *testing.T) {
 	}
 }
 
-func TestWrite_NoKeyConfigured_NoSidecar(t *testing.T) {
-	s := New(t.TempDir()) // no signing key set — degraded/disabled
+// F40: with no key a session write is refused — it could never be verified
+// on read — unless the migration switch is on, and then it gets no sidecar.
+func TestWrite_NoKeyConfigured_SessionWriteRefused(t *testing.T) {
+	s := New(t.TempDir()) // no signing key set
 
 	rel := ".agent/Sessions/abc.json"
+	if _, err := s.Write(context.Background(), tenant, user, rel, []byte(`{"id":"abc"}`)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("session write with no key: got %v, want ErrUnavailable", err)
+	}
+	s.SetAllowUnsignedSessions(true)
 	if _, err := s.Write(context.Background(), tenant, user, rel, []byte(`{"id":"abc"}`)); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatalf("write with the migration switch on: %v", err)
 	}
 	if _, _, err := s.Read(context.Background(), tenant, user, rel+".sig"); err == nil {
 		t.Fatalf("expected no sidecar to be written when signing is disabled")
@@ -675,7 +683,9 @@ func TestReadVerified_TamperedContentRefused(t *testing.T) {
 	}
 }
 
-func TestReadVerified_LegacyFileNoSidecarAllowed(t *testing.T) {
+// F40: a session record with no sidecar fails closed by default; only the
+// allowUnsignedSessions migration switch reads it, flagged legacy.
+func TestReadVerified_LegacyFileNoSidecar(t *testing.T) {
 	s := New(t.TempDir())
 	s.SetSessionSigningKey([]byte(testSessionKey))
 
@@ -683,19 +693,166 @@ func TestReadVerified_LegacyFileNoSidecarAllowed(t *testing.T) {
 	// Written with signing disabled — simulates a file persisted before
 	// CP4.2 shipped.
 	unsigned := New(s.root)
+	unsigned.SetAllowUnsignedSessions(true)
 	want := []byte(`{"id":"abc"}`)
 	if _, err := unsigned.Write(context.Background(), tenant, user, rel, want); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	if _, _, _, err := s.ReadVerified(context.Background(), tenant, user, rel); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("no sidecar: got %v, want ErrIntegrityMismatch", err)
+	}
+	s.SetAllowUnsignedSessions(true)
 	got, _, legacy, err := s.ReadVerified(context.Background(), tenant, user, rel)
 	if err != nil {
-		t.Fatalf("ReadVerified: %v", err)
+		t.Fatalf("ReadVerified with the migration switch on: %v", err)
 	}
 	if !legacy {
 		t.Fatalf("file with no sidecar should be reported legacy")
 	}
 	if string(got) != string(want) {
 		t.Fatalf("content mismatch: got %q want %q", got, want)
+	}
+}
+
+// F40: the MAC is bound to tenant/user/path, so a record and its sidecar
+// copied to another path (or another user) no longer verify.
+func TestReadVerified_SidecarBoundToPath(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetSessionSigningKey([]byte(testSessionKey))
+	ctx := context.Background()
+
+	if _, err := s.Write(ctx, tenant, user, ".agent/Sessions/a.json", []byte(`{"id":"a"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	dir := filepath.Join(s.userDir(tenant, user), ".agent/Sessions")
+	for _, suffix := range []string{"", ".sig"} {
+		data, err := os.ReadFile(filepath.Join(dir, "a.json"+suffix))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "b.json"+suffix), data, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, _, err := s.ReadVerified(ctx, tenant, user, ".agent/Sessions/b.json"); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("copied record: got %v, want ErrIntegrityMismatch", err)
+	}
+}
+
+// F40: sidecars are server-maintained — never written or deleted directly —
+// and deleting a record removes its sidecar.
+func TestSessionSidecar_ServerMaintained(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetSessionSigningKey([]byte(testSessionKey))
+	ctx := context.Background()
+	rel := ".agent/Sessions/a.json"
+
+	if _, err := s.Write(ctx, tenant, user, rel, []byte(`{}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := s.Write(ctx, tenant, user, rel+".sig", []byte("forged")); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("sidecar write: got %v, want ErrInvalidPath", err)
+	}
+	if err := s.Delete(ctx, tenant, user, rel+".sig"); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("sidecar delete: got %v, want ErrInvalidPath", err)
+	}
+	if err := s.Delete(ctx, tenant, user, rel); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(s.userDir(tenant, user), rel+".sig")); !os.IsNotExist(err) {
+		t.Fatalf("sidecar left behind after delete: %v", err)
+	}
+}
+
+// F33: a write loop stops at the byte quota, and Mkdir at the entry quota.
+func TestQuota_WriteAndMkdirStop(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetQuota(10, 3)
+	ctx := context.Background()
+
+	if _, err := s.Write(ctx, tenant, user, "a.txt", []byte("12345")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := s.Write(ctx, tenant, user, "a.txt", []byte("1234567890")); err != nil {
+		t.Fatalf("overwrite counts only its growth: %v", err)
+	}
+	if _, err := s.Write(ctx, tenant, user, "b.txt", []byte("x")); !errors.Is(err, ErrQuota) {
+		t.Fatalf("byte quota: got %v, want ErrQuota", err)
+	}
+	if err := s.Mkdir(ctx, tenant, user, "d1"); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := s.Mkdir(ctx, tenant, user, "d2/d3"); !errors.Is(err, ErrQuota) {
+		t.Fatalf("entry quota: got %v, want ErrQuota", err)
+	}
+	// Another user has their own quota.
+	if _, err := s.Write(ctx, tenant, "bob", "b.txt", []byte("x")); err != nil {
+		t.Fatalf("other user: %v", err)
+	}
+}
+
+// F33: ListDir stops at MaxListEntries and says so.
+func TestListDir_Truncated(t *testing.T) {
+	s := New(t.TempDir())
+	dir := filepath.Join(s.userDir(tenant, user), "many")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= MaxListEntries; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d", i)), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ListDir(context.Background(), tenant, user, "", true)
+	if !errors.Is(err, ErrListTruncated) {
+		t.Fatalf("got %v, want ErrListTruncated", err)
+	}
+	if len(got) != MaxListEntries {
+		t.Fatalf("got %d entries, want %d", len(got), MaxListEntries)
+	}
+}
+
+// F44: a symlink planted in the workspace never carries an operation out of
+// the user dir, and is never read through even when it points inside.
+func TestSymlinkEscapeRefused(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s := New(root)
+	ctx := context.Background()
+	if _, err := s.Write(ctx, tenant, user, "in.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	base := s.userDir(tenant, user)
+	if err := os.Symlink(outside, filepath.Join(base, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "in.txt"), filepath.Join(base, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Read(ctx, tenant, user, "docs/secret"); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("read through dir symlink: got %v, want ErrInvalidPath", err)
+	}
+	if _, err := s.Write(ctx, tenant, user, "docs/new", []byte("x")); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("write through dir symlink: got %v, want ErrInvalidPath", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "new")); !os.IsNotExist(err) {
+		t.Fatalf("write escaped the workspace: %v", err)
+	}
+	if _, _, err := s.Read(ctx, tenant, user, "link.txt"); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("read of a file symlink: got %v, want ErrInvalidPath", err)
+	}
+}
+
+// F43: the reserved config/ subtree is matched case-insensitively.
+func TestReservedConfig_CaseInsensitive(t *testing.T) {
+	s := New(t.TempDir())
+	for _, rel := range []string{"Config/mcp_connections.json", "CONFIG/x"} {
+		if _, err := s.Write(context.Background(), tenant, user, rel, []byte("x")); !errors.Is(err, ErrInvalidPath) {
+			t.Fatalf("write %q: got %v, want ErrInvalidPath", rel, err)
+		}
 	}
 }
 

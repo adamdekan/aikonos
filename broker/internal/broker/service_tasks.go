@@ -36,6 +36,26 @@ func (s *BrokerService) toolReg() *toolregistry.Registry {
 	return toolregistry.PkgDefault()
 }
 
+// Per-field caps on task inputs (G48, F179). The 16 MiB gRPC message cap is
+// the only other bound, and these fields are stored and published verbatim.
+const (
+	maxPromptBytes          = 32 << 10
+	maxClientRequestIDBytes = 512
+)
+
+// validateTaskFields bounds a task's caller-supplied strings before it is
+// persisted; persistManagedTask runs it for north CreateTask and south
+// CreateGatewayTask alike.
+func validateTaskFields(t *db.Task) error {
+	if len(t.Prompt) > maxPromptBytes {
+		return status.Errorf(codes.InvalidArgument, "prompt longer than %d bytes", maxPromptBytes)
+	}
+	if len(t.ClientRequestID) > maxClientRequestIDBytes {
+		return status.Errorf(codes.InvalidArgument, "client_request_id longer than %d bytes", maxClientRequestIDBytes)
+	}
+	return nil
+}
+
 // CreateTask creates a new task for the authenticated caller, binding the
 // owner to the OIDC identity on the context (request user_id must match or be
 // absent); returns InvalidArgument if tenant_id is not a valid UUID.
@@ -107,9 +127,11 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 }
 
 // envelopeDelegator resolves CreateTaskRequest.envelope_id (AG-17): when the
-// caller is the addressed recipient of a live (pending, delivered, accepted or
-// dismissed) envelope in their tenant, it returns the envelope, whose sender
-// and limits the task then carries (applyEnvelopeLimits). Anything else is
+// caller is the addressed recipient of an unexpired envelope in their tenant
+// that they have ACCEPTED, it returns the envelope, whose sender and limits
+// the task then carries (applyEnvelopeLimits). F139: a delivered or dismissed
+// envelope the recipient never accepted does not let them stamp arbitrary
+// tasks as delegated_by the sender. Anything else is
 // ignored rather than failing the chat — the task is just not marked
 // delegated — and audited as aikonos.broker.task.delegation_ignored with the
 // reason.
@@ -129,6 +151,8 @@ func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, 
 			reason = "envelope_not_recipient"
 		case !envelopeUsable(env):
 			reason = "envelope_not_active"
+		case env.State != db.EnvelopeAccepted:
+			reason = "envelope_not_accepted"
 		default:
 			return env
 		}
@@ -449,6 +473,9 @@ func (s *BrokerService) CancelTask(ctx context.Context, req *brokerv1.CancelTask
 	tenant, user, err := s.callerIdentity(ctx, req.TenantId, "")
 	if err != nil {
 		return nil, err
+	}
+	if len(req.Reason) > approvalsvc.MaxReasonBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "reason longer than %d bytes", approvalsvc.MaxReasonBytes)
 	}
 	traceID := span.SpanContext().TraceID().String()
 

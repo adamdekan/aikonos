@@ -120,3 +120,27 @@ func TestDevModeGuard(t *testing.T) {
 		})
 	}
 }
+
+// F199/F227: placeholder and short secrets are fatal outside dev mode and a
+// WARN-only finding inside it.
+func TestSecretsGuard(t *testing.T) {
+	strong := strings.Repeat("k", minSecretBytes)
+	for name, value := range map[string]string{
+		"empty":          "",
+		"short":          "short-key",
+		"onprem example": "<AUDIT_SIGNING_KEY-CHANGE-ME>",
+		"local example":  "dev-audit-hmac-key-change-me-padded-to-length",
+		"changeme":       strings.Repeat("x", 40) + "changeme",
+	} {
+		weak, fatal := secretsGuard(false, map[string]string{"audit signing key": value, "api key pepper": strong})
+		if fatal == nil || len(weak) != 1 {
+			t.Errorf("%s: weak=%v fatal=%v, want one finding and a fatal error", name, weak, fatal)
+		}
+		if weak, fatal := secretsGuard(true, map[string]string{"audit signing key": value}); fatal != nil || len(weak) != 1 {
+			t.Errorf("%s in dev mode: weak=%v fatal=%v, want a finding and no fatal error", name, weak, fatal)
+		}
+	}
+	if weak, fatal := secretsGuard(false, map[string]string{"audit signing key": strong}); fatal != nil || weak != nil {
+		t.Errorf("strong key: weak=%v fatal=%v", weak, fatal)
+	}
+}

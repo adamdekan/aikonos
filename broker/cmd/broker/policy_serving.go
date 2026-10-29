@@ -55,7 +55,7 @@ func startPolicyBundle(ctx context.Context, emitter *audit.Emitter, tenant strin
 	mux := http.NewServeMux()
 	mux.Handle("/opa/bundles/"+policyBundleName+".tar.gz", srv)
 	httpSrv := &http.Server{
-		Addr:              viper.GetString("policy.bundle_http_addr"),
+		Addr:              bundleHTTPAddr(viper.GetString("policy.bundle_http_addr"), viper.GetBool("dev_mode"), log),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -153,4 +153,17 @@ func emitPolicyEvent(ctx context.Context, emitter *audit.Emitter, tenant, eventT
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, log, err, eventType)
 	}
+}
+
+// bundleHTTPAddr is the bundle listener's bind address: the configured one,
+// else all interfaces in dev mode and loopback otherwise (F37).
+func bundleHTTPAddr(configured string, devMode bool, log *zap.Logger) string {
+	switch {
+	case configured != "":
+		return configured
+	case devMode:
+		return ":9092"
+	}
+	log.Warn("policy.bundle_http_addr is unset outside dev mode: serving the OPA bundle on loopback only; set AIKONOS_POLICY_BUNDLE_HTTP_ADDR for an OPA in another container")
+	return "127.0.0.1:9092"
 }

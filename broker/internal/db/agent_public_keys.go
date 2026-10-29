@@ -125,12 +125,5 @@ func (r *AgentPublicKeyRepo) Get(ctx context.Context, tenantID, agentID, kid str
 
 // TouchLastUsed records a successful assertion (best effort, fire-and-forget).
 func (r *AgentPublicKeyRepo) TouchLastUsed(tenantID, keyID string) {
-	go func() {
-		if err := withConnErr(context.Background(), r.pool, tenantID, func(c *pgxpool.Conn) error {
-			_, err := c.Exec(context.Background(), `UPDATE agent_public_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
-			return err
-		}); err != nil {
-			r.logger.Warn("agent_public_keys: last_used_at update failed", zap.String("key_id", keyID), zap.Error(err))
-		}
-	}()
+	touchLastUsed(r.pool, r.logger, tenantID, `UPDATE agent_public_keys SET last_used_at = NOW() WHERE id = $1`, keyID)
 }

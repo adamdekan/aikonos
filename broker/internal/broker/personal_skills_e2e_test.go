@@ -289,8 +289,9 @@ func TestPersonalSkillsE2E_NoNewMigrations(t *testing.T) {
 	// scheduled_runs_delegation, 050 is agents_service_agent, 051 is
 	// tasks_obo_kind, 052 is agent_api_keys_expiry, 053 is approval_expiry,
 	// 054 is revocation_epoch, 055 is default_agent, 056 is agent_status,
-	// 064 is scim_token_expiry (062/063 are reserved by sibling changes).
-	const knownMaxMigration = 64
+	// 062 is scheduled_runs_pin_claim, 063 is plan_step_consumed, 064 is
+	// scim_token_expiry, 065 is alerts_retention.
+	const knownMaxMigration = 65
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

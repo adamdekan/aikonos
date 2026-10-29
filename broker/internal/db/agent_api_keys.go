@@ -148,18 +148,39 @@ func (r *AgentApiKeyRepo) Resolve(ctx context.Context, keyHash string) (*StoredA
 	if err != nil {
 		return nil, err
 	}
-	// Best-effort last_used_at update — fire-and-forget. The tenant is now known
-	// from the resolved row, so scope the connection so RLS admits the UPDATE.
+	// Best-effort last_used_at update. The tenant is now known from the
+	// resolved row, so scope the connection so RLS admits the UPDATE.
+	touchLastUsed(r.pool, r.logger, k.TenantID.String(),
+		`UPDATE agent_api_keys SET last_used_at = NOW() WHERE id = $1`, k.ID)
+	return k, nil
+}
+
+// touchSlots bounds the last_used_at stamps in flight across every key repo
+// (F48): a burst of valid credentials must not queue unbounded goroutines on
+// the pool that request-path queries need. A stamp that finds no free slot is
+// dropped — the column is a best-effort "recently used" hint.
+var touchSlots = make(chan struct{}, 8)
+
+// touchTimeout bounds one last_used_at stamp, pool acquire included.
+const touchTimeout = 5 * time.Second
+
+// touchLastUsed runs a best-effort, fire-and-forget last_used_at UPDATE under
+// tenant's RLS scope, bounded by touchSlots and touchTimeout.
+func touchLastUsed(pool *pgxpool.Pool, log *zap.Logger, tenant, query string, id any) {
+	select {
+	case touchSlots <- struct{}{}:
+	default:
+		return
+	}
 	go func() {
-		if err := withConnErr(context.Background(), r.pool, k.TenantID.String(), func(c2 *pgxpool.Conn) error {
-			_, err := c2.Exec(context.Background(),
-				`UPDATE agent_api_keys SET last_used_at = NOW() WHERE id = $1`, k.ID)
+		defer func() { <-touchSlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), touchTimeout)
+		defer cancel()
+		if err := withConnErr(ctx, pool, tenant, func(c *pgxpool.Conn) error {
+			_, err := c.Exec(ctx, query, id)
 			return err
 		}); err != nil {
-			r.logger.Warn("agent_api_keys: last_used_at update failed",
-				zap.String("key_id", k.ID.String()),
-				zap.Error(err))
+			log.Warn("last_used_at update failed", zap.String("query", query), zap.Error(err))
 		}
 	}()
-	return k, nil
 }
