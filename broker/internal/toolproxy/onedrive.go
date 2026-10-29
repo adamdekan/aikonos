@@ -18,6 +18,7 @@ import (
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/onedrivefs"
 )
 
 // Overridable in tests; production points at Microsoft Graph.
@@ -205,16 +206,22 @@ func newOneDriveWriteHandler(d connectorDeps, ws WorkspaceConfig) Handler {
 }
 
 // escapeGraphPath escapes each path segment but preserves the slashes Graph uses
-// to address nested folders under /me/drive/root:/. url.PathEscape leaves "."
-// and ".." untouched, so a dot or empty segment (or a control character) is
-// refused: a front end that normalises dot-segments would otherwise let a
-// path argument address another Graph resource under the same bearer.
+// to address nested folders under /me/drive/root:/. url.PathEscape leaves ".",
+// ".." and ':' untouched, so every segment must pass OneDrive's own naming rules
+// (onedrivefs.ValidateSegment: no empty/dot/trailing-dot/whitespace-padded
+// segment, none of "*:<>?\|) and carry no control character. Otherwise a path
+// argument could leave root:/{path}: addressing (dot-segments, or ':' ending the
+// path, e.g. "x:/permissions") and reach another Graph resource under the same
+// bearer.
 func escapeGraphPath(p string) (string, error) {
 	p = strings.Trim(p, "/")
 	parts := strings.Split(p, "/")
 	for i, seg := range parts {
-		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, unicode.IsControl) {
-			return "", fmt.Errorf("invalid path %q: empty, dot or control-character segment", p)
+		if strings.ContainsFunc(seg, unicode.IsControl) {
+			return "", fmt.Errorf("invalid path %q: control character", p)
+		}
+		if err := onedrivefs.ValidateSegment(seg); err != nil {
+			return "", fmt.Errorf("invalid path %q: %w", p, err)
 		}
 		parts[i] = url.PathEscape(seg)
 	}

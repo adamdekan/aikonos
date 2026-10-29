@@ -317,7 +317,7 @@ func escapeGraphPath(p string) string {
 func pathEscape(s string) string { return url.PathEscape(s) }
 
 // forbiddenNameChars are rejected in any path segment before any HTTP call —
-// see validateSegment.
+// see ValidateSegment.
 const forbiddenNameChars = "\"*:<>?/\\|"
 
 // reservedDeviceNames are Windows/OneDrive-reserved names, checked
@@ -334,9 +334,10 @@ func buildReservedDeviceNames() map[string]bool {
 	return m
 }
 
-// validateSegment checks one cleaned path segment against OneDrive's naming
-// rules, before any HTTP call is made.
-func validateSegment(seg string) error {
+// ValidateSegment checks one cleaned path segment against OneDrive's naming
+// rules, before any HTTP call is made. Exported so toolproxy's onedrive.*
+// path arguments get the same rules (a ':' would end Graph path addressing).
+func ValidateSegment(seg string) error {
 	if seg == "" {
 		return fmt.Errorf("%w: empty path segment", workspacefs.ErrInvalidPath)
 	}
@@ -366,7 +367,7 @@ func validateRel(clean string) error {
 		return nil
 	}
 	for _, seg := range strings.Split(clean, "/") {
-		if err := validateSegment(seg); err != nil {
+		if err := ValidateSegment(seg); err != nil {
 			return err
 		}
 	}

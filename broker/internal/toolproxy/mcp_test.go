@@ -442,7 +442,14 @@ func TestValidateMcpURL(t *testing.T) {
 	}{
 		{"https://mcp.example.com/rpc", false, true},
 		{"http://mcp.example.com/rpc", false, false},
-		{"http://mcp.example.com/rpc", true, true},
+		// allowPrivate lifts http only for in-mesh hosts, never a public one.
+		{"http://mcp.example.com/rpc", true, false},
+		{"http://mcp.partner.example/rpc", true, false},
+		{"http://8.8.8.8/rpc", true, false},
+		{"http://[2001:4860::1%25eth0]/rpc", true, false},
+		{"http://docs-mcp:3000/mcp", true, true},
+		{"http://172.18.0.5:8000/mcp", true, true},
+		{"http://docs-mcp:3000/mcp", false, false},
 		{"http://127.0.0.1:8080/rpc", false, true},
 		{"http://localhost:8080/rpc", false, true},
 		{"http://[::1]:8080/rpc", false, true},

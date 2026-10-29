@@ -37,9 +37,11 @@ const (
 
 // ValidateMcpURL checks an MCP server URL before any token is sent to it: it
 // must be absolute https with no userinfo. Plain http is accepted only for a
-// loopback host, or anywhere when allowPrivate (the dev/test flag that also
-// lifts the SSRF guard) is set — otherwise the shared bearer or a user's OAuth
-// token would cross the network in cleartext.
+// loopback host or, when allowPrivate (the flag that also lifts the SSRF guard
+// for in-mesh MCP servers) is set, a private IP literal or a single-label
+// container DNS name. A public host is never reached over http, even with
+// allowPrivate — otherwise the shared bearer or a user's OAuth token would
+// cross the network in cleartext.
 func ValidateMcpURL(raw string, allowPrivate bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -49,14 +51,15 @@ func ValidateMcpURL(raw string, allowPrivate bool) error {
 		return fmt.Errorf("mcp: url must not carry credentials")
 	}
 	host := u.Hostname()
-	loopback := strings.EqualFold(host, "localhost")
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		loopback = true
-	}
-	if u.Scheme == "https" || (u.Scheme == "http" && (loopback || allowPrivate)) {
+	ip := net.ParseIP(host)
+	loopback := strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()
+	// secrets/vault.go's in-mesh test; ':' also excludes a zoned IPv6 literal,
+	// which ParseIP does not parse.
+	inMesh := ip != nil && ip.IsPrivate() || ip == nil && !strings.ContainsAny(host, ".:")
+	if u.Scheme == "https" || (u.Scheme == "http" && (loopback || allowPrivate && inMesh)) {
 		return nil
 	}
-	return fmt.Errorf("mcp: url must be https (http only for loopback), got scheme %q", u.Scheme)
+	return fmt.Errorf("mcp: url must be https (http only for loopback, or a private/in-mesh host when private MCP targets are allowed), got scheme %q", u.Scheme)
 }
 
 // McpToolSchema is the discovery result for one tool on an MCP server.

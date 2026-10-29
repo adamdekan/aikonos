@@ -149,7 +149,10 @@ func TestEscapeGraphPath(t *testing.T) {
 // reach a provider URL, so a path/id argument cannot address another Graph or
 // Drive resource under the user's bearer.
 func TestOneDrive_RejectsTraversalArgs(t *testing.T) {
-	for _, p := range []string{"../../drives/D/root:/x", "a/./b", "a//b", "..", "a/\x00b"} {
+	// ':' ends Graph path addressing (root:/{path}:/{relationship}); '\' may be
+	// decoded by an IIS front end; padded/trailing-dot names OneDrive refuses.
+	for _, p := range []string{"../../drives/D/root:/x", "a/./b", "a//b", "..", "a/\x00b",
+		"Documents/x:/permissions", "a:/children/b", `..\..`, `a\b`, " a/b", "a/b.", "a/b?c"} {
 		if _, err := escapeGraphPath(p); err == nil {
 			t.Errorf("escapeGraphPath(%q) accepted", p)
 		}
@@ -182,6 +185,8 @@ func TestOneDrive_RejectsTraversalArgs(t *testing.T) {
 		{newOneDriveReadHandler(deps, ws), map[string]any{"item_id": ".."}},
 		{newOneDriveReadHandler(deps, ws), map[string]any{"path": "../../drives/D/items/I/content"}},
 		{newOneDriveWriteHandler(deps, ws), map[string]any{"path": "../x", "content": "x"}},
+		{newOneDriveReadHandler(deps, ws), map[string]any{"path": "Documents/x:/permissions"}},
+		{newOneDriveWriteHandler(deps, ws), map[string]any{"path": "a:/children/b", "content": "x"}},
 		{newGDriveReadHandler(deps, ws), map[string]any{"file_id": ".."}},
 		{newGDriveReadHandler(deps, ws), map[string]any{"file_id": "x' or 'a' in parents"}},
 	} {
