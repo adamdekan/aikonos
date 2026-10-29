@@ -79,7 +79,12 @@ function cancelEdit() {
   oauthScopes.value       = "";
 }
 
+// True while an add/save is in flight: OAuth discovery against a slow or
+// unreachable host can take several seconds.
+const submitting = ref(false);
+
 async function submit() {
+  if (submitting.value) return;
   if (!name.value.trim() || !url.value.trim()) {
     error.value = "name and URL are required";
     return;
@@ -100,6 +105,7 @@ async function submit() {
     body.oauthScopes   = oauthScopes.value.split(/\s+/).filter(Boolean);
     if (oauthClientSecret.value) body.oauthClientSecret = oauthClientSecret.value;
   }
+  submitting.value = true;
   try {
     if (editId.value) {
       const resp = await updateMcpConnection(editId.value, body);
@@ -120,10 +126,13 @@ async function submit() {
     await load();
   } catch (e) {
     error.value = e.message;
+  } finally {
+    submitting.value = false;
   }
 }
 
 async function remove(conn) {
+  if (!confirm(`Delete the MCP connection "${conn.name}"? Agents lose its tools at once.`)) return;
   error.value = "";
   try {
     const resp = await deleteMcpConnection(conn.id);
@@ -311,8 +320,8 @@ const TABLE_COLS = [
             data-testid="conn-oauth-scopes"
           />
         </template>
-        <button class="btn-primary" data-testid="add-conn-btn" @click="submit">
-          <Icon name="plus" /> {{ editId ? "Save" : "Add" }}
+        <button class="btn-primary" data-testid="add-conn-btn" :disabled="submitting" :aria-busy="submitting" @click="submit">
+          <Icon name="plus" /> {{ submitting ? (editId ? "Saving…" : "Adding…") : (editId ? "Save" : "Add") }}
         </button>
         <button v-if="editId" class="btn-ghost" @click="cancelEdit">Cancel</button>
       </div>

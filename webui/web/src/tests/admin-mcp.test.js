@@ -53,6 +53,8 @@ describe("Mcp.vue", () => {
     // drain any leftover toasts between tests
     const { toasts } = useToast();
     toasts.splice(0);
+    // Delete asks first; tests that check the question override this.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -175,9 +177,34 @@ describe("Mcp.vue", () => {
     const w = mount(Mcp, { global: { plugins: [router] } });
     await flushPromises();
 
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await w.find("[data-testid='delete-c1']").trigger("click");
+    await flushPromises();
+    expect(adminApi.deleteMcpConnection).not.toHaveBeenCalled();
     await w.find("[data-testid='delete-c1']").trigger("click");
     await flushPromises();
     expect(adminApi.deleteMcpConnection).toHaveBeenCalledWith("c1");
+    confirmSpy.mockRestore();
+  });
+
+  it("disables Add while the connection is being added (slow OAuth discovery)", async () => {
+    adminApi.listMcpConnections.mockResolvedValue({ connections: [] });
+    let finish;
+    adminApi.addMcpConnection.mockReturnValue(new Promise((r) => { finish = r; }));
+    const router = makeRouter();
+    await router.push("/admin/mcp");
+    const w = mount(Mcp, { global: { plugins: [router] } });
+    await flushPromises();
+    await w.find("[data-testid='conn-name']").setValue("s");
+    await w.find("[data-testid='conn-url']").setValue("https://mcp.example.com");
+    await w.find("[data-testid='add-conn-btn']").trigger("click");
+    await flushPromises();
+    const btn = w.find("[data-testid='add-conn-btn']");
+    expect(btn.attributes("disabled")).toBeDefined();
+    expect(btn.text()).toContain("Adding");
+    finish({ connection: SAMPLE_CONN });
+    await flushPromises();
+    expect(w.find("[data-testid='add-conn-btn']").attributes("disabled")).toBeUndefined();
   });
 
   it("renders not-an-admin empty-state on forbidden response without throwing", async () => {
