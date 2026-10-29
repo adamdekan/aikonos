@@ -394,7 +394,8 @@ func validateUser(u *db.ScimUser) error {
 	if strings.TrimSpace(u.ExternalID) == "" {
 		return badRequest("invalidValue", "externalId is required: map it to the user's OIDC subject (Entra objectId)")
 	}
-	if strings.HasPrefix(u.ExternalID, "svc-") || strings.ContainsAny(u.ExternalID, " #:*") {
+	// group- is the group memory segment, refused as a north subject (F175).
+	if strings.HasPrefix(u.ExternalID, "svc-") || strings.HasPrefix(u.ExternalID, "group-") || strings.ContainsAny(u.ExternalID, " #:*") {
 		return badRequest("invalidValue", "externalId %q is not a valid subject", u.ExternalID)
 	}
 	if len(u.UserName) > 256 || len(u.ExternalID) > 256 {

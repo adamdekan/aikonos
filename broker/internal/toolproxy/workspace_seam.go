@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 
 	"github.com/adamdekan/aikonos/broker/internal/workspacefs"
+	"github.com/adamdekan/aikonos/broker/internal/workspacepath"
 )
 
 // withSeam returns cfg.Workspace carrying the injected Backend (Config.
@@ -148,7 +149,7 @@ func (cfg WorkspaceConfig) workspaceList(ctx context.Context, req Request) ([]an
 		return out, nil
 	}
 	base := cfg.root()
-	taskDir := filepath.Join(base, sanitizeSeg(req.TenantID), sanitizeSeg(req.wsKey()))
+	taskDir := workspacepath.Dir(base, req.TenantID, req.wsKey())
 	var out []any
 	err := filepath.WalkDir(taskDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

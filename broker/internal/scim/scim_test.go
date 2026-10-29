@@ -379,6 +379,7 @@ func TestUserValidation(t *testing.T) {
 	for name, body := range map[string]string{
 		"no externalId":   `{"userName":"c@contoso.com"}`,
 		"svc subject":     `{"userName":"c@contoso.com","externalId":"svc-x"}`,
+		"group subject":   `{"userName":"c@contoso.com","externalId":"group-x"}`,
 		"no userName":     `{"externalId":"oid-c"}`,
 		"active not bool": `{"userName":"c@contoso.com","externalId":"oid-c","active":"maybe"}`,
 	} {
