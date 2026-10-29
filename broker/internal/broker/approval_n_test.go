@@ -122,8 +122,8 @@ func submitRefused(t *testing.T, svc *SandboxService, store *fakeTaskStore, need
 	if store.lastApproval != nil {
 		t.Errorf("no approval request may be created, got %+v", store.lastApproval)
 	}
-	if store.task.State == db.TaskStateAwaitingApproval {
-		t.Error("task must not wait for an approval nobody can give")
+	if store.task.State != db.TaskStateDenied {
+		t.Errorf("task state = %s, want DENIED (never left in VALIDATING)", store.task.State)
 	}
 }
 

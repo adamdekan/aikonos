@@ -247,6 +247,26 @@ func TestSubmitPlan_CP1_DeniedStepCapturesTrace(t *testing.T) {
 	if rec.PolicyDecision != db.PolicyDeny {
 		t.Errorf("PolicyDecision = %v, want DENY", rec.PolicyDecision)
 	}
+	if taskStore.task.State != db.TaskStateDenied {
+		t.Errorf("task state = %s, want DENIED", taskStore.task.State)
+	}
+}
+
+// A structurally refused plan ends the task instead of leaving it VALIDATING.
+func TestSubmitPlan_PlanValidationDenyEndsTask(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: false}, nil)
+
+	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
+	})
+	if err != nil {
+		t.Fatalf("SubmitPlan: %v", err)
+	}
+	if res.Outcome != planv1.ValidationOutcome_DENIED || taskStore.task.State != db.TaskStateDenied {
+		t.Fatalf("outcome %s, task state %s; want DENIED/DENIED", res.Outcome, taskStore.task.State)
+	}
 }
 
 // ── CP1 test 2: web.fetch netacl deny captures network sub-key ───────────────
