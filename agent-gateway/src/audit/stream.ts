@@ -7,6 +7,7 @@
 
 import { connect, StringCodec } from "nats";
 import type { Logger } from "pino";
+import { status } from "@grpc/grpc-js";
 import type { FastifyInstance } from "fastify";
 import { requireUser } from "../auth/require-user.js";
 import type { JwksResolver, VerifyOptions } from "../auth/verify.js";
@@ -18,6 +19,11 @@ const PING_MS  = 15_000;
 const RETRY_MS = 3_000;
 // H-07: live streams one principal may hold open at once.
 const MAX_STREAMS_PER_USER = 3;
+// F59: how often a live stream re-runs the admin probe, so a demotion, block
+// or revoked session takes effect on an open stream, not only at reconnect.
+const RECHECK_MS = 60_000;
+// setTimeout's ceiling; a token living longer is re-checked by RECHECK_MS anyway.
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -68,18 +74,27 @@ export interface AuditRoutesCtx {
   jwksResolver: JwksResolver;
   verifyOpts: VerifyOptions;
   north: Pick<NorthClient, "getObservabilityInfo">;
+  // Test seam for the live-stream re-check interval (default RECHECK_MS).
+  recheckMs?: number;
 }
 
 // scopeFor gives tenant admins the whole tenant and everyone else their own
 // events (H-07). The probe is a cheap tenant-admin-gated broker RPC; any
-// error, not only PERMISSION_DENIED, falls back to the member scope.
+// other error falls back to the member scope. F59: undefined means the broker
+// no longer accepts the principal at all — UNAUTHENTICATED (expired or
+// revoked session) or the RevocationInterceptor's "user is blocked" — and the
+// caller refuses or ends the stream instead of downgrading it.
 // ponytail: borrows GetObservabilityInfo's admin gate; a dedicated
 // "am I admin" RPC if a second caller needs one.
-async function scopeFor(ctx: AuditRoutesCtx, p: { tenant: string; sub: string; token: string }): Promise<AuditScope> {
+async function scopeFor(ctx: AuditRoutesCtx, p: { tenant: string; sub: string; token: string }): Promise<AuditScope | undefined> {
   try {
     await ctx.north.getObservabilityInfo({}, p.token);
     return { tenant: p.tenant };
-  } catch {
+  } catch (err) {
+    const e = err as { code?: unknown; details?: unknown };
+    if (e?.code === status.UNAUTHENTICATED || (e?.code === status.PERMISSION_DENIED && e.details === "user is blocked")) {
+      return undefined;
+    }
     return { tenant: p.tenant, user: p.sub };
   }
 }
@@ -97,6 +112,10 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
       const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
       if (!principal) return;
       const scope  = await scopeFor(ctx, principal);
+      if (!scope) {
+        reply.code(401).send({ error: "session no longer valid" });
+        return;
+      }
       const limit  = Number(req.query.limit ?? 200) || 200;
       const src    = buffer.filter((e) => matchesScope(e, scope));
       reply.send({ events: src.slice(-limit).reverse() });
@@ -116,15 +135,32 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
     // that leaves mid-probe is still released.
     streamsPerUser.set(principal.sub, open + 1);
     let ping: ReturnType<typeof setInterval> | undefined;
-    req.raw.on("close", () => {
+    let recheck: ReturnType<typeof setInterval> | undefined;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
       clearInterval(ping);
+      clearInterval(recheck);
+      clearTimeout(expiry);
       clients.delete(reply.raw);
       const n = (streamsPerUser.get(principal.sub) ?? 1) - 1;
       if (n > 0) streamsPerUser.set(principal.sub, n);
       else streamsPerUser.delete(principal.sub);
-    });
+    };
+    req.raw.on("close", release);
+    const end = (): void => {
+      release();
+      reply.raw.end();
+    };
     const scope = await scopeFor(ctx, principal);
     if (req.raw.destroyed) return;
+    if (!scope) {
+      release();
+      reply.code(401).send({ error: "session no longer valid" });
+      return;
+    }
     reply.raw.writeHead(200, {
       "content-type":               "text/event-stream",
       "cache-control":              "no-cache",
@@ -140,6 +176,18 @@ export function registerAuditRoutes(app: FastifyInstance, ctx: AuditRoutesCtx): 
       if (reply.raw.destroyed) return;
       reply.raw.write(": ping\n\n");
     }, PING_MS);
+    // F59: the stream lives no longer than its bearer, and re-probes the
+    // broker so a demotion narrows it and a block or revocation ends it.
+    if (principal.exp !== undefined) {
+      expiry = setTimeout(end, Math.min(Math.max(principal.exp * 1000 - Date.now(), 0), MAX_TIMER_MS));
+    }
+    recheck = setInterval(() => {
+      void scopeFor(ctx, principal).then((next) => {
+        if (released) return;
+        if (next) clients.set(reply.raw, next);
+        else end();
+      });
+    }, ctx.recheckMs ?? RECHECK_MS);
   });
 }
 

@@ -285,3 +285,102 @@ test("GET /api/audit/stream — open streams per principal are capped (429)", as
     await app.close();
   }
 });
+
+// ── F59: a live stream is re-validated, not fixed at connect time ─────────────
+
+// openStream collects SSE data until the server ends the response (or 4 s).
+function openStream(port: number, token: string): { ended: Promise<boolean>; body: () => string } {
+  let buf = "";
+  const ended = new Promise<boolean>((resolve) => {
+    const safety = setTimeout(() => { req.destroy(); resolve(false); }, 4000);
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path: "/api/audit/stream", method: "GET", headers: { authorization: `Bearer ${token}` } },
+      (res) => {
+        res.on("data", (d: Buffer) => { buf += d.toString(); });
+        res.on("end", () => { clearTimeout(safety); resolve(true); });
+      },
+    );
+    req.on("error", () => {});
+    req.end();
+  });
+  return { ended, body: () => buf };
+}
+
+async function listenWith(north: { getObservabilityInfo: () => Promise<unknown> }, expiresIn: string) {
+  const { privateKey, jwk } = await makeKey();
+  const token = await new SignJWT({ sub: "alice@example.com", email: "alice@example.com", tenant_id: "tenant-a" })
+    .setProtectedHeader({ alg: "RS256", kid: "k1" })
+    .setIssuer(VERIFY_OPTS.issuer)
+    .setAudience(VERIFY_OPTS.audience)
+    .setIssuedAt()
+    .setExpirationTime(expiresIn)
+    .sign(privateKey);
+  const app = Fastify({ logger: false });
+  registerAuditRoutes(app, { jwksResolver: await localResolver(jwk), verifyOpts: VERIFY_OPTS, north: north as never, recheckMs: 100 });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+  return { app, token, port: address.port };
+}
+
+test("F59 GET /api/audit/stream — the stream ends when its bearer expires", async () => {
+  const { app, token, port } = await listenWith(fakeNorth(true), "2s");
+  try {
+    const s = openStream(port, token);
+    assert.equal(await s.ended, true, "the server must end the stream at the token's exp");
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+  }
+});
+
+test("F59 GET /api/audit/stream — a revoked session or blocked user ends the open stream (no downgrade)", async () => {
+  for (const err of [
+    Object.assign(new Error("revoked"), { code: status.UNAUTHENTICATED, details: "session revoked; sign in again" }),
+    Object.assign(new Error("blocked"), { code: status.PERMISSION_DENIED, details: "user is blocked" }),
+  ]) {
+    let admin = true;
+    const north = { getObservabilityInfo: () => (admin ? Promise.resolve({}) : Promise.reject(err)) };
+    const { app, token, port } = await listenWith(north, "1h");
+    try {
+      const s = openStream(port, token);
+      await new Promise((r) => setTimeout(r, 150));
+      admin = false;
+      assert.equal(await s.ended, true, `${err.details}: the stream must close`);
+    } finally {
+      app.server.closeAllConnections();
+      await app.close();
+    }
+  }
+});
+
+test("F59 GET /api/audit/stream — an admin demoted mid-stream stops receiving other users' events", async () => {
+  let admin = true;
+  const north = { getObservabilityInfo: () => (admin ? Promise.resolve({}) : Promise.reject(Object.assign(new Error("x"), { code: status.PERMISSION_DENIED, details: "tenant admin required" }))) };
+  const { app, token, port } = await listenWith(north, "1h");
+  try {
+    const s = openStream(port, token);
+    await new Promise((r) => setTimeout(r, 150));
+    record({ event_id: "bob-before", tenant_id: "tenant-a", actor_user_id: "bob" });
+    admin = false;
+    await new Promise((r) => setTimeout(r, 300));
+    record({ event_id: "bob-after", tenant_id: "tenant-a", actor_user_id: "bob" });
+    record({ event_id: "alice-after", tenant_id: "tenant-a", actor_user_id: "alice@example.com" });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(s.body().includes("bob-before"));
+    assert.ok(!s.body().includes("bob-after"), "a demoted admin must not see other users' events");
+    assert.ok(s.body().includes("alice-after"), "the member keeps their own events");
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+  }
+});
+
+test("F59 GET /api/audit — a revoked session gets 401, not member-scope events", async () => {
+  const { app, token } = await buildApp({ admin: false, probeErr: Object.assign(new Error("r"), { code: status.UNAUTHENTICATED }) });
+  await app.ready();
+  record({ event_id: "mine", tenant_id: "tenant-a", actor_user_id: "alice@example.com" });
+  const res = await app.inject({ method: "GET", url: "/api/audit", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(res.statusCode, 401);
+  await app.close();
+});

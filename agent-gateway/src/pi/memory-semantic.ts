@@ -13,7 +13,7 @@ import type { Logger } from "pino";
 import { callEmbeddingProvider, type EmbeddingCallResult } from "../llm/embed.js";
 import { embeddingCandidates, type EmbeddingProviderLike } from "../llm/provider-fallback.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
-import { MEMORY_RECALL_CAP, recallableConcepts, type MemoryConceptLike } from "./memory-match.js";
+import { MEMORY_RECALL_CAP, recallableConcepts, recallTags, type MemoryConceptLike } from "./memory-match.js";
 
 // A concept's embed text is deterministic from its own fields (title,
 // description, tags) — a fresh embedding is only worth the round trip when
@@ -64,7 +64,8 @@ function cacheKey(concept: MemoryConceptLike): string {
 }
 
 function conceptText(concept: MemoryConceptLike): string {
-  return `${concept.title}\n${concept.description}\n${concept.tags.join(" ")}`;
+  // F202: bounded like the keyword tier — a concept's tags are otherwise uncapped.
+  return `${concept.title.slice(0, 200)}\n${concept.description.slice(0, 500)}\n${recallTags(concept).join(" ")}`;
 }
 
 // cosine is computed explicitly (dot product over the norms) rather than
