@@ -87,6 +87,12 @@ one. Do not use a claim the user can edit themselves.
    | `AIKONOS_WEBUI_OIDC_CLIENT` | the web UI client id |
    | `AIKONOS_WEBUI_OIDC_SCOPE` | `openid profile email`, plus the API scope if the IdP needs one to set the audience |
    | `AIKONOS_WEBUI_OIDC_TOKEN` | `access` (API audience) or `id` (client id audience) |
+   | `AIKONOS_WEBUI_OIDC_REDIRECT_URI` | the web UI's `/auth/callback` URL registered at the IdP |
+
+   Set the two web UI URLs at runtime even when the image was built with
+   `VITE_OIDC_*`: the web UI's Content-Security-Policy and silent-renew frame
+   policy come only from them, and it logs a warning at startup when either is
+   unset.
 
    Then recreate the containers:
    `docker compose up -d --force-recreate broker agent-gateway webui`.

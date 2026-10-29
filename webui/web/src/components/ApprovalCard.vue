@@ -10,6 +10,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { get, post } from "../api/client.js";
 import { decideApproval, withdrawApproval } from "../api/approvals.js";
 import ArgsView from "./ArgsView.vue";
+import { revealHidden } from "../lib/revealHidden.js";
 import Icon from "./Icon.vue";
 import ToggleSwitch from "./ui/ToggleSwitch.vue";
 
@@ -128,7 +129,7 @@ async function respond(approved) {
       </span>
     </header>
 
-    <p v-if="request.reason" class="ac-reason">{{ request.reason }}</p>
+    <p v-if="request.reason" class="ac-reason">{{ revealHidden(request.reason) }}</p>
 
     <details class="ac-args" open>
       <summary>Arguments</summary>

@@ -44,6 +44,13 @@ describe("ApprovalCard.vue", () => {
     expect(w.text()).toContain("https://example.com");
   });
 
+  // F213: the reason is model-supplied, so hidden characters show as escapes.
+  it("reveals hidden characters in the agent-supplied reason", () => {
+    const w = card({ reason: "Send the weekly report\u202E\u{E0061}" });
+    const reason = w.find(".ac-reason").text();
+    expect(reason).toBe("Send the weekly report\\u202E\\u{E0061}");
+  });
+
   it("shows the tool, the risk and the arguments", () => {
     const w = card({ stepUp: true });
     expect(w.text()).toContain("web.fetch");

@@ -42,7 +42,12 @@ const editCron    = ref("0 9 * * *");
 const editRunAt   = ref("");
 const editActor   = ref("");
 let   editActorWas = ""; // sent only when changed, so a timing edit never re-checks the actor
-let   editTools   = [];
+const editTools   = ref([]);
+// The edit checklist: the usual choices plus whatever the row already stores
+// (older schedules carry a hidden baseline), so each can be unticked (L-25).
+function editToolChoices(s) {
+  return [...new Set([...PREAPPROVABLE, ...(s.approvedTools ?? [])])];
+}
 
 // ISO → the local "YYYY-MM-DDTHH:mm" that <input type="datetime-local"> wants.
 function isoToLocalInput(iso) {
@@ -59,7 +64,7 @@ function startEdit(s) {
   editCron.value   = s.cronExpr || "0 9 * * *";
   editRunAt.value  = s.kind === "ONCE" ? isoToLocalInput(s.nextFireAt) : "";
   editActor.value  = editActorWas = s.actorAgentId ?? "";
-  editTools        = s.approvedTools ?? []; // resend verbatim so the broker doesn't clear them
+  editTools.value  = [...(s.approvedTools ?? [])]; // resent as ticked: an absent list would clear them
 }
 
 function cancelEdit() {
@@ -81,7 +86,7 @@ async function saveEdit(id) {
       kind:          editKind.value,
       cronExpr:      editKind.value === "CRON" ? editCron.value.trim() : "",
       runAt:         editKind.value === "ONCE" ? localInputToIso(editRunAt.value) : undefined,
-      approvedTools: editTools,
+      approvedTools: [...editTools.value],
       actorAgentId:  editActor.value !== editActorWas ? editActor.value : undefined,
     });
     if (result.schedule) updateRow(result.schedule);
@@ -290,6 +295,13 @@ onMounted(() => {
               </select>
             </label>
           </div>
+          <fieldset v-if="!isWorkflowRow(s)" class="form-inline preapprove" :data-testid="`edit-tools-${s.id}`">
+            <legend>Pre-approve when it runs unattended (no one is asked)</legend>
+            <label v-for="t in editToolChoices(s)" :key="t" class="form-inline">
+              <input v-model="editTools" type="checkbox" :value="t" :data-testid="`edit-tool-${s.id}-${t}`" />
+              <code>{{ t }}</code>
+            </label>
+          </fieldset>
         </div>
         <div v-else class="schedule-main">
           <span v-if="isWorkflowRow(s)" class="schedule-prompt schedule-workflow">

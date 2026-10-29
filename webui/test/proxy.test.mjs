@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request } from "node:http";
-import { buildApp } from "../server.mjs";
+import { buildApp, missingOidcRuntime } from "../server.mjs";
 
 // The real fetch, for the one test that talks to a live upstream.
 const realFetch = globalThis.fetch;
@@ -563,4 +563,15 @@ test("a configured redirect URI is the page silent renew may frame", async (t) =
 
   assert.equal((await app.inject({ method: "GET", url: "/signin/cb?code=c" })).headers["x-frame-options"], "SAMEORIGIN");
   assert.equal((await app.inject({ method: "GET", url: "/auth/callback" })).headers["x-frame-options"], "DENY");
+});
+
+// The CSP and frame policy cannot see a bundle-baked VITE_OIDC_*: startup
+// warns about each runtime setting they would otherwise default.
+test("the runtime OIDC settings the CSP needs are reported when unset", () => {
+  assert.deepEqual(missingOidcRuntime({}), ["AIKONOS_WEBUI_OIDC_AUTHORITY", "AIKONOS_WEBUI_OIDC_REDIRECT_URI"]);
+  assert.deepEqual(missingOidcRuntime({ AIKONOS_WEBUI_OIDC_AUTHORITY: "https://idp.example.com/realm", AIKONOS_WEBUI_OIDC_REDIRECT_URI: " " }), ["AIKONOS_WEBUI_OIDC_REDIRECT_URI"]);
+  assert.deepEqual(missingOidcRuntime({
+    AIKONOS_WEBUI_OIDC_AUTHORITY: "https://idp.example.com/realm",
+    AIKONOS_WEBUI_OIDC_REDIRECT_URI: "https://console.example.com/auth/callback",
+  }), []);
 });

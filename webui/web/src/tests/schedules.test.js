@@ -332,6 +332,32 @@ describe("Schedules.vue", () => {
     expect(w.text()).toContain("edited report");
   });
 
+  // L-25 upgrade path: a schedule saved with the old hidden baseline shows it
+  // ticked in the edit form, and an untick is saved.
+  it("the edit form shows stored pre-approvals ticked and saves an untick", async () => {
+    const legacy = { ...SAMPLE_SCHED, approvedTools: ["web.fetch", "doc.read", "doc.write", "mail.send"] };
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [legacy] });
+    schedApiView.updateSchedule.mockResolvedValue({ schedule: { ...legacy, approvedTools: ["doc.read", "doc.write", "mail.send"] } });
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await w.find("[data-testid='edit-s1']").trigger("click");
+    await flushPromises();
+    for (const t of legacy.approvedTools) {
+      expect(w.find(`[data-testid='edit-tool-s1-${t}']`).element.checked).toBe(true);
+    }
+    await w.find("[data-testid='edit-tool-s1-web.fetch']").setValue(false);
+    await w.find("[data-testid='save-s1']").trigger("click");
+    await flushPromises();
+
+    expect(schedApiView.updateSchedule).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ approvedTools: ["doc.read", "doc.write", "mail.send"] }),
+    );
+  });
+
   it("cancel closes the edit form without calling updateSchedule", async () => {
     schedApiView.listSchedules.mockResolvedValue({ schedules: [SAMPLE_SCHED] });
     const router = makeRouter();

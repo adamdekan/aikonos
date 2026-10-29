@@ -12,6 +12,18 @@ describe("ArgsView hidden characters", () => {
     expect(revealHidden(42)).toBe("42");
   });
 
+  it("revealHidden escapes invisible code points outside the BMP list too", () => {
+    // Unicode tag characters carry ASCII a model reads but a person does not see.
+    const tagged = "ok" + [..."attack"].map((c) => String.fromCodePoint(0xe0000 + c.charCodeAt(0))).join("");
+    expect(revealHidden(tagged)).toBe("ok\\u{E0061}\\u{E0074}\\u{E0074}\\u{E0061}\\u{E0063}\\u{E006B}");
+    expect(revealHidden("a\u3164b\u180Ec\u206Ad\uFE0Fe\u034Ff\u{E0100}g")).toBe(
+      "a\\u3164b\\u180Ec\\u206Ad\\uFE0Fe\\u034Ff\\u{E0100}g",
+    );
+    expect(revealHidden("héllo € 😀")).toBe("héllo € 😀");
+    const w = mount(ArgsView, { props: { args: { body: "ok\u{E0061}" } } });
+    expect(w.find(".arg-hidden").exists()).toBe(true);
+  });
+
   it("shows an override in a value as an escape with a marker", () => {
     const w = mount(ArgsView, { props: { args: { to: "ceo@corp.example\u202E\u2066moc.live@attacker\u2069", subject: "Weekly report" } } });
     const rows = w.findAll(".arg-row");

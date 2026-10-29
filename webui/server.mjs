@@ -111,6 +111,14 @@ export function securityHeaders(env = process.env) {
   };
 }
 
+// The CSP's IdP origin and the silent-renew frame path come only from these
+// runtime settings, never from a VITE_OIDC_* value baked into the bundle. When
+// either is unset the defaults above apply, which fit only a local Keycloak.
+export function missingOidcRuntime(env = process.env) {
+  const { oidc } = runtimeConfig(env);
+  return ["authority", "redirectUri"].filter((key) => !oidc[key]).map((key) => RUNTIME_OIDC_ENV[key]);
+}
+
 function callbackPath(env) {
   try {
     return new URL(runtimeConfig(env).oidc.redirectUri).pathname;
@@ -408,6 +416,9 @@ export async function buildApp({
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const PORT = Number(process.env.PORT ?? 4200);
   const GATEWAY_URL = (process.env.GATEWAY_URL ?? "http://agent-gateway.aikonos-platform.svc.cluster.local:8080").replace(/\/$/, "");
+  for (const name of missingOidcRuntime()) {
+    console.warn(`${name} is unset: the CSP and silent-renew frame policy use the local defaults and may block sign-in`);
+  }
   const app = await buildApp();
   await app.listen({ port: PORT, host: "0.0.0.0" });
   console.log(`webui backend on :${PORT} (gateway ${GATEWAY_URL})`);

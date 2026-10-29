@@ -4,10 +4,11 @@ import { uuid } from "../lib/uuid.js";
 import { useToast } from "../components/ui/useToast.js";
 import { usePrefsStore } from "./prefs.js";
 
+// L-26: the stored value is { owner, buffers }, the buffers together with the
+// OIDC subject they belong to, so no tab can store one user's buffers under
+// another's name. Another subject's value, or one without an owner (older
+// builds), is never shown.
 export const CHAT_STORAGE_KEY = "aikonos.chatSessions";
-// L-26: the OIDC subject the stored buffers belong to. Another subject, or
-// buffers nobody owns (older builds), are wiped instead of shown.
-export const CHAT_OWNER_KEY = "aikonos.chatSessions.owner";
 
 // Persisted buffers keep a bounded slice of history — full transcripts (incl. tool
 // results) live only in the in-memory reactive buffer and in the durable session file.
@@ -41,23 +42,42 @@ function serializeForStorage(buffers, maxMessages) {
   return out;
 }
 
-function loadFromStorage() {
+// The stored { owner, buffers }, or null when there is none or it has another
+// shape (an older build's bare map, the user::agentId schema).
+function readStored() {
   try {
-    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
-    // Discard old user::agentId schema — durable sessions live in files, not here.
-    if (Object.keys(parsed).some(k => k.includes("::"))) return {};
-    return parsed;
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    if (typeof parsed?.owner === "string" && typeof parsed.buffers === "object" && parsed.buffers !== null) {
+      return parsed;
+    }
   } catch {
-    return {};
+    /* unreadable or unavailable: nothing stored */
+  }
+  return null;
+}
+
+function removeStored() {
+  try {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+  } catch (e) {
+    console.warn("[chat] localStorage removeItem failed", e);
   }
 }
 
+function loadFromStorage() {
+  const stored = readStored();
+  if (stored) return stored;
+  removeStored(); // an unowned leftover is nobody's to show
+  return { owner: null, buffers: {} };
+}
+
 export const useChatStore = defineStore("chat", () => {
+  const stored = loadFromStorage();
+  // The subject the buffers belong to: the stored one until bindOwner runs,
+  // null when nobody is signed in (then nothing is persisted).
+  let owner = stored.owner;
   // buffers is a reactive map: sessionId | "draft" → { threadId, messages }
-  const buffers = reactive(loadFromStorage());
+  const buffers = reactive(stored.buffers);
 
   // The workspace-file session id bound to the live buffer. Null for an unsaved new chat.
   const activeSessionId = ref(null);
@@ -68,17 +88,14 @@ export const useChatStore = defineStore("chat", () => {
   function persist() {
     const prefs = usePrefsStore();
     if (prefs.chatPersistEnabled === false) {
-      try {
-        localStorage.removeItem(CHAT_STORAGE_KEY);
-      } catch (e) {
-        console.warn("[chat] localStorage removeItem failed", e);
-      }
+      removeStored();
       return;
     }
+    if (owner === null) return;
     try {
       localStorage.setItem(
         CHAT_STORAGE_KEY,
-        JSON.stringify(serializeForStorage(buffers, prefs.chatPersistTurns))
+        JSON.stringify({ owner, buffers: serializeForStorage(buffers, prefs.chatPersistTurns) })
       );
     } catch {
       // quota / availability — in-memory buffers are unaffected; durable copy is the
@@ -157,33 +174,25 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // Wipe all buffers on principal change (logout). Mutates in place so reactivity
-  // holds. Removes the localStorage key so a subsequent user cannot read a prior
-  // user's draft on a shared browser.
+  // holds. Removes the stored copy so a subsequent user cannot read a prior
+  // user's draft on a shared browser, but not another user's that a second tab
+  // stored since.
   function clearAll() {
     for (const key of Object.keys(buffers)) {
       delete buffers[key];
     }
     activeSessionId.value = null;
-    localStorage.removeItem(CHAT_STORAGE_KEY);
-    localStorage.removeItem(CHAT_OWNER_KEY);
+    const storedOwner = readStored()?.owner;
+    if (owner === null || storedOwner === undefined || storedOwner === owner) removeStored();
+    owner = null;
   }
 
   // Binds the buffers to the signed-in subject (user store, on sign-in and on
   // a reload). Runs before any view shows them.
   function bindOwner(sub) {
-    let owner = null;
-    try {
-      owner = localStorage.getItem(CHAT_OWNER_KEY);
-    } catch {
-      /* storage unavailable: treat as unowned */
-    }
     if (owner === sub) return;
     if (owner !== null || Object.keys(buffers).length) clearAll();
-    try {
-      if (sub) localStorage.setItem(CHAT_OWNER_KEY, sub);
-    } catch {
-      /* storage unavailable: nothing is persisted either */
-    }
+    owner = sub || null;
   }
 
   return {
