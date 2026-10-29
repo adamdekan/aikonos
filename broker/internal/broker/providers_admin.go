@@ -243,7 +243,11 @@ func (s *BrokerService) UpsertLlmProvider(ctx context.Context, req *brokerv1.Ups
 		return nil, status.Errorf(codes.Internal, "failed to upsert provider")
 	}
 
-	s.emitLlmProviderAudit(ctx, traceID, tenant, user, "llm.provider.upsert", p.Id)
+	// G8: record where the provider now points (host only: the URL may carry
+	// userinfo or a query key) so an endpoint retarget leaves a trace.
+	u, _ := url.Parse(p.Endpoint) // validateProvider already parsed it
+	s.emitLlmProviderEvent(ctx, traceID, tenant, user, "llm.provider.upsert", p.Id,
+		auditv1.PolicyDecision_ALLOW, "", map[string]any{"endpoint_host": u.Host, "api": p.Api})
 	return &brokerv1.UpsertLlmProviderResponse{}, nil
 }
 
@@ -600,7 +604,7 @@ func pricingFromProto(pr *brokerv1.LlmModelPricing) *db.ModelPricing {
 
 // emitLlmProviderAudit fires an ALLOW audit event for LLM provider mutations.
 func (s *BrokerService) emitLlmProviderAudit(ctx context.Context, traceID, tenant, actor, eventType, providerID string) {
-	s.emitLlmProviderEvent(ctx, traceID, tenant, actor, eventType, providerID, auditv1.PolicyDecision_ALLOW, "")
+	s.emitLlmProviderEvent(ctx, traceID, tenant, actor, eventType, providerID, auditv1.PolicyDecision_ALLOW, "", nil)
 }
 
 // storedKeyTarget loads the saved row for p.Id and reports whether p sends a
@@ -626,11 +630,11 @@ func (s *BrokerService) storedKeyTarget(ctx context.Context, tenant string, p *b
 // one; the admin re-enters the key to change where it goes (M-14).
 func (s *BrokerService) refuseStoredKeyRetarget(ctx context.Context, traceID, tenant, actor, providerID string) error {
 	s.emitLlmProviderEvent(ctx, traceID, tenant, actor, "llm.provider.key_retarget_denied", providerID,
-		auditv1.PolicyDecision_DENY, "stored key used with a changed endpoint, api, api_version or config")
+		auditv1.PolicyDecision_DENY, "stored key used with a changed endpoint, api, api_version or config", nil)
 	return status.Error(codes.InvalidArgument, "api_key required when endpoint, api, api_version or config changes")
 }
 
-func (s *BrokerService) emitLlmProviderEvent(ctx context.Context, traceID, tenant, actor, eventType, providerID string, decision auditv1.PolicyDecision, reason string) {
+func (s *BrokerService) emitLlmProviderEvent(ctx context.Context, traceID, tenant, actor, eventType, providerID string, decision auditv1.PolicyDecision, reason string, extra map[string]any) {
 	if s.deps.Audit == nil {
 		return
 	}
@@ -638,6 +642,7 @@ func (s *BrokerService) emitLlmProviderEvent(ctx context.Context, traceID, tenan
 		"actor":       actor,
 		"provider_id": providerID,
 	}
+	maps.Copy(fields, extra)
 	if reason != "" {
 		fields["reason"] = reason
 	}

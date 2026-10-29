@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -36,5 +37,9 @@ func TestQueryAudit_StoreListError_ReturnsInternal(t *testing.T) {
 	_, err := svc.QueryAudit(ctx, &brokerv1.QueryAuditRequest{})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("want codes.Internal on Query list error, got %v", err)
+	}
+	// F41: the store error (MinIO endpoint/bucket) is logged, never returned.
+	if strings.Contains(status.Convert(err).Message(), "minio") {
+		t.Fatalf("store error text leaked to the caller: %v", err)
 	}
 }

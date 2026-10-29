@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -33,7 +34,9 @@ func (s *BrokerService) VerifyAuditChain(ctx context.Context, _ *brokerv1.Verify
 
 	report, configured, readErr := s.deps.AuditReader.VerifyChain(ctx, tenant)
 	if readErr != nil {
-		return nil, status.Errorf(codes.Internal, "audit store read failed: %v", readErr)
+		// F41: the store error names the MinIO endpoint/bucket; log it, never return it.
+		s.deps.Logger.Warn("VerifyAuditChain: audit store read failed", zap.String("tenant", tenant), zap.Error(readErr))
+		return nil, status.Error(codes.Internal, "audit store read failed")
 	}
 
 	if s.deps.Audit != nil {

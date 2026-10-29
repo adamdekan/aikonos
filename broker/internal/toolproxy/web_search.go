@@ -1,11 +1,10 @@
 // broker/internal/toolproxy/web_search.go
 //
-// web.search — read_only admin-configured search-engine query
-//. Composes with web.fetch: this tool returns
-// ranked {title, url, snippet} links only, never fetched content — the model
-// loads whichever result it chooses via web.fetch. Brave, Exa, and Tavily ship
-//; the searchEngine interface makes a further
-// engine additive.
+// web.search — read_only admin-configured search-engine query. Composes with
+// web.fetch: this tool returns ranked {title, url, snippet} links only, never
+// fetched content — the model loads whichever result it chooses via
+// web.fetch. Brave, Exa, and Tavily ship; the searchEngine interface makes a
+// further engine additive.
 package toolproxy
 
 import (
@@ -45,6 +44,13 @@ var searchEngines = map[string]func(client *http.Client, baseURL string) searchE
 	"tavily": newTavilyEngine,
 }
 
+// KnownSearchEngine reports whether engine is a key of searchEngines, so the
+// admin upsert refuses an engine the handler could never run (G6).
+func KnownSearchEngine(engine string) bool {
+	_, ok := searchEngines[engine]
+	return ok
+}
+
 // searchEngineProbeURLs is the fixed production endpoint each engine's
 // TestWebSearchConfig admin probe validates + calls — the same host each engine's Search hits in production, just with a
 // placeholder one-result query. Kept as a var (not const) so tests can point
@@ -58,8 +64,7 @@ var searchEngineProbeURLs = map[string]string{
 // ProbeSearchEngine issues one minimal, SSRF-guarded query against engine's
 // real endpoint using apiKey, reusing the exact searchEngine implementation
 // web.search calls in production — the admin Test probe's only per-engine
-// HTTP shape lives here, never duplicated in the broker package
-//.
+// HTTP shape lives here, never duplicated in the broker package.
 func ProbeSearchEngine(ctx context.Context, engine, apiKey string, allowPrivate bool, timeout time.Duration) error {
 	newEngine, ok := searchEngines[engine]
 	if !ok {

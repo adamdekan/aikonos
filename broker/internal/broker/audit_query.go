@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -48,7 +49,9 @@ func (s *BrokerService) QueryAudit(ctx context.Context, req *brokerv1.QueryAudit
 
 	events, nextCursor, ok, readErr := s.deps.AuditReader.Query(ctx, tenant, f)
 	if readErr != nil {
-		return nil, status.Errorf(codes.Internal, "failed to read audit events: %v", readErr)
+		// F41: the store error names the MinIO endpoint/bucket; log it, never return it.
+		s.deps.Logger.Warn("QueryAudit: audit store read failed", zap.String("tenant", tenant), zap.Error(readErr))
+		return nil, status.Error(codes.Internal, "failed to read audit events")
 	}
 
 	// Emit a aikonos.broker.audit.queried ALLOW event (fire-and-forget).

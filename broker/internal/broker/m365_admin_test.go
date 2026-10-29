@@ -264,12 +264,14 @@ func TestUpsertM365Connection_BlankSecretPreservesStoredNeverWrites(t *testing.T
 // directly rather than through a full RPC round-trip (Upsert only reaches
 // audit on a successful Merge, which needs a live OrgSettingsRepo unavailable
 // in this unit-test harness — see TestUpsertM365Connection_NoOrgSettingsConfiguredFailsClosedButWritesSecret).
-func TestEmitM365Audit_ChangedKeysOnlyNeverValues(t *testing.T) {
+// G8: the non-secret new values travel alongside the changed key names.
+func TestEmitM365Audit_ChangedKeysAndNonSecretValues(t *testing.T) {
 	sink := &capturingAuditSink{}
 	svc := NewBrokerService(Deps{Audit: sink})
 
 	svc.emitM365Audit(context.Background(), "trace-1", testTenantUUID, "admin@example.com",
-		"m365.connection.upsert", []string{"client_id", "entra_tenant_id", "client_secret"})
+		"m365.connection.upsert", []string{"client_id", "entra_tenant_id", "client_secret"},
+		map[string]any{"entra_tenant_id": "contoso.onmicrosoft.com", "client_id": "app-id", "enabled": true})
 
 	ev := sink.last()
 	if ev == nil {
@@ -294,6 +296,13 @@ func TestEmitM365Audit_ChangedKeysOnlyNeverValues(t *testing.T) {
 	}
 	if len(list.Values) != len(wantKeys) {
 		t.Fatalf("want %d changed keys, got %d: %v", len(wantKeys), len(list.Values), list.Values)
+	}
+	f := ev.Context.Fields
+	if f["entra_tenant_id"].GetStringValue() != "contoso.onmicrosoft.com" || f["client_id"].GetStringValue() != "app-id" || !f["enabled"].GetBoolValue() {
+		t.Fatalf("want the non-secret new values in the audit context, got %v", f)
+	}
+	if _, leaked := f["client_secret"]; leaked {
+		t.Fatal("client_secret must never travel as a value")
 	}
 }
 

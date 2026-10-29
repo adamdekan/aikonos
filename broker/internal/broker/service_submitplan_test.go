@@ -25,6 +25,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/netacl"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
@@ -648,5 +649,31 @@ func TestSubmitPlan_StepCap(t *testing.T) {
 	}
 	if pol.actor != "" || len(taskStore.transitions) != 0 {
 		t.Fatalf("an oversized plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
+	}
+}
+
+// TestSubmitPlan_NegativeEstimatedCost (F123): a negative step estimate would
+// offset the others in the plan budget sum, so the broker refuses it before
+// OPA (independent of the bundle) and before the task moves, and audits it.
+func TestSubmitPlan_NegativeEstimatedCost(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+	sink := &capturingAuditSink{}
+	svc.deps.Audit = sink
+	cheap, refund := makeStep(1, "doc.read", nil), makeStep(2, "doc.read", map[string]any{"path": "b"})
+	cheap.EstimatedCost, refund.EstimatedCost = 1000100, -1000000
+	_, err := svc.SubmitPlan(peerCtx(testGWSpiffeID), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, []*planv1.PlanStep{cheap, refund}),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
+	}
+	if pol.actor != "" || len(taskStore.transitions) != 0 {
+		t.Fatalf("a negative-cost plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
+	}
+	ev := sink.last()
+	if ev == nil || ev.Decision != auditv1.PolicyDecision_DENY || ev.Context.Fields["reason"].GetStringValue() != "negative_estimated_cost" {
+		t.Fatalf("want a DENY audit with reason negative_estimated_cost, got %v", ev)
 	}
 }

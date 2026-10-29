@@ -219,6 +219,38 @@ func TestUpsertWebSearchConfig_RejectsNegativeMaxResults(t *testing.T) {
 	}
 }
 
+// TestUpsertWebSearchConfig_RejectsUnknownEngineAndOversizedMaxResults (G6):
+// an engine web.search cannot run, or an unbounded max_results, is refused at
+// save time instead of stored and failing (or passed upstream) at call time.
+func TestUpsertWebSearchConfig_RejectsUnknownEngineAndOversizedMaxResults(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	svc := NewBrokerService(testProviderDeps(t, srv.URL, nil))
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	for _, cfg := range []*brokerv1.WebSearchConfig{
+		{Engine: "google", MaxResults: 5},
+		{Engine: "Brave", MaxResults: 5},
+		{Engine: "brave", MaxResults: webSearchMaxResultsMax + 1},
+	} {
+		_, err := svc.UpsertWebSearchConfig(ctx, &brokerv1.UpsertWebSearchConfigRequest{Config: cfg})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("config=%+v: want InvalidArgument, got %v", cfg, err)
+		}
+	}
+	// The bounds themselves pass validation (and stop at the unwired repo).
+	for _, cfg := range []*brokerv1.WebSearchConfig{
+		{Engine: "tavily", MaxResults: 0},
+		{Engine: "exa", MaxResults: webSearchMaxResultsMax},
+	} {
+		_, err := svc.UpsertWebSearchConfig(ctx, &brokerv1.UpsertWebSearchConfigRequest{Config: cfg})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("config=%+v: want FailedPrecondition (valid input, org settings unconfigured), got %v", cfg, err)
+		}
+	}
+}
+
 // stubSecrets (connectors_test.go) satisfies secrets.Provider but not the
 // websearchSecrets type assertion — Upsert must fail closed, not silently
 // report hasKey=true while the key never reached Vault.
@@ -291,13 +323,15 @@ func TestUpsertWebSearchConfig_BlankKeyPreservesStoredNeverWrites(t *testing.T) 
 // emitWebSearchAudit is the single place that shapes a web.search audit
 // event; test it directly rather than through a full RPC round-trip (Upsert
 // only reaches audit on a successful Merge, which needs a live
-// OrgSettingsRepo unavailable in this unit-test harness).
-func TestEmitWebSearchAudit_ChangedKeysOnlyNeverValues(t *testing.T) {
+// OrgSettingsRepo unavailable in this unit-test harness). G8: the non-secret
+// new values travel alongside the changed key names.
+func TestEmitWebSearchAudit_ChangedKeysAndNonSecretValues(t *testing.T) {
 	sink := &capturingAuditSink{}
 	svc := NewBrokerService(Deps{Audit: sink})
 
 	svc.emitWebSearchAudit(context.Background(), "trace-1", testTenantUUID, "admin@example.com",
-		"websearch.config.upsert", []string{"engine", "max_results", "api_key"})
+		"websearch.config.upsert", []string{"engine", "max_results", "api_key"},
+		map[string]any{"engine": "exa", "max_results": int32(7)})
 
 	ev := sink.last()
 	if ev == nil {
@@ -322,6 +356,13 @@ func TestEmitWebSearchAudit_ChangedKeysOnlyNeverValues(t *testing.T) {
 	}
 	if len(list.Values) != len(wantKeys) {
 		t.Fatalf("want %d changed keys, got %d: %v", len(wantKeys), len(list.Values), list.Values)
+	}
+	f := ev.Context.Fields
+	if f["engine"].GetStringValue() != "exa" || f["max_results"].GetNumberValue() != 7 {
+		t.Fatalf("want engine=exa max_results=7 in the audit context, got %v", f)
+	}
+	if _, leaked := f["api_key"]; leaked {
+		t.Fatal("api_key must never travel as a value")
 	}
 }
 
