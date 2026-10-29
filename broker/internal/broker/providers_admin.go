@@ -208,7 +208,12 @@ func (s *BrokerService) UpsertLlmProvider(ctx context.Context, req *brokerv1.Ups
 			}
 		}
 		hasKey = true
-	} else if existing, found, same := s.storedKeyTarget(ctx, tenant, p); found {
+	} else if existing, found, same, gerr := s.storedKeyTarget(ctx, tenant, p); gerr != nil {
+		// Not "new provider": that would write has_key=false over a key that
+		// may still sit in Vault.
+		s.deps.Logger.Warn("UpsertLlmProvider: read stored provider failed", zap.Error(gerr))
+		return nil, status.Error(codes.Unavailable, "provider store unavailable; retry")
+	} else if found {
 		// Preserve existing has_key value when no new key supplied, but never
 		// carry the stored key to a new destination (M-14).
 		if existing.HasKey && !same {
@@ -609,20 +614,24 @@ func (s *BrokerService) emitLlmProviderAudit(ctx context.Context, traceID, tenan
 
 // storedKeyTarget loads the saved row for p.Id and reports whether p sends a
 // key to the same place: endpoint, api, api version and config all equal (the
-// config carries api-specific host fields such as a region). A read error
-// counts as not found, so the stored key is never used on an unverified row.
-func (s *BrokerService) storedKeyTarget(ctx context.Context, tenant string, p *brokerv1.LlmProvider) (stored db.Provider, found, same bool) {
+// config carries api-specific host fields such as a region). A missing row is
+// found=false; any other read error is returned, so the stored key is never
+// used on an unverified row and a failed read never passes for a new provider.
+func (s *BrokerService) storedKeyTarget(ctx context.Context, tenant string, p *brokerv1.LlmProvider) (stored db.Provider, found, same bool, err error) {
 	store := s.providersFor()
 	if store == nil {
-		return db.Provider{}, false, false
+		return db.Provider{}, false, false, nil
 	}
-	stored, err := store.Get(ctx, tenant, p.Id)
+	stored, err = store.Get(ctx, tenant, p.Id)
+	if errors.Is(err, db.ErrProviderNotFound) {
+		return db.Provider{}, false, false, nil
+	}
 	if err != nil {
-		return db.Provider{}, false, false
+		return db.Provider{}, false, false, err
 	}
 	same = stored.Endpoint == p.Endpoint && stored.API == p.Api &&
 		stored.APIVersion == p.ApiVersion && maps.Equal(stored.Config, p.Config)
-	return stored, true, same
+	return stored, true, same, nil
 }
 
 // refuseStoredKeyRetarget audits and refuses a request that would send a

@@ -314,7 +314,7 @@ type Deps struct {
 	// OrgSettings backs the A-series org governance control plane (org-global
 	// instruction preamble, unattended-mode master, …). Nil → handlers return
 	// defaults (read) / FailedPrecondition (write).
-	OrgSettings *db.OrgSettingsRepo
+	OrgSettings OrgSettingsStore
 
 	// OtelEndpoint is the broker's boot-time OTLP endpoint (AIKONOS_OTEL_ENDPOINT,
 	// via viper "otel.endpoint"). Reported read-only by GetObservabilityInfo;

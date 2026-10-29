@@ -209,10 +209,18 @@ func orgSettingsPatch(in *brokerv1.OrgSettings) (map[string]any, []string) {
 	return patch, changed
 }
 
+// OrgSettingsStore is the org_settings seam Deps holds (*db.OrgSettingsRepo in
+// production), narrowed so unit tests can cover the governance checks that
+// read it without a live Postgres.
+type OrgSettingsStore interface {
+	orgSettingsGetter
+	Merge(ctx context.Context, tenantID string, patch map[string]any, updatedBy string) (db.OrgSettings, error)
+}
+
 // requireWorkflowSharingAllowed enforces the A6 org master before a publish.
 // Fails closed on a settings read error (governance guard). When the repo is
 // unconfigured, sharing is allowed (feature-not-configured → no restriction).
-func requireWorkflowSharingAllowed(ctx context.Context, repo *db.OrgSettingsRepo, tenant string) error {
+func requireWorkflowSharingAllowed(ctx context.Context, repo orgSettingsGetter, tenant string) error {
 	if repo == nil {
 		return nil
 	}

@@ -53,14 +53,20 @@ func (s *BrokerService) TestLlmProvider(ctx context.Context, req *brokerv1.TestL
 	// Resolve the key: prefer the (unsaved) key from the request; otherwise fall
 	// back to the stored Vault key for an existing provider (blank-on-edit
 	// path) — only when the request targets the saved row's destination, so
-	// the write-only key cannot be sent to an admin-chosen host (M-14).
+	// the write-only key cannot be sent to an admin-chosen host (M-14). A row
+	// without has_key never borrows a Vault key that outlived its provider
+	// (DeleteLlmProvider removes the key best-effort only).
 	key := req.ApiKey
 	if key == "" && s.deps.Secrets != nil {
-		row, found, same := s.storedKeyTarget(ctx, tenant, p)
+		row, found, same, gerr := s.storedKeyTarget(ctx, tenant, p)
+		if gerr != nil {
+			s.deps.Logger.Warn("TestLlmProvider: read stored provider failed", zap.Error(gerr))
+			return nil, status.Error(codes.Unavailable, "provider store unavailable; retry")
+		}
 		if found && row.HasKey && !same {
 			return nil, s.refuseStoredKeyRetarget(ctx, traceID, tenant, user, p.Id)
 		}
-		if found && same {
+		if found && same && row.HasKey {
 			if stored, ok, kerr := s.deps.Secrets.ReadProviderKey(ctx, tenant, p.Id); kerr == nil && ok {
 				key = stored
 			}
