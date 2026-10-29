@@ -7,6 +7,7 @@ import { useUserStore } from "../store/user.js";
 import App from "../App.vue";
 import { routes } from "../router.js";
 import { autoScrollbar } from "../lib/autoScrollbar.js";
+import { accountBlocked } from "../api/client.js";
 
 // App.vue uses the globally-registered v-autoscroll directive; provide it here.
 const globalDirectives = { autoscroll: autoScrollbar };
@@ -136,5 +137,17 @@ describe("App.vue — shell gated on authentication", () => {
     expect(wrapper.find(".app-shell").exists()).toBe(false);
     expect(wrapper.find("[data-testid='auth-splash']").exists()).toBe(false);
     expect(wrapper.find(".stub-view").exists()).toBe(true);
+  });
+});
+
+describe("App.vue — blocked account (AG-06)", () => {
+  it("shows a global 'account is blocked' banner once the broker refuses the user as blocked", async () => {
+    accountBlocked.value = false;
+    const { wrapper } = await buildApp();
+    expect(wrapper.find('[data-testid="account-blocked-banner"]').exists()).toBe(false);
+    accountBlocked.value = true;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="account-blocked-banner"]').text()).toContain("Your account is blocked");
+    accountBlocked.value = false;
   });
 });

@@ -375,3 +375,46 @@ test("GET /desktop.json answers JSON even where the SPA fallback answers unknown
   assert.ok(res.headers["content-type"].startsWith("application/json"), res.headers["content-type"]);
   assert.equal(JSON.parse(res.payload).oidc.clientId, "aikonos-desktop");
 });
+
+test("POST /agui passes a gateway refusal through with its status and body, not as a 200 stream", async (t) => {
+  const req = {};
+  const app = await makeApp(captureFetch(req, {
+    status: 403, body: '{"error":"agent is suspended (agent_suspended)"}', contentType: "application/json",
+  }));
+  t.after(() => app.close());
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/agui",
+    headers: { "content-type": "application/json", "x-aikonos-agent": "a1" },
+    payload: JSON.stringify({ prompt: "hi" }),
+  });
+  assert.equal(res.statusCode, 403);
+  assert.notEqual(res.headers["content-type"], "text/event-stream");
+  assert.equal(JSON.parse(res.payload).error, "agent is suspended (agent_suspended)");
+  assert.equal(req.headers["x-aikonos-agent"], "a1");
+});
+
+test("POST /api/workflows/:id/run?stream=1 passes a 401 through instead of streaming it", async (t) => {
+  const app = await makeApp(captureFetch({}, { status: 401, body: '{"error":"session revoked; sign in again"}' }));
+  t.after(() => app.close());
+
+  const res = await app.inject({ method: "POST", url: "/api/workflows/l1/run?stream=1", payload: {} });
+  assert.equal(res.statusCode, 401);
+  assert.match(res.payload, /session revoked/);
+});
+
+test("/api/* forwards content-disposition and cache-control (AG-14 export)", async (t) => {
+  globalThis.fetch = async () => ({
+    status: 200,
+    headers: { get: (n) => ({ "content-type": "text/csv", "content-disposition": 'attachment; filename="x.csv"', "cache-control": "no-store" })[n.toLowerCase()] ?? null },
+    text: async () => "a,b",
+  });
+  const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: "/nonexistent" });
+  await app.ready();
+  t.after(() => app.close());
+
+  const res = await app.inject({ method: "GET", url: "/api/admin/agents/inventory?format=csv" });
+  assert.equal(res.headers["cache-control"], "no-store");
+  assert.equal(res.headers["content-disposition"], 'attachment; filename="x.csv"');
+});

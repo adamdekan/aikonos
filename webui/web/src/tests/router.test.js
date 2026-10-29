@@ -150,6 +150,15 @@ describe("router auth guard", () => {
     expect(login).toHaveBeenCalled();
   });
 
+  it("passes the requested deep link to login() so it survives sign-in", async () => {
+    getUser.mockResolvedValue(null);
+    login.mockResolvedValue(undefined);
+
+    await router.push("/admin/policy?tab=audit");
+
+    expect(login).toHaveBeenCalledWith("/admin/policy?tab=audit");
+  });
+
   it("calls login() when the session is expired", async () => {
     getUser.mockResolvedValue({ expired: true });
     login.mockResolvedValue(undefined);

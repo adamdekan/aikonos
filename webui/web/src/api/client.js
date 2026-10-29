@@ -2,7 +2,32 @@
 // surfaces as { forbidden: true } so callers can render an empty-state without
 // throwing.
 
-import { getAccessToken } from "../auth/oidc.js";
+import { ref } from "vue";
+import { getAccessToken, login } from "../auth/oidc.js";
+
+// Set once the broker refuses this user as blocked (AG-06); App.vue shows a
+// global banner instead of each view rendering an empty or misleading state.
+export const accountBlocked = ref(false);
+
+const REAUTH_KEY = "aikonos.reauthAt";
+
+// noteAuthFailure handles the account-level refusals every surface shares:
+// 403 "user is blocked" raises the banner; 401 (session revoked, token
+// rejected) sends the user back to sign-in, returning to this page. A
+// step_up_required 401 belongs to the approval UI and is left alone.
+export function noteAuthFailure(status, error) {
+  if (status === 403 && error === "user is blocked") accountBlocked.value = true;
+  if (status !== 401 || error === "step_up_required") return;
+  // ponytail: at most one redirect a minute, so a gateway that rejects every
+  // token cannot bounce the browser through the IdP in a loop.
+  try {
+    if (Date.now() - Number(sessionStorage.getItem(REAUTH_KEY) || 0) < 60_000) return;
+    sessionStorage.setItem(REAUTH_KEY, String(Date.now()));
+  } catch {
+    /* storage unavailable: redirect anyway */
+  }
+  login(window.location.pathname + window.location.search);
+}
 
 // Passthrough paths that must not be prefixed with /api.
 const PASSTHROUGH = ["/agui", "/audit/stream"];
@@ -39,6 +64,7 @@ export async function request(path, { method = "GET", body, headers = {} } = {})
     /* empty or non-JSON body */
   }
 
+  noteAuthFailure(res.status, data.error);
   if (res.status === 403) return { forbidden: true, error: data.error };
   if (!res.ok) {
     const err = new Error(data.error || `request failed (${res.status})`);
@@ -64,14 +90,17 @@ export async function download(path) {
 
   const res = await fetch(resolveUrl(path), { headers: { "Authorization": `Bearer ${token}` } });
   const text = await res.text();
-  if (res.status === 403) return { forbidden: true };
+  let message = `request failed (${res.status})`;
   if (!res.ok) {
-    let message = `request failed (${res.status})`;
     try {
       message = JSON.parse(text).error || message;
     } catch {
       /* not JSON */
     }
+  }
+  noteAuthFailure(res.status, message);
+  if (res.status === 403) return { forbidden: true };
+  if (!res.ok) {
     const err = new Error(message);
     err.status = res.status;
     throw err;
@@ -99,6 +128,7 @@ export async function upload(path, { body, contentType, method = "POST" }) {
     /* empty or non-JSON body */
   }
 
+  noteAuthFailure(res.status, data.error);
   if (res.status === 403) return { forbidden: true, error: data.error };
   if (!res.ok) {
     const err = new Error(data.error || `request failed (${res.status})`);

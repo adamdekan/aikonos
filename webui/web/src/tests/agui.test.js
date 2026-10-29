@@ -351,6 +351,14 @@ describe("runAgui — event dispatch", () => {
     expect(calls[0][1]).toContain("re-enter it in Admin");
   });
 
+  it("onError shows a JSON refusal's reason (agent suspended, AG-03)", async () => {
+    const body = JSON.stringify({ error: "agent is suspended (agent_suspended)" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403, text: async () => body });
+    await runAgui({ prompt: "hi", threadId: "t1" }, handlers, fetchMock, testToken);
+
+    expect(calls[0]).toEqual(["onError", "request failed (403): agent is suspended (agent_suspended)"]);
+  });
+
   it("onError falls back to the bare status when the response body can't be read", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,

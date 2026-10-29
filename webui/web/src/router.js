@@ -105,7 +105,7 @@ export async function authGuard(to) {
   }
 
   // No valid session — kick off the login redirect.
-  await login();
+  await login(to.fullPath);
   // login() triggers a full-page redirect; returning false prevents vue-router
   // from also trying to render the target route in the same tick.
   return false;
