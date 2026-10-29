@@ -932,3 +932,50 @@ describe("AccessControl.vue — Agents tab", () => {
     );
   });
 });
+
+describe("AccessControl.vue — Advanced tab revoke", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    setupMocks();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  // Revoke buttons are indexed per section table; pick the one on bob's tenant member row.
+  function bobTenantRevoke(w) {
+    const row = w.findAll("[data-testid='tuple-row']")
+      .find((r) => r.text().includes("Bob") && r.text().includes("member") && r.text().includes("aikonos"));
+    return row.find("button.btn-danger-sm");
+  }
+
+  it("Cancel on the confirm leaves the assignment alone", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const w = await mountAC("Advanced");
+    await bobTenantRevoke(w).trigger("click");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Revoke member for Bob on aikonos? This changes who can approve/access at once.",
+    );
+    expect(adminApi.revokeRole).not.toHaveBeenCalled();
+  });
+
+  it("OK on the confirm revokes the tuple", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const w = await mountAC("Advanced");
+    await bobTenantRevoke(w).trigger("click");
+    await flushPromises();
+    expect(adminApi.revokeRole).toHaveBeenCalledWith(
+      expect.objectContaining({ user: "user:bob@example.com", relation: "member", object: TENANT_REF }),
+    );
+  });
+
+  it("every revoke button in the list asks first", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const w = await mountAC("Advanced");
+    const buttons = w.findAll("[data-testid='tuple-row'] button.btn-danger-sm");
+    expect(buttons.length).toBeGreaterThan(1);
+    for (const b of buttons) await b.trigger("click");
+    expect(confirmSpy).toHaveBeenCalledTimes(buttons.length);
+    expect(adminApi.revokeRole).not.toHaveBeenCalled();
+  });
+});

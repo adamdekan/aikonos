@@ -194,6 +194,15 @@ describe("AuditHistory.vue", () => {
     expect(w.find("[data-testid='forbidden']").exists()).toBe(true);
   });
 
+  it("long actor and resource cells ellipsize and keep the full value in a title", async () => {
+    const w = await mountWith([SAMPLE_EVENT]);
+    const cells = w.find("[data-testid='audit-history-row']").findAll("td");
+    expect(cells[2].classes()).toContain("overflow");
+    expect(cells[2].attributes("title")).toBe("alice@example.com");
+    expect(cells[3].classes()).toContain("overflow");
+    expect(cells[3].attributes("title")).toBe("aikonos:tool:web.fetch");
+  });
+
   // ── Case 4: decision evidence ──────────────────────────────────────────────
   const DECISION_EVENT = {
     event_id: "0199a4f0-3c2e-7d41-9b6a-1f2e3d4c5b6a",

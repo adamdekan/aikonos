@@ -84,7 +84,9 @@ function next() { if (page.value < totalPages.value) page.value++; }
 }
 
 .dt-table th,
-.dt-table td {
+.dt-table td,
+/* Row cells come from the parent's #row slot, so only :slotted reaches them. */
+.dt-table :slotted(td) {
   padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
@@ -99,7 +101,7 @@ function next() { if (page.value < totalPages.value) page.value++; }
   background: var(--bg-hover);
 }
 
-.dt-table tbody tr:last-child td {
+.dt-table tbody tr:last-child :slotted(td) {
   border-bottom: none;
 }
 
