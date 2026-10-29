@@ -79,6 +79,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	"github.com/adamdekan/aikonos/broker/internal/workspacefs"
+	"github.com/adamdekan/aikonos/broker/internal/workspacepath"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 	"go.opentelemetry.io/otel/metric"
@@ -1001,27 +1002,15 @@ func main() {
 	// both services, so an admin write resets the interceptor's cache too.
 	revocationChecker := revocation.New(db.NewRevocationRepo(pool, log))
 
+	northUnary, northStream := northInterceptors(oidcValidator, auditEmitter,
+		viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), revocationChecker, provisioner.Interceptor(), log)
 	northServer := grpc.NewServer(append(serverLimits(),
 		grpc.Creds(northCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.MaxRecvMsgSize(maxMsgBytes),
 		grpc.MaxSendMsgSize(maxMsgBytes),
-		grpc.ChainUnaryInterceptor(
-			requestSizeInterceptor(maxRequestBytes, largeRequestMethods),
-			auth.OIDCInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
-			auth.TenantInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
-			auth.RevocationInterceptor(revocationChecker, auditEmitter, log),
-			// After the tenant and revocation gates: a blocked, revoked or
-			// tenant-less caller must not be JIT-provisioned into groups.
-			provisioner.Interceptor(),
-			auth.AuditInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
-		),
-		// StreamTaskEvents passes the same identity gates as unary calls.
-		grpc.ChainStreamInterceptor(
-			auth.OIDCStreamInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
-			auth.TenantStreamInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
-			auth.RevocationStreamInterceptor(revocationChecker, auditEmitter, log),
-		),
+		grpc.ChainUnaryInterceptor(northUnary...),
+		grpc.ChainStreamInterceptor(northStream...),
 	)...)
 
 	auditReader := audit.NewReader(audit.Config{
@@ -1048,6 +1037,12 @@ func main() {
 	// Seed provisioning rules on boot (idempotent — existing matchers skipped).
 	provisioningseed.Seed(ctx, provisioningRepo, viper.GetString("tenant_id"),
 		viper.GetString("provisioning.seed_file"), log)
+
+	// G32/F175: move pre-upgrade workspaces to their collision-free names
+	// before serving, each only to the one known subject it belongs to.
+	if root := viper.GetString("toolproxy.workspace_root"); root != "" {
+		migrateWorkspaces(ctx, root, viper.GetString("tenant_id"), userDirRepo, scimRepo, log)
+	}
 
 	northDeps := brokersvc.Deps{
 		Logger:      log,
@@ -1302,6 +1297,58 @@ func serverLimits() []grpc.ServerOption {
 			Timeout:           20 * time.Second,
 		}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Minute}),
+	}
+}
+
+// northInterceptors is the north chain in order. The OIDC, tenant and
+// revocation gates run before the provisioner, so a blocked, revoked or
+// tenant-less caller is never JIT-provisioned into groups (F173/G47), and
+// StreamTaskEvents passes the same gates as unary calls (F136).
+// TestNorthInterceptors pins both.
+func northInterceptors(v *auth.Validator, em *audit.Emitter, label, tenantUUID string, rc auth.UserRevocations,
+	prov grpc.UnaryServerInterceptor, log *zap.Logger) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
+	return []grpc.UnaryServerInterceptor{
+		requestSizeInterceptor(maxRequestBytes, largeRequestMethods),
+		auth.OIDCInterceptor(v, em, label, log),
+		auth.TenantInterceptor(em, label, tenantUUID, log),
+		auth.RevocationInterceptor(rc, em, log),
+		prov,
+		auth.AuditInterceptor(em, label, log),
+	}, []grpc.StreamServerInterceptor{
+		auth.OIDCStreamInterceptor(v, em, label, log),
+		auth.TenantStreamInterceptor(em, label, tenantUUID, log),
+		auth.RevocationStreamInterceptor(rc, em, log),
+	}
+}
+
+// migrateWorkspaces runs the one-time G32/F175 workspace rename before
+// serving. The known subjects are the user directory and the SCIM users; a
+// read failure skips the run (no marker), so the next start retries it.
+func migrateWorkspaces(ctx context.Context, root, tenant string, dir *db.UserDirectoryRepo, scim *db.ScimRepo, log *zap.Logger) {
+	known, err := dir.ListByTenant(ctx, tenant)
+	if err != nil {
+		log.Error("workspace migration skipped: user directory unreadable", zap.Error(err))
+		return
+	}
+	users, err := scim.ListUsers(ctx, tenant)
+	if err != nil {
+		log.Error("workspace migration skipped: SCIM users unreadable", zap.Error(err))
+		return
+	}
+	subjects := make([]string, 0, len(known)+len(users))
+	for s := range known {
+		subjects = append(subjects, s)
+	}
+	for _, u := range users {
+		subjects = append(subjects, u.ExternalID)
+	}
+	ambiguous, err := workspacepath.MigrateLegacy(root, tenant, subjects)
+	for _, dir := range ambiguous {
+		log.Warn("pre-upgrade workspace held for an admin: several identities map to it, or its new name already holds data; split it by hand into each owner's directory",
+			zap.String("dir", dir))
+	}
+	if err != nil {
+		log.Error("workspace migration failed", zap.Error(err))
 	}
 }
 

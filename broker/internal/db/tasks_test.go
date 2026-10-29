@@ -31,6 +31,37 @@ func TestTaskRepo_Get_NotFound(t *testing.T) {
 	}
 }
 
+// TestTaskRepo_Create_ClientRequestIDOwnerConflict pins F2 on the real SQL
+// path: another owner's replay of a client_request_id gets
+// ErrClientRequestIDConflict with t untouched (no victim ids), while the
+// owner's own replay resolves to the existing task.
+func TestTaskRepo_Create_ClientRequestIDOwnerConflict(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID, key := uuid.New(), "run-1:call-1"
+	newTask := func(owner string) *Task {
+		return &Task{TaskID: uuid.New(), TenantID: tenantID, OwnerUserID: owner, Prompt: "p", CostBudget: 10,
+			TraceID: uuid.NewString(), ClientRequestID: key}
+	}
+	a := newTask("alice@example.com")
+	if err := repo.Create(ctx, a); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b := newTask("bob@example.com")
+	bID, bTrace := b.TaskID, b.TraceID
+	if err := repo.Create(ctx, b); !errors.Is(err, ErrClientRequestIDConflict) {
+		t.Fatalf("other owner's replay: got %v, want ErrClientRequestIDConflict", err)
+	}
+	if b.TaskID != bID || b.TraceID != bTrace {
+		t.Fatal("a conflicting replay was handed the existing task's ids")
+	}
+	c := newTask("alice@example.com")
+	if err := repo.Create(ctx, c); !errors.Is(err, ErrClientRequestIDExists) || c.TaskID != a.TaskID {
+		t.Fatalf("owner's replay: err=%v task=%s, want ErrClientRequestIDExists and %s", err, c.TaskID, a.TaskID)
+	}
+}
+
 // fakeTaskMetricsRecorder captures RecordTransition calls without requiring
 // the OTel SDK — used both for the no-DB wiring tests below and for
 // TestTaskRepo_Transition_RecordsOnSuccessOnly's DB-gated positive-path

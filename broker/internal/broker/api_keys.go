@@ -418,7 +418,13 @@ func (s *SandboxService) verifyUserAssertion(ctx context.Context, k *db.StoredAp
 		return "", "assertion_invalid"
 	}
 	subject = id.PrincipalID() // same principal the north API uses for FGA
-	if subject == "" || strings.HasPrefix(subject, "svc-") {
+	switch reservedPrincipalPrefix(subject) {
+	case "svc-":
+		return "", "assertion_svc_subject"
+	case memoryGroupSegPrefix: // F175: the owner grant would key a group's workspace
+		return "", "assertion_reserved_subject"
+	}
+	if subject == "" {
 		return "", "assertion_svc_subject"
 	}
 	if id.TenantID != k.TenantID.String() { // no tenant claim refused too, as north does

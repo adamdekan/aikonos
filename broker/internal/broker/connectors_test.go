@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,6 +23,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
+	"github.com/adamdekan/aikonos/broker/internal/workspacepath"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -365,6 +370,42 @@ func TestCallerIdentity_GroupSegmentPrincipalRejected(t *testing.T) {
 	_, err := svc.ListConnectors(ctx, &brokerv1.ListConnectorsRequest{TenantId: testTenantUUID})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("group- principal must be PermissionDenied, got %v", err)
+	}
+}
+
+// TestConnectorRPCs_BackendErrorsNotReflected pins F180 for the connector
+// RPCs: a member sees a fixed Internal message, never the store's file path
+// or the database's connection details.
+func TestConnectorRPCs_BackendErrorsNotReflected(t *testing.T) {
+	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
+
+	root := t.TempDir()
+	cfg := filepath.Join(workspacepath.Dir(root, testTenantUUID, "alice@example.com"), "config")
+	if err := os.MkdirAll(cfg, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "mcp_connections.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := testConnectorDeps(t)
+	deps.Connectors = connectorstore.New(root)
+	_, err := NewBrokerService(deps).ListConnectors(ctx, &brokerv1.ListConnectorsRequest{TenantId: testTenantUUID})
+	if status.Code(err) != codes.Internal || strings.Contains(status.Convert(err).Message(), root) {
+		t.Fatalf("ListConnectors: want a fixed Internal message, got %v", err)
+	}
+
+	pool, err := pgxpool.New(context.Background(), "postgres://leak-user@127.0.0.1:1/leak-db?connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	deps = testConnectorDeps(t)
+	deps.OrgSettings = db.NewOrgSettingsRepo(pool, zap.NewNop())
+	_, err = NewBrokerService(deps).BeginConnectorAuth(ctx, &brokerv1.BeginConnectorAuthRequest{
+		TenantId: testTenantUUID, Provider: brokerv1.ConnectorProvider_GOOGLE_DRIVE,
+	})
+	if status.Code(err) != codes.Internal || strings.Contains(status.Convert(err).Message(), "leak") {
+		t.Fatalf("BeginConnectorAuth: want a fixed Internal message, got %v", err)
 	}
 }
 

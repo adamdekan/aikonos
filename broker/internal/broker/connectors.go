@@ -165,7 +165,7 @@ func (s *BrokerService) BeginConnectorAuth(ctx context.Context, req *brokerv1.Be
 	scopes := connector.EffectiveScopes(prov, req.Scopes)
 	authURL, err := s.deps.OAuth.AuthCodeURL(prov, scopes, state, verifier)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "authorize url: %v", err)
+		return nil, s.internalErr("authorize url", err)
 	}
 
 	if err := s.deps.ConnAuth.Put(ctx, state, connector.PendingAuth{
@@ -284,7 +284,7 @@ func (s *BrokerService) ListConnectors(ctx context.Context, req *brokerv1.ListCo
 	s.ensureOneDriveOBO(ctx, tenant, user)
 	entries, err := s.deps.Connectors.List(tenant, user)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list connectors: %v", err)
+		return nil, s.internalErr("list connectors", err)
 	}
 	managed := s.oneDriveManaged(ctx, tenant)
 	out := make([]*brokerv1.ConnectorStatus, 0, len(entries))
@@ -396,7 +396,7 @@ func (s *BrokerService) requireConnectorAllowed(ctx context.Context, traceID, te
 	}
 	settings, serr := s.deps.OrgSettings.Get(ctx, tenant)
 	if serr != nil {
-		return status.Errorf(codes.Internal, "org settings read: %v", serr)
+		return s.internalErr("org settings read", serr)
 	}
 	if !settings.ConnectorAllowed(string(prov)) {
 		s.emitConnectorAudit(ctx, traceID, tenant, user,

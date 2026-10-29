@@ -861,6 +861,7 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 		{"good assertion, non-service agent under enforce", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: apiKeyTestTenantUUID}}, true, ""},
 		{"wrong audience", &fakeAssertions{err: errors.New("oidc: invalid audience")}, true, "assertion_invalid"},
 		{"svc- subject", &fakeAssertions{err: &auth.SvcSubjectError{Subject: "svc-x"}}, true, "assertion_svc_subject"},
+		{"group- subject (F175)", &fakeAssertions{id: &auth.Identity{Subject: "group-finance", TenantID: apiKeyTestTenantUUID}}, true, "assertion_reserved_subject"},
 		{"no can_use", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: apiKeyTestTenantUUID}}, false, "assertion_no_can_use"},
 		{"no tenant claim", &fakeAssertions{id: &auth.Identity{Subject: alice}}, true, "assertion_tenant_mismatch"},
 		{"other tenant", &fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: "33333333-0000-0000-0000-000000000003"}}, true, "assertion_tenant_mismatch"},
@@ -868,7 +869,9 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}, checks: map[string]bool{canUse: tc.canUse}}
+			fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}, checks: map[string]bool{
+				canUse: tc.canUse, "user:group-finance|can_use|agent:" + apiKeyTestAgentUUID: tc.canUse,
+			}}
 			deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, &fakeApiKeyStore{}, agentStoreWithAgent(t))
 			aud := &fakeInvokeAudit{}
 			deps.Audit = aud

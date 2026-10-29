@@ -383,6 +383,16 @@ func canonicalSubject(s string) string {
 	return s
 }
 
+// subjectForms is s plus, for a row stored before canonicalisation (an
+// upper-case GUID), the canonical form tokens carry: a block or tuple on the
+// stored form alone would miss the user's tokens (F133).
+func subjectForms(s string) []string {
+	if c := canonicalSubject(s); c != s {
+		return []string{s, c}
+	}
+	return []string{s}
+}
+
 // validateUser checks u and canonicalises its externalId in place.
 func validateUser(u *db.ScimUser) error {
 	u.ExternalID = canonicalSubject(u.ExternalID)
@@ -608,17 +618,25 @@ func (h *Handler) saveUser(ctx context.Context, req Request, prev, next db.ScimU
 // a block SCIM set: an admin's own block stays until an admin lifts it.
 func (h *Handler) applyActive(ctx context.Context, tenant, subject string, active bool) error {
 	if !active {
-		_, err := h.Blocks.BlockUser(ctx, tenant, subject, "deactivated in the identity provider (SCIM)", BlockedBy)
-		return err
+		for _, s := range subjectForms(subject) {
+			if _, err := h.Blocks.BlockUser(ctx, tenant, s, "deactivated in the identity provider (SCIM)", BlockedBy); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	blocks, err := h.Blocks.UserBlocks(ctx, tenant)
 	if err != nil {
 		return err
 	}
-	if b, ok := blocks[subject]; ok && b.By == BlockedBy {
-		_, err = h.Blocks.UnblockUser(ctx, tenant, subject, BlockedBy)
+	for _, s := range subjectForms(subject) {
+		if b, ok := blocks[s]; ok && b.By == BlockedBy {
+			if _, err := h.Blocks.UnblockUser(ctx, tenant, s, BlockedBy); err != nil {
+				return err
+			}
+		}
 	}
-	return err
+	return nil
 }
 
 // deleteUser is a deactivation that also forgets the user: the block stays,
@@ -639,7 +657,7 @@ func (h *Handler) deleteUser(ctx context.Context, req Request, id uuid.UUID) (in
 	for _, g := range groups {
 		for _, m := range g.Members {
 			if m == id {
-				if err := h.Tuples.DeleteRelations(ctx, memberTuple(u.ExternalID, g.FGAGroup)); err != nil {
+				if err := h.Tuples.DeleteRelations(ctx, memberTuples(u.ExternalID, g.FGAGroup)...); err != nil {
 					return 0, nil, err
 				}
 				removed = append(removed, g.FGAGroup)
@@ -712,8 +730,13 @@ type groupBody struct {
 	Members     []memberRef `json:"members"`
 }
 
-func memberTuple(subject, group string) policy.Relation {
-	return policy.Relation{User: "user:" + subject, Relation: "member", Object: "group:" + group}
+// memberTuples is the membership tuple on each of subject's forms.
+func memberTuples(subject, group string) []policy.Relation {
+	var out []policy.Relation
+	for _, s := range subjectForms(subject) {
+		out = append(out, policy.Relation{User: "user:" + s, Relation: "member", Object: "group:" + group})
+	}
+	return out
 }
 
 // subjects maps member ids to subjects; every id must be a provisioned user.
@@ -761,12 +784,15 @@ func (h *Handler) writeMembers(ctx context.Context, tenant, group string, added,
 		return err
 	}
 	for _, id := range added {
-		if err := h.Tuples.WriteRelations(ctx, memberTuple(subj[id], group)); err != nil && !provisioning.IsDuplicateTuple(err) {
-			return err
+		// One write per tuple: a duplicate fails its whole batch.
+		for _, r := range memberTuples(subj[id], group) {
+			if err := h.Tuples.WriteRelations(ctx, r); err != nil && !provisioning.IsDuplicateTuple(err) {
+				return err
+			}
 		}
 	}
 	for _, id := range removed {
-		if err := h.Tuples.DeleteRelations(ctx, memberTuple(subj[id], group)); err != nil {
+		if err := h.Tuples.DeleteRelations(ctx, memberTuples(subj[id], group)...); err != nil {
 			return err
 		}
 	}
@@ -815,6 +841,7 @@ func (h *Handler) createGroup(ctx context.Context, req Request) (int, any, error
 		return 0, nil, err
 	}
 	if inUse, err := h.groupInUse(ctx, fga); err != nil {
+		h.emit(ctx, req, "aikonos.broker.scim.group.claim_refused", "group:"+fga, map[string]any{"display_name": b.DisplayName, "reason": "state_unavailable"})
 		return 0, nil, err
 	} else if inUse {
 		h.emit(ctx, req, "aikonos.broker.scim.group.claim_refused", "group:"+fga, map[string]any{"display_name": b.DisplayName})
