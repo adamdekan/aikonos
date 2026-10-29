@@ -6,6 +6,7 @@ import DataTable from "../../components/ui/DataTable.vue";
 import EmptyState from "../../components/ui/EmptyState.vue";
 import Modal from "../../components/ui/Modal.vue";
 import { useToast } from "../../components/ui/useToast.js";
+import { csvEscape } from "./auditExport.js";
 
 const { push: toast } = useToast();
 
@@ -48,11 +49,6 @@ function fmtDate(iso) {
   return isNaN(d) ? iso : d.toLocaleString();
 }
 
-function csvCell(v) {
-  const s = String(v ?? "");
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
 function exportCsv() {
   const header = ["subject", "email", "name", "role", "origin", "status", "last_seen", "provisioned_at"];
   const lines = [header.join(",")];
@@ -66,7 +62,7 @@ function exportCsv() {
       m.blocked ? "blocked" : "active",
       m.lastSeen ?? "",
       m.provisionedAt ?? "",
-    ].map(csvCell).join(","));
+    ].map(csvEscape).join(","));
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

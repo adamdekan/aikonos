@@ -36,7 +36,15 @@ describe("ApprovalCard.vue", () => {
     mockPost.mockResolvedValue({ newStatus: 5 });
   });
 
-  it("shows the tool, the risk and collapsed arguments", () => {
+  // M-28: every approver sees the arguments without a click, not only on
+  // step-up; the reason line is agent-supplied.
+  it("a regular approval shows its arguments open", () => {
+    const w = card();
+    expect(w.find("details.ac-args").attributes("open")).toBeDefined();
+    expect(w.text()).toContain("https://example.com");
+  });
+
+  it("shows the tool, the risk and the arguments", () => {
     const w = card({ stepUp: true });
     expect(w.text()).toContain("web.fetch");
     expect(w.text()).toContain("STEP-UP");

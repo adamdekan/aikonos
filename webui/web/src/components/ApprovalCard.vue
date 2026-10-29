@@ -130,7 +130,7 @@ async function respond(approved) {
 
     <p v-if="request.reason" class="ac-reason">{{ request.reason }}</p>
 
-    <details class="ac-args" :open="highRisk">
+    <details class="ac-args" open>
       <summary>Arguments</summary>
       <ArgsView :args="request.args ?? null" />
     </details>

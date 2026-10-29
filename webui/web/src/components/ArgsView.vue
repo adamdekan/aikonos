@@ -1,4 +1,6 @@
 <script setup>
+import { revealHidden } from "../lib/revealHidden.js";
+
 const props = defineProps({
   args: { type: Object, default: null },
   depth: { type: Number, default: 0 },
@@ -18,7 +20,12 @@ function countLabel(val) {
 function stringify(val) {
   if (val === null) return "null";
   if (typeof val === "boolean") return val ? "true" : "false";
-  return String(val);
+  return revealHidden(val);
+}
+
+// True when a key or value carried characters revealHidden escaped (F213).
+function hidden(...texts) {
+  return texts.some((t) => revealHidden(t) !== String(t));
 }
 </script>
 
@@ -32,14 +39,14 @@ function stringify(val) {
     <template v-for="(val, key) in args" :key="key">
       <!-- Scalar row -->
       <div v-if="isScalar(val)" class="arg-row">
-        <dt class="arg-key">{{ key }}</dt>
-        <dd class="arg-val">{{ stringify(val) }}</dd>
+        <dt class="arg-key">{{ revealHidden(key) }}</dt>
+        <dd class="arg-val">{{ stringify(val) }}<span v-if="hidden(key, val)" class="arg-hidden">hidden characters</span></dd>
       </div>
 
       <!-- Depth cap: render as compact pre rather than recurse endlessly -->
       <div v-else-if="depth >= MAX_DEPTH" class="arg-row arg-row--deep">
-        <dt class="arg-key">{{ key }}</dt>
-        <dd class="arg-val arg-val--pre">{{ JSON.stringify(val) }}</dd>
+        <dt class="arg-key">{{ revealHidden(key) }}</dt>
+        <dd class="arg-val arg-val--pre">{{ revealHidden(JSON.stringify(val)) }}<span v-if="hidden(key, JSON.stringify(val))" class="arg-hidden">hidden characters</span></dd>
       </div>
 
       <!-- Nested object/array — native <details>, open so nothing an approver
@@ -47,7 +54,8 @@ function stringify(val) {
       <div v-else class="arg-row arg-row--nested">
         <details class="arg-details" open>
           <summary class="arg-summary">
-            <span class="arg-key">{{ key }}</span>
+            <span class="arg-key">{{ revealHidden(key) }}</span>
+            <span v-if="hidden(key)" class="arg-hidden">hidden characters</span>
             <span class="arg-count">{{ countLabel(val) }}</span>
           </summary>
           <div class="arg-nested">
@@ -152,6 +160,17 @@ function stringify(val) {
 /* Remove default <details> marker in WebKit */
 .arg-summary::-webkit-details-marker {
   display: none;
+}
+
+.arg-hidden {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  white-space: nowrap;
 }
 
 .arg-count {
