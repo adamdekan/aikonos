@@ -23,6 +23,7 @@ import type { BrokerClients } from "../broker/clients";
 import type { VerifyOptions, JwksResolver } from "../auth/verify.js";
 import type { ChildSupervisor } from "../ipc/supervisor.js";
 import { parseSkillMd } from "../pi/skill-parser.js";
+import { authBeforeBody } from "./files.js";
 import { scheduleJson } from "../schedule-json.js";
 import { sendError } from "../http-errors.js";
 import { log } from "../log.js";
@@ -720,9 +721,10 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
   //   anything else                → 415
   // On success calls broker UpsertAgentSkill; InvalidArgument → 400, PermissionDenied → 403.
   // req.body is a Buffer for the three registered content types (addContentTypeParser above).
+  // F57: the bearer is verified before the up-to-5 MiB body is buffered.
   app.post<{ Body: Buffer; Querystring: { keywords?: string } }>(
     "/admin/skills/upload",
-    { bodyLimit: SKILL_UPLOAD_MAX_BYTES },
+    { bodyLimit: SKILL_UPLOAD_MAX_BYTES, onRequest: authBeforeBody(ctx) },
     async (req, reply) => {
       await handleSkillUpload(req, reply, jwksResolver, verifyOpts, clients.north);
     },
@@ -733,7 +735,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
   // UpsertAgentSkill so the broker updates the existing row rather than inserting.
   app.put<{ Params: { id: string }; Body: Buffer; Querystring: { keywords?: string } }>(
     "/admin/skill-bundles/:id",
-    { bodyLimit: SKILL_UPLOAD_MAX_BYTES },
+    { bodyLimit: SKILL_UPLOAD_MAX_BYTES, onRequest: authBeforeBody(ctx) },
     async (req, reply) => {
       await handleSkillUpload(req, reply, jwksResolver, verifyOpts, clients.north, req.params.id);
     },

@@ -865,3 +865,21 @@ test("F66 error text: a gRPC infra error string in a bridge result is trimmed be
   );
   assert.equal(caller.error, "no can_delegate grant", "a caller-class detail still reaches the model");
 });
+
+test("F66 error text: a gRPC error wrapped in a gate refusal's reason is trimmed before it reaches the child", async () => {
+  // WHY: GovernanceBridge.gate returns `could not read the workflow to approve:
+  // ${String(err)}` in `reason`, not `error`, and that text reaches the model.
+  const spy = makeSpyBridge();
+  spy.onGate = async () => ({
+    allow: false,
+    reason: "workflow_schedule: could not read the workflow to approve: Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090",
+  });
+  const { child } = makeWiredPair(spy);
+  const reply = await withTimeout(
+    child.request<GateResult>({ kind: "gate", seq: makeSeq()(), runId: TEST_RUN_ID, toolCallId: "tc-1", toolName: "web_fetch", input: {} }, "gate-result"),
+    500,
+    "gate infra reason",
+  );
+  assert.equal(reply.allow, false);
+  assert.equal(reply.reason, "workflow_schedule: could not read the workflow to approve: upstream unavailable");
+});

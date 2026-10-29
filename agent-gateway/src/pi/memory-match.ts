@@ -10,10 +10,11 @@
 // rules can be exhaustively unit-tested without a gateway harness.
 //
 // Matching rule is deliberately identical to auto skill-loading's: reuse
-// buildKeywordPattern rather than reimplement the boundary logic. Keywords for
-// a concept are its tags plus its title (the title matched as one phrase).
+// keywordCounter (boundary rule and F202 work budget) rather than reimplement
+// it. Keywords for a concept are its tags plus its title (the title matched as
+// one phrase).
 // Frontmatter only — bodies are never matched and never injected.
-import { buildKeywordPattern, MATCH_PROMPT_CLIP_CHARS } from "./skill-match.js";
+import { keywordCounter } from "./skill-match.js";
 
 export const MEMORY_RECALL_CAP = 3;
 
@@ -48,15 +49,6 @@ export interface MemoryConceptLike {
   stale: boolean;
 }
 
-function countKeywordMatches(message: string, keywords: string[]): number {
-  let count = 0;
-  for (const keyword of keywords) {
-    const pattern = buildKeywordPattern(keyword);
-    if (pattern && pattern.test(message)) count++;
-  }
-  return count;
-}
-
 // recallableConcepts drops deprecated concepts — a retired concept must never
 // occupy a cap slot that a live one could have used, in either recall tier.
 // Shared by matchMemoryConcepts and memory-semantic.ts's semanticRecall so the
@@ -77,11 +69,11 @@ export function matchMemoryConcepts<T extends MemoryConceptLike>(
   message: string,
   concepts: T[],
 ): { recalled: T[] } {
-  const text = message.slice(0, MATCH_PROMPT_CLIP_CHARS);
+  const countMatches = keywordCounter(message);
   const recalled = recallableConcepts(concepts)
     .map((concept) => ({
       concept,
-      count: countKeywordMatches(text, [...recallTags(concept), concept.title]),
+      count: countMatches([...recallTags(concept), concept.title]),
     }))
     .filter((candidate) => candidate.count > 0)
     .sort(

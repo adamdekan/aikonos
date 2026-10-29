@@ -55,9 +55,9 @@ administrator, and the accepted-risk items below.
 
 These are open findings from the internal zero-trust audit. Each is documented
 with the reasoning behind not scheduling it, so an operator can judge it
-against their own threat model rather than discover it later. All three share
-one boundary: registering an MCP server is an administrator action, and the
-administrator is treated as the trust boundary.
+against their own threat model rather than discover it later. The first three
+share one boundary: registering an MCP server is an administrator action, and
+the administrator is treated as the trust boundary.
 
 **MCP server authentication is not enforced.** The broker does not require an
 MCP server to authenticate before routing tool calls to it. The agent side is
@@ -83,6 +83,19 @@ trust boundary here, not the transport.
 If your threat model does not accept an administrator as a trust boundary,
 these three become relevant to you and you should say so in an issue. That is
 useful signal for prioritising them.
+
+**The sandboxed agent process shares the gateway's user (M-24).** Each agent
+process is forked from the gateway under the same uid in the same container.
+Its environment is reduced to an allowlist and it does not use the on-disk
+module cache, but code running inside it can still read anything that uid
+can: the gateway's SVID key under `/tls`, the gateway's environment through
+`/proc/<ppid>/environ`, and the shared `/tmp`. This needs code execution in
+the agent process first (its tools run no shell, so a dependency or parser bug
+is required), and the broker still requires the owner grant for calls made
+on behalf of a user. The fix is a separate uid or container for the agent
+process; a distinct uid needs `CAP_SETUID`, which the container drops, and
+Node's permission model does not work with the TypeScript loader the process
+runs under.
 
 ## Hardening the deployment you run
 

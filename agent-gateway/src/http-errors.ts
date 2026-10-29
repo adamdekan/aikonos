@@ -105,10 +105,14 @@ export function trimmedErrorMessage(err: unknown): string {
 // the child (and so the model and the chat) over IPC. A gRPC-shaped string
 // ("Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090") gets the same
 // caller-class/infra-class treatment; any other text is gateway-authored and
-// passes through so the model can still act on it (F66).
+// passes through so the model can still act on it (F66). So does a gateway
+// prefix wrapped around String(err) ("could not read the workflow: Error: 14
+// UNAVAILABLE: …"), with the gRPC part trimmed.
 export function trimmedErrorText(text: string): string {
   const m = /^(?:[A-Za-z]*Error: )?(\d+) [A-Z_]+: ([\s\S]*)$/.exec(text);
-  return m ? trimmedErrorMessage({ code: Number(m[1]), details: m[2] }) : text;
+  if (m) return trimmedErrorMessage({ code: Number(m[1]), details: m[2] });
+  const wrapped = /^([\s\S]*?: )[A-Za-z]*Error: (\d+) [A-Z_]+: ([\s\S]*)$/.exec(text);
+  return wrapped ? wrapped[1] + trimmedErrorMessage({ code: Number(wrapped[2]), details: wrapped[3] }) : text;
 }
 
 // AG-13: the broker refuses a yes on a step-up approval without a recent

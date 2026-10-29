@@ -3,6 +3,8 @@
 // prompt over size cap → 413; body over cap → 413.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { buildExternalApp } from "../../src/external/server.js";
 import type { Config } from "../../src/config.js";
 import type { ChildSupervisor } from "../../src/ipc/supervisor.js";
@@ -505,4 +507,44 @@ test("F56: X-Forwarded-For is ignored when no proxy is trusted", async () => {
   await invoke(app, AUTO_AGENT_ID, "tk_x", "203.0.113.2");
   assert.equal((await invoke(app, AUTO_AGENT_ID, "tk_x", "203.0.113.3")).statusCode, 429, "a spoofed XFF must not mint a fresh bucket");
   await app.close();
+});
+
+test("F208: a client that disconnects before the stream starts still aborts the run", async () => {
+  // WHY: the close listener is attached only after the auth and spec awaits.
+  // A client that sends an invoke and leaves at once closed the socket before
+  // it existed, so the run burned tokens unattended until its 180 s timeout.
+  const south = makeSouth(AUTO_AGENT_ID, "auto");
+  const getSpec = south.getAgentSpec;
+  let specEntered!: () => void;
+  const inSpec = new Promise<void>((r) => { specEntered = r; });
+  let releaseSpec!: () => void;
+  const specGate = new Promise<void>((r) => { releaseSpec = r; });
+  south.getAgentSpec = async () => { specEntered(); await specGate; return getSpec(); };
+  let aborted = false;
+  let endRun = (): void => {};
+  const supervisor = {
+    keyFor: () => "__single__",
+    getOrSpawn: async () => ({ setRunContext: () => {}, clearRunContext: () => {}, abortRun: () => { aborted = true; endRun(); } }),
+    run: () => new Promise<void>((resolve) => { endRun = resolve; }),
+  } as unknown as ChildSupervisor;
+  const app = buildExternalApp(baseCfg, makeClients(south), log, supervisor);
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    const serverSocket = once(app.server, "connection");
+    const body = JSON.stringify({ prompt: "hello" });
+    const client = connect((app.server.address() as AddressInfo).port, "127.0.0.1");
+    client.on("error", () => {});
+    client.write(`POST /v1/agents/${AUTO_AGENT_ID}/invoke HTTP/1.1\r\nhost: localhost\r\n` +
+      `authorization: Bearer ${RAW_KEY_AUTO}\r\ncontent-type: application/json\r\n` +
+      `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    const [sock] = (await serverSocket) as [Socket];
+    await inSpec;
+    client.destroy();
+    await once(sock, "close");
+    releaseSpec();
+    for (const deadline = Date.now() + 2000; !aborted && Date.now() < deadline;) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(aborted, "the run is aborted, not left to its timeout");
+  } finally {
+    await app.close();
+  }
 });

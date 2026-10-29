@@ -282,3 +282,15 @@ test("resolveCommandSkill: forwards the session owner grant to both south reads"
   await resolveCommandSkill({ south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "x" });
   assert.deepEqual(grants, ["grant-1", "grant-1"]);
 });
+
+test("F66 resolveCommandSkill: a broker infra error reaches the chat trimmed, not as raw gRPC text", async () => {
+  // WHY: the error message is shown to the user; String(err) carried broker
+  // hosts ("connect ECONNREFUSED 10.0.0.5:9090") into the chat.
+  const south: CommandSkillSouth = {
+    listUserAgentSkills: async () => {
+      throw Object.assign(new Error("14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090"), { code: 14, details: "connect ECONNREFUSED 10.0.0.5:9090" });
+    },
+  };
+  const result = await resolveCommandSkill({ south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "x" });
+  assert.deepEqual(result, { kind: "error", message: "skill resolution failed: upstream unavailable" });
+});

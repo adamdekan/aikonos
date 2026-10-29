@@ -52,6 +52,9 @@ export async function verifyBearer(
     issuer: opts.issuer,
     audience: opts.audience,
     algorithms: ALLOWED_ALGORITHMS,
+    // A token without exp would be accepted indefinitely and never arm the
+    // audit stream's expiry timer (F59).
+    requiredClaims: ["exp"],
     // Absorb host↔IdP clock skew; jose defaults to 0, which rejects tokens a
     // single second past exp and any token whose iat/nbf is barely in the future.
     clockTolerance: 60,
