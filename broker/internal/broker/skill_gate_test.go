@@ -32,6 +32,7 @@ type fakeSkillPolicy struct {
 	enabled       bool
 	granted       bool
 	err           error
+	byRelation    map[string]bool // per-relation answer; granted when absent
 	checkFGACalls int
 	lastUser      string
 	lastRelation  string
@@ -45,6 +46,9 @@ func (f *fakeSkillPolicy) CheckFGA(_ context.Context, user, relation, object str
 	f.lastUser = user
 	f.lastRelation = relation
 	f.lastObject = object
+	if g, ok := f.byRelation[relation]; ok {
+		return g, f.err
+	}
 	return f.granted, f.err
 }
 
@@ -54,7 +58,7 @@ func (f *fakeSkillPolicy) CheckFGA(_ context.Context, user, relation, object str
 // planPolicyEngine (OPA fake) and skillGatePolicy (FGA fake).
 func newSvcWithSkillPolicy(ts taskStore, pol planPolicyEngine, sp skillGatePolicy) *SandboxService {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(),
 		Audit:  em,
 		Tasks:  ts,
@@ -80,7 +84,7 @@ func TestUserSkillGate_NoGrant_Denied(t *testing.T) {
 	}
 	svc := newSvcWithSkillPolicy(ts, pol, sp)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "web.fetch", nil)}),
 	})
@@ -127,7 +131,7 @@ func TestUserSkillGate_WithGrant_Approved(t *testing.T) {
 	}
 	svc := newSvcWithSkillPolicy(ts, pol, sp)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "web.fetch", nil)}),
 	})
@@ -154,7 +158,7 @@ func TestUserSkillGate_FGADisabled_PassThrough(t *testing.T) {
 	}
 	svc := newSvcWithSkillPolicy(ts, pol, sp)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "web.fetch", nil)}),
 	})
@@ -190,7 +194,7 @@ func TestUserSkillGate_WithGrant_ApprovalClass(t *testing.T) {
 	}
 	svc := newSvcWithSkillPolicy(ts, pol, sp)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "email.draft", nil)}),
 	})
@@ -225,7 +229,7 @@ func TestUserSkillGate_FGAError_FailClosed(t *testing.T) {
 	}
 	svc := newSvcWithSkillPolicy(ts, pol, sp)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})

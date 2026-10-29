@@ -40,6 +40,13 @@ func (stubTaskStore) InsertPlanSteps(_ context.Context, _ string, _ []db.PlanSte
 	return nil
 }
 
+// ClaimPlanStep stands in for an approved, unused plan step matching the call,
+// so tests about other InvokeTool gates need not seed one. Step-binding tests
+// use planStepTaskStore (service_invoke_step_test.go), which checks for real.
+func (stubTaskStore) ClaimPlanStep(_ context.Context, _, _ string, _ int32, toolID string, argsHashes []string) (db.PlanStepClaim, error) {
+	return db.PlanStepClaim{ToolID: toolID, ArgsHash: argsHashes[0], PolicyDecision: string(db.PolicyAllow), Claimed: true}, nil
+}
+
 func (stubTaskStore) CreateApprovalRequest(_ context.Context, _ *db.ApprovalRequest) (uuid.UUID, error) {
 	return uuid.UUID{}, nil
 }

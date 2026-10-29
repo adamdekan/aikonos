@@ -50,9 +50,10 @@ func (s *BrokerService) ListSkills(ctx context.Context, req *brokerv1.ListSkills
 	entries := reg.ListTools()
 
 	// Lazy-load the tenant overlay into the registry cache so IsEnabled /
-	// EffectClassForTenant are current. Load errors are tolerated (I7).
+	// EffectClassForTenant are current. Load errors are tolerated here (I7):
+	// a display read, and the enforcement paths fail closed on their own.
 	if s.deps.OverlayLoader != nil {
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger)
+		_ = s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger)
 	}
 
 	// Fetch raw overlay rows for display fields (display_name, description,

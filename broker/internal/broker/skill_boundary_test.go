@@ -33,6 +33,21 @@ type fakeAgentStoreForSkill struct {
 	getCalls int
 }
 
+// skilledAgents answers any agent id with an agent holding skills, so tests of
+// other InvokeTool gates on agent-bound tasks pass the F188 skill re-check.
+type skilledAgents struct {
+	fakeAgentStoreForSkill
+	skills []string
+}
+
+func (s *skilledAgents) Get(_ context.Context, _, id string) (*db.Agent, error) {
+	aid, err := uuid.Parse(id)
+	if err != nil {
+		return nil, db.ErrAgentNotFound
+	}
+	return &db.Agent{ID: aid, Skills: s.skills}, nil
+}
+
 func (f *fakeAgentStoreForSkill) Create(_ context.Context, _ *db.Agent) error { return nil }
 func (f *fakeAgentStoreForSkill) List(_ context.Context, _ string) ([]*db.Agent, error) {
 	return nil, nil
@@ -108,7 +123,7 @@ func newSvcWithAgent(t *testing.T, agentSkills []string, ts taskStore, pol planP
 		},
 	}
 
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -125,7 +140,7 @@ func TestSkillBoundary_InSkill_Approved(t *testing.T) {
 	store := agentBoundTask()
 	svc := newSvcWithAgent(t, []string{"doc.read"}, store, allowPol())
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	})
@@ -144,7 +159,7 @@ func TestSkillBoundary_OutOfSkill_Denied(t *testing.T) {
 	store := agentBoundTask()
 	svc := newSvcWithAgent(t, []string{"doc.read"}, store, allowPol())
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "web.fetch", nil)}),
 	})
@@ -188,7 +203,7 @@ func TestSkillBoundary_NullAgentID_Unaffected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -196,7 +211,7 @@ func TestSkillBoundary_NullAgentID_Unaffected(t *testing.T) {
 		Agents:  agentStore,
 	}, policy: allowPol()}
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		// web.fetch would be out-of-skills for the seeded agent — but the task
 		// has no agent_id so the check must be completely skipped.
@@ -234,7 +249,7 @@ func newSvcWithAgentMcp(t *testing.T, skills, mcpServers []string, ts taskStore,
 			McpTools:   mcpTools,
 		},
 	}
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -249,7 +264,7 @@ func TestSkillBoundary_McpAttached_Approved(t *testing.T) {
 	store := agentBoundTask()
 	svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol(), "mcp:conn-1:search")
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:conn-1:search", nil)}),
 	})
@@ -267,7 +282,7 @@ func TestSkillBoundary_McpNotAttached_Denied(t *testing.T) {
 	store := agentBoundTask()
 	svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol())
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:conn-2:search", nil)}),
 	})
@@ -295,7 +310,7 @@ func TestSkillBoundary_McpMalformed_Denied(t *testing.T) {
 	store := agentBoundTask()
 	svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol())
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:conn-1", nil)}),
 	})
@@ -329,7 +344,7 @@ func TestSkillBoundary_AG08_McpToolNotAllowed_Denied(t *testing.T) {
 		svc := newSvcWithAgentMcp(t, []string{"doc.read"}, []string{"conn-1"}, store, allowPol(), "mcp:conn-1:search")
 		svc.deps.Agents.(*fakeAgentStoreForSkill).agent.IsDefault = isDefault
 
-		result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 			TaskId: validTaskUUID(),
 			Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:conn-1:delete_all", nil)}),
 		})

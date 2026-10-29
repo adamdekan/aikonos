@@ -118,7 +118,7 @@ func buildMcpSandboxSvc(
 	}, zap.NewNop())
 
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  proxy,
@@ -206,7 +206,8 @@ func TestInvokeTool_MCP_AllowedAgent_RoutesToHandler(t *testing.T) {
 	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, true /* allowed */)
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-1")
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-1",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -231,7 +232,8 @@ func TestInvokeTool_MCP_AG08_ToolNotAllowed_Denied(t *testing.T) {
 	svc.deps.Agents.(*fakeAgentStoreForSkill).agent.McpTools = []string{"mcp:" + connID + ":other"}
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-1")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-1",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -252,7 +254,8 @@ func TestInvokeTool_MCP_EmptyAgentID_Denied(t *testing.T) {
 	svc.deps.Tasks = executingTaskStore("") // legacy unbound row
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-2")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-2",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -277,7 +280,8 @@ func TestInvokeTool_MCP_AgentIDMismatchWithBoundTask_Denied(t *testing.T) {
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, AgentID: &boundAgent, CostBudget: 100}}
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-mismatch")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-mismatch",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -301,7 +305,8 @@ func TestInvokeTool_MCP_TaskLoadTransportError_Denied(t *testing.T) {
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{getErr: errors.New("connection reset by peer")}
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-transport-err")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-transport-err",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -313,7 +318,8 @@ func TestInvokeTool_MCP_TaskLoadTransportError_Denied(t *testing.T) {
 	}
 
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{getErr: db.ErrNotFound}
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-transport-err",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -335,7 +341,8 @@ func TestInvokeTool_MCP_UnboundTaskRefusesCallerAgent(t *testing.T) {
 	svc.deps.Tasks = &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100}} // no AgentID bound
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-nobinding")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-nobinding",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -356,10 +363,11 @@ func TestInvokeTool_MCP_NilPolicy_DeniesInsteadOfPanicking(t *testing.T) {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
 	connID := uuid.New().String()
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")}} // Policy left nil
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")}} // Policy left nil
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-nopolicy")
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-nopolicy",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,
@@ -378,7 +386,8 @@ func TestInvokeTool_MCP_DeniedByFGA(t *testing.T) {
 	svc, m := buildMcpSandboxSvc(t, connID, mcpSrv.URL, false /* denied */)
 
 	tok := mintMcpToken(t, m, connID, "task-mcp-3")
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-3",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,

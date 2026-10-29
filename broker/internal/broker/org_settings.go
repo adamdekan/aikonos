@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"sort"
+	"unicode/utf16"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -13,6 +14,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
+	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
 
 // Org governance settings (A-series). North Get/Update are tenant-admin gated;
@@ -50,6 +52,9 @@ func (s *BrokerService) UpdateOrgSettings(ctx context.Context, req *brokerv1.Upd
 		return nil, status.Error(codes.FailedPrecondition, "org settings not configured")
 	}
 
+	if err := validateOrgSettings(req.Settings); err != nil {
+		return nil, err
+	}
 	patch, changed := orgSettingsPatch(req.Settings)
 	if len(patch) == 0 {
 		// Nothing to apply — return current state without a write or audit event.
@@ -109,6 +114,57 @@ func orgSettingsToProto(s db.OrgSettings) *brokerv1.OrgSettings {
 		out.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
 	return out
+}
+
+// Org settings input bounds (G6). orgPreambleMaxUnits matches the gateway's
+// ORG_PREAMBLE_MAX_CHARS (agent-gateway/src/pi/system-prompt.ts), counted in
+// UTF-16 units as the gateway slices, so a stored preamble is never silently
+// cut at render.
+const (
+	orgPreambleMaxUnits    = 4000
+	orgConnectorAllowedMax = 64
+	orgConnectorIDMax      = 64
+)
+
+// validateOrgSettings rejects input the settings could store but never apply
+// as written: an over-long preamble, an effect class that matches no tool,
+// an unbounded or blank connector allowlist.
+func validateOrgSettings(in *brokerv1.OrgSettings) error {
+	if in == nil {
+		return nil
+	}
+	if in.InstructionPreamble != nil {
+		if n := utf16Len(in.GetInstructionPreamble()); n > orgPreambleMaxUnits {
+			return status.Errorf(codes.InvalidArgument, "instruction_preamble is %d characters; at most %d are allowed", n, orgPreambleMaxUnits)
+		}
+	}
+	if in.ConnectorAllowlistEnabled != nil {
+		ids := in.GetConnectorAllowlist()
+		if len(ids) > orgConnectorAllowedMax {
+			return status.Errorf(codes.InvalidArgument, "connector_allowlist has %d entries; at most %d are allowed", len(ids), orgConnectorAllowedMax)
+		}
+		for _, id := range ids {
+			if id == "" || len(id) > orgConnectorIDMax {
+				return status.Errorf(codes.InvalidArgument, "connector_allowlist entry %q must be 1-%d characters", id, orgConnectorIDMax)
+			}
+		}
+	}
+	if in.Capabilities != nil {
+		for _, c := range in.Capabilities.GetDisabledEffectClasses() {
+			if v, ok := planv1.EffectClass_value[c]; !ok || v == int32(planv1.EffectClass_EFFECT_CLASS_UNSPECIFIED) {
+				return status.Errorf(codes.InvalidArgument, "disabled_effect_classes entry %q is not an effect class", c)
+			}
+		}
+	}
+	return nil
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
 }
 
 // orgSettingsPatch builds the partial-merge patch from only the fields present

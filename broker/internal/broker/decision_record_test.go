@@ -93,12 +93,12 @@ func TestSubmitPlan_RecordsEachDecision(t *testing.T) {
 	tasks := &fakeTaskStore{task: newFakeTask(db.TaskStateValidating)}
 	interactive := "interactive"
 	tasks.task.OBOKind = &interactive
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: pol}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: pol}
 
 	step := makeStep(1, "web.fetch", map[string]any{"url": "https://example.org"})
 	step.EffectClass = planv1.EffectClass_NETWORK_EGRESS
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
-		TaskId: validTaskUUID(), SandboxSpiffeId: "spiffe://aikonos/sandbox/s1",
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(), SandboxSpiffeId: testGWSpiffeID,
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{step}),
 	})
 	if err != nil {
@@ -162,9 +162,9 @@ func TestSubmitPlan_AgentBoundaryDenialIsRecorded(t *testing.T) {
 	tasks := &fakeTaskStore{task: newFakeTask(db.TaskStateValidating)}
 	agentID := uuid.MustParse(validTaskUUID())
 	tasks.task.AgentID = &agentID
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: &fakePolicyEngine{planAllow: true}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true}, policy: &fakePolicyEngine{planAllow: true}}
 
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	})
 	if err != nil || res.Outcome != planv1.ValidationOutcome_DENIED {

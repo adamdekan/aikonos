@@ -346,12 +346,15 @@ func TestTestLlmProvider_StoredKeyFallback(t *testing.T) {
 	sec := &storedKeySecrets{stored: "sk-stored"}
 	deps := testProviderDeps(t, srv.URL, sec)
 	deps.AllowProviderTestPrivate = true
+	store := newFakeLlmProviderStore()
+	store.rows[testTenantUUID+"/openrouter"] = fakeLlmProviderRow{id: "openrouter", endpoint: upstream.URL, api: "openai-completions", hasKey: true}
+	deps.Providers = store
 	svc := NewBrokerService(deps)
 
 	p := validProvider()
 	p.Endpoint = upstream.URL
 	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
-	// Blank ApiKey → handler must fall back to the stored Vault key.
+	// Blank ApiKey on the saved destination → handler falls back to the stored Vault key.
 	resp, err := svc.TestLlmProvider(ctx, &brokerv1.TestLlmProviderRequest{Provider: p, ApiKey: ""})
 	if err != nil {
 		t.Fatalf("TestLlmProvider: %v", err)
@@ -361,6 +364,50 @@ func TestTestLlmProvider_StoredKeyFallback(t *testing.T) {
 	}
 	if gotAuth != "Bearer sk-stored" {
 		t.Errorf("upstream should see stored key, got auth %q", gotAuth)
+	}
+}
+
+// TestTestLlmProvider_StoredKeyNotRetargeted (M-14): a blank api_key never
+// sends the stored key anywhere but the saved row's destination, and an
+// unsaved provider never borrows a stored key.
+func TestTestLlmProvider_StoredKeyNotRetargeted(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	deps := testProviderDeps(t, srv.URL, &storedKeySecrets{stored: "sk-stored"})
+	deps.AllowProviderTestPrivate = true
+	store := newFakeLlmProviderStore()
+	store.rows[testTenantUUID+"/openrouter"] = fakeLlmProviderRow{id: "openrouter", endpoint: "https://openrouter.ai/api/v1", api: "openai-completions", hasKey: true}
+	deps.Providers = store
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	for name, mut := range map[string]func(*brokerv1.LlmProvider){
+		"endpoint": func(p *brokerv1.LlmProvider) { p.Endpoint = upstream.URL },
+		"config":   func(p *brokerv1.LlmProvider) { p.Config = map[string]string{"region": "attacker"} },
+	} {
+		p := validProvider()
+		mut(p)
+		_, err := svc.TestLlmProvider(ctx, &brokerv1.TestLlmProviderRequest{Provider: p})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s changed: want InvalidArgument, got %v", name, err)
+		}
+	}
+	p := validProvider()
+	p.Id, p.Endpoint = "unsaved", upstream.URL
+	resp, err := svc.TestLlmProvider(ctx, &brokerv1.TestLlmProviderRequest{Provider: p})
+	if err != nil || resp.Ok {
+		t.Errorf("unsaved provider: want a no-key result, got %+v %v", resp, err)
+	}
+	if hits != 0 {
+		t.Fatalf("the stored key reached an unsaved destination %d times", hits)
 	}
 }
 

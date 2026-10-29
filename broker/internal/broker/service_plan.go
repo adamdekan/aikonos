@@ -38,11 +38,17 @@ func (s *SandboxService) toolReg() *toolregistry.Registry {
 	return toolregistry.PkgDefault()
 }
 
+// maxPlanSteps caps a submitted plan before it reaches OPA (F124).
+const maxPlanSteps = 256
+
 // SubmitPlan validates a proposed plan against OPA and OpenFGA, enforces the
 // agent skill boundary (if task is agent-bound), records per-step policy
 // decisions, and either mints capability tokens (APPROVED), creates an approval
 // request (NEEDS_HUMAN/NEEDS_STEP_UP), or returns DENIED for the agent to replan.
 func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPlanRequest) (*planv1.PlanValidationResult, error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return nil, err
+	}
 	ctx, span := tracer.Start(ctx, "broker.plan.validate")
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
@@ -82,6 +88,16 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		return nil, status.Errorf(codes.Internal, "failed to load task")
 	}
 	ctx = withOBOTask(ctx, task)
+
+	// F124: bound the plan before OPA sees it — plan_validation's duplicate
+	// rule is quadratic in the step count and one OPA serves every tenant.
+	// Checked before the task moves, so a refused plan leaves the row as is.
+	if len(plan.Steps) > maxPlanSteps {
+		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+			"plan_id": plan.PlanId, "reason": "too_many_steps", "steps": len(plan.Steps),
+		})
+		return nil, status.Errorf(codes.InvalidArgument, "plan has %d steps; at most %d are allowed", len(plan.Steps), maxPlanSteps)
+	}
 
 	// AG-03: only an active agent plans. Checked before the task moves, so a
 	// refused plan leaves the row where it was.
@@ -194,9 +210,12 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	taskUUID, _ := uuid.Parse(req.TaskId)
 
 	// Lazy-load the tenant overlay once before the step loop (I6). One DB read
-	// per tenant per process lifetime; subsequent calls are no-ops.
+	// per tenant per process lifetime; subsequent calls are no-ops. An
+	// unloadable overlay fails the plan closed: it may hold a disable (F25).
 	if s.deps.OverlayLoader != nil {
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger)
+		if err := s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger); err != nil {
+			return nil, status.Error(codes.Unavailable, "tenant skill settings could not be read; retry")
+		}
 	}
 
 	// AG-02: "" for a human subject, else why the user bound does not apply.
@@ -255,8 +274,8 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 
 		// CP2: routeStep runs the unified 5-layer escalation pipeline (OPA →
 		// netacl → disabled_tools → overlay-disable → effect_class_routing),
-		// deriving reads_sensitive server-side instead of trusting
-		// step.ReadsSensitive. It has no side effects — the trace below drives
+		// never trusting step.ReadsSensitive or plan.HasDlpAttestation (M-08).
+		// It has no side effects — the trace below drives
 		// the same audits/decision-trace notes this loop always emitted.
 		dec, rtrace, err := routeStep(ctx, routeStepInput{
 			Engine:             policyEng,
@@ -269,7 +288,6 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			EffectClass:        routingClass,
 			ActorSpiffeID:      req.SandboxSpiffeId,
 			FGADecision:        fgaDec,
-			HasDLPAttestation:  plan.HasDlpAttestation,
 			NetaclHost:         netaclHost,
 			OverlayGateEnabled: s.deps.OverlayLoader != nil,
 		})

@@ -216,3 +216,61 @@ func TestTaskRepo_ServiceAgent_ReadOnLoad(t *testing.T) {
 }
 
 func ptrBool(b bool) *bool { return &b }
+
+// TestTaskRepo_ClaimPlanStep (H-03): a step is claimed only by its tool, its
+// args hash and a non-DENY decision, and only once; a replan of the seq resets
+// it and drops seqs the new plan no longer has.
+func TestTaskRepo_ClaimPlanStep(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID, taskID := uuid.New(), uuid.New()
+	tenant, task := tenantID.String(), taskID.String()
+	if err := repo.Create(ctx, &Task{TaskID: taskID, TenantID: tenantID, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 10}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	step := func(seq int32, tool, hash string, d PolicyDecision) PlanStepRecord {
+		return PlanStepRecord{TaskID: taskID, TenantID: tenantID, Seq: seq, ToolID: tool, ArgsHash: hash, EffectClass: "READ_ONLY", PolicyDecision: d}
+	}
+	if err := repo.InsertPlanSteps(ctx, tenant, []PlanStepRecord{
+		step(1, "web.fetch", "h1", PolicyAllow), step(2, "web.fetch", "h2", PolicyDeny),
+	}); err != nil {
+		t.Fatalf("InsertPlanSteps: %v", err)
+	}
+	claim := func(seq int32, tool, hash string) PlanStepClaim {
+		t.Helper()
+		c, err := repo.ClaimPlanStep(ctx, tenant, task, seq, tool, []string{hash})
+		if err != nil {
+			t.Fatalf("ClaimPlanStep(%d): %v", seq, err)
+		}
+		return c
+	}
+	if c := claim(1, "web.search", "h1"); c.Claimed || c.ToolID != "web.fetch" {
+		t.Errorf("other tool: %+v", c)
+	}
+	if c := claim(1, "web.fetch", "hX"); c.Claimed {
+		t.Errorf("other args: %+v", c)
+	}
+	if c := claim(2, "web.fetch", "h2"); c.Claimed || c.PolicyDecision != string(PolicyDeny) {
+		t.Errorf("denied step: %+v", c)
+	}
+	if c := claim(1, "web.fetch", "h1"); !c.Claimed {
+		t.Errorf("matching step: %+v", c)
+	}
+	if c := claim(1, "web.fetch", "h1"); c.Claimed || !c.WasConsumed {
+		t.Errorf("replay: %+v", c)
+	}
+	if _, err := repo.ClaimPlanStep(ctx, tenant, task, 9, "web.fetch", []string{"h1"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing step: want ErrNotFound, got %v", err)
+	}
+	// Replan: seq 1 is fresh again, seq 2 is gone.
+	if err := repo.InsertPlanSteps(ctx, tenant, []PlanStepRecord{step(1, "web.fetch", "h1", PolicyAllow)}); err != nil {
+		t.Fatalf("replan: %v", err)
+	}
+	if c := claim(1, "web.fetch", "h1"); !c.Claimed {
+		t.Errorf("replanned step: %+v", c)
+	}
+	if _, err := repo.ClaimPlanStep(ctx, tenant, task, 2, "web.fetch", []string{"h2"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("dropped seq: want ErrNotFound, got %v", err)
+	}
+}

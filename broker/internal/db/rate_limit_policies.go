@@ -71,12 +71,12 @@ func (r *RateLimitPolicyRepo) List(ctx context.Context, tenantID string) ([]Rate
 
 // ListAll returns every tenant's rate limit policies, ordered by created_at.
 //
-// For the broker's one-shot startup preload only: the in-process limiter holds a
-// single flat policy set spanning all tenants, and at startup there is no tenant
-// to scope an RLS-bounded read to. Reads through the migration 044 SECURITY
-// DEFINER carve-out, the same sanctioned bypass 033/034 use for their
-// legitimately cross-tenant sweeps. Every other caller must use List, which
-// stays tenant-scoped and RLS-enforced.
+// For loading the in-process limiter only (the startup preload and the reload
+// after an admin change): the limiter holds a single flat policy set spanning
+// all tenants, so a tenant-scoped read would drop the others. Reads through
+// the migration 044 SECURITY DEFINER carve-out, the same sanctioned bypass
+// 033/034 use for their legitimately cross-tenant sweeps. Every other caller
+// must use List, which stays tenant-scoped and RLS-enforced.
 //
 // The tenant passed to withConn is only there to satisfy the connection helper's
 // GUC set; the function body ignores app.current_tenant by design.

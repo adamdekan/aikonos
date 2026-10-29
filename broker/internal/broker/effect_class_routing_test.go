@@ -30,7 +30,7 @@ func TestSubmitPlan_FU3_WritLocalApprovalEscalates(t *testing.T) {
 
 	svc := newSandboxSvcForPlanWithConfig(taskStore, &opaLikePolicyEngine{}, nil, cfg)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			// doc.write is authoritatively write_local → OPA returns allow=true.
@@ -82,7 +82,7 @@ func TestSubmitPlan_FU3_RelaxNoOp(t *testing.T) {
 	svc := newSandboxSvcForPlanWithConfig(taskStore, &opaLikePolicyEngine{}, nil, cfg)
 	withApprovers(t, svc) // a step-up gate needs two approvers other than the requester
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			makeStepWithClass(1, "doc.read", planv1.EffectClass_CREDENTIAL_ACCESS),
@@ -122,7 +122,7 @@ func TestSubmitPlan_FU3_MalformedConfigIgnored(t *testing.T) {
 	svc := newSandboxSvcForPlanWithConfig(taskStore, &opaLikePolicyEngine{}, nil, cfg)
 
 	// doc.read is read_only → OPA returns allow=true → should remain APPROVED.
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			makeStepWithClass(1, "doc.read", planv1.EffectClass_READ_ONLY),
@@ -147,7 +147,7 @@ func TestSubmitPlan_FU3_DenyEscalation(t *testing.T) {
 
 	svc := newSandboxSvcForPlanWithConfig(taskStore, &opaLikePolicyEngine{}, nil, cfg)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			makeStepWithClass(1, "doc.read", planv1.EffectClass_READ_ONLY),

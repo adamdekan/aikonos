@@ -862,3 +862,14 @@ func TestGetGatewayApproval_StateVotesAndTokens(t *testing.T) {
 		t.Fatalf("non-gateway peer: err = %v, want PermissionDenied", err)
 	}
 }
+
+// asGateway puts the agent-gateway SVID on ctx, the only peer the south
+// plan/invoke/status RPCs accept (H-04). Other identity fields are kept.
+func asGateway(ctx context.Context) context.Context {
+	id := auth.Identity{}
+	if cur, ok := auth.IdentityFromContext(ctx); ok {
+		id = *cur
+	}
+	id.SpiffeID = testGWSpiffeID
+	return auth.WithIdentity(ctx, &id)
+}

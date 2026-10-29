@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,5 +204,37 @@ func TestOrgSettingsToProto(t *testing.T) {
 	}
 	if zero.InstructionPreamble == nil {
 		t.Fatalf("empty preamble must still be a set optional field")
+	}
+}
+
+// G6: UpdateOrgSettings refuses input it would store but never apply as
+// written; values at the bounds pass.
+func TestValidateOrgSettings(t *testing.T) {
+	str := func(s string) *string { return &s }
+	on := true
+	long := strings.Repeat("a", orgPreambleMaxUnits)
+	astral := strings.Repeat("😀", orgPreambleMaxUnits/2+1) // 2 UTF-16 units each
+	many := make([]string, orgConnectorAllowedMax+1)
+	for i := range many {
+		many[i] = "c"
+	}
+	for _, tc := range []struct {
+		name string
+		in   *brokerv1.OrgSettings
+		ok   bool
+	}{
+		{"preamble at cap", &brokerv1.OrgSettings{InstructionPreamble: str(long)}, true},
+		{"preamble over cap", &brokerv1.OrgSettings{InstructionPreamble: str(long + "a")}, false},
+		{"preamble over cap in UTF-16", &brokerv1.OrgSettings{InstructionPreamble: str(astral)}, false},
+		{"known effect class", &brokerv1.OrgSettings{Capabilities: &brokerv1.CapabilityPolicy{DisabledEffectClasses: []string{"DESTRUCTIVE"}}}, true},
+		{"typo effect class", &brokerv1.OrgSettings{Capabilities: &brokerv1.CapabilityPolicy{DisabledEffectClasses: []string{"Destructive"}}}, false},
+		{"unspecified effect class", &brokerv1.OrgSettings{Capabilities: &brokerv1.CapabilityPolicy{DisabledEffectClasses: []string{"EFFECT_CLASS_UNSPECIFIED"}}}, false},
+		{"allowlist", &brokerv1.OrgSettings{ConnectorAllowlistEnabled: &on, ConnectorAllowlist: []string{"google_drive"}}, true},
+		{"allowlist too long", &brokerv1.OrgSettings{ConnectorAllowlistEnabled: &on, ConnectorAllowlist: many}, false},
+		{"blank allowlist entry", &brokerv1.OrgSettings{ConnectorAllowlistEnabled: &on, ConnectorAllowlist: []string{""}}, false},
+	} {
+		if err := validateOrgSettings(tc.in); (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.name, err, tc.ok)
+		}
 	}
 }

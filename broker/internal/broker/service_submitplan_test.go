@@ -145,7 +145,7 @@ func makeStep(seq int32, toolID string, args map[string]any) *planv1.PlanStep {
 
 func newSandboxSvcForPlan(tasks taskStore, pol planPolicyEngine, acl aclDecider) *SandboxService {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -156,7 +156,7 @@ func newSandboxSvcForPlan(tasks taskStore, pol planPolicyEngine, acl aclDecider)
 
 func newSandboxSvcForPlanWithConfig(tasks taskStore, pol planPolicyEngine, acl aclDecider, cfg Config) *SandboxService {
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -175,7 +175,7 @@ func TestSubmitPlan_TaskNotFound(t *testing.T) {
 	taskStore := &fakeTaskStore{getErr: db.ErrNotFound}
 	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{}, nil)
 
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -200,7 +200,7 @@ func TestSubmitPlan_CP1_DeniedStepCapturesTrace(t *testing.T) {
 	}
 	svc := newSandboxSvcForPlan(taskStore, pol, nil)
 
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -257,7 +257,7 @@ func TestSubmitPlan_PlanValidationDenyEndsTask(t *testing.T) {
 	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: false}, nil)
 
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -282,7 +282,7 @@ func TestSubmitPlan_CP1_NetaclDenyCaptures(t *testing.T) {
 	}
 	svc := newSandboxSvcForPlan(taskStore, pol, &staticACL{action: netacl.Deny})
 
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			makeStep(1, "web.fetch", map[string]any{"url": "https://evil.example.com/path"}),
@@ -339,7 +339,7 @@ func TestSubmitPlan_CP1_AllowedOutcomeUnchanged(t *testing.T) {
 	// No capability minter → mintStepTokens returns nil map silently.
 	svc := newSandboxSvcForPlan(taskStore, pol, nil)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	})
@@ -390,7 +390,7 @@ func TestSubmitPlan_RecordsPlanOutcome(t *testing.T) {
 	}
 	em, _ := audit.NewEmitter(context.Background(), audit.Config{})
 	tm := &fakeTaskMetrics{}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode:     true,
 		Logger:      zap.NewNop(),
 		Audit:       em,
@@ -398,7 +398,7 @@ func TestSubmitPlan_RecordsPlanOutcome(t *testing.T) {
 		TaskMetrics: tm,
 	}, policy: pol}
 
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	})
@@ -423,7 +423,7 @@ func TestSubmitPlan_NilTaskMetrics_NoPanic(t *testing.T) {
 	}
 	svc := newSandboxSvcForPlan(taskStore, pol, nil)
 
-	if _, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	if _, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	}); err != nil {
@@ -453,7 +453,7 @@ func TestSubmitPlan_CP2_ApprovalExpiryFromConfig(t *testing.T) {
 	svc := newSandboxSvcForPlanWithConfig(taskStore, pol, nil, cfg)
 
 	before := time.Now()
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -497,7 +497,7 @@ func TestSubmitPlan_SpiffeIDDiffersFromVerifiedPeerDenied(t *testing.T) {
 	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
 
-	_, err := svc.SubmitPlan(peerCtx("spiffe://aikonos.com/sandbox/a"), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId:          validTaskUUID(),
 		SandboxSpiffeId: "spiffe://aikonos.com/control-plane",
 		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
@@ -528,18 +528,32 @@ func TestSubmitPlan_VerifiedPeerIsTheActor(t *testing.T) {
 	}
 }
 
-func TestSubmitPlan_NoVerifiedPeerOutsideDevModeUnauthenticated(t *testing.T) {
-	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
-	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
-	svc.deps.DevMode = false
-
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
-		TaskId:          validTaskUUID(),
-		SandboxSpiffeId: "spiffe://aikonos.com/agent-gateway",
-		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
-	})
-	if status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("want Unauthenticated, got %v", err)
+// TestSouth_NonGatewayPeerDenied (H-04): SubmitPlan, InvokeTool and
+// EmitStatus answer only the agent-gateway SVID. Another trust-domain peer, or
+// none (dev mode too), is refused before any task is read or moved.
+func TestSouth_NonGatewayPeerDenied(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"sandbox peer": peerCtx("spiffe://aikonos.com/sandbox/a"),
+		"no peer":      context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateApproved)}
+			svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
+			_, perr := svc.SubmitPlan(ctx, &brokerv1.SubmitPlanRequest{
+				TaskId: validTaskUUID(),
+				Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
+			})
+			_, ierr := svc.InvokeTool(ctx, &brokerv1.InvokeToolRequest{TaskId: validTaskUUID(), StepId: "1", ToolId: "web.fetch"})
+			_, serr := svc.EmitStatus(ctx, &brokerv1.EmitStatusRequest{TaskId: validTaskUUID(), Status: brokerv1.TaskStatus_COMPLETED})
+			for rpc, err := range map[string]error{"SubmitPlan": perr, "InvokeTool": ierr, "EmitStatus": serr} {
+				if status.Code(err) != codes.PermissionDenied {
+					t.Errorf("%s: want PermissionDenied, got %v", rpc, err)
+				}
+			}
+			if len(taskStore.transitions) != 0 {
+				t.Fatalf("a non-gateway peer must not move the task, got %+v", taskStore.transitions)
+			}
+		})
 	}
 }
 
@@ -547,7 +561,7 @@ func TestSubmitPlan_PlanTenantDiffersFromTaskDenied(t *testing.T) {
 	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
 
-	_, err := svc.SubmitPlan(peerCtx("spiffe://aikonos.com/agent-gateway"), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(peerCtx(testGWSpiffeID), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan("bbbbbbbb-0000-0000-0000-000000000002", []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 	})
@@ -556,26 +570,6 @@ func TestSubmitPlan_PlanTenantDiffersFromTaskDenied(t *testing.T) {
 	}
 	if len(taskStore.transitions) != 0 {
 		t.Fatalf("a foreign tenant must not move the task, got %+v", taskStore.transitions)
-	}
-}
-
-// TestSubmitPlan_DevModeIgnoresClaimedPeer: with no verified identity a
-// dev-mode broker evaluates the plan as the fixed devUnverifiedPeer, never the
-// sandbox_spiffe_id the caller claims — a dev caller cannot pose as the gateway.
-func TestSubmitPlan_DevModeIgnoresClaimedPeer(t *testing.T) {
-	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
-	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}}
-	svc := newSandboxSvcForPlan(taskStore, pol, nil)
-
-	if _, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
-		TaskId:          validTaskUUID(),
-		SandboxSpiffeId: "spiffe://aikonos.com/agent-gateway",
-		Plan:            makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
-	}); err != nil {
-		t.Fatalf("SubmitPlan: %v", err)
-	}
-	if pol.actor != devUnverifiedPeer {
-		t.Fatalf("OPA actor = %q, want %q", pol.actor, devUnverifiedPeer)
 	}
 }
 
@@ -605,7 +599,7 @@ func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 	cfg.values[testTenantUUID+":identity.obo"] = "enforce"
 	svc.deps.Config = cfg
 
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			makeStep(1, "web.fetch", map[string]any{"url": "https://example.com"}),
@@ -623,7 +617,8 @@ func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 	}
 
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: validTaskUUID(), ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 		UserId: task.OwnerUserID,
 	})
@@ -632,5 +627,26 @@ func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 	}
 	if got.ToolID != "web.fetch" || got.TaskID != validTaskUUID() || got.UserID != task.OwnerUserID {
 		t.Fatalf("handler did not run as the task: %+v", got)
+	}
+}
+
+// TestSubmitPlan_StepCap (F124): a plan over maxPlanSteps is refused before
+// OPA sees it and before the task moves.
+func TestSubmitPlan_StepCap(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+	steps := make([]*planv1.PlanStep, maxPlanSteps+1)
+	for i := range steps {
+		steps[i] = makeStep(int32(i+1), "doc.read", nil)
+	}
+	_, err := svc.SubmitPlan(peerCtx(testGWSpiffeID), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, steps),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
+	}
+	if pol.actor != "" || len(taskStore.transitions) != 0 {
+		t.Fatalf("an oversized plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
 	}
 }

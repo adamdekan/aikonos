@@ -58,5 +58,9 @@ func (s *SandboxService) GetAgentSpec(ctx context.Context, req *brokerv1.GetAgen
 		Skills:         a.Skills,
 		Soul:           a.Soul,
 		GatewayEnabled: a.GatewayEnabled,
+		// G4: the agent's provider restriction; the gateway filters its
+		// candidate chain by it (empty = unrestricted).
+		AllowedProviders:  a.AllowedProviders,
+		PreferredProvider: a.PreferredProvider,
 	}, nil
 }

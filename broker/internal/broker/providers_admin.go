@@ -7,6 +7,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/url"
 
 	"go.uber.org/zap"
@@ -198,6 +199,7 @@ func (s *BrokerService) UpsertLlmProvider(ctx context.Context, req *brokerv1.Ups
 	// stored has_key value for an existing provider (empty key on update must
 	// not silently wipe a stored secret).
 	hasKey := false
+	traceID := span.SpanContext().TraceID().String()
 	if req.ApiKey != "" {
 		if s.deps.Secrets != nil {
 			if werr := s.deps.Secrets.WriteProviderKey(ctx, tenant, p.Id, req.ApiKey); werr != nil {
@@ -206,13 +208,14 @@ func (s *BrokerService) UpsertLlmProvider(ctx context.Context, req *brokerv1.Ups
 			}
 		}
 		hasKey = true
-	} else if store := s.providersFor(); store != nil {
-		// Preserve existing has_key value when no new key supplied.
-		existing, getErr := store.Get(ctx, tenant, p.Id)
-		if getErr == nil {
-			hasKey = existing.HasKey
+	} else if existing, found, same := s.storedKeyTarget(ctx, tenant, p); found {
+		// Preserve existing has_key value when no new key supplied, but never
+		// carry the stored key to a new destination (M-14).
+		if existing.HasKey && !same {
+			return nil, s.refuseStoredKeyRetarget(ctx, traceID, tenant, user, p.Id)
 		}
-		// ErrProviderNotFound → new provider with no key → hasKey stays false.
+		hasKey = existing.HasKey
+		// Not found → new provider with no key → hasKey stays false.
 	}
 
 	row := db.Provider{
@@ -240,8 +243,7 @@ func (s *BrokerService) UpsertLlmProvider(ctx context.Context, req *brokerv1.Ups
 		return nil, status.Errorf(codes.Internal, "failed to upsert provider")
 	}
 
-	s.emitLlmProviderAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"llm.provider.upsert", p.Id)
+	s.emitLlmProviderAudit(ctx, traceID, tenant, user, "llm.provider.upsert", p.Id)
 	return &brokerv1.UpsertLlmProviderResponse{}, nil
 }
 
@@ -598,13 +600,48 @@ func pricingFromProto(pr *brokerv1.LlmModelPricing) *db.ModelPricing {
 
 // emitLlmProviderAudit fires an ALLOW audit event for LLM provider mutations.
 func (s *BrokerService) emitLlmProviderAudit(ctx context.Context, traceID, tenant, actor, eventType, providerID string) {
+	s.emitLlmProviderEvent(ctx, traceID, tenant, actor, eventType, providerID, auditv1.PolicyDecision_ALLOW, "")
+}
+
+// storedKeyTarget loads the saved row for p.Id and reports whether p sends a
+// key to the same place: endpoint, api, api version and config all equal (the
+// config carries api-specific host fields such as a region). A read error
+// counts as not found, so the stored key is never used on an unverified row.
+func (s *BrokerService) storedKeyTarget(ctx context.Context, tenant string, p *brokerv1.LlmProvider) (stored db.Provider, found, same bool) {
+	store := s.providersFor()
+	if store == nil {
+		return db.Provider{}, false, false
+	}
+	stored, err := store.Get(ctx, tenant, p.Id)
+	if err != nil {
+		return db.Provider{}, false, false
+	}
+	same = stored.Endpoint == p.Endpoint && stored.API == p.Api &&
+		stored.APIVersion == p.ApiVersion && maps.Equal(stored.Config, p.Config)
+	return stored, true, same
+}
+
+// refuseStoredKeyRetarget audits and refuses a request that would send a
+// provider's stored (write-only) key to a destination other than its saved
+// one; the admin re-enters the key to change where it goes (M-14).
+func (s *BrokerService) refuseStoredKeyRetarget(ctx context.Context, traceID, tenant, actor, providerID string) error {
+	s.emitLlmProviderEvent(ctx, traceID, tenant, actor, "llm.provider.key_retarget_denied", providerID,
+		auditv1.PolicyDecision_DENY, "stored key used with a changed endpoint, api, api_version or config")
+	return status.Error(codes.InvalidArgument, "api_key required when endpoint, api, api_version or config changes")
+}
+
+func (s *BrokerService) emitLlmProviderEvent(ctx context.Context, traceID, tenant, actor, eventType, providerID string, decision auditv1.PolicyDecision, reason string) {
 	if s.deps.Audit == nil {
 		return
 	}
-	ctxStruct, _ := structpb.NewStruct(map[string]any{
+	fields := map[string]any{
 		"actor":       actor,
 		"provider_id": providerID,
-	})
+	}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	ctxStruct, _ := structpb.NewStruct(fields)
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
 		EventId:     ids.EventID(),
 		TraceId:     traceID,
@@ -613,7 +650,7 @@ func (s *BrokerService) emitLlmProviderAudit(ctx context.Context, traceID, tenan
 		ActorUserId: actor,
 		EventType:   eventType,
 		ResourceRef: "aikonos:llmprovider:" + providerID,
-		Decision:    auditv1.PolicyDecision_ALLOW,
+		Decision:    decision,
 		Context:     ctxStruct,
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, eventType)

@@ -108,7 +108,7 @@ func TestWriteRelations_Live(t *testing.T) {
 func TestWriteRelations_AlreadyExistsIsOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input"}`))
+		_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input","message":"cannot write a tuple which already exists: user: 'user:alice', relation: 'owner', object: 'task:1': invalid write input"}`))
 	}))
 	defer srv.Close()
 
@@ -225,7 +225,7 @@ func TestDeleteRelations_Live(t *testing.T) {
 func TestDeleteRelations_AbsentIsOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input"}`))
+		_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input","message":"cannot delete a tuple which does not exist: user: 'user:alice', relation: 'member', object: 'group:x': invalid write input"}`))
 	}))
 	defer srv.Close()
 	e, _ := NewEngine(context.Background(), Config{
@@ -234,6 +234,65 @@ func TestDeleteRelations_AbsentIsOK(t *testing.T) {
 	if err := e.DeleteRelations(context.Background(),
 		Relation{User: "user:alice", Relation: "member", Object: "group:x"}); err != nil {
 		t.Errorf("deleting an absent tuple should succeed, got %v", err)
+	}
+}
+
+// TestDeleteRelations_BatchWithAbsentTupleRetriesEach (F239): OpenFGA rejects
+// a whole atomic batch when one tuple is absent; the client then deletes each
+// tuple on its own, so the present ones are still revoked.
+func TestDeleteRelations_BatchWithAbsentTupleRetriesEach(t *testing.T) {
+	present := map[string]bool{"group:a": true, "group:c": true}
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req fgaDeleteRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, k := range req.Deletes.TupleKeys {
+			if !present[k.Object] {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input","message":"cannot delete a tuple which does not exist"}`))
+				return
+			}
+		}
+		for _, k := range req.Deletes.TupleKeys {
+			deleted = append(deleted, k.Object)
+		}
+	}))
+	defer srv.Close()
+	e, _ := NewEngine(context.Background(), Config{
+		OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1",
+	})
+	if err := e.DeleteRelations(context.Background(),
+		Relation{User: "user:alice", Relation: "member", Object: "group:a"},
+		Relation{User: "user:alice", Relation: "member", Object: "group:b"},
+		Relation{User: "user:alice", Relation: "member", Object: "group:c"},
+	); err != nil {
+		t.Fatalf("DeleteRelations: %v", err)
+	}
+	if len(deleted) != 2 || deleted[0] != "group:a" || deleted[1] != "group:c" {
+		t.Fatalf("deleted = %v, want the present tuples revoked", deleted)
+	}
+}
+
+// TestWriteRelations_InvalidInputIsError (F239): a 400 for anything but an
+// already-applied tuple (here an unknown relation) is an error, not success.
+func TestWriteRelations_InvalidInputIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"write_failed_due_to_invalid_input","message":"relation 'group#nope' not found"}`))
+	}))
+	defer srv.Close()
+	e, _ := NewEngine(context.Background(), Config{
+		OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1",
+	})
+	for name, err := range map[string]error{
+		"write":        e.WriteRelations(context.Background(), Relation{User: "user:alice", Relation: "nope", Object: "group:x"}),
+		"delete":       e.DeleteRelations(context.Background(), Relation{User: "user:alice", Relation: "nope", Object: "group:x"}),
+		"write batch":  e.WriteRelations(context.Background(), Relation{User: "user:a", Relation: "nope", Object: "group:x"}, Relation{User: "user:b", Relation: "nope", Object: "group:x"}),
+		"delete batch": e.DeleteRelations(context.Background(), Relation{User: "user:a", Relation: "nope", Object: "group:x"}, Relation{User: "user:b", Relation: "nope", Object: "group:x"}),
+	} {
+		if err == nil {
+			t.Errorf("%s: invalid input must be an error", name)
+		}
 	}
 }
 
@@ -360,6 +419,49 @@ func TestListObjects_Live(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "agent:aaa" || got[1] != "agent:bbb" {
 		t.Errorf("objects = %v", got)
+	}
+}
+
+// TestListUserGroups_NestedViaListObjects (F238): group membership comes from
+// ListObjects, which resolves group#member nesting, not from the user's direct
+// tuples; an FGA error fails closed.
+func TestListUserGroups_NestedViaListObjects(t *testing.T) {
+	var gotBody fgaListObjectsRequest
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/list-objects") {
+			t.Errorf("ListUserGroups must use list-objects, hit %s", r.URL.Path)
+		}
+		if fail {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		// carol is a direct member of contractors-eu, which is nested in contractors.
+		_ = json.NewEncoder(w).Encode(fgaListObjectsResponse{Objects: []string{"group:contractors-eu", "group:contractors"}})
+	}))
+	defer srv.Close()
+	e, err := NewEngine(context.Background(), Config{
+		OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1",
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	got, err := e.ListUserGroups(context.Background(), "carol@example.com")
+	if err != nil {
+		t.Fatalf("ListUserGroups: %v", err)
+	}
+	if gotBody.User != "user:carol@example.com" || gotBody.Relation != "member" || gotBody.Type != "group" {
+		t.Errorf("request body = %+v", gotBody)
+	}
+	if len(got) != 2 || got[0] != "contractors-eu" || got[1] != "contractors" {
+		t.Errorf("groups = %v, want the nested group too", got)
+	}
+	fail = true
+	if got, err := e.ListUserGroups(context.Background(), "carol@example.com"); err == nil || got != nil {
+		t.Fatalf("FGA error must fail closed, got (%v, %v)", got, err)
 	}
 }
 

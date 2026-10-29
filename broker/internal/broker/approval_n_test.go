@@ -41,7 +41,7 @@ func newSvcWithCfgAndFGA(t *testing.T, tasks taskStore, pol planPolicyEngine, cf
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -87,7 +87,7 @@ func stepUpPol() *fakePolicyEngine {
 // approval request captured by the fake task store.
 func submitOneStep(t *testing.T, svc *SandboxService, store *fakeTaskStore) *db.ApprovalRequest {
 	t.Helper()
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -105,7 +105,7 @@ func submitOneStep(t *testing.T, svc *SandboxService, store *fakeTaskStore) *db.
 // the user sees, no approval request exists, and the task never waits.
 func submitRefused(t *testing.T, svc *SandboxService, store *fakeTaskStore, need, have int) {
 	t.Helper()
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -273,7 +273,7 @@ func TestApprovalN_FGAApprovers_SoDExcludesOwner(t *testing.T) {
 
 	svc := newSvcWithCfgAndFGA(t, store, approvalPol(), cfg, srv.URL)
 
-	_, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: taskID,
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})

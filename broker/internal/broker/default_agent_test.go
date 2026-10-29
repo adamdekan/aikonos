@@ -222,7 +222,7 @@ func TestSkillBoundary_DefaultAgent_PersonalGate(t *testing.T) {
 	svc := newSvcWithAgent(t, []string{"doc.read"}, agentBoundTask(), allowPol())
 	svc.deps.Agents.(*fakeAgentStoreForSkill).agent.IsDefault = true
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "web.fetch", nil)}),
 	})

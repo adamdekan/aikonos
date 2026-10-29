@@ -157,7 +157,8 @@ func TestInvokeTool_SuspendedAgentStopsAtNextCall(t *testing.T) {
 	}
 	invoke := func() error {
 		got = toolproxy.Request{}
-		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			StepId: "1",
 			TaskId: "task-1", ToolId: "memory.write", CapabilityToken: base64.StdEncoding.EncodeToString(raw),
 			Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
 		})
@@ -223,7 +224,7 @@ func TestAgentStatus_RunPathsRefuseInactive(t *testing.T) {
 			prev := newFakeRevStore()
 			prev.agentSt[testAgentIDStr] = st
 			plan.deps.Revocation = revocation.New(prev)
-			_, err = plan.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+			_, err = plan.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 				TaskId: validTaskUUID(),
 				Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.read", nil)}),
 			})
