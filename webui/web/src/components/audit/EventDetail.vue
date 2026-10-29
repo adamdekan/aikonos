@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import Icon from "../Icon.vue";
+import { tsMillis, decision } from "./audit-format.js";
 
 const props = defineProps({
   ev: { type: Object, required: true },
@@ -23,8 +24,18 @@ function copyJson() {
   }).catch(() => {});
 }
 
+// occurred_at and decision read as an ISO time and the decision's name, not
+// as {seconds, nanos} and the proto enum number.
+function shown(key, val) {
+  if (key === "occurred_at" && val) return new Date(tsMillis(props.ev)).toISOString();
+  if (key === "decision") return decision(props.ev)?.label ?? val;
+  return typeof val === "object" ? JSON.stringify(val) : val;
+}
+
 function fieldEntries(ev) {
-  return Object.entries(ev).filter(([k]) => !k.startsWith("_") && k !== "context");
+  return Object.entries(ev)
+    .filter(([k]) => !k.startsWith("_") && k !== "context")
+    .map(([k, v]) => [k, shown(k, v)]);
 }
 </script>
 
@@ -48,7 +59,7 @@ function fieldEntries(ev) {
       >
         <span class="detail-key">{{ key }}</span>
         <span class="detail-val" :class="{ copied: copied === key }">
-          {{ typeof val === 'object' ? JSON.stringify(val) : val }}
+          {{ val }}
         </span>
       </div>
     </div>

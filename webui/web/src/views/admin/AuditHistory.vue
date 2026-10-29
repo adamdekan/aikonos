@@ -165,7 +165,7 @@ function copyId(id) {
 }
 
 const TABLE_COLS = [
-  { key: "time",     label: "Time",     width: "140px" },
+  { key: "time",     label: "Time",     width: "180px" },
   { key: "event",    label: "Event",    width: "220px" },
   { key: "actor",    label: "Actor",    width: "160px" },
   { key: "resource", label: "Resource" },
@@ -318,7 +318,7 @@ const TABLE_COLS = [
             :row-attrs="{ 'data-testid': 'audit-history-row' }"
           >
             <template #row="{ row: ev }">
-              <td class="muted mono">{{ fmtTimeHistory(ev) }}</td>
+              <td class="muted mono nowrap" data-testid="audit-history-time">{{ fmtTimeHistory(ev) }}</td>
               <td class="accent mono">{{ ev.event_type }}</td>
               <td class="mono">{{ actor(ev) }}</td>
               <td class="muted overflow" :title="ev.resource_ref">{{ ev.resource_ref }}</td>
@@ -600,4 +600,5 @@ const TABLE_COLS = [
 .muted   { color: var(--text-muted); }
 .accent  { color: var(--accent-text); }
 .overflow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap  { white-space: nowrap; }
 </style>
