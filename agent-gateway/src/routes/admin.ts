@@ -1501,15 +1501,28 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
       if (!principal) return;
       try {
         const resp = await clients.north.verifyAuditChain({}, principal.token);
+        const breaks = resp.breaks ?? [];
+        const signatureFailures = resp.signatureFailures ?? [];
+        const truncated = resp.truncated ?? false;
+        const skipped = resp.skipped ?? 0;
+        // "incomplete": no break found, but part of the chain was not checked
+        // (truncated walk or unreadable objects) — never shown as intact.
+        const verdict =
+          breaks.length || signatureFailures.length ? "broken"
+          : truncated || skipped > 0 ? "incomplete"
+          : resp.ok ? "intact" : "broken";
         reply.send({
           total:             resp.total             ?? 0,
-          ok:                resp.ok                ?? false,
+          ok:                verdict === "intact",
+          verdict,
+          truncated,
+          skipped,
           signed:            resp.signed             ?? false,
           storeConfigured:   resp.storeConfigured    ?? false,
           headEventId:       resp.headEventId        ?? "",
           tailEventId:       resp.tailEventId        ?? "",
-          breaks:            resp.breaks             ?? [],
-          signatureFailures: resp.signatureFailures  ?? [],
+          breaks,
+          signatureFailures,
         });
       } catch (err) {
         sendError(reply, log, err, { route: `${req.method} ${req.url}` });

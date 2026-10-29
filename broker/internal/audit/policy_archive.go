@@ -102,7 +102,7 @@ func (r *Reader) GetEvent(ctx context.Context, tenant, eventID string) (*auditv1
 		sec, nsec := id.Time().UnixTime()
 		day := time.Unix(sec, nsec).UTC()
 		for _, d := range []time.Time{day, day.AddDate(0, 0, -1), day.AddDate(0, 0, 1)} {
-			candidates = append(candidates, fmt.Sprintf("%s/%04d/%02d/%02d/%s.json", tenant, d.Year(), int(d.Month()), d.Day(), eventID))
+			candidates = append(candidates, fmt.Sprintf("%s/%04d/%02d/%02d/%s.json", keySegment(tenant), d.Year(), int(d.Month()), d.Day(), eventID))
 		}
 	}
 	for _, key := range candidates {
@@ -110,7 +110,7 @@ func (r *Reader) GetEvent(ctx context.Context, tenant, eventID string) (*auditv1
 			return decodeStoredEvent(tenant, eventID, data)
 		}
 	}
-	metas, err := r.store.list(ctx, tenant+"/")
+	metas, err := r.store.list(ctx, keySegment(tenant)+"/")
 	if err != nil {
 		return nil, nil, true, err
 	}

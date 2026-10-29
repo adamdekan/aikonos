@@ -168,6 +168,26 @@ describe("AuditHistory.vue", () => {
     expect(txt).toContain("evt-007");  // sig failure id
   });
 
+  it("Verify integrity: truncated or skipped renders incomplete, never intact", async () => {
+    client.get.mockResolvedValue({
+      total: 5000, ok: false, verdict: "incomplete", truncated: true, skipped: 2,
+      signed: true, storeConfigured: true, headEventId: "h", tailEventId: "t",
+      breaks: [], signatureFailures: [],
+    });
+    const router = makeRouter();
+    await router.push("/admin/audit/history");
+    const w = mount(AuditHistory, { global: { plugins: [router] } });
+
+    await w.find("[data-testid='verify-btn']").trigger("click");
+    await flushPromises();
+
+    const result = w.find("[data-testid='verify-result']");
+    expect(result.classes()).toContain("fail");
+    expect(result.text()).toContain("incomplete");
+    expect(result.text()).toContain("2 unreadable");
+    expect(result.text()).not.toContain("intact");
+  });
+
   // ── Case 3: forbidden ──────────────────────────────────────────────────────
   it("forbidden:true response shows admin empty-state without throwing", async () => {
     client.get.mockResolvedValue({ forbidden: true });

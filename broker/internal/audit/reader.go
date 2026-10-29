@@ -20,6 +20,14 @@ import (
 // maxScanObjects is the hard cap on objects scanned in one Query call.
 const maxScanObjects = 5000
 
+// maxVerifyObjects caps one VerifyChain walk. Verify streams the whole trail
+// and keeps only each event's link (~250 bytes), so the cap bounds memory and
+// run time rather than coverage of any realistic tenant; past it the report is
+// Truncated and OK=false. A var so tests can lower it.
+// ponytail: one full walk per Verify call; verify from a persisted checkpoint
+// of the last verified head hash if trails outgrow this.
+var maxVerifyObjects = 1_000_000
+
 // maxLimit is the maximum page size a caller may request.
 const maxLimit = 200
 
@@ -138,7 +146,7 @@ func (r *Reader) Query(ctx context.Context, tenant string, f QueryFilter) ([]*au
 		return nil, "", false, nil
 	}
 
-	prefix := tenant + "/"
+	prefix := keySegment(tenant) + "/"
 	metas, err := r.listNewest(ctx, prefix, prefix, f, nil)
 	if err != nil {
 		r.logger.Warn("audit reader: list objects failed", zap.String("tenant", tenant), zap.Error(err))
@@ -273,71 +281,77 @@ func filterAndPage(events []*auditv1.AuditEvent, f QueryFilter) ([]*auditv1.Audi
 	return page, next
 }
 
-// scanResult carries the output of readAll including incompleteness signals.
-type scanResult struct {
-	events    []*auditv1.AuditEvent
-	truncated bool // true when total objects > maxScanObjects
-	skipped   int  // count of objects that failed to fetch/decode
-}
-
-// readAll fetches and decodes every event for tenant (up to maxScanObjects).
-// Returns (scanResult{}, false, nil) when the store is not configured.
-// Returns (scanResult{}, true, err) when the list call fails — a fatal I/O
-// error that must not be silently treated as an empty (intact) chain.
-// Individual get/unmarshal failures increment skipped and continue.
-func (r *Reader) readAll(ctx context.Context, tenant string) (scanResult, bool, error) {
-	if r.store == nil {
-		return scanResult{}, false, nil
-	}
-	prefix := tenant + "/"
-	metas, err := r.store.list(ctx, prefix)
+// walkOldest visits every object under prefix oldest first — the
+// <tenant>/YYYY/MM/DD/ date directories ascending, keys ascending within one —
+// until visit returns false. Only one listing level is held at a time.
+func (r *Reader) walkOldest(ctx context.Context, prefix string, visit func(objMeta) bool) (bool, error) {
+	dirs, objs, err := r.store.listLevel(ctx, prefix)
 	if err != nil {
-		r.logger.Warn("audit reader: list objects failed in readAll", zap.String("tenant", tenant), zap.Error(err))
-		return scanResult{}, true, err
+		return false, err
 	}
-	var res scanResult
-	if len(metas) > maxScanObjects {
-		metas = metas[:maxScanObjects]
-		res.truncated = true
-	}
-	for _, m := range metas {
-		data, err := r.store.get(ctx, m.key)
-		if err != nil {
-			r.logger.Warn("audit reader: get object failed in readAll, skipping", zap.String("key", m.key), zap.Error(err))
-			res.skipped++
-			continue
+	sort.Slice(objs, func(i, j int) bool { return objs[i].key < objs[j].key })
+	for _, o := range objs {
+		if !visit(o) {
+			return false, nil
 		}
-		ev, err := unmarshalAuditEvent(data)
-		if err != nil {
-			res.skipped++
-			continue
-		}
-		res.events = append(res.events, ev)
 	}
-	return res, true, nil
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if more, err := r.walkOldest(ctx, d, visit); !more || err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
-// VerifyChain reads all tenant events and runs the pure chain verifier with the
-// Reader's configured signing key. Returns (ChainReport{}, false, nil) when the
-// store is not configured. Returns a non-nil error when the underlying list
-// fails — callers must propagate this rather than treating it as a clean report.
-// The returned ChainReport carries Truncated and Skipped to signal that the
-// verdict covers only the scanned subset when either field is non-zero.
+// VerifyChain streams every one of the tenant's events, oldest first, through
+// the chain verifier with the Reader's configured signing key. Returns
+// (ChainReport{}, false, nil) when the store is not configured, and a non-nil
+// error when a listing fails — callers must propagate it rather than treat it
+// as a clean report. An object that cannot be fetched or decoded counts in
+// Skipped, and a walk cut at maxVerifyObjects sets Truncated; either leaves
+// part of the chain unverified, so OK is false.
 func (r *Reader) VerifyChain(ctx context.Context, tenant string) (ChainReport, bool, error) {
-	res, configured, err := r.readAll(ctx, tenant)
-	if !configured {
+	if r.store == nil {
 		return ChainReport{}, false, nil
-	}
-	if err != nil {
-		return ChainReport{}, true, err
 	}
 	keySource := r.cfg.SigningKeySource
 	if keySource == nil {
 		keySource = staticKeySource{key: r.cfg.SigningKey}
 	}
-	report := VerifyChainVersioned(ctx, res.events, keySource)
-	report.Truncated = res.truncated
-	report.Skipped = res.skipped
+	v := newChainVerifier(ctx, keySource)
+	seen, skipped, truncated := 0, 0, false
+	_, err := r.walkOldest(ctx, keySegment(tenant)+"/", func(m objMeta) bool {
+		if seen == maxVerifyObjects {
+			truncated = true
+			return false
+		}
+		seen++
+		data, err := r.store.get(ctx, m.key)
+		if err != nil {
+			r.logger.Warn("audit reader: get object failed in VerifyChain, skipping", zap.String("key", m.key), zap.Error(err))
+			skipped++
+			return true
+		}
+		ev, err := unmarshalAuditEvent(data)
+		if err != nil {
+			r.logger.Warn("audit reader: undecodable object in VerifyChain, skipping", zap.String("key", m.key), zap.Error(err))
+			skipped++
+			return true
+		}
+		v.add(ev)
+		return true
+	})
+	if err != nil {
+		r.logger.Warn("audit reader: list objects failed in VerifyChain", zap.String("tenant", tenant), zap.Error(err))
+		return ChainReport{}, true, err
+	}
+	report := v.report()
+	report.Truncated = truncated
+	report.Skipped = skipped
+	if truncated || skipped > 0 {
+		report.OK = false
+	}
 	// Surface the "entire chain unsigned" case beyond a boot-time log line: OK
 	// stays true for a consistent-but-unsigned chain, so an ops alert needs its
 	// own signal — this fires every time such a chain is verified, not just once.
