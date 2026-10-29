@@ -93,7 +93,7 @@ task-row binding idiom and add the regression test pattern already used in
 | M-03 | Admin gate pinned to the single configured tenant object, not the token's tenant | `roles.go:26-28`, `identity.go:28-42,80-92` | Reject token tenants outside the configured set, or build the FGA tenant object from the resolved tenant **Status:** fixed (F10, G10) |
 | M-04 | Policy bundle HTTP endpoint unauthenticated, cleartext, published on all interfaces; OPA fetches without bundle signing | `cmd/broker/policy_serving.go:55-61`, `compose.yaml:536`, `deploy/compose/opa.yaml:11-22` | Bind to internal iface / mTLS, enable OPA bundle signing, drop host port |
 | M-05 | Insecure defaults: empty FGA store = allow-all, empty issuer = no OIDC, empty sandbox prefix = any workload; only a WARN | `main.go:147,158,164,565`, `policy/engine.go:373-381`, `guard.go` | Fail startup unless explicit dev flag (see H-08) |
-| M-06 | `ApproveGatewayTask` self-approves with the owner identity for any gateway task (design intent unclear) | `gateway_tasks.go:195-232` | Confirm intent; restrict to the agent's pre-approved allowlist or require an owner-signed grant **Status:** fixed (F5, G46) |
+| M-06 | `ApproveGatewayTask` self-approves with the owner identity for any gateway task (design intent unclear) | `gateway_tasks.go:195-232` | Confirm intent; restrict to the agent's pre-approved allowlist or require an owner-signed grant **Status:** fixed (F5, G46); residual: the grant is not bound to the task id, and GetGatewayApproval mints step tokens for an approved gateway task without an owner grant (SECURITY.md) |
 | M-07 | Per-agent RPM limit and baseline keyed on request `agent_id` for non-MCP tools — **fixed with H-02** (keyed on the task's bound agent) | `service_invoke.go:341,410-417,525` | Done; see H-02 |
 
 ### Broker identity/authz — Low / Info
@@ -116,7 +116,7 @@ task-row binding idiom and add the regression test pattern already used in
 ### Policy/execution — Medium
 | ID | Finding | Where | Fix |
 |---|---|---|---|
-| M-08 | `plan.has_dlp_attestation` is a bool from the plan submitter; turns the hard exfil deny into a normal approval | `proto/plan.proto:45`, `service_plan.go:200`, `policy/engine.go:600,628`, `plan_validation.rego:46-53`, `tool_invocation.rego:65-72` | Pass `false` / drop from policy input until a broker-verified DLP stage exists **Status:** fixed (F120) |
+| M-08 | `plan.has_dlp_attestation` is a bool from the plan submitter; turns the hard exfil deny into a normal approval | `proto/plan.proto:45`, `service_plan.go:200`, `policy/engine.go:600,628`, `plan_validation.rego:46-53`, `tool_invocation.rego:65-72` | Pass `false` / drop from policy input until a broker-verified DLP stage exists **Status:** partial (F120) |
 | M-09 | Approval `expires_at` written but never enforced; no EXPIRED sweep | `approvalsvc/build.go:158`, `db/approvals.go:349-372,378-451` | `AND expires_at > NOW()` in both queries; resolve expired rows to EXPIRED, task to TIMEOUT. **Fixed (AG-07):** both queries filter `expires_at > NOW()`; a broker sweep (every minute, migration 053 carve-out) sets expired rows `EXPIRED`, the task `TIMEOUT`, and audits `aikonos.broker.approval.expired` |
 | M-10 | Replanning leaves stale `plan_steps`; approval of plan N mints tokens for non-DENY rows of earlier plans | `db/approvals.go:113-124,241-247`, `approvalsvc/resolve.go:85-94` | Add `plan_id`, supersede old rows on `SubmitPlan`, mint from the approved plan only |
 | M-11 | Empty approver set after separation-of-duty = "anyone may vote" (legacy bypass) | `approvalsvc/build.go:93-125`, `db/approvals.go:456-461` | Empty set stays PENDING; don't seed owner as approver when n≥2. **Fixed:** an empty set admits nobody (`MayVote`, `ListPendingApprovalsFor`). For n≥2 the broker resolves the eligible approvers at `SubmitPlan` (task approvers plus the tenant's `tenant#approver`, admins included, minus the requester, each checked for FGA `can_approve`); fewer than n refuses the plan with a reason the user sees, audited `aikonos.broker.approval.insufficient_approvers` (DENY), so no undecidable request is created. The requester can withdraw a pending request (`CancelTask` closes it, audited `aikonos.broker.approval.withdrawn`) |
@@ -142,9 +142,9 @@ task-row binding idiom and add the regression test pattern already used in
 |---|---|---|---|
 | M-18 | Audit `Emit` advances the chain head before persistence; drops on full queue (1024/100ms), gives up after 3 retries, loses tail on exit; returns nil in all cases → silent loss + chain break indistinguishable from tampering | `audit/emitter.go:206-222,251-253,335-347,361-407` | Local outbox/WAL before returning; chain inside the single worker in dequeue order; return error for mutations/denials **Status:** fixed (F28) |
 | M-19 | Chain order (lock order) ≠ verifier order (event_id sort); `event_id` minted before lock → spurious breaks under concurrency; restart may resume from a non-head | `emitter.go:206-222,304-331`, `verify.go:69-71`, `files.go:317` | Assign `EventId` under the lock; verify by `prior_event_hash` linkage |
-| M-20 | Query/Verify see only the **oldest** 5000 objects per tenant; Query has no truncation flag | `audit/reader.go:72-87,142-151,256-259` | Date-prefixed listing, newest-first pagination, `truncated` in response, incremental verify with checkpoints **Status:** fixed (F30) |
+| M-20 | Query/Verify see only the **oldest** 5000 objects per tenant; Query has no truncation flag | `audit/reader.go:72-87,142-151,256-259` | Date-prefixed listing, newest-first pagination, `truncated` in response, incremental verify with checkpoints **Status:** partial (F30) |
 | M-21 | Silent downgrade to env key / unsigned when Vault read fails at startup; unsigned chain is forgeable with bucket write | `cmd/broker/main.go:1444-1454`, `emitter.go:217-221`, `verify.go:158-169` | Fail or retry-refuse when Vault is configured; unsigned = explicit dev opt-in; alert metric **Status:** fixed (F29) |
-| M-22 | No per-user/tenant byte, file-count or depth quota on workspace RPCs; unbounded `ListDir`; no explicit `grpc.MaxRecvMsgSize` found | `workspacefs/store.go:34,326-411,505-534,662-672`, `files.go:133-238` | Quotas in `Store.Write`/`Mkdir`; cap listing; set `MaxRecvMsgSize` **Status:** fixed (F33, G48) |
+| M-22 | No per-user/tenant byte, file-count or depth quota on workspace RPCs; unbounded `ListDir`; no explicit `grpc.MaxRecvMsgSize` found | `workspacefs/store.go:34,326-411,505-534,662-672`, `files.go:133-238` | Quotas in `Store.Write`/`Mkdir`; cap listing; set `MaxRecvMsgSize` **Status:** partial (F33) / fixed (G48) |
 
 ### Low / Info
 - L-09 Verifier can't detect tail truncation; `Skipped>0` still `OK`; WORM is Governance mode with default retention 0 (`verify.go:125-145`, `emitter.go:170-176`). Signed checkpoints to a separate sink; Compliance mode in prod.
@@ -189,12 +189,12 @@ task-row binding idiom and add the regression test pattern already used in
 | M-25 | External API rate limit per source IP only, no `trustProxy`, no per-key limit; unauthenticated requests cost a south RPC | `external/server.ts:32-38` | `keyGenerator` on hashed Authorization; `trustProxy` to the proxy hop only; low limit for failed auth **Status:** fixed (F56) |
 
 ### Gateway — Low / Info
-- L-18 No rate limit / SSE cap / disconnect abort on internal :8080 (`app.ts:54-121`, `routes/workflows.ts:294-322`). **Status:** fixed (F57, F58).
+- L-18 No rate limit / SSE cap / disconnect abort on internal :8080 (`app.ts:54-121`, `routes/workflows.ts:294-322`). **Status:** partial (F57) / fixed (F58).
 - L-19 JWT issuer/audience checks silently skipped when env is empty (jose treats falsy as "don't check"); no `algorithms` allowlist (`config.ts:179,181`, `auth/verify.ts:44-50`). Refuse to start unless explicit insecure-dev flag. **Status:** fixed (F63).
 - L-20 `cfg.defaultTenantId` used for chat/scheduler runs while REST uses `principal.tenant` (`routes/agui.ts:418-420,605-606,647-658,766-771`, `scheduler/ticker.ts:93,284,362`). Assert equality. **Status:** fixed (F64).
 - L-21 Legacy demo UI at `/` has an `innerHTML` DOM-XSS sink and no CSP (`public/index.html:160-163`). Remove route or fix. **Status:** fixed (F65).
-- L-22 Error text leaks on workflow routes and provider errors (`routes/workflows.ts:319`, `broker/governance.ts:401,449`, `llm/reason.ts:137-141`, `llm/embed.ts:108-113`).
-- L-23 Provider `fetch` follows redirects and forwards `api-key`/`x-api-key`; accepts `http://` endpoints (`llm/reason.ts:127`, `vision.ts:149`, `embed.ts:98`). `redirect:'error'`, require https. **Status:** fixed (F66, G3).
+- L-22 Error text leaks on workflow routes and provider errors (`routes/workflows.ts:319`, `broker/governance.ts:401,449`, `llm/reason.ts:137-141`, `llm/embed.ts:108-113`). **Status:** partial (F66); the error-text part is fixed; F66 stays partial for the http provider endpoints of L-23.
+- L-23 Provider `fetch` follows redirects and forwards `api-key`/`x-api-key`; accepts `http://` endpoints (`llm/reason.ts:127`, `vision.ts:149`, `embed.ts:98`). `redirect:'error'`, require https. **Status:** partial (F66) / fixed (G3).
 - L-24 `/delegate` demo defaults (`to`, `scopes`, `maxCost=50`) and unvalidated `maxCost`/`scopes` (`routes/delegation.ts:30`).
 - L-25 Scheduler baseline pre-approves web.fetch/doc.read/doc.write for every schedule even with `approvedTools: []` (`ticker.ts:41-45`). Make explicit at creation. **Fixed (AG-07 slice 2):** the baseline is gone; only the schedule's own `approvedTools` are pre-approved, and any other gated call pauses the run for a human. **Status:** fixed (F211).
 - I-03 Forged assistant turns in client history are possible (roles user/assistant), accepted class L-01. I-04 Wildcard ACAO on SSE responses, not exploitable (bearer-only, no credentials).
@@ -212,7 +212,7 @@ task-row binding idiom and add the regression test pattern already used in
 
 ### Low / Info
 - L-26 Chat history in `localStorage`, not keyed by `sub`, cleared only by Settings sign-out (`store/chat.js:41-165`, `store/user.js:26-35`). Key by `sub`, clear on `logout()`. **Status:** fixed (F74).
-- L-27 Proxy: no upstream abort on client close, no backpressure, no timeouts, no proxy-side auth on `/agui`/`/audit/stream`, 15 MiB body limit (`server.mjs:146-271`). `AbortController` on `raw.close`, `AbortSignal.timeout`, 401 without Authorization. **Status:** fixed (F71).
+- L-27 Proxy: no upstream abort on client close, no backpressure, no timeouts, no proxy-side auth on `/agui`/`/audit/stream`, 15 MiB body limit (`server.mjs:146-271`). `AbortController` on `raw.close`, `AbortSignal.timeout`, 401 without Authorization. **Status:** fixed (F71, F76).
 - L-28 `/healthz` and 502 bodies leak internal URLs / `String(err)` (`server.mjs:121,185,209,238,273`). **Status:** fixed (F76).
 - L-29 `/api/*` upstream URL by raw concatenation; dot segments reach any gateway path (`server.mjs:219,243-245`). Reject `..`, allowlist prefix.
 - L-30 `window.location.assign(data.authorizeUrl)` with no scheme check (`views/Connections.vue:43-44`). **Status:** refuted (F75).
@@ -225,11 +225,11 @@ task-row binding idiom and add the regression test pattern already used in
 ### Medium
 | ID | Finding | Where | Fix |
 |---|---|---|---|
-| M-29 | office-worker has no authentication; protection is only the `internal: true` `office` network; several ops execute caller-supplied scripts (RCE by design) | `office-worker/src/server.js:39-95`, `compose.yaml:98-100,459,565-588` | Per-deployment bearer/HMAC header checked before `semaphore.acquire()`; broker sends it **Status:** partial (F84) |
+| M-29 | office-worker has no authentication; protection is only the `internal: true` `office` network; several ops execute caller-supplied scripts (RCE by design) | `office-worker/src/server.js:39-95`, `compose.yaml:98-100,459,565-588` | Per-deployment bearer/HMAC header checked before `semaphore.acquire()`; broker sends it **Status:** fixed (F84) |
 | M-30 | Model-authored scripts run same uid, shared `/tmp/office-job-*` readable across concurrent jobs; `setsid` double-fork escapes `killAll`; symlink in job dir makes `readJobFile` return any readable file | `handlers/run-script.js:94-157`, `job.js:21-60` | `mkdtemp` + `chmod 700` + per-slot uid, or bwrap/nsjail with private `/tmp`, no netns, rlimits; `realpath` re-check in `readJobFile` **Status:** partial (F79) |
 | M-31 | Semaphore slot taken before multipart parse; no `requestTimeout`/`headersTimeout`/`maxConnections`; unbounded acquire queue → slowloris starves all 4 slots | `server.js:73-75`, `multipart.js:54-153`, `job.js:62-77` | Parse first (inside a timeout), then acquire; set server timeouts; bound queue, 503 when full **Status:** fixed (F83) |
 | M-32 | Uploads fully buffered (16×11 MiB) then copied; output read whole + `Buffer.concat` (2× peak); `max_output_bytes` only if caller supplies it; `zip_edit.py:47` / `zip_xml_query.py:35` read members with no uncompressed-size check (zip bomb) | `multipart.js:31-39,94-112`, `size-check.js:29`, `scripts/zip_*.py` | Server-side default cap (~50 MiB), stat before read, `ZipInfo.file_size` cap, per-job `prlimit`/cgroup **Status:** fixed (F82) |
-| M-33 | docs-mcp published `0.0.0.0:8060`, no auth, no Host/Origin validation, no DNS-rebinding protection on `StreamableHTTPServerTransport` | `compose.yaml:771-772`, `docs-mcp/src/server.js:19-28,104,142` | `127.0.0.1:8060:8060` or drop ports; `enableDnsRebindingProtection: true` + `allowedHosts`; optional bearer (opt-in profile, so Medium) **Status:** partial (F85) |
+| M-33 | docs-mcp published `0.0.0.0:8060`, no auth, no Host/Origin validation, no DNS-rebinding protection on `StreamableHTTPServerTransport` | `compose.yaml:771-772`, `docs-mcp/src/server.js:19-28,104,142` | `127.0.0.1:8060:8060` or drop ports; `enableDnsRebindingProtection: true` + `allowedHosts`; optional bearer (opt-in profile, so Medium) **Status:** fixed (F85) |
 
 ### Low / Info
 - L-31 `params` JSON shape unvalidated (`null` → 500); `dpi`/`max_pages`/`pages`/`angle` unclamped to pdftoppm/qpdf (`dpi:200000` OOM; `--`-prefixed page range = argument injection); user regex in Python `re` (ReDoS bounded by timeout); `ops` unbounded (`multipart.js:141`, `handlers/pptx.js:62-81`, `pdf.js:96-126`, `zip-edit.js:14-26`). Assert plain object; clamp ints; regex-validate page ranges. **Status:** fixed (F80, F87).
@@ -255,7 +255,7 @@ task-row binding idiom and add the regression test pattern already used in
 - L-37 `aikonos.exe` not Authenticode-signed; only SHA256SUMS cosign-signed (`.github/workflows/release.yml:17-20,358`). Add signtool / Azure Trusted Signing. **Status:** deferred (F95).
 - L-38 Loopback sign-in listener serial accept; local process can stall callback ~10s per connection (`auth.rs:352-440`). **Status:** deferred (F96).
 - L-39 `save_bytes` predictable temp name, follows pre-planted symlink, remove-then-rename window (`local_files.rs:106-119`). `create_new(true)` + random suffix; rename replaces on Windows. **Status:** fixed (F97).
-- I-11 ID token not validated, `nonce` never compared (display-only; gateway validates bearer) (`auth.rs:88-93,302`). **Status:** fixed (F98). I-12 `TokenSet` derives `Debug` (`auth.rs:114-120`); implement redacting `Debug`.
+- I-11 ID token not validated, `nonce` never compared (display-only; gateway validates bearer) (`auth.rs:88-93,302`). **Status:** fixed (F98). I-12 `TokenSet` derives `Debug` (`auth.rs:114-120`); implement redacting `Debug`. **Status:** fixed (F98).
 - Reviewed OK: tokens in memory only; PKCE S256 + state enforced; `127.0.0.1` random-port listener; no `danger_accept_invalid_certs`; `open_link` restricted to http/https with tests; no auto-update; downloads to user-picked path only; `--locked` builds, pinned toolchain.
 
 ---
@@ -289,7 +289,7 @@ task-row binding idiom and add the regression test pattern already used in
 
 ### Deploy — Low
 - L-40 Postgres/OpenFGA/Grafana DB connections `sslmode=disable`; DB password embedded in `OPENFGA_DATASTORE_URI` (`compose.yaml:153,172`, `obs/grafana/provisioning/datasources/datasources.yaml:63-65`).
-- L-41 NATS unauthenticated on `mesh`; carries the audit stream (`compose.yaml:281-302,645`). Enable user/token auth with split pub/sub perms. **Status:** fixed (F114).
+- L-41 NATS unauthenticated on `mesh`; carries the audit stream (`compose.yaml:281-302,645`). Enable user/token auth with split pub/sub perms. **Status:** partial (F114).
 - L-42 Traefik (azure) mounts docker.sock read-only; `trustForwardHeader=true` (`compose.azure.yaml:105-108,164`). Socket proxy; drop trustForwardHeader at the edge. **Status:** deferred (F229).
 - L-43 `provision.sh` hardcodes subscription/RG defaults and decides the SSH allow /32 from an `ipify` lookup (`deploy/azure/provision.sh:13-14,29,34`). Explicit inputs. **Status:** fixed (F119).
 - L-44 `aikonosctl` f-string SQL into `psql -c`; fixed `/tmp/aikonosctl-plan-input.json`; default MinIO creds fallback (`scripts/aikonosctl:156,191,267-268,299-300`). `psql -v`, `NamedTemporaryFile`. **Status:** fixed (F117, F231).
