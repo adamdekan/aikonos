@@ -451,8 +451,10 @@ func (c *VaultClient) WriteCapabilityKey(ctx context.Context, b64 string) error 
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusBadRequest {
-		// KV-v2 returns 400 on a cas mismatch (key already exists).
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
+		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
+		// when the policy grants create but not update (F115). Either way the
+		// caller re-reads; a re-read that finds no key fails closed.
 		return ErrCASConflict
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
@@ -515,8 +517,10 @@ func (c *VaultClient) WriteGatewayGrantKey(ctx context.Context, b64 string) erro
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusBadRequest {
-		// KV-v2 returns 400 on a cas mismatch (key already exists).
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
+		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
+		// when the policy grants create but not update (F115). Either way the
+		// caller re-reads; a re-read that finds no key fails closed.
 		return ErrCASConflict
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
@@ -617,8 +621,10 @@ func (c *VaultClient) WriteAuditSigningKey(ctx context.Context, b64 string) erro
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusBadRequest {
-		// KV-v2 returns 400 on a cas mismatch (key already exists).
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
+		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
+		// when the policy grants create but not update (F115). Either way the
+		// caller re-reads; a re-read that finds no key fails closed.
 		return ErrCASConflict
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
@@ -631,8 +637,7 @@ func (c *VaultClient) WriteAuditSigningKey(ctx context.Context, b64 string) erro
 // The workspace session key is a 32-byte random value used as the HMAC-SHA256
 // key for session-file (.agent/Sessions/*) integrity sidecars. Mirrors the
 // gateway-grant key: cas=0 on first boot, shared across replicas, unversioned
-// (no rotation-spanning verification is needed for CP4.2 — see
-//  CP4.2).
+// (no rotation-spanning verification is needed for CP4.2 — see CP4.2).
 const workspaceSessionKeyLogical = "broker/workspace-session-key"
 
 func (c *VaultClient) workspaceSessionKeyDataPath() string {
@@ -684,8 +689,10 @@ func (c *VaultClient) WriteWorkspaceSessionKey(ctx context.Context, b64 string) 
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusBadRequest {
-		// KV-v2 returns 400 on a cas mismatch (key already exists).
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
+		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
+		// when the policy grants create but not update (F115). Either way the
+		// caller re-reads; a re-read that finds no key fails closed.
 		return ErrCASConflict
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {

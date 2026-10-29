@@ -2,11 +2,14 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
@@ -236,5 +239,45 @@ func TestValidateOrgSettings(t *testing.T) {
 		if err := validateOrgSettings(tc.in); (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v, want ok=%v", tc.name, err, tc.ok)
 		}
+	}
+}
+
+// G8: the org_settings audit event names the resource and decision, records
+// the non-preamble new values so a downgrade is visible, and carries the
+// preamble only as a sha256 and length, never its text.
+func TestEmitOrgSettingsUpdated_DigestsPreambleAndRecordsValues(t *testing.T) {
+	sink := &capturingAuditSink{}
+	svc := NewBrokerService(Deps{Audit: sink})
+	preamble, off, on := "Never share customer data.", false, true
+	patch, changed := orgSettingsPatch(&brokerv1.OrgSettings{
+		InstructionPreamble:       &preamble,
+		UnattendedAllowed:         &off,
+		ConnectorAllowlistEnabled: &on,
+		ConnectorAllowlist:        []string{"google_drive"},
+	})
+
+	svc.emitOrgSettingsUpdated(context.Background(), "trace-1", "t1", "admin@example.com", patch, changed)
+
+	ev := sink.last()
+	if ev == nil {
+		t.Fatal("expected an audit event")
+	}
+	if ev.ResourceRef != "aikonos:tenant:t1" || ev.Decision != auditv1.PolicyDecision_ALLOW || ev.TraceId != "trace-1" {
+		t.Fatalf("want resource aikonos:tenant:t1, ALLOW, trace-1; got %q %v %q", ev.ResourceRef, ev.Decision, ev.TraceId)
+	}
+	f := ev.Context.Fields
+	sum := sha256.Sum256([]byte(preamble))
+	if f["instruction_preamble_sha256"].GetStringValue() != hex.EncodeToString(sum[:]) ||
+		f["instruction_preamble_length"].GetNumberValue() != float64(len(preamble)) {
+		t.Fatalf("want the preamble digest and length, got %v", f)
+	}
+	if _, leaked := f["instruction_preamble"]; leaked || strings.Contains(ev.Context.String(), "customer data") {
+		t.Fatal("the preamble text must never reach the audit trail")
+	}
+	if v, ok := f["unattended_allowed"]; !ok || v.GetBoolValue() {
+		t.Fatalf("want unattended_allowed=false recorded, got %v", f["unattended_allowed"])
+	}
+	if l := f["connector_allowlist"].GetListValue(); l == nil || len(l.Values) != 1 || l.Values[0].GetStringValue() != "google_drive" {
+		t.Fatalf("want connector_allowlist recorded, got %v", f["connector_allowlist"])
 	}
 }

@@ -9,6 +9,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"go.uber.org/zap"
@@ -24,7 +25,11 @@ import (
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
-const webSearchTestTimeout = 12 * time.Second
+const (
+	webSearchTestTimeout = 12 * time.Second
+	// webSearchMaxResultsMax bounds the stored max_results (0 = engine default).
+	webSearchMaxResultsMax = 50
+)
 
 // websearchSecrets is the Vault write/delete seam this file needs on top of
 // CP1's read-only equivalent (toolproxy/web_search.go's webSearchKeyReader) —
@@ -106,8 +111,13 @@ func (s *BrokerService) UpsertWebSearchConfig(ctx context.Context, req *brokerv1
 	if cfg == nil || cfg.GetEngine() == "" {
 		return nil, status.Error(codes.InvalidArgument, "config.engine is required")
 	}
-	if cfg.GetMaxResults() < 0 {
-		return nil, status.Error(codes.InvalidArgument, "config.max_results must not be negative")
+	// G6: refuse at save time what web.search would fail on or pass upstream
+	// unbounded at call time.
+	if !toolproxy.KnownSearchEngine(cfg.GetEngine()) {
+		return nil, status.Error(codes.InvalidArgument, "config.engine is not a supported search engine")
+	}
+	if cfg.GetMaxResults() < 0 || cfg.GetMaxResults() > webSearchMaxResultsMax {
+		return nil, status.Errorf(codes.InvalidArgument, "config.max_results must be between 0 and %d", webSearchMaxResultsMax)
 	}
 
 	// Key handling mirrors UpsertM365Connection: write to Vault when supplied,
@@ -145,7 +155,10 @@ func (s *BrokerService) UpsertWebSearchConfig(ctx context.Context, req *brokerv1
 	if req.ApiKey != "" {
 		changed = append(changed, "api_key")
 	}
-	s.emitWebSearchAudit(ctx, span.SpanContext().TraceID().String(), tenant, user, "websearch.config.upsert", changed)
+	// G8: the non-secret new values travel too; the api key never does.
+	s.emitWebSearchAudit(ctx, span.SpanContext().TraceID().String(), tenant, user, "websearch.config.upsert", changed, map[string]any{
+		"engine": cfg.GetEngine(), "max_results": cfg.GetMaxResults(),
+	})
 
 	out := webSearchToProto(settings, hasKey)
 	return &brokerv1.UpsertWebSearchConfigResponse{Config: out}, nil
@@ -181,7 +194,7 @@ func (s *BrokerService) DeleteWebSearchConfig(ctx context.Context, _ *brokerv1.D
 	}
 
 	s.emitWebSearchAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"websearch.config.delete", []string{"api_key", "engine", "max_results"})
+		"websearch.config.delete", []string{"api_key", "engine", "max_results"}, nil)
 	return &brokerv1.DeleteWebSearchConfigResponse{}, nil
 }
 
@@ -203,7 +216,7 @@ func (s *BrokerService) TestWebSearchConfig(ctx context.Context, req *brokerv1.T
 	engine, apiKey := s.resolveWebSearchTestInputs(ctx, tenant, req)
 	resp := s.runWebSearchProbe(ctx, engine, apiKey)
 
-	s.emitWebSearchAudit(ctx, span.SpanContext().TraceID().String(), tenant, user, "websearch.config.test", nil)
+	s.emitWebSearchAudit(ctx, span.SpanContext().TraceID().String(), tenant, user, "websearch.config.test", nil, nil)
 	return resp, nil
 }
 
@@ -246,10 +259,9 @@ func (s *BrokerService) resolveWebSearchTestInputs(ctx context.Context, tenant s
 
 // runWebSearchProbe dispatches to the configured engine, reusing the exact
 // searchEngine implementation web.search calls (toolproxy.ProbeSearchEngine)
-// rather than duplicating three per-engine HTTP shapes in this package
-//. An unknown/unset engine or missing key fails
-// closed with a typed {ok:false} response — never a default engine
-//.
+// rather than duplicating three per-engine HTTP shapes in this package. An
+// unknown/unset engine or missing key fails closed with a typed {ok:false}
+// response — never a default engine.
 func (s *BrokerService) runWebSearchProbe(ctx context.Context, engine, apiKey string) *brokerv1.TestWebSearchConfigResponse {
 	if engine == "" {
 		return &brokerv1.TestWebSearchConfigResponse{Ok: false, Detail: "no engine configured"}
@@ -281,12 +293,15 @@ func webSearchToProto(s db.OrgSettings, hasKey bool) *brokerv1.WebSearchConfig {
 }
 
 // emitWebSearchAudit fires an ALLOW audit event for a web.search config
-// mutation or probe. Only field names travel in the event, never values.
-func (s *BrokerService) emitWebSearchAudit(ctx context.Context, traceID, tenant, actor, eventType string, changed []string) {
+// mutation or probe: the changed field names and the non-secret new values.
+// The api key is never passed in values and never persisted to the WORM trail.
+func (s *BrokerService) emitWebSearchAudit(ctx context.Context, traceID, tenant, actor, eventType string, changed []string, values map[string]any) {
 	if s.deps.Audit == nil {
 		return
 	}
-	ctxStruct, _ := structpb.NewStruct(map[string]any{"actor": actor})
+	ctxFields := map[string]any{"actor": actor}
+	maps.Copy(ctxFields, values)
+	ctxStruct, _ := structpb.NewStruct(ctxFields)
 	if len(changed) > 0 {
 		fields := make([]any, len(changed))
 		for i, k := range changed {

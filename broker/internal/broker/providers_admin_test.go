@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -532,6 +533,38 @@ func TestUpsertLlmProvider_StoredKeyNotRetargeted(t *testing.T) {
 	}
 	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p, ApiKey: "sk-new"}); err != nil {
 		t.Fatalf("new endpoint with a new key: %v", err)
+	}
+}
+
+// TestUpsertLlmProvider_AuditsEndpointHost (G8): the upsert event records
+// where the provider points (host and api), so an endpoint retarget leaves a
+// trace; the path and query of the URL stay out.
+func TestUpsertLlmProvider_AuditsEndpointHost(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	deps := testProviderDeps(t, srv.URL, nil)
+	deps.Providers = newFakeLlmProviderStore()
+	sink := &capturingAuditSink{}
+	deps.Audit = sink
+	svc := NewBrokerService(deps)
+
+	p := validProvider()
+	p.Endpoint = "https://llm.example.com:8443/v1?tenant=x"
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	ev := sink.last()
+	if ev == nil || ev.EventType != "llm.provider.upsert" {
+		t.Fatalf("want an llm.provider.upsert event, got %v", ev)
+	}
+	fl := ev.Context.Fields
+	if fl["endpoint_host"].GetStringValue() != "llm.example.com:8443" || fl["api"].GetStringValue() != p.Api {
+		t.Fatalf("want endpoint_host and api in the audit context, got %v", fl)
+	}
+	if strings.Contains(ev.Context.String(), "tenant=x") {
+		t.Fatal("only the endpoint host belongs in the audit event")
 	}
 }
 

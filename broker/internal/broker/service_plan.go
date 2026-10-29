@@ -98,6 +98,16 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		})
 		return nil, status.Errorf(codes.InvalidArgument, "plan has %d steps; at most %d are allowed", len(plan.Steps), maxPlanSteps)
 	}
+	// F123: a negative estimate would offset the others in plan_validation's
+	// budget sum. Mirrors the rego rule so the guard holds without the bundle.
+	for i, st := range plan.Steps {
+		if st.GetEstimatedCost() < 0 {
+			s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
+				"plan_id": plan.PlanId, "reason": "negative_estimated_cost", "step": i + 1,
+			})
+			return nil, status.Errorf(codes.InvalidArgument, "step %d has a negative estimated cost", i+1)
+		}
+	}
 
 	// AG-03: only an active agent plans. Checked before the task moves, so a
 	// refused plan leaves the row where it was.

@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,9 @@ type fakeVault struct {
 	leaseSeconds int
 	logins       int32
 	store        map[string][]json.RawMessage // logical path -> versions, oldest first
+	// noUpdate answers a cas=0 write to an existing path with 403, as Vault
+	// does when the policy grants create but not update (F115).
+	noUpdate bool
 }
 
 func newFakeVault(leaseSeconds int) *fakeVault {
@@ -99,7 +103,11 @@ func (f *fakeVault) handler(t *testing.T) http.Handler {
 			// Honor check-and-set: cas=0 means "create only if absent".
 			if payload.Options != nil && payload.Options.CAS != nil && *payload.Options.CAS == 0 {
 				if len(f.store[logical]) > 0 {
-					w.WriteHeader(http.StatusBadRequest)
+					if f.noUpdate {
+						w.WriteHeader(http.StatusForbidden)
+					} else {
+						w.WriteHeader(http.StatusBadRequest)
+					}
 					return
 				}
 			}
@@ -781,5 +789,32 @@ func TestCheckVaultAddr(t *testing.T) {
 	}
 	if err := checkVaultAddr("http://vault.corp.example:8200", true); err != nil {
 		t.Errorf("explicit opt-in refused: %v", err)
+	}
+}
+
+// TestVault_KeyCreateRaceUnderCreateOnlyPolicy (F115): with the broker policy
+// granting create but not update on the signing-key paths, the replica that
+// loses the first-boot race gets 403 instead of a cas 400. It must still see
+// ErrCASConflict, so its caller re-reads the winner's key instead of exiting.
+func TestVault_KeyCreateRaceUnderCreateOnlyPolicy(t *testing.T) {
+	fake := newFakeVault(3600)
+	fake.noUpdate = true
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	ctx := context.Background()
+
+	for name, write := range map[string]func(context.Context, string) error{
+		"capability":            c.WriteCapabilityKey,
+		"gateway-grant":         c.WriteGatewayGrantKey,
+		"audit-signing-key":     c.WriteAuditSigningKey,
+		"workspace-session-key": c.WriteWorkspaceSessionKey,
+	} {
+		if err := write(ctx, "d2lubmVy"); err != nil {
+			t.Fatalf("%s: first create: %v", name, err)
+		}
+		if err := write(ctx, "bG9zZXI="); !errors.Is(err, ErrCASConflict) {
+			t.Fatalf("%s: losing create under a create-only policy: want ErrCASConflict, got %v", name, err)
+		}
 	}
 }

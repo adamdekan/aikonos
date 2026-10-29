@@ -8,6 +8,7 @@ package broker
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"time"
 
@@ -104,7 +105,10 @@ func (s *BrokerService) UpsertM365Connection(ctx context.Context, req *brokerv1.
 	if req.ClientSecret != "" {
 		changed = append(changed, "client_secret")
 	}
-	s.emitM365Audit(ctx, span.SpanContext().TraceID().String(), tenant, user, "m365.connection.upsert", changed)
+	// G8: the non-secret new values travel too; the client secret never does.
+	s.emitM365Audit(ctx, span.SpanContext().TraceID().String(), tenant, user, "m365.connection.upsert", changed, map[string]any{
+		"entra_tenant_id": conn.GetEntraTenantId(), "client_id": conn.GetClientId(), "enabled": conn.GetEnabled(),
+	})
 
 	out := m365ToProto(settings, hasSecret)
 	return &brokerv1.UpsertM365ConnectionResponse{Connection: out}, nil
@@ -142,7 +146,7 @@ func (s *BrokerService) DeleteM365Connection(ctx context.Context, _ *brokerv1.De
 	}
 
 	s.emitM365Audit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"m365.connection.delete", []string{"client_id", "client_secret", "enabled", "entra_tenant_id"})
+		"m365.connection.delete", []string{"client_id", "client_secret", "enabled", "entra_tenant_id"}, nil)
 	return &brokerv1.DeleteM365ConnectionResponse{}, nil
 }
 
@@ -176,7 +180,7 @@ func (s *BrokerService) TestM365Connection(ctx context.Context, req *brokerv1.Te
 	defer cancel()
 	_, exerr := connector.ExchangeOBO(reqCtx, client, app, assertion)
 
-	s.emitM365Audit(ctx, span.SpanContext().TraceID().String(), tenant, user, "m365.connection.test", nil)
+	s.emitM365Audit(ctx, span.SpanContext().TraceID().String(), tenant, user, "m365.connection.test", nil, nil)
 	return m365TestResult(exerr), nil
 }
 
@@ -186,8 +190,8 @@ func (s *BrokerService) TestM365Connection(ctx context.Context, req *brokerv1.Te
 // tenant (so a config change takes effect on the very next ensureOneDriveOBO
 // call rather than waiting out the TTL) and WorkspacePrefResolver's cached
 // entries for every user in the tenant (so GetWorkspaceBackend/the Router's
-// routing decision also picks up the change immediately — see
-//  CP3 item 2; previously only the
+// routing decision also picks up the change immediately — see CP3 item 2;
+// previously only the
 // OBO source was invalidated, leaving Router.Prefs stale for up to
 // effectivePrefCacheTTL). Both are no-ops when unwired.
 func (s *BrokerService) invalidateM365Cache(tenant string) {
@@ -275,13 +279,15 @@ func m365ToProto(s db.OrgSettings, hasSecret bool) *brokerv1.M365Connection {
 }
 
 // emitM365Audit fires an ALLOW audit event for an M365 connection mutation or
-// probe. Only field names travel in the event, never values — the tenant id,
-// client id, and (obviously) the secret are never persisted to the WORM trail.
-func (s *BrokerService) emitM365Audit(ctx context.Context, traceID, tenant, actor, eventType string, changed []string) {
+// probe: the changed field names and the non-secret new values. The client
+// secret is never passed in values and never persisted to the WORM trail.
+func (s *BrokerService) emitM365Audit(ctx context.Context, traceID, tenant, actor, eventType string, changed []string, values map[string]any) {
 	if s.deps.Audit == nil {
 		return
 	}
-	ctxStruct, _ := structpb.NewStruct(map[string]any{"actor": actor})
+	ctxFields := map[string]any{"actor": actor}
+	maps.Copy(ctxFields, values)
+	ctxStruct, _ := structpb.NewStruct(ctxFields)
 	if len(changed) > 0 {
 		fields := make([]any, len(changed))
 		for i, k := range changed {

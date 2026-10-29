@@ -2,6 +2,8 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"unicode/utf16"
 
@@ -41,6 +43,9 @@ func (s *BrokerService) GetOrgSettings(ctx context.Context, req *brokerv1.GetOrg
 }
 
 func (s *BrokerService) UpdateOrgSettings(ctx context.Context, req *brokerv1.UpdateOrgSettingsRequest) (*brokerv1.UpdateOrgSettingsResponse, error) {
+	ctx, span := tracer.Start(ctx, "broker.admin.org_settings.update")
+	defer span.End()
+
 	tenant, user, err := s.callerIdentity(ctx, req.TenantId, "")
 	if err != nil {
 		return nil, err
@@ -69,7 +74,7 @@ func (s *BrokerService) UpdateOrgSettings(ctx context.Context, req *brokerv1.Upd
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update org settings: %v", err)
 	}
-	s.emitOrgSettingsUpdated(ctx, tenant, user, changed)
+	s.emitOrgSettingsUpdated(ctx, span.SpanContext().TraceID().String(), tenant, user, patch, changed)
 	return &brokerv1.UpdateOrgSettingsResponse{Settings: orgSettingsToProto(settings)}, nil
 }
 
@@ -221,31 +226,49 @@ func requireWorkflowSharingAllowed(ctx context.Context, repo *db.OrgSettingsRepo
 	return nil
 }
 
-// emitOrgSettingsUpdated records a config-change audit event. It carries the
-// changed field keys (never their values) so the WORM trail never persists
-// governance-config content, and the actor.
-func (s *BrokerService) emitOrgSettingsUpdated(ctx context.Context, tenantID, actor string, changed []string) {
+// emitOrgSettingsUpdated records a config-change audit event (G8): the actor,
+// the changed keys and their new values, so a review can tell a downgrade from
+// an upgrade. A string value (the instruction preamble) travels only as its
+// sha256 and length, so the WORM trail never holds prompt text.
+func (s *BrokerService) emitOrgSettingsUpdated(ctx context.Context, traceID, tenantID, actor string, patch map[string]any, changed []string) {
 	if s.deps.Audit == nil {
 		return
 	}
-	fields := make([]any, len(changed))
+	keys := make([]any, len(changed))
 	for i, k := range changed {
-		fields[i] = k
+		keys[i] = k
 	}
-	changedList, _ := structpb.NewList(fields)
-	ctxStruct, _ := structpb.NewStruct(map[string]any{
+	fields := map[string]any{
 		"actor":         actor,
 		"changed_count": float64(len(changed)),
-	})
-	if changedList != nil {
-		ctxStruct.Fields["changed_keys"] = structpb.NewListValue(changedList)
+		"changed_keys":  keys,
 	}
+	for k, v := range patch {
+		switch v := v.(type) {
+		case string:
+			sum := sha256.Sum256([]byte(v))
+			fields[k+"_sha256"] = hex.EncodeToString(sum[:])
+			fields[k+"_length"] = utf16Len(v)
+		case []string:
+			list := make([]any, len(v))
+			for i, e := range v {
+				list[i] = e
+			}
+			fields[k] = list
+		default:
+			fields[k] = v
+		}
+	}
+	ctxStruct, _ := structpb.NewStruct(fields)
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{
-		EventId:    ids.EventID(),
-		TenantId:   tenantID,
-		OccurredAt: timestampNow(),
-		EventType:   "aikonos.broker.org_settings.updated",
+		EventId:     ids.EventID(),
+		TraceId:     traceID,
+		TenantId:    tenantID,
+		OccurredAt:  timestampNow(),
 		ActorUserId: actor,
+		EventType:   "aikonos.broker.org_settings.updated",
+		ResourceRef: "aikonos:tenant:" + tenantID,
+		Decision:    auditv1.PolicyDecision_ALLOW,
 		Context:     ctxStruct,
 	}); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.org_settings.updated")
