@@ -18,13 +18,15 @@ import (
 )
 
 // ListVersions lists all versions of a lineage, newest first. Skill-gated by
-// the wrapper; caller establishes tenantID from its trust anchor. Was
-// listWorkflowVersionsCore.
+// the wrapper; caller establishes tenantID and user from its trust anchor, and
+// must be able to access the lineage (F190). Was listWorkflowVersionsCore.
 func ListVersions(
 	ctx context.Context,
-	tenantID string,
+	tenantID, user string,
 	req *brokerv1.ListWorkflowVersionsRequest,
 	store Store,
+	ap AccessPolicy,
+	emitter AuditEmitter,
 	logger *zap.Logger,
 ) (*brokerv1.ListWorkflowVersionsResponse, error) {
 	if store == nil {
@@ -34,6 +36,9 @@ func ListVersions(
 	lineageID, err := uuid.Parse(req.LineageId)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid lineage_id: %v", err)
+	}
+	if _, err := loadAccessible(ctx, store, ap, tenantID, user, lineageID, emitter, logger); err != nil {
+		return nil, err
 	}
 
 	// F19: additive pagination, following the audit-reader cursor convention

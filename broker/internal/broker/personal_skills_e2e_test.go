@@ -59,6 +59,8 @@ func e2eGrantedFGA(t *testing.T) string {
 		checks: map[string]bool{
 			"user:" + e2eAlice + "|can_invoke|skill:personal-skills": true,
 			"user:" + e2eBob + "|can_invoke|skill:personal-skills":   true,
+			// F191: a direct transfer needs a delegation edge, as SendEnvelope does.
+			"user:" + e2eAlice + "|can_delegate_to_user|user:" + e2eBob: true,
 		},
 		listObjectsResultByUser: map[string][]string{
 			"user:" + e2eAlice: {e2eGroup},
@@ -287,7 +289,7 @@ func TestPersonalSkillsE2E_NoNewMigrations(t *testing.T) {
 	// scheduled_runs_delegation, 050 is agents_service_agent, 051 is
 	// tasks_obo_kind, 052 is agent_api_keys_expiry, 053 is approval_expiry,
 	// 054 is revocation_epoch, 055 is default_agent, 056 is agent_status.
-	const knownMaxMigration = 61
+	const knownMaxMigration = 62
 
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {

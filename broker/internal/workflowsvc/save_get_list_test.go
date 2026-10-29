@@ -24,6 +24,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
@@ -40,16 +42,36 @@ type fakeWorkflowStore struct {
 	// currentBoundAgent is returned as GetCurrent's BoundAgentID so edit-path
 	// tests can prove the binding is inherited (nil = unbound current version).
 	currentBoundAgent *uuid.UUID
+	// currentOwner is GetCurrent's OwnerUserID ("" = testWFOwner).
+	currentOwner string
+	// currentShared makes the current version published + shared.
+	currentShared bool
+	// rated records MarkSuccessRated calls.
+	rated int
+}
+
+func (f *fakeWorkflowStore) MarkSuccessRated(_ context.Context, _ string, _ uuid.UUID, _ int) error {
+	f.rated++
+	return nil
 }
 
 func (f *fakeWorkflowStore) GetCurrent(_ context.Context, _ string, _ uuid.UUID) (*db.WorkflowRow, error) {
 	// Fake: return a private approved row so the edit path can inherit from it.
-	return &db.WorkflowRow{
+	owner := f.currentOwner
+	if owner == "" {
+		owner = testWFOwner
+	}
+	row := &db.WorkflowRow{
+		OwnerUserID:      owner,
 		Status:           "private",
 		VisibilityKind:   "private",
 		VisibilityGroups: json.RawMessage(`[]`),
 		BoundAgentID:     f.currentBoundAgent,
-	}, nil
+	}
+	if f.currentShared {
+		row.Status, row.VisibilityKind, row.VisibilityGroups = "published", "shared", json.RawMessage(`["finance"]`)
+	}
+	return row, nil
 }
 
 func (f *fakeWorkflowStore) CreateVersion(_ context.Context, _ string, row db.WorkflowRow) (db.WorkflowRow, error) {
@@ -633,6 +655,10 @@ func (f *fakeWorkflowGetStore) ResolveVersionForUser(_ context.Context, _, _ str
 	return f.row.Version, nil
 }
 
+func (f *fakeWorkflowGetStore) GetCurrent(_ context.Context, _ string, _ uuid.UUID) (*db.WorkflowRow, error) {
+	return f.row, nil
+}
+
 func (f *fakeWorkflowGetStore) GetVersion(_ context.Context, _ string, _ uuid.UUID, _ int) (*db.WorkflowRow, error) {
 	return f.row, nil
 }
@@ -697,6 +723,44 @@ func TestSave_EditInheritsBinding_IgnoresAgentId(t *testing.T) {
 	}
 }
 
+// TestSave_NonOwnerEdit_Denied (F15): only the lineage owner may add a
+// version. A non-owner's edit — private or shared lineage — is refused before
+// any version is written, so the lineage's content and ownership stay put.
+func TestSave_NonOwnerEdit_Denied(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		store := &fakeWorkflowStore{currentOwner: "victim@example.com", currentShared: shared}
+		req := &brokerv1.SaveWorkflowRequest{
+			TenantId:       testWFTenant,
+			LineageId:      uuid.New().String(),
+			DefinitionJson: minimalValidWorkflowJSON(),
+			Name:           "takeover",
+		}
+		_, err := Save(context.Background(), testWFTenant, testWFOwner, req, store, nil, newEmitter(t), zap.NewNop())
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("shared=%v: non-owner edit: want PermissionDenied, got %v", shared, err)
+		}
+		if len(store.created) != 0 {
+			t.Fatalf("shared=%v: no version may be created for a non-owner, got %d", shared, len(store.created))
+		}
+	}
+}
+
+// TestRate_NonOwnerPrivate_NotFound (F190): a rating lands only on a lineage
+// the caller may access; another user's private lineage is answered NotFound
+// with no success stamp.
+func TestRate_NonOwnerPrivate_NotFound(t *testing.T) {
+	store := &fakeWorkflowStore{currentOwner: "victim@example.com"}
+	_, err := Rate(context.Background(), testWFTenant, testWFOwner, &brokerv1.RateWorkflowRunRequest{
+		LineageId: uuid.New().String(), Version: 1, Rating: brokerv1.WorkflowRating_RATING_SUCCESS,
+	}, store, nil, newEmitter(t), zap.NewNop())
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("non-owner rate: want NotFound, got %v", err)
+	}
+	if store.rated != 0 {
+		t.Fatalf("no success stamp may land on a foreign lineage, got %d", store.rated)
+	}
+}
+
 // TestSave_NewLineage_NonUuidAgentId_Unbound: a malformed agent_id on a new
 // lineage is treated as unbound (NULL), never an error.
 func TestSave_NewLineage_NonUuidAgentId_Unbound(t *testing.T) {
@@ -722,13 +786,15 @@ func TestSave_NewLineage_NonUuidAgentId_Unbound(t *testing.T) {
 func TestGet_ReturnsBoundAgentId(t *testing.T) {
 	agentID := uuid.New()
 	store := &fakeWorkflowGetStore{row: &db.WorkflowRow{
-		Version:      3,
-		Definition:   json.RawMessage(minimalValidWorkflowJSON()),
-		BoundAgentID: &agentID,
+		Version:       3,
+		OwnerUserID:   testWFOwner,
+		ApprovalState: "approved",
+		Definition:    json.RawMessage(minimalValidWorkflowJSON()),
+		BoundAgentID:  &agentID,
 	}}
 
 	resp, err := Get(context.Background(), testWFTenant, testWFOwner,
-		&brokerv1.GetWorkflowRequest{LineageId: uuid.New().String()}, store, zap.NewNop())
+		&brokerv1.GetWorkflowRequest{LineageId: uuid.New().String()}, store, nil, nil, nil, zap.NewNop())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

@@ -35,6 +35,18 @@ func (f *fakeWorkflowStoreForSchedule) ResolveVersionForUser(_ context.Context, 
 	return f.version, nil
 }
 
+// GetCurrent serves the same row: it is the lineage's owner/visibility record
+// that workflowsvc.Get's access gate (F17) reads.
+func (f *fakeWorkflowStoreForSchedule) GetCurrent(_ context.Context, _ string, _ uuid.UUID) (*db.WorkflowRow, error) {
+	if f.resolveErr != nil {
+		return nil, f.resolveErr
+	}
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.row, nil
+}
+
 func (f *fakeWorkflowStoreForSchedule) GetVersion(_ context.Context, _ string, _ uuid.UUID, _ int) (*db.WorkflowRow, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -79,8 +91,8 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 	lineageID := uuid.New()
 
 	t.Run("rejects prompt", func(t *testing.T) {
-		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
-		_, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "u", ApprovalState: "approved"}}
+		_, _, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"do it", nil, lineageID.String(), nil,
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if status.Code(err) != codes.InvalidArgument {
@@ -89,8 +101,8 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 	})
 
 	t.Run("rejects approved_tools", func(t *testing.T) {
-		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
-		_, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "u", ApprovalState: "approved"}}
+		_, _, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"", []string{"web.fetch"}, lineageID.String(), nil,
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if status.Code(err) != codes.InvalidArgument {
@@ -100,7 +112,7 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 
 	t.Run("rejects an unparseable lineage id", func(t *testing.T) {
 		store := &fakeWorkflowStoreForSchedule{}
-		_, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		_, _, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"", nil, "not-a-uuid", nil,
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if status.Code(err) != codes.InvalidArgument {
@@ -110,7 +122,7 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 
 	t.Run("rejects an unresolvable lineage", func(t *testing.T) {
 		store := &fakeWorkflowStoreForSchedule{resolveErr: errors.New("not found")}
-		_, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		_, _, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"", nil, lineageID.String(), nil,
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if status.Code(err) != codes.InvalidArgument {
@@ -120,8 +132,8 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 
 	t.Run("rejects an agent-bound workflow", func(t *testing.T) {
 		agentID := uuid.New()
-		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{BoundAgentID: &agentID}}
-		_, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "u", ApprovalState: "approved", BoundAgentID: &agentID}}
+		_, _, _, _, _, _, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"", nil, lineageID.String(), nil,
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if status.Code(err) != codes.InvalidArgument {
@@ -130,8 +142,10 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 	})
 
 	t.Run("accepts a valid unbound workflow", func(t *testing.T) {
-		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
-		kind, cronExpr, next, gotLineage, inputs, err := validateWorkflowScheduleDef(context.Background(), store, "t", "u",
+		store := &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{
+			OwnerUserID: "u", ApprovalState: "approved", Version: 1, Definition: []byte(`{"steps": []}`),
+		}}
+		kind, cronExpr, next, gotLineage, inputs, pin, err := validateWorkflowScheduleDef(context.Background(), Deps{Workflows: store}, "t", "u",
 			"", nil, lineageID.String(), map[string]string{"topic": "foo"},
 			brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, "0 9 * * *", nil, now, 0)
 		if err != nil {
@@ -149,6 +163,10 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 		if inputs["topic"] != "foo" {
 			t.Fatalf("got inputs=%v", inputs)
 		}
+		// F18: the schedule pins the version it validated, with its hash.
+		if pin.Version != 1 || pin.DefinitionSHA256 != db.WorkflowDefinitionSHA256([]byte(`{"steps": []}`)) {
+			t.Fatalf("got pin=%+v", pin)
+		}
 	})
 }
 
@@ -157,7 +175,7 @@ func TestValidateWorkflowScheduleDef(t *testing.T) {
 func TestCreateScheduledRun_WorkflowMode_Success(t *testing.T) {
 	deps := testAdminDeps(t, "") // FGA disabled: skill:scheduler / skill:workflows both allow-all
 	lineageID := uuid.New()
-	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
+	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "alice@example.com", ApprovalState: "approved"}}
 	store := &captureScheduledStore{}
 	deps.Scheduled = store
 	svc := NewBrokerService(deps)
@@ -193,7 +211,7 @@ func TestCreateScheduledRun_WorkflowMode_Success(t *testing.T) {
 func TestCreateScheduledRun_WorkflowMode_RejectsApprovedTools(t *testing.T) {
 	deps := testAdminDeps(t, "")
 	lineageID := uuid.New()
-	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
+	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "alice@example.com", ApprovalState: "approved"}}
 	deps.Scheduled = &captureScheduledStore{}
 	svc := NewBrokerService(deps)
 
@@ -214,7 +232,7 @@ func TestCreateScheduledRun_WorkflowMode_RejectsAgentBound(t *testing.T) {
 	deps := testAdminDeps(t, "")
 	lineageID := uuid.New()
 	agentID := uuid.New()
-	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{BoundAgentID: &agentID}}
+	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "alice@example.com", ApprovalState: "approved", BoundAgentID: &agentID}}
 	deps.Scheduled = &captureScheduledStore{}
 	svc := NewBrokerService(deps)
 
@@ -241,7 +259,7 @@ func TestCreateScheduledRun_WorkflowMode_RequiresWorkflowsSkill(t *testing.T) {
 	defer srv.Close()
 	deps := testAdminDeps(t, srv.URL)
 	lineageID := uuid.New()
-	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{}}
+	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 1, row: &db.WorkflowRow{OwnerUserID: "alice@example.com", ApprovalState: "approved"}}
 	deps.Scheduled = &captureScheduledStore{}
 	svc := NewBrokerService(deps)
 
@@ -273,6 +291,9 @@ func TestUpdateScheduledRun_WorkflowMode_TimingOnlyAccepted(t *testing.T) {
 	}
 	store := &captureScheduledStore{get: existing}
 	deps.Scheduled = store
+	deps.Workflows = &fakeWorkflowStoreForSchedule{version: 2, row: &db.WorkflowRow{
+		OwnerUserID: "alice@example.com", ApprovalState: "approved", Version: 2, Definition: []byte(`{"steps": []}`),
+	}}
 	svc := NewBrokerService(deps)
 
 	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")
@@ -294,6 +315,10 @@ func TestUpdateScheduledRun_WorkflowMode_TimingOnlyAccepted(t *testing.T) {
 	}
 	if store.updated.WorkflowInputs["topic"] != "foo" {
 		t.Errorf("workflow inputs should be preserved, got %v", store.updated.WorkflowInputs)
+	}
+	// F18: the owner's edit re-confirms (re-pins) the version the schedule runs.
+	if v := store.updated.WorkflowVersion; v == nil || *v != 2 || store.updated.WorkflowDefinitionSHA256 == "" {
+		t.Errorf("edit must re-pin the current version, got version=%v sha=%q", v, store.updated.WorkflowDefinitionSHA256)
 	}
 }
 

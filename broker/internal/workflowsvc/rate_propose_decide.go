@@ -25,14 +25,16 @@ import (
 // stamps success_rated_at on the version as an informational marker (the
 // publish gate on it was removed 2026-07-21 — rating no longer affects
 // publishability). No proposal is created here — BAD is a signal for the
-// owner/agent to act on separately via Propose. publishStore may be nil (e.g.
-// tests that don't inject it); the success-stamp is then skipped non-fatally.
-// Was rateCore.
+// owner/agent to act on separately via Propose. Only a caller who may access
+// the lineage (owner, or a member of a shared lineage's group) may rate it
+// (F190): no stamp and no rating event lands on a lineage the caller cannot
+// see. Was rateCore.
 func Rate(
 	ctx context.Context,
 	tenantID, ownerUserID string,
 	req *brokerv1.RateWorkflowRunRequest,
 	publishStore Store,
+	ap AccessPolicy,
 	emitter AuditEmitter,
 	logger *zap.Logger,
 ) (*brokerv1.RateWorkflowRunResponse, error) {
@@ -40,10 +42,16 @@ func Rate(
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid lineage_id: %v", err)
 	}
+	if publishStore == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workflow storage not configured")
+	}
+	if _, err := loadAccessible(ctx, publishStore, ap, tenantID, ownerUserID, lineageID, emitter, logger); err != nil {
+		return nil, err
+	}
 
 	// On SUCCESS, stamp success_rated_at as an informational marker (it no longer
 	// gates publish). BAD and unrated versions are never stamped.
-	if req.Rating == brokerv1.WorkflowRating_RATING_SUCCESS && publishStore != nil {
+	if req.Rating == brokerv1.WorkflowRating_RATING_SUCCESS {
 		if stampErr := publishStore.MarkSuccessRated(ctx, tenantID, lineageID, int(req.Version)); stampErr != nil {
 			// Non-fatal: the audit event still fires, the rating is still recorded.
 			// The stamp is idempotent on retry.

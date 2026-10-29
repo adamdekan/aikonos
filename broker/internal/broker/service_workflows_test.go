@@ -28,6 +28,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/workflowsvc"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -292,6 +293,21 @@ func (f *fakeWorkflowGetStore) ResolveVersionForUser(_ context.Context, _, userI
 		}
 	}
 	return max, nil
+}
+
+// GetCurrent returns the lineage's highest version: GetWorkflow's access gate
+// (F17) reads owner and visibility from it.
+func (f *fakeWorkflowGetStore) GetCurrent(_ context.Context, _ string, lineageID uuid.UUID) (*db.WorkflowRow, error) {
+	var cur *db.WorkflowRow
+	for _, r := range f.rows[lineageID.String()] {
+		if cur == nil || r.Version > cur.Version {
+			cur = r
+		}
+	}
+	if cur == nil {
+		return nil, fmt.Errorf("workflow lineage %s not found", lineageID)
+	}
+	return cur, nil
 }
 
 func (f *fakeWorkflowGetStore) GetVersion(_ context.Context, _ string, lineageID uuid.UUID, version int) (*db.WorkflowRow, error) {
@@ -905,4 +921,106 @@ func TestNorthWorkflow_SvcSubjectRejected(t *testing.T) {
 			t.Fatalf("ListWorkflows: want PermissionDenied for svc- subject, got %v (err: %v)", got, err)
 		}
 	})
+}
+
+// TestGetWorkflow_NonOwnerPrivate_NotFound (F17): another user's private
+// lineage is answered exactly like a missing one — no definition, no oracle.
+func TestGetWorkflow_NonOwnerPrivate_NotFound(t *testing.T) {
+	store := newFakeGetStore()
+	lineageID := uuid.New()
+	store.add(db.WorkflowRow{
+		ID: uuid.New(), LineageID: lineageID, Version: 1,
+		TenantID: uuid.MustParse(testWFTenant), OwnerUserID: "victim@example.com",
+		Name: "wf", Status: "private", VisibilityKind: "private", ApprovalState: "approved",
+		VisibilityGroups: []byte("[]"), Definition: []byte(minimalValidWorkflowJSON()),
+	})
+	svc := newSandboxSvcForGetTest(t, store)
+
+	_, err := svc.GetWorkflow(gatewayCtxForWorkflow(), &brokerv1.GetWorkflowRequest{
+		TenantId:   testWFTenant,
+		UserId:     "victim@example.com", // asserted field: must not select whose view
+		OwnerGrant: mintWFGrant(t),
+		LineageId:  lineageID.String(),
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("non-owner private lineage: want NotFound, got %v", err)
+	}
+}
+
+// pinnedRunStore serves one workflow schedule row to the GetWorkflow pin
+// lookup (F18).
+type pinnedRunStore struct {
+	stubScheduledStore
+	run *db.ScheduledRun
+}
+
+func (f *pinnedRunStore) Get(_ context.Context, _, id string) (*db.ScheduledRun, error) {
+	if f.run != nil && f.run.ScheduledRunID.String() == id {
+		return f.run, nil
+	}
+	return nil, fmt.Errorf("scheduled run %s not found", id)
+}
+
+// TestGetWorkflow_ScheduledFire_ServesPinnedVersion (F18): a schedule's fire is
+// served exactly the version the owner scheduled, not the newer current one;
+// once that version's definition changes the fire is refused and audited.
+func TestGetWorkflow_ScheduledFire_ServesPinnedVersion(t *testing.T) {
+	store := newFakeGetStore()
+	lineageID := uuid.New()
+	v1 := minimalValidWorkflowJSON()
+	for v := 1; v <= 2; v++ {
+		store.add(db.WorkflowRow{
+			ID: uuid.New(), LineageID: lineageID, Version: v,
+			TenantID: uuid.MustParse(testWFTenant), OwnerUserID: testWFOwner,
+			Name: "wf", Status: "private", VisibilityKind: "private", ApprovalState: "approved",
+			VisibilityGroups: []byte("[]"), Definition: []byte(v1),
+		})
+	}
+	runID, actor := uuid.New(), uuid.New()
+	pinned := 1
+	sched := &pinnedRunStore{run: &db.ScheduledRun{
+		ScheduledRunID: runID, OwnerUserID: testWFOwner, WorkflowLineageID: &lineageID,
+		WorkflowVersion: &pinned, WorkflowDefinitionSHA256: db.WorkflowDefinitionSHA256([]byte(v1)),
+	}}
+	aud := &fakeInvokeAudit{}
+	svc := NewSandboxService(Deps{
+		Logger: zap.NewNop(), Audit: aud, GatewaySpiffeID: testGWSpiffeID,
+		GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL,
+		Workflows: store, Scheduled: sched,
+	})
+	grant, err := gatewaygrant.Mint(testGrantKey, gatewaygrant.Grant{
+		TenantID: testWFTenant, Subject: testWFOwner, Actor: actor.String(),
+		Kind: gatewaygrant.KindScheduled, GrantID: runID.String(),
+	}, testGrantTTL)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	get := func() (*brokerv1.GetWorkflowResponse, error) {
+		return svc.GetWorkflow(gatewayCtxForWorkflow(), &brokerv1.GetWorkflowRequest{
+			TenantId: testWFTenant, OwnerGrant: grant, LineageId: lineageID.String(),
+		})
+	}
+
+	resp, err := get()
+	if err != nil {
+		t.Fatalf("pinned fetch: %v", err)
+	}
+	if resp.Version != 1 {
+		t.Fatalf("scheduled fire must get the pinned version 1, got %d", resp.Version)
+	}
+
+	// The pinned version's definition is rewritten in place (Publish does this).
+	store.rows[lineageID.String()][0].Definition = []byte(`{"steps":[{"kind":"tool","skill":"slack.post"}]}`)
+	if _, err := get(); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("changed workflow: want FailedPrecondition, got %v", err)
+	}
+	found := false
+	for _, e := range aud.events {
+		if e.EventType == "aikonos.scheduler.run.skipped.workflow_changed" && e.Decision == auditv1.PolicyDecision_DENY {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a workflow_changed refusal must be audited as DENY")
+	}
 }

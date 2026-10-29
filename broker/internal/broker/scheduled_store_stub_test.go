@@ -45,6 +45,10 @@ func (stubScheduledStore) ExtendDelegation(_ context.Context, _, _ string, _ tim
 	return nil
 }
 
+func (stubScheduledStore) Park(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (stubScheduledStore) Delete(_ context.Context, _, _ string) error {
 	return nil
 }

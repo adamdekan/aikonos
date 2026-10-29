@@ -322,7 +322,9 @@ async function runViaWorkflow(
       // call — deriving the pre-authorized tool-step set requires the
       // definition before `new GovernanceBridge(...)`. bridge.runWorkflow
       // re-fetches the same grant-scoped read internally; a second read, not
-      // a second authority check.
+      // a second authority check. The broker serves a schedule's scheduled
+      // grant exactly the workflow version the owner scheduled (hash-checked
+      // on both reads), so the approver and the run see the same steps.
       const workflowResp = await clients.south.getWorkflow({
         tenantId: cfg.defaultTenantId,
         ownerGrant: run.ownerGrant,
@@ -335,7 +337,7 @@ async function runViaWorkflow(
         .map((s) => s.skill);
       // Scheduling the workflow IS the standing approval: only this version's
       // own tool steps are pre-authorized (none when the org master is off),
-      // derived live every fire, never a stored list. OPA DENY and FGA
+      // derived every fire from the pinned version, never a stored list. OPA DENY and FGA
       // denials still halt the run; any other gated call waits for a human.
       const approver = unattendedApprover(unattended ? toolStepSkills : [], log);
       // run.runId doubles as the session id (reportScheduledRunResult files the

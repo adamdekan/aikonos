@@ -2,6 +2,8 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"maps"
 	"strings"
 	"time"
@@ -40,8 +42,10 @@ const (
 // requireSchedulerSkill gates schedule creation on the skill:scheduler capability
 // (granted through the admin "Skill access" tab). Mirrors requireTenantAdmin:
 // fails closed on a transport error. FGA-disabled dev ⇒ allow-all, as elsewhere.
+// F192: also gates every path that renews a schedule's authority (resume,
+// full edit, extend_delegation) on the run OWNER's grant.
 func (s *BrokerService) requireSchedulerSkill(ctx context.Context, user string) error {
-	ok, err := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_invoke", "skill:scheduler")
+	ok, err := schedulerSkillGranted(ctx, s.deps, user)
 	if err != nil {
 		return status.Error(codes.Internal, "authorization check failed")
 	}
@@ -49,6 +53,34 @@ func (s *BrokerService) requireSchedulerSkill(ctx context.Context, user string) 
 		return status.Error(codes.PermissionDenied, "scheduler skill required")
 	}
 	return nil
+}
+
+// maxSessionRecordBytes caps the session record a run report may persist
+// into the owner's workspace (F172).
+const maxSessionRecordBytes = 1 << 20
+
+// skipSkillRevoked is the park reason for a run whose owner lost
+// skill:scheduler (F192).
+const skipSkillRevoked = "skill_scheduler_revoked"
+
+// requireOwnerSchedulerSkill is requireSchedulerSkill on the run's OWNER (the
+// caller may be an admin acting on it), with the denial audited (F192).
+func (s *BrokerService) requireOwnerSchedulerSkill(ctx context.Context, traceID, tenant, user string, run *db.ScheduledRun) error {
+	if err := s.requireSchedulerSkill(ctx, run.OwnerUserID); err != nil {
+		schedulerAudit(s.deps, ctx, traceID, tenant, user,
+			"aikonos.scheduler.run.skill_denied", run.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, runOBO(run))
+		return err
+	}
+	return nil
+}
+
+// schedulerSkillGranted reports whether user holds skill:scheduler. An unwired
+// Policy is the FGA-off allow-all posture (as mayOperateActor).
+func schedulerSkillGranted(ctx context.Context, deps Deps, user string) (bool, error) {
+	if deps.Policy == nil {
+		return true, nil
+	}
+	return deps.Policy.CheckFGA(ctx, "user:"+user, "can_invoke", "skill:scheduler")
 }
 
 func kindFromProto(k brokerv1.ScheduleKind) (db.ScheduleKind, bool) {
@@ -213,11 +245,12 @@ func validateScheduleTiming(k brokerv1.ScheduleKind, cronExpr string, runAt *tim
 // full-edit of an existing workflow-mode row) definition: no prompt, no
 // approved_tools (approval derives from the workflow itself at fire time —
 // see ), and the lineage must resolve for the
-// caller via the same store path GetWorkflow uses (ResolveVersionForUser +
-// GetVersion), rejecting a lineage bound to an agent.
+// caller via GetWorkflow's own access-checked path (owner or shared-group
+// member, F17), rejecting a lineage bound to an agent. The returned pin is the
+// version the schedule will run, and nothing else (F18).
 func validateWorkflowScheduleDef(
 	ctx context.Context,
-	store workflowsvc.Store,
+	deps Deps,
 	tenant, user string,
 	prompt string,
 	approvedTools []string,
@@ -225,37 +258,55 @@ func validateWorkflowScheduleDef(
 	inputs map[string]string,
 	k brokerv1.ScheduleKind, cronExpr string, runAt *timestamppb.Timestamp,
 	now time.Time, minInterval time.Duration,
-) (db.ScheduleKind, string, time.Time, uuid.UUID, map[string]string, error) {
+) (db.ScheduleKind, string, time.Time, uuid.UUID, map[string]string, workflowsvc.SchedulePin, error) {
 	var zero uuid.UUID
+	var noPin workflowsvc.SchedulePin
 	if strings.TrimSpace(prompt) != "" {
-		return "", "", time.Time{}, zero, nil, status.Error(codes.InvalidArgument, "prompt not allowed on a workflow schedule")
+		return "", "", time.Time{}, zero, nil, noPin, status.Error(codes.InvalidArgument, "prompt not allowed on a workflow schedule")
 	}
 	if len(approvedTools) > 0 {
-		return "", "", time.Time{}, zero, nil, status.Error(codes.InvalidArgument, "approved_tools not allowed on a workflow schedule")
+		return "", "", time.Time{}, zero, nil, noPin, status.Error(codes.InvalidArgument, "approved_tools not allowed on a workflow schedule")
 	}
 	lineageID, err := uuid.Parse(lineageIDStr)
 	if err != nil {
-		return "", "", time.Time{}, zero, nil, status.Errorf(codes.InvalidArgument, "invalid workflow_lineage_id: %v", err)
+		return "", "", time.Time{}, zero, nil, noPin, status.Errorf(codes.InvalidArgument, "invalid workflow_lineage_id: %v", err)
 	}
-	if store == nil {
-		return "", "", time.Time{}, zero, nil, status.Error(codes.FailedPrecondition, "workflow storage not configured")
-	}
-	version, err := store.ResolveVersionForUser(ctx, tenant, user, lineageID)
+	pin, err := pinScheduledWorkflow(ctx, deps, tenant, user, lineageID)
 	if err != nil {
-		return "", "", time.Time{}, zero, nil, status.Errorf(codes.InvalidArgument, "workflow not found: %v", err)
-	}
-	row, err := store.GetVersion(ctx, tenant, lineageID, version)
-	if err != nil {
-		return "", "", time.Time{}, zero, nil, status.Errorf(codes.InvalidArgument, "workflow not found: %v", err)
-	}
-	if row.BoundAgentID != nil {
-		return "", "", time.Time{}, zero, nil, status.Error(codes.InvalidArgument, "cannot schedule an agent-bound workflow")
+		return "", "", time.Time{}, zero, nil, noPin, err
 	}
 	kind, resolvedCron, next, err := validateScheduleTiming(k, cronExpr, runAt, now, minInterval)
 	if err != nil {
-		return "", "", time.Time{}, zero, nil, err
+		return "", "", time.Time{}, zero, nil, noPin, err
 	}
-	return kind, resolvedCron, next, lineageID, inputs, nil
+	return kind, resolvedCron, next, lineageID, inputs, pin, nil
+}
+
+// pinScheduledWorkflow resolves the version user would run of lineageID now —
+// through workflowsvc.Get, so the same owner-or-shared-member gate applies —
+// and returns it with its definition hash for the schedule row to pin (F18).
+// An agent-bound lineage cannot be scheduled.
+func pinScheduledWorkflow(ctx context.Context, deps Deps, tenant, user string, lineageID uuid.UUID) (workflowsvc.SchedulePin, error) {
+	var noPin workflowsvc.SchedulePin
+	if deps.Workflows == nil {
+		return noPin, status.Error(codes.FailedPrecondition, "workflow storage not configured")
+	}
+	logger := deps.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	wf, err := workflowsvc.Get(ctx, tenant, user, &brokerv1.GetWorkflowRequest{LineageId: lineageID.String()},
+		deps.Workflows, workflowAP(deps), nil, deps.Audit, logger)
+	if err != nil {
+		return noPin, status.Error(codes.InvalidArgument, "workflow not found")
+	}
+	if wf.BoundAgentId != "" {
+		return noPin, status.Error(codes.InvalidArgument, "cannot schedule an agent-bound workflow")
+	}
+	return workflowsvc.SchedulePin{
+		Version:          int(wf.Version),
+		DefinitionSHA256: db.WorkflowDefinitionSHA256([]byte(wf.DefinitionJson)),
+	}, nil
 }
 
 // authorizeRunMutation allows the run's owner, otherwise requires tenant-admin.
@@ -289,6 +340,7 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 	var next time.Time
 	var lineageID *uuid.UUID
 	var workflowInputs map[string]string
+	var pin workflowsvc.SchedulePin
 	if isWorkflow {
 		// Workflow resolution re-checks skill:workflows + visibility (the same
 		// GetWorkflow path) in addition to, not instead of, skill:scheduler above.
@@ -296,8 +348,8 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 			return nil, err
 		}
 		var lid uuid.UUID
-		kind, cronExpr, next, lid, workflowInputs, err = validateWorkflowScheduleDef(
-			ctx, s.deps.Workflows, tenant, user, req.Prompt, req.ApprovedTools,
+		kind, cronExpr, next, lid, workflowInputs, pin, err = validateWorkflowScheduleDef(
+			ctx, s.deps, tenant, user, req.Prompt, req.ApprovedTools,
 			req.WorkflowLineageId, req.WorkflowInputs, req.Kind, req.CronExpr, req.RunAt, now,
 			s.deps.SchedulerMinInterval,
 		)
@@ -342,6 +394,10 @@ func (s *BrokerService) CreateScheduledRun(ctx context.Context, req *brokerv1.Cr
 	}
 	if run.ApprovedTools == nil {
 		run.ApprovedTools = []string{}
+	}
+	if isWorkflow {
+		run.WorkflowVersion = &pin.Version
+		run.WorkflowDefinitionSHA256 = pin.DefinitionSHA256
 	}
 	if err := s.deps.Scheduled.Create(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create scheduled run: %v", err)
@@ -484,6 +540,10 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 		if run.DelegationRevokedAt != nil {
 			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked; create a new schedule")
 		}
+		// F192: re-granting needs the capability a new schedule needs.
+		if err := s.requireOwnerSchedulerSkill(ctx, span.SpanContext().TraceID().String(), tenant, user, run); err != nil {
+			return nil, err
+		}
 		if err := s.deps.Scheduled.ExtendDelegation(ctx, tenant, req.Id, now.Add(delegationTTL)); err != nil {
 			return nil, status.Errorf(codes.Internal, "extend: %v", err)
 		}
@@ -508,6 +568,11 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 		if !delegationLive(run, now) {
 			return nil, status.Error(codes.FailedPrecondition, "schedule delegation is revoked or expired; extend it or create a new schedule")
 		}
+		// F192: an owner without skill:scheduler cannot have a run re-enabled
+		// in their name, by themselves or by an admin.
+		if err := s.requireOwnerSchedulerSkill(ctx, span.SpanContext().TraceID().String(), tenant, user, run); err != nil {
+			return nil, err
+		}
 		// identity.obo=enforce parks an actorless row at every claim, so
 		// resuming one would only re-park it: refuse and say why.
 		if err := s.requireActorUnderEnforce(ctx, tenant, run.ActorAgentID); err != nil {
@@ -525,6 +590,17 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 			return nil, status.Errorf(codes.Internal, "resume: %v", err)
 		}
 	default: // full edit
+		// F187: what a schedule runs is the owner's to decide — it fires under
+		// the owner's delegation, grants and pre-approvals. An admin may pause,
+		// resume, delete or revoke it (above), never rewrite it.
+		if run.OwnerUserID != user {
+			schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), tenant, user,
+				"aikonos.scheduler.run.update_denied", req.Id, auditv1.PolicyDecision_DENY, runOBO(run))
+			return nil, status.Error(codes.PermissionDenied, "only the schedule owner can edit it; an admin may pause, revoke or delete it")
+		}
+		if err := s.requireOwnerSchedulerSkill(ctx, span.SpanContext().TraceID().String(), tenant, user, run); err != nil {
+			return nil, err
+		}
 		// Absent actor_agent_id keeps the row's actor; a present one is checked
 		// exactly as at create (and denied + audited the same way).
 		actor := run.ActorAgentID
@@ -558,15 +634,23 @@ func (s *BrokerService) UpdateScheduledRun(ctx context.Context, req *brokerv1.Up
 			if verr != nil {
 				return nil, verr
 			}
+			// F18: the owner's edit re-confirms the workflow version the
+			// schedule runs — the recovery path for a workflow_changed park.
+			pin, perr := pinScheduledWorkflow(ctx, s.deps, tenant, user, *run.WorkflowLineageID)
+			if perr != nil {
+				return nil, perr
+			}
 			edit := &db.ScheduledRun{
-				Prompt:            "",
-				Kind:              kind,
-				CronExpr:          cronExpr,
-				NextFireAt:        &next,
-				ApprovedTools:     []string{},
-				WorkflowLineageID: run.WorkflowLineageID,
-				WorkflowInputs:    run.WorkflowInputs,
-				ActorAgentID:      actor,
+				Prompt:                   "",
+				Kind:                     kind,
+				CronExpr:                 cronExpr,
+				NextFireAt:               &next,
+				ApprovedTools:            []string{},
+				WorkflowLineageID:        run.WorkflowLineageID,
+				WorkflowInputs:           run.WorkflowInputs,
+				ActorAgentID:             actor,
+				WorkflowVersion:          &pin.Version,
+				WorkflowDefinitionSHA256: pin.DefinitionSHA256,
 			}
 			if err := s.deps.Scheduled.Update(ctx, tenant, req.Id, edit); err != nil {
 				return nil, status.Errorf(codes.Internal, "update: %v", err)
@@ -665,10 +749,10 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	if _, err := uuid.Parse(req.TenantId); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid tenant_id: %v", err)
 	}
+	// F12: due-time and delegation expiry are the broker's own clock; a
+	// gateway-supplied req.Now is ignored (it could keep an expired
+	// delegation alive).
 	now := time.Now().UTC()
-	if req.Now != nil {
-		now = req.Now.AsTime()
-	}
 	limit := int(req.Limit)
 	if limit <= 0 || limit > 100 {
 		limit = defaultClaimLimit
@@ -687,14 +771,37 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	}
 	out := make([]*brokerv1.DueRun, 0, len(due))
 	traceID := span.SpanContext().TraceID().String()
+	skillByOwner := map[string]bool{} // one FGA check per owner per claim batch
 	for _, r := range due {
 		obo := runOBO(r)
-		// ClaimDue parked a revoked/expired delegation, a blocked subject, a
-		// revoked-all actor (AG-06) or a retired actor (AG-03) instead of
-		// advancing it.
+		// ClaimDue parked a revoked/expired delegation, a blocked or
+		// revoked-all subject (F242), a revoked-all actor (AG-06), a retired
+		// actor (AG-03) or a changed workflow (F18) instead of advancing it.
 		if r.SkipReason != "" {
 			schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 				"aikonos.scheduler.run.skipped."+r.SkipReason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+			continue
+		}
+		// F192: an owner who lost skill:scheduler no longer runs schedules.
+		// Park the row (the owner resumes it once re-granted); a failed check
+		// skips this fire only (fail closed, the next slot re-checks).
+		granted, seen := skillByOwner[r.OwnerUserID]
+		if !seen {
+			ok, serr := schedulerSkillGranted(ctx, s.deps, r.OwnerUserID)
+			if serr != nil {
+				s.deps.Logger.Warn("ClaimDueScheduledRuns: scheduler skill check failed, skipping run",
+					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(serr))
+				continue
+			}
+			granted = ok
+			skillByOwner[r.OwnerUserID] = ok
+		}
+		if !granted {
+			if perr := s.deps.Scheduled.Park(ctx, req.TenantId, r.ScheduledRunID.String(), skipSkillRevoked); perr != nil {
+				s.deps.Logger.Warn("ClaimDueScheduledRuns: park failed", zap.String("run_id", r.ScheduledRunID.String()), zap.Error(perr))
+			}
+			schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
+				"aikonos.scheduler.run.skipped."+skipSkillRevoked, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
 			continue
 		}
 		actor := ""
@@ -785,7 +892,15 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id required")
 	}
+	// F172: only a run ClaimDue handed out (and not yet reported) can be
+	// reported; anything else is refused and audited, and no session record is
+	// written for it.
 	if err := s.deps.Scheduled.ReportResult(ctx, req.TenantId, req.Id, req.Success, req.Summary); err != nil {
+		if errors.Is(err, db.ErrScheduledRunNotClaimed) {
+			schedulerAudit(s.deps, ctx, span.SpanContext().TraceID().String(), req.TenantId, "",
+				"aikonos.scheduler.run.report_denied", req.Id, auditv1.PolicyDecision_DENY)
+			return nil, status.Error(codes.FailedPrecondition, "scheduled run has no outstanding claim")
+		}
 		return nil, status.Errorf(codes.Internal, "report result: %v", err)
 	}
 	event := "aikonos.scheduler.run.completed"
@@ -811,6 +926,11 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 			s.deps.Logger.Warn("ReportScheduledRunResult: session_id is not a valid UUID, skipping session file write",
 				zap.String("session_id", req.SessionId),
 				zap.String("run_id", req.Id),
+			)
+		} else if len(req.SessionRecord) > maxSessionRecordBytes || !json.Valid(req.SessionRecord) {
+			s.deps.Logger.Warn("ReportScheduledRunResult: session_record is oversized or not JSON, skipping session file write",
+				zap.String("run_id", req.Id),
+				zap.Int("bytes", len(req.SessionRecord)),
 			)
 		} else {
 			if getErr != nil {

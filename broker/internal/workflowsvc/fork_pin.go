@@ -145,13 +145,15 @@ func Fork(
 	return &brokerv1.ForkWorkflowResponse{LineageId: created.LineageID.String()}, nil
 }
 
-// Pin validates that the target version is approved, then sets the pin. A pin
-// must never target a proposed/rejected version. Was pinCore.
+// Pin validates that the caller may access the lineage (F17) and that the
+// target version is approved, then sets the pin. A pin must never target a
+// proposed/rejected version. Was pinCore.
 func Pin(
 	ctx context.Context,
 	tenantID, userID string,
 	req *brokerv1.SetWorkflowVersionPinRequest,
 	store Store,
+	ap AccessPolicy,
 	emitter AuditEmitter,
 	logger *zap.Logger,
 ) (*brokerv1.SetWorkflowVersionPinResponse, error) {
@@ -162,6 +164,9 @@ func Pin(
 	lineageID, err := uuid.Parse(req.LineageId)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid lineage_id: %v", err)
+	}
+	if _, err := loadAccessible(ctx, store, ap, tenantID, userID, lineageID, emitter, logger); err != nil {
+		return nil, err
 	}
 
 	// Validate the target version exists and is approved.

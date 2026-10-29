@@ -195,6 +195,90 @@ func (f *fakeClaimDueStore) ClaimDue(_ context.Context, _ string, _ time.Time, _
 	return f.runs, nil
 }
 
+// parkClaimStore records the clock ClaimDue was given and every Park.
+type parkClaimStore struct {
+	fakeClaimDueStore
+	now    time.Time
+	parked map[string]string // run id → reason
+}
+
+func (f *parkClaimStore) ClaimDue(ctx context.Context, tenant string, now time.Time, limit int, requireActor bool) ([]*db.ScheduledRun, error) {
+	f.now = now
+	return f.fakeClaimDueStore.ClaimDue(ctx, tenant, now, limit, requireActor)
+}
+
+func (f *parkClaimStore) Park(_ context.Context, _, id, reason string) error {
+	if f.parked == nil {
+		f.parked = map[string]string{}
+	}
+	f.parked[id] = reason
+	return nil
+}
+
+// TestClaimDueScheduledRuns_IgnoresGatewayClock (F12): due-time and delegation
+// expiry are judged on the broker's clock; a backdated req.Now cannot keep an
+// expired delegation alive.
+func TestClaimDueScheduledRuns_IgnoresGatewayClock(t *testing.T) {
+	store := &parkClaimStore{}
+	svc := NewSandboxService(Deps{
+		Logger: zap.NewNop(), Audit: &fakeInvokeAudit{}, GatewaySpiffeID: testGWSpiffeID,
+		GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL, Scheduled: store,
+	})
+	before := time.Now().UTC()
+	if _, err := svc.ClaimDueScheduledRuns(
+		auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+		&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID, Now: timestamppb.New(before.Add(-365 * 24 * time.Hour))},
+	); err != nil {
+		t.Fatalf("ClaimDueScheduledRuns: %v", err)
+	}
+	if store.now.Before(before) {
+		t.Fatalf("ClaimDue got now=%v, want the broker clock (>= %v)", store.now, before)
+	}
+}
+
+// TestClaimDueScheduledRuns_OwnerLostSchedulerSkill (F192): a due run whose
+// owner no longer holds skill:scheduler is parked and audited, not fired;
+// another owner's run in the same batch still fires.
+func TestClaimDueScheduledRuns_OwnerLostSchedulerSkill(t *testing.T) {
+	f := &fakeFGA{checks: map[string]bool{"user:bob@example.com|can_invoke|skill:scheduler": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	aliceRun, bobRun, actor := uuid.New(), uuid.New(), uuid.New()
+	store := &parkClaimStore{fakeClaimDueStore: fakeClaimDueStore{runs: []*db.ScheduledRun{
+		{ScheduledRunID: aliceRun, OwnerUserID: "alice@example.com", Prompt: "p", ActorAgentID: &actor},
+		{ScheduledRunID: bobRun, OwnerUserID: "bob@example.com", Prompt: "p", ActorAgentID: &actor},
+	}}}
+	deps := testAdminDeps(t, srv.URL)
+	aud := &fakeInvokeAudit{}
+	deps.Audit, deps.Scheduled = aud, store
+	deps.GatewaySpiffeID, deps.GatewayGrantKey, deps.GatewayGrantTTL = testGWSpiffeID, testGrantKey, testGrantTTL
+	f.checks["user:bob@example.com|can_use|agent:"+actor.String()] = true
+	svc := NewSandboxService(deps)
+
+	resp, err := svc.ClaimDueScheduledRuns(
+		auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+		&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID},
+	)
+	if err != nil {
+		t.Fatalf("ClaimDueScheduledRuns: %v", err)
+	}
+	if len(resp.Runs) != 1 || resp.Runs[0].Id != bobRun.String() {
+		t.Fatalf("want only bob's run fired, got %v", resp.Runs)
+	}
+	if store.parked[aliceRun.String()] != skipSkillRevoked {
+		t.Errorf("alice's run must be parked %q, got %v", skipSkillRevoked, store.parked)
+	}
+	found := false
+	for _, e := range aud.events {
+		if e.EventType == "aikonos.scheduler.run.skipped."+skipSkillRevoked && e.Decision == auditv1.PolicyDecision_DENY {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the skill_scheduler_revoked skip must be audited as DENY")
+	}
+}
+
 // TestClaimDueScheduledRuns_GrantVerifiesToRunOwner proves that
 // ClaimDueScheduledRuns attaches a broker-issued owner-grant to each DueRun and
 // that Verify→the run's stored owner.  This is the transport-level proof that
@@ -403,7 +487,10 @@ func (f *stateScheduledStore) SetState(_ context.Context, _, _ string, s db.Sche
 // actor_missing (identity.obo=enforce) lets resume reactivate it.
 func TestUpdateScheduledRun_Actor(t *testing.T) {
 	agent, other := uuid.New(), uuid.New()
-	f := &fakeFGA{checks: map[string]bool{"user:alice@example.com|can_use|agent:" + agent.String(): true}}
+	f := &fakeFGA{checks: map[string]bool{
+		"user:alice@example.com|can_use|agent:" + agent.String(): true,
+		"user:alice@example.com|can_invoke|skill:scheduler":      true,
+	}}
 	srv := f.server(t)
 	defer srv.Close()
 	cfg := newFakeConfigStore()
@@ -589,7 +676,8 @@ func (f *extendScheduledStore) ExtendDelegation(_ context.Context, _, _ string, 
 // delegation to now+90d (audited); an admin who is not the owner cannot
 // re-grant it, and a revoked delegation stays final.
 func TestUpdateScheduledRun_ExtendDelegation(t *testing.T) {
-	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true},
+		checks: map[string]bool{"user:alice@example.com|can_invoke|skill:scheduler": true}}
 	srv := f.server(t)
 	defer srv.Close()
 	revokedAt := time.Now()
@@ -633,6 +721,84 @@ func TestUpdateScheduledRun_ExtendDelegation(t *testing.T) {
 		store, _, err := extend(t, "alice@example.com", r)
 		if status.Code(err) != codes.FailedPrecondition || !store.until.IsZero() {
 			t.Errorf("err = %v, until = %v; want FailedPrecondition and no store write", err, store.until)
+		}
+	})
+}
+
+// TestUpdateScheduledRun_OwnerLostSchedulerSkill (F192): once skill:scheduler
+// is revoked, the owner can no longer extend, resume or edit a schedule, and
+// the denial is audited; pause and revoke stay open so they can still stop it.
+func TestUpdateScheduledRun_OwnerLostSchedulerSkill(t *testing.T) {
+	f := &fakeFGA{} // FGA on, alice holds no skill:scheduler
+	srv := f.server(t)
+	defer srv.Close()
+	run := func(t *testing.T, req *brokerv1.UpdateScheduledRunRequest) (*stateScheduledStore, notify.Subscription, error) {
+		deps, sub := testAdminDepsWithConfigAndBus(t, srv.URL, newFakeConfigStore())
+		store := &stateScheduledStore{captureScheduledStore: captureScheduledStore{get: &db.ScheduledRun{
+			ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", Prompt: "p", Kind: db.ScheduleKindCron,
+			CronExpr: "0 9 * * *", State: db.ScheduledRunPaused, DelegationExpiresAt: time.Now().Add(time.Hour),
+		}}}
+		deps.Scheduled = store
+		req.UserId, req.Id = "alice@example.com", store.get.ScheduledRunID.String()
+		_, err := NewBrokerService(deps).UpdateScheduledRun(ctxWithIdentity(testTenantUUID, "alice@example.com"), req)
+		return store, sub, err
+	}
+	for name, req := range map[string]*brokerv1.UpdateScheduledRunRequest{
+		"extend": {ExtendDelegation: true},
+		"resume": {DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_ACTIVE},
+		"edit":   {Prompt: "new", Kind: brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, CronExpr: "0 9 * * *"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, sub, err := run(t, req)
+			if status.Code(err) != codes.PermissionDenied || store.state != "" || store.updated != nil {
+				t.Fatalf("err = %v (state %q, updated %v); want PermissionDenied and no store write", err, store.state, store.updated)
+			}
+			receiveAuditEvent(t, sub, "aikonos.scheduler.run.skill_denied", 2*time.Second)
+		})
+	}
+	t.Run("pause still allowed", func(t *testing.T) {
+		store, _, err := run(t, &brokerv1.UpdateScheduledRunRequest{DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_PAUSED})
+		if err != nil || store.state != db.ScheduledRunPaused {
+			t.Fatalf("pause: err = %v, state %q", err, store.state)
+		}
+	})
+}
+
+// TestUpdateScheduledRun_AdminCannotRewrite (F187): a tenant admin may pause or
+// revoke another user's schedule but never rewrite what it runs — it fires
+// under the owner's delegation and pre-approvals.
+func TestUpdateScheduledRun_AdminCannotRewrite(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true},
+		checks: map[string]bool{"user:alice@example.com|can_invoke|skill:scheduler": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	run := func(t *testing.T, req *brokerv1.UpdateScheduledRunRequest) (*stateScheduledStore, notify.Subscription, error) {
+		deps, sub := testAdminDepsWithConfigAndBus(t, srv.URL, newFakeConfigStore())
+		store := &stateScheduledStore{captureScheduledStore: captureScheduledStore{get: &db.ScheduledRun{
+			ScheduledRunID: uuid.New(), OwnerUserID: "alice@example.com", Prompt: "summarise my inbox", Kind: db.ScheduleKindCron,
+			CronExpr: "0 9 * * *", State: db.ScheduledRunActive, DelegationExpiresAt: time.Now().Add(time.Hour),
+		}}}
+		deps.Scheduled = store
+		req.UserId, req.Id = "admin@example.com", store.get.ScheduledRunID.String()
+		_, err := NewBrokerService(deps).UpdateScheduledRun(ctxWithIdentity(testTenantUUID, "admin@example.com"), req)
+		return store, sub, err
+	}
+	t.Run("full edit denied", func(t *testing.T) {
+		store, sub, err := run(t, &brokerv1.UpdateScheduledRunRequest{
+			Prompt: "email the finance folder out", Kind: brokerv1.ScheduleKind_SCHEDULE_KIND_CRON, CronExpr: "0 9 * * *",
+		})
+		if status.Code(err) != codes.PermissionDenied || store.updated != nil {
+			t.Fatalf("err = %v, updated %v; want PermissionDenied and no store write", err, store.updated)
+		}
+		ev := receiveAuditEvent(t, sub, "aikonos.scheduler.run.update_denied", 2*time.Second)
+		if ev.Decision != auditv1.PolicyDecision_DENY || ev.ActorUserId != "admin@example.com" {
+			t.Errorf("audit = %v by %q, want DENY by admin", ev.Decision, ev.ActorUserId)
+		}
+	})
+	t.Run("pause allowed", func(t *testing.T) {
+		store, _, err := run(t, &brokerv1.UpdateScheduledRunRequest{DesiredState: brokerv1.ScheduledRunState_SCHEDULED_RUN_PAUSED})
+		if err != nil || store.state != db.ScheduledRunPaused {
+			t.Fatalf("pause: err = %v, state %q", err, store.state)
 		}
 	})
 }

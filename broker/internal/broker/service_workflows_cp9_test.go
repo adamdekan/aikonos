@@ -90,6 +90,16 @@ func (f *fakeWorkflowPinStore) addVersion(row db.WorkflowRow) {
 	f.versions[lid][row.Version] = &r
 }
 
+// GetCurrent stands in for the lineage's current row, owned by testWFOwner
+// (every lineage this fake holds is the caller's), so Pin's access gate (F17)
+// admits the owner and the version checks below it are what the tests probe.
+func (f *fakeWorkflowPinStore) GetCurrent(_ context.Context, _ string, lineageID uuid.UUID) (*db.WorkflowRow, error) {
+	if _, ok := f.versions[lineageID.String()]; !ok {
+		return nil, fmt.Errorf("workflow lineage %s not found", lineageID)
+	}
+	return &db.WorkflowRow{LineageID: lineageID, OwnerUserID: testWFOwner, VisibilityKind: "private"}, nil
+}
+
 func (f *fakeWorkflowPinStore) GetVersion(_ context.Context, _ string, lineageID uuid.UUID, version int) (*db.WorkflowRow, error) {
 	byLid, ok := f.versions[lineageID.String()]
 	if !ok {

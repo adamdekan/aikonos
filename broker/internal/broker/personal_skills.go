@@ -240,6 +240,13 @@ func (s *BrokerService) SendSkillTransfer(ctx context.Context, req *brokerv1.Sen
 	var recipients, skipped []string
 	switch {
 	case recipientUser != "":
+		// F191: a transfer is an envelope, so it takes SendEnvelope's ReBAC
+		// gate — a can_delegate_to_user edge, else a shared delegatable group.
+		if ok, _ := s.deps.Policy.CheckFGA(ctx, "user:"+sender, "can_delegate_to_user", "user:"+recipientUser); !ok && !s.sharesDelegatableGroup(ctx, sender, recipientUser) {
+			s.gcStagingSegment(ctx, be, tenant, stagingSeg)
+			s.emitEnvelopeAudit(ctx, traceID, tenant, sender, "aikonos.skill.transfer.denied", auditv1.PolicyDecision_DENY, "")
+			return nil, status.Errorf(codes.PermissionDenied, "no delegation relationship to %q", recipientUser)
+		}
 		granted, gerr := s.personalSkillsGrantedOther(ctx, recipientUser)
 		if gerr != nil || !granted {
 			s.gcStagingSegment(ctx, be, tenant, stagingSeg)

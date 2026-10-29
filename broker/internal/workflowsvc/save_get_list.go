@@ -83,6 +83,13 @@ func Save(
 		if curErr != nil {
 			return nil, status.Errorf(codes.NotFound, "workflow lineage not found: %v", curErr)
 		}
+		// F15: only the lineage owner may add a version (same rule as Propose,
+		// Decide, Publish and Delete). Without it a non-owner's edit became the
+		// current approved version — and took the lineage's ownership with it.
+		if current.OwnerUserID != ownerUserID {
+			emitWorkflowDenied(ctx, emitter, logger, tenantID, ownerUserID, "aikonos.broker.workflow.save", lineageID)
+			return nil, status.Error(codes.PermissionDenied, "only the lineage owner may edit a workflow; fork it instead")
+		}
 		status_ = current.Status
 		visibilityKind = current.VisibilityKind
 		visibilityGroups = current.VisibilityGroups
@@ -150,12 +157,27 @@ func Save(
 	}, nil
 }
 
-// Get fetches the definition for a workflow lineage. Was getWorkflowCore.
+// SchedulePin is the workflow version, and the sha256 of its definition, a
+// workflow schedule was confirmed against (F18). Get serves exactly that
+// version to the schedule's fire, or refuses when it changed.
+type SchedulePin struct {
+	Version          int
+	DefinitionSHA256 string
+}
+
+// Get fetches the definition for a workflow lineage the caller may access
+// (own, or a member of a shared lineage's group — F17). The version is the
+// caller's own pin, else the current approved version; pin, when non-nil,
+// overrides that with a schedule's pinned version. A non-owner only ever reads
+// an approved version. Was getWorkflowCore.
 func Get(
 	ctx context.Context,
 	tenantID, ownerUserID string,
 	req *brokerv1.GetWorkflowRequest,
 	store Store,
+	ap AccessPolicy,
+	pin *SchedulePin,
+	emitter AuditEmitter,
 	logger *zap.Logger,
 ) (*brokerv1.GetWorkflowResponse, error) {
 	if store == nil {
@@ -167,19 +189,25 @@ func Get(
 		return nil, status.Errorf(codes.InvalidArgument, "invalid lineage_id: %v", err)
 	}
 
-	// userId for pin resolution: prefer the explicit field, fall back to ownerUserID.
-	resolveUser := req.UserId
-	if resolveUser == "" {
-		resolveUser = ownerUserID
+	current, err := loadAccessible(ctx, store, ap, tenantID, ownerUserID, lineageID, emitter, logger)
+	if err != nil {
+		return nil, err
 	}
 
-	version, err := store.ResolveVersionForUser(ctx, tenantID, resolveUser, lineageID)
-	if err != nil {
-		logger.Error("GetWorkflow: ResolveVersionForUser failed",
-			zap.String("lineage_id", req.LineageId),
-			zap.Error(err),
-		)
-		return nil, status.Errorf(codes.NotFound, "workflow not found: %v", err)
+	// Pin resolution is for the bound caller only: req.UserId is an asserted
+	// field (south) and must not select another user's pin.
+	version := 0
+	if pin != nil {
+		version = pin.Version
+	} else {
+		version, err = store.ResolveVersionForUser(ctx, tenantID, ownerUserID, lineageID)
+		if err != nil {
+			logger.Error("GetWorkflow: ResolveVersionForUser failed",
+				zap.String("lineage_id", req.LineageId),
+				zap.Error(err),
+			)
+			return nil, errWorkflowNotFound
+		}
 	}
 
 	row, err := store.GetVersion(ctx, tenantID, lineageID, version)
@@ -189,7 +217,14 @@ func Get(
 			zap.Int("version", version),
 			zap.Error(err),
 		)
-		return nil, status.Errorf(codes.NotFound, "workflow version not found: %v", err)
+		return nil, errWorkflowNotFound
+	}
+	// Drafts (proposed/rejected) stay the owner's: a non-owner never reads one.
+	if current.OwnerUserID != ownerUserID && row.ApprovalState != "approved" {
+		return nil, errWorkflowNotFound
+	}
+	if pin != nil && (row.ApprovalState != "approved" || db.WorkflowDefinitionSHA256(row.Definition) != pin.DefinitionSHA256) {
+		return nil, status.Error(codes.FailedPrecondition, "workflow changed since it was scheduled; the schedule owner must re-confirm it")
 	}
 
 	boundAgentID := ""
@@ -533,4 +568,54 @@ func MayAccessWorkflow(ctx context.Context, ap AccessPolicy, user string, row *d
 		}
 	}
 	return false
+}
+
+// errWorkflowNotFound is the single answer for a lineage that does not exist
+// and for one the caller may not access, so a lineage id cannot be probed for
+// existence (F17).
+var errWorkflowNotFound = status.Error(codes.NotFound, "workflow not found")
+
+// loadAccessible returns the lineage's current approved row when user may
+// access the lineage (MayAccessWorkflow). The current row is authoritative for
+// owner and visibility: Publish rewrites only the version it publishes, so an
+// older version's row can still say private. Every read-side lineage RPC (Get,
+// ListVersions, Rate, Pin) gates through here; a denial is audited and answered
+// exactly like a missing lineage.
+func loadAccessible(
+	ctx context.Context,
+	store Store,
+	ap AccessPolicy,
+	tenantID, user string,
+	lineageID uuid.UUID,
+	emitter AuditEmitter,
+	logger *zap.Logger,
+) (*db.WorkflowRow, error) {
+	current, err := store.GetCurrent(ctx, tenantID, lineageID)
+	if err != nil {
+		return nil, errWorkflowNotFound
+	}
+	if !MayAccessWorkflow(ctx, ap, user, current) {
+		emitWorkflowDenied(ctx, emitter, logger, tenantID, user, "aikonos.broker.workflow.access_denied", lineageID)
+		return nil, errWorkflowNotFound
+	}
+	return current, nil
+}
+
+// emitWorkflowDenied records a DENY on a lineage. Fire-and-forget; a nil
+// emitter (tests) is a no-op.
+func emitWorkflowDenied(ctx context.Context, emitter AuditEmitter, logger *zap.Logger, tenantID, user, eventType string, lineageID uuid.UUID) {
+	if emitter == nil {
+		return
+	}
+	if err := emitter.Emit(ctx, &auditv1.AuditEvent{
+		EventId:     ids.EventID(),
+		TenantId:    tenantID,
+		OccurredAt:  timestamppb.New(time.Now().UTC()),
+		ActorUserId: user,
+		EventType:   eventType,
+		ResourceRef: "aikonos:workflow-lineage:" + lineageID.String(),
+		Decision:    auditv1.PolicyDecision_DENY,
+	}); err != nil {
+		audit.RecordEmitFailure(ctx, logger, err, eventType)
+	}
 }

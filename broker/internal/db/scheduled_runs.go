@@ -7,12 +7,14 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -93,6 +95,13 @@ type ScheduledRun struct {
 	WorkflowLineageID *uuid.UUID
 	// WorkflowInputs are the input values fed to the workflow at fire time.
 	WorkflowInputs map[string]string
+	// WorkflowVersion / WorkflowDefinitionSHA256 pin the workflow version the
+	// owner scheduled (F18, migration 062): ClaimDue parks the row as
+	// "workflow_changed" when that version no longer matches, and the
+	// gateway's fetch is served exactly this version. Set at create and on an
+	// owner edit; nil/"" on a prompt-mode row.
+	WorkflowVersion          *int
+	WorkflowDefinitionSHA256 string
 	// WorkflowDisplayName is populated only by List's join against the
 	// workflow's current approved version — never by Create/Get/ClaimDue.
 	WorkflowDisplayName string
@@ -103,10 +112,15 @@ type ScheduledRun struct {
 	DelegationExpiresAt time.Time
 	DelegationRevokedAt *time.Time
 	DelegationRevokedBy string
+	// DelegatedAt is when the owner last granted the delegation (create or
+	// extend_delegation, migration 062); the owner's revocation epoch is
+	// compared against it (F242). Create takes the column default.
+	DelegatedAt time.Time
 	// SkipReason is set by ClaimDue on a claimed row it parked instead of
 	// firing ("delegation_expired" | "delegation_revoked" | "actor_missing" |
-	// "subject_blocked" | "actor_revoked" | "actor_retired", also written to last_status). Not a
-	// column.
+	// "subject_blocked" | "subject_revoked" | "actor_revoked" |
+	// "actor_retired" | "workflow_changed", also written to last_status). Not
+	// a column.
 	SkipReason string
 }
 
@@ -123,7 +137,8 @@ const scheduledRunCols = `
 	scheduled_run_id, tenant_id, owner_user_id, prompt, schedule_kind, cron_expr,
 	next_fire_at, approved_tools, state, last_fire_at, last_status, last_summary,
 	run_count, created_by, created_at, updated_at, workflow_lineage_id, workflow_inputs,
-	actor_agent_id, delegation_expires_at, delegation_revoked_at, delegation_revoked_by`
+	actor_agent_id, delegation_expires_at, delegation_revoked_at, delegation_revoked_by,
+	workflow_version, workflow_definition_sha256, delegated_at`
 
 // scanScheduledRun maps a single row in scheduledRunCols order. approved_tools /
 // workflow_inputs are jsonb, scanned as raw bytes then unmarshaled (pgx would
@@ -132,7 +147,7 @@ const scheduledRunCols = `
 // workflow display name) appended after scheduledRunCols in the query.
 func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 	var r ScheduledRun
-	var cronExpr, lastStatus, lastSummary, revokedBy *string
+	var cronExpr, lastStatus, lastSummary, revokedBy, wfSHA *string
 	var toolsJSON, inputsJSON []byte
 	var workflowLineageID *uuid.UUID
 
@@ -141,6 +156,7 @@ func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 		&r.NextFireAt, &toolsJSON, &r.State, &r.LastFireAt, &lastStatus, &lastSummary,
 		&r.RunCount, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &workflowLineageID, &inputsJSON,
 		&r.ActorAgentID, &r.DelegationExpiresAt, &r.DelegationRevokedAt, &revokedBy,
+		&r.WorkflowVersion, &wfSHA, &r.DelegatedAt,
 	}
 	if nameDest != nil {
 		dest = append(dest, nameDest)
@@ -159,6 +175,9 @@ func scanScheduledRun(row pgx.Row, nameDest **string) (*ScheduledRun, error) {
 	}
 	if revokedBy != nil {
 		r.DelegationRevokedBy = *revokedBy
+	}
+	if wfSHA != nil {
+		r.WorkflowDefinitionSHA256 = *wfSHA
 	}
 	if len(toolsJSON) > 0 {
 		if err := json.Unmarshal(toolsJSON, &r.ApprovedTools); err != nil {
@@ -192,6 +211,14 @@ func nullableTime(t time.Time) *time.Time {
 	return &t
 }
 
+// nullableString maps "" to SQL NULL.
+func nullableString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
 // nullableInputs marshals workflow_inputs to JSON, or nil (SQL NULL) when the
 // map is empty — mirrors nullableCron's "no value → NULL" convention for a
 // prompt-mode row.
@@ -217,12 +244,14 @@ func (r *ScheduledRunRepo) Create(ctx context.Context, s *ScheduledRun) error {
 		INSERT INTO scheduled_runs (
 			scheduled_run_id, tenant_id, owner_user_id, prompt, schedule_kind,
 			cron_expr, next_fire_at, approved_tools, state, created_by,
-			workflow_lineage_id, workflow_inputs, actor_agent_id, delegation_expires_at
+			workflow_lineage_id, workflow_inputs, actor_agent_id, delegation_expires_at,
+			workflow_version, workflow_definition_sha256
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			COALESCE($14, NOW() + INTERVAL '90 days'))`,
+			COALESCE($14, NOW() + INTERVAL '90 days'), $15, $16)`,
 			s.ScheduledRunID, s.TenantID, s.OwnerUserID, s.Prompt, s.Kind,
 			nullableCron(s.Kind, s.CronExpr), s.NextFireAt, toolsJSON, ScheduledRunActive, s.CreatedBy,
 			s.WorkflowLineageID, inputsJSON, s.ActorAgentID, nullableTime(s.DelegationExpiresAt),
+			s.WorkflowVersion, nullableString(s.WorkflowDefinitionSHA256),
 		)
 		if err != nil {
 			return fmt.Errorf("insert scheduled_run: %w", err)
@@ -293,6 +322,8 @@ func (r *ScheduledRunRepo) List(ctx context.Context, tenantID, owner string) ([]
 // workflow_lineage_id / workflow_inputs are deliberately absent from the SET
 // list — a workflow schedule's binding is immutable post-create, and the
 // broker layer never varies s.WorkflowLineageID/WorkflowInputs on an edit.
+// The workflow version pin is re-set: an owner edit re-confirms the version
+// the schedule runs (F18).
 func (r *ScheduledRunRepo) Update(ctx context.Context, tenantID, id string, s *ScheduledRun) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		toolsJSON, err := json.Marshal(s.ApprovedTools)
@@ -302,9 +333,11 @@ func (r *ScheduledRunRepo) Update(ctx context.Context, tenantID, id string, s *S
 		tag, err := conn.Exec(ctx, `
 		UPDATE scheduled_runs
 		SET prompt = $1, schedule_kind = $2, cron_expr = $3, next_fire_at = $4,
-		    approved_tools = $5, actor_agent_id = $7, updated_at = NOW()
+		    approved_tools = $5, actor_agent_id = $7, workflow_version = $8,
+		    workflow_definition_sha256 = $9, updated_at = NOW()
 		WHERE scheduled_run_id = $6 AND state IN ('ACTIVE','PAUSED')`,
 			s.Prompt, s.Kind, nullableCron(s.Kind, s.CronExpr), s.NextFireAt, toolsJSON, id, s.ActorAgentID,
+			s.WorkflowVersion, nullableString(s.WorkflowDefinitionSHA256),
 		)
 		if err != nil {
 			return fmt.Errorf("update scheduled_run: %w", err)
@@ -360,13 +393,15 @@ func (r *ScheduledRunRepo) RevokeDelegation(ctx context.Context, tenantID, id, b
 	})
 }
 
-// ExtendDelegation moves a live (not revoked) delegation's expiry to until.
-// It does not change state: a row ClaimDue parked as delegation_expired is
-// resumed by its owner afterwards.
+// ExtendDelegation moves a live (not revoked) delegation's expiry to until and
+// re-stamps delegated_at: the owner's fresh consent (their token already passed
+// the revocation epoch) is what lets a subject_revoked row fire again (F242).
+// It does not change state: a row ClaimDue parked as delegation_expired or
+// subject_revoked is resumed by its owner afterwards.
 func (r *ScheduledRunRepo) ExtendDelegation(ctx context.Context, tenantID, id string, until time.Time) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		tag, err := conn.Exec(ctx, `
-		UPDATE scheduled_runs SET delegation_expires_at = $1, updated_at = NOW()
+		UPDATE scheduled_runs SET delegation_expires_at = $1, delegated_at = NOW(), updated_at = NOW()
 		WHERE scheduled_run_id = $2 AND delegation_revoked_at IS NULL`,
 			until, id,
 		)
@@ -375,6 +410,27 @@ func (r *ScheduledRunRepo) ExtendDelegation(ctx context.Context, tenantID, id st
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("scheduled_run %s not found or revoked", id)
+		}
+		return nil
+	})
+}
+
+// Park pauses a live row with no next fire and records reason as last_status,
+// the same way ClaimDue parks a row it refuses. Used for a skip the broker
+// decides outside the claim transaction (an owner without skill:scheduler).
+func (r *ScheduledRunRepo) Park(ctx context.Context, tenantID, id, reason string) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		tag, err := conn.Exec(ctx, `
+		UPDATE scheduled_runs
+		SET state = 'PAUSED', next_fire_at = NULL, last_status = $1, claimed_at = NULL, updated_at = NOW()
+		WHERE scheduled_run_id = $2 AND state IN ('ACTIVE', 'PAUSED')`,
+			reason, id,
+		)
+		if err != nil {
+			return fmt.Errorf("park scheduled_run: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("scheduled_run %s not found or not live", id)
 		}
 		return nil
 	})
@@ -404,8 +460,13 @@ func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) erro
 // enforce, AG-17 S8) parks a row with no actor the same way ("actor_missing"),
 // as does a blocked owner or tenant ("subject_blocked") and an actor revoked
 // after the schedule was created ("actor_revoked", AG-06), and a retired actor
-// ("actor_retired", AG-03). An unblocked owner
-// resumes the schedule; an actor-revoked one must be recreated.
+// ("actor_retired", AG-03). An owner whose own revoke-all came after they last
+// granted the delegation is parked as "subject_revoked" (F242): the owner
+// extends the delegation (re-consent) and resumes it. A workflow-mode row whose
+// pinned version is gone, unapproved or rewritten is parked as
+// "workflow_changed" (F18): the owner re-confirms by editing it. An unblocked
+// owner resumes the schedule; an actor-revoked one must be recreated. A fired
+// row is stamped claimed_at, which ReportResult consumes (F172).
 func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int, requireActor bool) ([]*ScheduledRun, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*ScheduledRun, error) {
 		tx, err := conn.Begin(ctx)
@@ -446,16 +507,27 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 			// claim's transaction, uncached.
 			// AG-03: a retired actor never runs again; a suspended one is
 			// skipped per fire by the caller and resumes on reactivation.
-			var subjectBlocked, actorRevoked, actorRetired bool
+			// F242: the owner's own revoke-all after the delegation was
+			// granted voids it, as it voids their tokens and owner grants.
+			var subjectBlocked, subjectRevoked, actorRevoked, actorRetired bool
 			if err := tx.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM kill_switches
 			                WHERE tenant_id = $1 AND active
 			                  AND (scope = 'tenant' OR (scope = 'user' AND subject = $2))),
+			       COALESCE((SELECT revoked_before > $5 FROM user_directory WHERE tenant_id = $1 AND subject = $2), FALSE),
 			       COALESCE((SELECT revoked_before > $4 FROM agents WHERE id = $3), FALSE),
 			       COALESCE((SELECT status = 'retired' FROM agents WHERE id = $3), FALSE)`,
-				s.TenantID, s.OwnerUserID, s.ActorAgentID, s.CreatedAt,
-			).Scan(&subjectBlocked, &actorRevoked, &actorRetired); err != nil {
+				s.TenantID, s.OwnerUserID, s.ActorAgentID, s.CreatedAt, s.DelegatedAt,
+			).Scan(&subjectBlocked, &subjectRevoked, &actorRevoked, &actorRetired); err != nil {
 				return nil, fmt.Errorf("read revocation for scheduled_run: %w", err)
+			}
+			workflowChanged := false
+			if s.WorkflowLineageID != nil {
+				changed, err := workflowPinChanged(ctx, tx, s)
+				if err != nil {
+					return nil, err
+				}
+				workflowChanged = changed
 			}
 			switch {
 			case s.DelegationRevokedAt != nil:
@@ -466,10 +538,14 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 				s.SkipReason = "actor_missing"
 			case subjectBlocked:
 				s.SkipReason = "subject_blocked"
+			case subjectRevoked:
+				s.SkipReason = "subject_revoked"
 			case actorRevoked:
 				s.SkipReason = "actor_revoked"
 			case actorRetired:
 				s.SkipReason = "actor_retired"
+			case workflowChanged:
+				s.SkipReason = "workflow_changed"
 			}
 			if s.SkipReason != "" {
 				if _, err := tx.Exec(ctx, `UPDATE scheduled_runs SET state='PAUSED', next_fire_at=NULL, last_status=$1, updated_at=NOW() WHERE scheduled_run_id=$2`, s.SkipReason, s.ScheduledRunID); err != nil {
@@ -494,7 +570,7 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 			}
 			if _, err := tx.Exec(ctx, `
 			UPDATE scheduled_runs
-			SET next_fire_at = $1, last_fire_at = $2, run_count = run_count + 1, updated_at = NOW()
+			SET next_fire_at = $1, last_fire_at = $2, run_count = run_count + 1, claimed_at = NOW(), updated_at = NOW()
 			WHERE scheduled_run_id = $3`,
 				next, now, s.ScheduledRunID,
 			); err != nil {
@@ -508,9 +584,17 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 	})
 }
 
+// ErrScheduledRunNotClaimed is ReportResult's refusal of a report for a run
+// with no outstanding claim (never fired, or already reported) — F172.
+var ErrScheduledRunNotClaimed = errors.New("scheduled_run has no outstanding claim")
+
 // ReportResult records the outcome of a fired run. A ONCE run reaches a terminal
 // state (COMPLETED/FAILED); a CRON run stays ACTIVE for its next slot and just
-// records last_status/last_summary.
+// records last_status/last_summary. Only a run ClaimDue fired (claimed_at set)
+// may be reported, once per claim; anything else is ErrScheduledRunNotClaimed,
+// so a report cannot end a run that was never handed to the gateway.
+// ponytail: one gateway identity claims everything, so the claim is a
+// timestamp, not a per-claim token; add a token if gateways ever shard.
 func (r *ScheduledRunRepo) ReportResult(ctx context.Context, tenantID, id string, ok bool, summary string) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		var kind ScheduleKind
@@ -522,25 +606,51 @@ func (r *ScheduledRunRepo) ReportResult(ctx context.Context, tenantID, id string
 		if !ok {
 			status = "FAILED"
 		}
+		var tag pgconn.CommandTag
 		var err error
 		if kind == ScheduleKindOnce {
-			_, err = conn.Exec(ctx, `
+			tag, err = conn.Exec(ctx, `
 			UPDATE scheduled_runs
-			SET state = $1, last_status = $2, last_summary = $3, next_fire_at = NULL, updated_at = NOW()
-			WHERE scheduled_run_id = $4`,
+			SET state = $1, last_status = $2, last_summary = $3, next_fire_at = NULL, claimed_at = NULL, updated_at = NOW()
+			WHERE scheduled_run_id = $4 AND claimed_at IS NOT NULL`,
 				ScheduledRunState(status), status, summary, id,
 			)
 		} else {
-			_, err = conn.Exec(ctx, `
+			tag, err = conn.Exec(ctx, `
 			UPDATE scheduled_runs
-			SET last_status = $1, last_summary = $2, updated_at = NOW()
-			WHERE scheduled_run_id = $3`,
+			SET last_status = $1, last_summary = $2, claimed_at = NULL, updated_at = NOW()
+			WHERE scheduled_run_id = $3 AND claimed_at IS NOT NULL`,
 				status, summary, id,
 			)
 		}
 		if err != nil {
 			return fmt.Errorf("report scheduled_run result: %w", err)
 		}
+		if tag.RowsAffected() == 0 {
+			return ErrScheduledRunNotClaimed
+		}
 		return nil
 	})
+}
+
+// workflowPinChanged reports whether a workflow-mode row's pinned version is
+// no longer the one the owner scheduled: missing pin, version gone or not
+// approved, or a definition whose hash differs (F18). Read in the claim's tx.
+func workflowPinChanged(ctx context.Context, tx pgx.Tx, s *ScheduledRun) (bool, error) {
+	if s.WorkflowVersion == nil || s.WorkflowDefinitionSHA256 == "" {
+		return true, nil
+	}
+	var def json.RawMessage
+	err := tx.QueryRow(ctx, `
+	SELECT definition FROM workflows
+	WHERE tenant_id = $1 AND lineage_id = $2 AND version = $3 AND approval_state = 'approved'`,
+		s.TenantID, s.WorkflowLineageID, *s.WorkflowVersion,
+	).Scan(&def)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read pinned workflow for scheduled_run: %w", err)
+	}
+	return WorkflowDefinitionSHA256(def) != s.WorkflowDefinitionSHA256, nil
 }
