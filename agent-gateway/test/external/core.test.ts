@@ -615,3 +615,37 @@ test("F208 runAgentInvocation: an aborted signal stops a silent run at once (abo
   assert.equal(ev.resource_ref, `agent:${AGENT_ID}`);
   assert.deepEqual(ev.context, { status: "aborted" });
 });
+
+test("F51 runAgentInvocation: branches re-read the agent's approvalMode (stillPreApproved), not a run-start snapshot", async () => {
+  // WHY: the parent's externalApprover re-reads approvalMode at every gate, but
+  // spawn_subagents branches only had the static preApproved list, so after an
+  // admin flipped the agent to needs_approval mid-run its branches still
+  // pre-approved its tools.
+  let mode = "auto";
+  const south = { ...makeSouth(["doc.read"]), getAgentSpec: () => Promise.resolve({ approvalMode: mode }) };
+  const clients = { north: makeNorth(), south } as unknown as import("../../src/broker/clients.js").BrokerClients;
+  const { runAgentInvocation } = await import("../../src/external/core.js");
+  let bound: import("../../src/ipc/bridge-server.js").RunIdentity | undefined;
+  const fakeSupervisor = {
+    keyFor: () => "__single__",
+    getOrSpawn: async () => ({
+      key: "__single__",
+      setRunContext: (_runId: string, identity: import("../../src/ipc/bridge-server.js").RunIdentity) => { bound = identity; },
+      clearRunContext: () => {},
+      abortRun: () => {},
+    }),
+    run: async (_h: unknown, prompt: { runId: string }, onEvent: (evt: DoneEvent) => void) => {
+      onEvent({ kind: "done", runId: prompt.runId } as DoneEvent);
+    },
+  } as unknown as ChildSupervisor;
+
+  for await (const _ev of runAgentInvocation(
+    AGENT_ID, `svc-${AGENT_ID}`, TENANT, ["doc.read"], "p",
+    { clients, cfg: baseCfg, log, supervisor: fakeSupervisor, timeoutMs: 500 },
+    { model: "", approvalMode: "auto", skills: ["doc.read"] },
+  )) { /* drain */ }
+
+  assert.ok(bound?.stillPreApproved, "the run identity must carry the live re-check");
+  mode = "needs_approval"; // the admin flips the agent after the run started as auto
+  assert.equal(await bound.stillPreApproved(), false, "a flip to needs_approval must stop branch pre-approval");
+});

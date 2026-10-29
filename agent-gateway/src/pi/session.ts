@@ -107,6 +107,8 @@ export interface ProviderCredentials extends ProviderTarget {
 //     usable fallback key exists) and log a warning naming that choice; if the
 //     env fallback key is ALSO empty, throw loud naming both facts. No path
 //     may return credentials with an empty apiKey.
+//   F203: an agent pinned to allowedProviders never gets the env fallback in
+//     Case B or D — OpenRouter is outside every pin, so those cases throw.
 export async function resolveProviderCredentials(
   cfg: Pick<Config, "llmModel" | "openrouterApiKey">,
   south: Pick<SouthClient, "getLlmProviders">,
@@ -123,11 +125,19 @@ export async function resolveProviderCredentials(
     apiVersion: "",
   };
 
+  const pinned = !!agentSpec?.allowedProviders?.length;
+  const pinnedError = () =>
+    failedPreconditionError("llm credentials unavailable: agent is pinned to allowed providers; none usable");
+
   let providers: LlmProvider[];
   try {
     const resp = await south.getLlmProviders({ tenantId });
     providers = (resp.providers ?? []).filter((p) => p.enabled);
   } catch (err) {
+    if (pinned) {
+      log.warn({ err, tenantId }, "broker unreachable resolving LLM providers — pinned agent gets no env fallback");
+      throw pinnedError();
+    }
     if (cfg.openrouterApiKey) {
       log.warn({ err, tenantId }, "broker unreachable — falling back to env provider");
       return envFallback;
@@ -138,6 +148,7 @@ export async function resolveProviderCredentials(
   }
 
   if (providers.length === 0) {
+    if (pinned) throw pinnedError();
     if (!cfg.openrouterApiKey) {
       throw failedPreconditionError(
         "llm credentials unavailable: no LLM providers configured and the env fallback (AIKONOS_OPENROUTER_API_KEY) is empty",

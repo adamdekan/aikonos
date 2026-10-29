@@ -278,3 +278,27 @@ test("resolveProviderCredentials invariant: every non-throwing path returns a no
   );
   assert.notEqual(rpcFailureFallback.apiKey, "");
 });
+
+// ── F203: a provider pin never falls back to the env OpenRouter provider ─────
+
+test("F203: an agent pinned to allowedProviders gets no env fallback — zero enabled providers or a broker blip both throw", async () => {
+  // WHY: Case B/D returned the env OpenRouter fallback without reading the
+  // spec, so an agent pinned to an on-prem provider sent its conversation to a
+  // SaaS whenever that provider was disabled or the broker blipped.
+  const spec = { model: "m", approvalMode: "auto", skills: [], allowedProviders: ["onprem"] };
+  const cfg = { llmModel: "m", openrouterApiKey: "sk-real" };
+  for (const south of [fakeSouth([]), failingSouth(new Error("ECONNREFUSED"))]) {
+    await assert.rejects(
+      () => resolveProviderCredentials(cfg, south, "tenant-1", spec),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /pinned to allowed providers/);
+        assert.equal((err as { code?: number }).code, 9, "FAILED_PRECONDITION");
+        return true;
+      },
+    );
+  }
+  // An unpinned agent keeps the deliberate fail-open.
+  const creds = await resolveProviderCredentials(cfg, fakeSouth([]), "tenant-1", { ...spec, allowedProviders: [] });
+  assert.equal(creds.apiKey, "sk-real");
+});

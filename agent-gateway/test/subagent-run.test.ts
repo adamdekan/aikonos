@@ -1022,6 +1022,31 @@ test("F51 approver: a branch inherits exactly the parent's pre-approval (auto pa
   rig.supervisor.dispose();
 });
 
+test("F51 approver: a parent whose approvalMode flipped mid-run (stillPreApproved false) pre-approves nothing in its branches", async () => {
+  // WHY: the external surface re-reads approvalMode at each gate, but branches
+  // took a static snapshot of preApproved at run start, so after an admin flip
+  // to needs_approval the parent stopped auto-approving and its branches did not.
+  const bridge = approverBridgeFactory();
+  const rig = makeRig({ bridgeFactory: bridge.factory });
+  const deps = makeDeps(rig, { identity: { ...callerIdentity(), stillPreApproved: async () => false } });
+
+  const fanOut = runSubagents([{ task: "write the doc" }, { task: "sibling" }], deps);
+  await flushAsync();
+  const child = rig.spawn.children[0];
+  assert.ok(child);
+  child.gate("run-1", "doc_write", 1);
+  await flushAsync();
+
+  assert.deepEqual(child.gateResults.map((r) => r.allow), [false], "a pre-approved tool is refused once the parent is no longer auto");
+
+  child.finish("run-1", "nothing written");
+  rig.spawn.children[1]?.finish("run-1", "sibling output");
+  await flushAsync();
+  const result = await fanOut;
+  assert.deepEqual(result.branches[0]?.deniedTools, ["doc.write"]);
+  rig.supervisor.dispose();
+});
+
 test("CP4 timeout: branchTimeoutMs expiry aborts that branch's child, clears its run context, and records failure:'timeout' while a sibling still succeeds", async () => {
   // WHY the abort: without it the child never settles, so the supervisor's busy
   // flag never clears and reapIdle can never evict it — it burns tokens forever.
@@ -1725,8 +1750,9 @@ test("CP7 invariant: every emitted spawned has a matching completed, in a fan-ou
   // check (into withEphemeralChild, via onAdmitted) so an overloaded branch —
   // which never wins a pool slot — announces neither event, while every
   // branch that DOES get admitted (including one that later fails
-  // systemically inside spawn()) gets both.
-  const rig = makeRig({ config: { maxChildren: 2 } });
+  // systemically inside spawn()) gets both. maxChildrenPerUser lifts the F58
+  // per-user share so the pool-wide cap is what overloads here.
+  const rig = makeRig({ config: { maxChildren: 2, maxChildrenPerUser: 2 } });
   const rec = recorder();
   const deps = makeDeps(rig, { onBranchEvent: rec.onBranchEvent });
 

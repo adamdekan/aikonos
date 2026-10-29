@@ -37,6 +37,7 @@ import {
   type SupervisorDeps,
 } from "../src/ipc/supervisor.js";
 import type { Identity, Approver } from "../src/broker/governance.js";
+import { failedPreconditionError } from "../src/http-errors.js";
 import type { AgentSpec } from "../src/pi/session.js";
 import type { EgressProxy, RegisterResult } from "../src/llm/egress-proxy.js";
 import type { ResolveIdentity } from "../src/pi/session-plan.js";
@@ -2534,6 +2535,66 @@ test("F58 withEphemeralChild: one user's live branches are capped (429-class), a
   // The count is released on settle: alice may spawn again.
   assert.equal(await rig.supervisor.withEphemeralChild(ephemeralKey("run-a", 3), alice, async () => "again"), "again");
   rig.supervisor.dispose();
+});
+
+test("F58 per-user share: one user with many agents cannot take the whole pool — busy pooled children count, own idle ones make room", async () => {
+  // WHY: the branch cap counted only ephemeral children. Pooled children are
+  // keyed per (tenant, user, agent) and stay busy while a run waits on an
+  // approval card, so one member with 4 agents plus a fan-out filled the pool
+  // of 8 and every other user got 503.
+  const rig = makeTestRig({ keying: "per-user", maxChildren: 4 }); // share = 2
+  const agent = (id: string) => makeIdentity("alice", id);
+  const a1 = await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(agent("a1")), agent("a1"));
+  const a2 = await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(agent("a2")), agent("a2"));
+  rig.supervisor.markBusy(a1);
+  rig.supervisor.markBusy(a2);
+
+  const refused = (err: unknown) => err instanceof BranchQuotaError && err.code === 8;
+  await assert.rejects(() => rig.supervisor.getOrSpawn(rig.supervisor.keyFor(agent("a3")), agent("a3")), refused, "a third busy agent child is refused");
+  await assert.rejects(
+    () => rig.supervisor.withEphemeralChild(ephemeralKey("run-a", 0), agent("a1"), async () => 0),
+    refused,
+    "a branch counts against the same share",
+  );
+  const bob = makeIdentity("bob", "b1");
+  const hBob = await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(bob), bob);
+  assert.ok(hBob, "another user still gets a slot");
+
+  // At the share, alice's own idle child makes room — never bob's idle one.
+  rig.supervisor.markIdle(a2);
+  hBob.lastUsedAt = 0; // bob's is the pool-wide LRU, yet must not be the victim
+  await rig.supervisor.getOrSpawn(rig.supervisor.keyFor(agent("a3")), agent("a3"));
+  assert.deepEqual(rig.proxy.unregistered, [a2.proxyToken], "alice's idle a2 child is the one evicted");
+  rig.supervisor.dispose();
+});
+
+test("F203 plan recheck: a FAILED_PRECONDITION credential re-resolve (provider no longer allowed) evicts the child and fails the run; a transport error keeps it", async () => {
+  // WHY: an admin narrows allowedProviders so no provider is left. The pooled
+  // child still talks to the old provider, and the recheck used to log and keep
+  // it until TTL — the pin never took effect on a live child.
+  const { spawnFn, records } = makeFakeSpawnFn();
+  let refuse: Error | undefined;
+  const creds: ProviderCredentialResolver = async (identity) => {
+    if (refuse) throw refuse;
+    return makeFakeCredentials()(identity);
+  };
+  const proxy = makeFakeProxy();
+  const supervisor = new ChildSupervisor(proxy.proxy, makeFakeDeps(), makeBridgeFactory().factory, spawnFn, creds, { keying: "per-user" });
+  const identity = makeIdentity();
+  const key = supervisor.keyFor(identity);
+  const h1 = await supervisor.getOrSpawn(key, identity);
+
+  refuse = Object.assign(new Error("broker down"), { code: 14 });
+  h1.lastPlanCheckAt = 0;
+  assert.equal(await supervisor.getOrSpawn(key, identity), h1, "a transport error keeps the last-known-good child");
+
+  refuse = failedPreconditionError("llm credentials unavailable: agent is pinned to allowed providers; none usable");
+  h1.lastPlanCheckAt = 0;
+  await assert.rejects(() => supervisor.getOrSpawn(key, identity), /pinned to allowed providers/);
+  assert.deepEqual(proxy.unregistered, [h1.proxyToken], "the child on the disallowed provider is evicted");
+  await assert.rejects(() => supervisor.getOrSpawn(key, identity), /pinned/, "and nothing respawns while the policy refuses");
+  assert.equal(records.length, 1);
+  supervisor.dispose();
 });
 
 test("CP6 the real risk — a hang, not a leak: evicting a branch mid-flight does NOT settle its pending run() on its own; only the child's own exit does, and then it rejects instead of hanging", async () => {
