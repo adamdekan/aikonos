@@ -75,6 +75,7 @@ import type { JwksResolver } from "../src/auth/verify.js";
 // with their effect class, for the admin confirm step and the agent editor.
 // AG-16 authorized addition: GET /admin/scim + POST /admin/scim/tokens +
 // POST /admin/scim/tokens/revoke — SCIM provisioning tokens (show once).
+// F65 authorized removal: GET / — the unauthenticated legacy demo UI.
 const EXPECTED_ROUTES = [
   "DELETE /admin/agents/:id",
   "DELETE /admin/agents/:id/keys/:keyId",
@@ -92,7 +93,6 @@ const EXPECTED_ROUTES = [
   "DELETE /skills/:name",
   "DELETE /workflows/:lineageId",
   "DELETE /workflows/:lineageId/pin",
-  "GET /",
   "GET /admin/agents",
   "GET /admin/agents/:id/keys",
   "GET /admin/agents/:id/public-keys",

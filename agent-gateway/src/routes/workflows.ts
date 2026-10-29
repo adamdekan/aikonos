@@ -11,7 +11,7 @@ import type { RateLimitChecker } from "../llm/egress-proxy.js";
 import { WorkflowRating } from "../../gen/ts/proto/broker";
 import type { Config } from "../config.js";
 import type { Logger } from "pino";
-import { sendError } from "../http-errors.js";
+import { sendError, trimmedErrorMessage, trimmedErrorText } from "../http-errors.js";
 import { sessionIdOrEmpty } from "./agui.js";
 import { log } from "../log.js";
 
@@ -313,11 +313,13 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: WorkflowsCtx):
             ...(o.denyReason !== undefined ? { denyReason: o.denyReason } : {}),
           });
         });
-        writeEvent("result", result);
+        // F66: the bridge returns String(err) in result.error — trim a gRPC
+        // infra error (broker hosts, SQL, policy text) before the browser sees it.
+        writeEvent("result", result.ok ? result : { ok: false, error: trimmedErrorText(result.error) });
       } catch (err) {
         // Post-hijack: no status code left to send — surface as a result frame.
         log.warn({ err: String(err), route: `${req.method} ${req.url}` }, "workflow run stream failed");
-        writeEvent("result", { ok: false, error: String(err) });
+        writeEvent("result", { ok: false, error: trimmedErrorMessage(err) });
       } finally {
         reply.raw.end();
       }

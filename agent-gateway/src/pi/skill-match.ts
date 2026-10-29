@@ -57,9 +57,13 @@ function escapeRegExp(s: string): string {
 // Exported for memory-match.ts: the
 // memory recall matcher must use the exact same boundary rule, so it reuses
 // this builder instead of growing a second copy that can drift.
+//
+// F202: a keyword longer than MAX_KEYWORD_CHARS is skipped — matching runs
+// synchronously on the parent's shared event loop, and memory tags and titles
+// carry no length cap of their own.
 export function buildKeywordPattern(keyword: string): RegExp | null {
   const trimmed = keyword.trim();
-  if (!trimmed) return null;
+  if (!trimmed || trimmed.length > MAX_KEYWORD_CHARS) return null;
   const escaped = escapeRegExp(trimmed).replace(/\s+/g, "\\s+");
   const startBoundary = /^\w/.test(trimmed) ? "\\b" : "(?<!\\w)";
   const endBoundary = /\w$/.test(trimmed) ? "\\b" : "(?!\\w)";
@@ -79,6 +83,12 @@ function countKeywordMatches(message: string, keywords: string[]): number {
   return count;
 }
 
+// F202: bounds on one turn's keyword matching. Only the head of the prompt is
+// matched (an /agui prompt may be up to 1 MiB), and a keyword is at most a
+// short phrase.
+export const MATCH_PROMPT_CLIP_CHARS = 8000;
+const MAX_KEYWORD_CHARS = 200;
+
 // matchSkillBundles computes the auto-load match set for one turn.
 //
 // Ordering: candidates are ranked by match-count desc, then name asc, before
@@ -90,6 +100,7 @@ function countKeywordMatches(message: string, keywords: string[]): number {
 // slot (a bundle that could never activate should not push an eligible one
 // out of the top 3).
 export function matchSkillBundles<T extends MatchableBundle>(message: string, bundles: T[]): SkillMatchResult<T> {
+  message = message.slice(0, MATCH_PROMPT_CLIP_CHARS);
   const candidates = bundles
     .map((bundle) => ({ bundle, count: countKeywordMatches(message, bundle.keywords) }))
     .filter((c) => c.count > 0)

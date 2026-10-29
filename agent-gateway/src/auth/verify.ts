@@ -11,7 +11,14 @@ export interface Principal {
   email: string;
   tenant: string;
   token: string;
+  // The token's exp (seconds since epoch), when it carries one. Long-lived
+  // surfaces (the audit SSE stream, F59) end at it instead of outliving it.
+  exp?: number;
 }
+
+// F63: asymmetric signatures only — never HS* (a JWKS-published key reused as
+// an HMAC secret) or "none".
+const ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"];
 
 // The resolver is the key-getter jwtVerify accepts as its second argument.
 // Tests pass a local variant resolving a single in-memory key; production
@@ -44,6 +51,7 @@ export async function verifyBearer(
   const { payload } = await jwtVerify(token, resolver, {
     issuer: opts.issuer,
     audience: opts.audience,
+    algorithms: ALLOWED_ALGORITHMS,
     // Absorb host↔IdP clock skew; jose defaults to 0, which rejects tokens a
     // single second past exp and any token whose iat/nbf is barely in the future.
     clockTolerance: 60,
@@ -66,7 +74,7 @@ export async function verifyBearer(
     throw new Error(`missing ${tenantClaim} claim in JWT payload`);
   }
 
-  return { sub, email, tenant, token };
+  return typeof payload.exp === "number" ? { sub, email, tenant, token, exp: payload.exp } : { sub, email, tenant, token };
 }
 
 // Production JWKS set, lazily created and then cached for the process lifetime.

@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deflateRawSync } from "node:zlib";
 
-import { parseSkillMd, MAX_SKILL_TOTAL_BYTES } from "../src/pi/skill-parser.js";
+import { parseSkillMd, MAX_SKILL_TOTAL_BYTES, MAX_ZIP_ENTRIES } from "../src/pi/skill-parser.js";
 
 // ── ZIP builder helpers (STORED + DEFLATE), mirroring test/skill-upload.test.ts ──
 
@@ -322,4 +322,43 @@ test("parseSkillMd — extras whose decompressed total exceeds MAX_SKILL_TOTAL_B
       err.message.includes(String(MAX_SKILL_TOTAL_BYTES)) &&
       !err.message.includes("frontmatter"),
   );
+});
+
+// ── G11: header cap and duplicate names ───────────────────────────────────────
+
+test("G11 parseSkillMd — a zip padded with junk entries past MAX_ZIP_ENTRIES is refused before any read", () => {
+  // WHY: entries outside the skill root were free padding, and readZipEntry
+  // re-walked every header per lookup — a 14 MiB upload stalled the event loop.
+  const junk = Array.from({ length: MAX_ZIP_ENTRIES }, (_, i) => ({ name: `junk/${i}`, data: Buffer.alloc(0), compression: 0 as const }));
+  const zipBuf = buildZip([...junk, { name: "d/SKILL.md", data: Buffer.from(VALID_SKILL_MD), compression: 0 }]);
+  const started = performance.now();
+  assert.throws(() => parseSkillMd(zipBuf, { zip: true }), /more than 1000 entries/);
+  assert.ok(performance.now() - started < 100, "the cap must fire before per-entry work");
+});
+
+test("G11 parseSkillMd — a duplicate entry name is refused", () => {
+  const zipBuf = buildZip([
+    { name: "SKILL.md", data: Buffer.from(VALID_SKILL_MD), compression: 0 },
+    { name: "notes.md", data: Buffer.from("a"), compression: 0 },
+    { name: "notes.md", data: Buffer.from("b"), compression: 0 },
+  ]);
+  assert.throws(() => parseSkillMd(zipBuf, { zip: true }), /duplicate entry "notes.md"/);
+});
+
+// ── G20: prototype-bearing extras names ───────────────────────────────────────
+
+test("G20 parseSkillMd — an extras file named __proto__/constructor/prototype is refused, extras has no prototype", () => {
+  for (const name of ["__proto__", "constructor", "prototype"]) {
+    const zipBuf = buildZip([
+      { name: "SKILL.md", data: Buffer.from(VALID_SKILL_MD), compression: 0 },
+      { name, data: Buffer.from("x".repeat(100)), compression: 0 },
+    ]);
+    assert.throws(() => parseSkillMd(zipBuf, { zip: true }), /unsafe file path/, name);
+  }
+  const ok = parseSkillMd(buildZip([
+    { name: "SKILL.md", data: Buffer.from(VALID_SKILL_MD), compression: 0 },
+    { name: "a/__proto__", data: Buffer.from("nested is fine"), compression: 0 },
+  ]), { zip: true });
+  assert.equal(Object.getPrototypeOf(ok.extras), null);
+  assert.deepEqual(Object.keys(ok.extras), ["a/__proto__"]);
 });

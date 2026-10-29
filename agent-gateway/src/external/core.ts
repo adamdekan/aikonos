@@ -46,9 +46,27 @@ export interface InvocationOpts {
   log: Logger;
   supervisor: ChildSupervisor;
   timeoutMs?: number;
+  // F208: aborted when the SSE client disconnects (rest.ts) — stops the run at
+  // once instead of when the next event wakes the drain loop.
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 180_000;
+
+// F205: the invocation record uses the AuditEvent field names (tenant_id,
+// actor_user_id, actor_agent_id, event_type, resource_ref) that the audit
+// stream's scope filter and the webui read; camelCase fields matched no reader.
+function recordInvocation(tenantId: string, agentId: string, principal: string, status: "completed" | "error" | "aborted", error?: string): void {
+  record({
+    event_type: "agent.external.invoked",
+    occurred_at: { seconds: Math.floor(Date.now() / 1000) },
+    tenant_id: tenantId,
+    actor_user_id: principal,
+    actor_agent_id: agentId,
+    resource_ref: `agent:${agentId}`,
+    context: error === undefined ? { status } : { status, error },
+  });
+}
 
 // runAgentInvocation drives a prompt against a named agent as its service
 // principal via the child supervisor. InvocationEvents are yielded as the
@@ -136,6 +154,15 @@ export async function* runAgentInvocation(
     });
   });
 
+  // F208: a client disconnect aborts the child's run and closes the queue, so
+  // the drain loop below ends now even while a long tool call is silent.
+  const onAbort = (): void => {
+    handle.abortRun(runId);
+    queue.close();
+  };
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  if (opts.signal?.aborted) onAbort();
+
   // Settle the queue when the run resolves or rejects. trimmedErrorMessage
   // (not the raw message) — a gRPC rejection from supervisor.run may carry
   // status/detail internals that must not reach the SSE caller.
@@ -155,23 +182,26 @@ export async function* runAgentInvocation(
     for await (const item of queue.drain()) {
       if (item.type === "done") {
         yield item;
-        record({ type: "agent.external.invoked", agentId, principal: ownerUserId, tenantId, status: "completed" });
+        recordInvocation(tenantId, agentId, ownerUserId, "completed");
         return;
       }
       if (item.type === "error") {
         yield item;
-        record({ type: "agent.external.invoked", agentId, principal: ownerUserId, tenantId, status: "error", error: item.error });
+        recordInvocation(tenantId, agentId, ownerUserId, "error", item.error);
         return;
       }
       yield item;
     }
+    // Drained without a terminal event: the queue was closed by onAbort.
+    recordInvocation(tenantId, agentId, ownerUserId, "aborted");
   } catch (err) {
     // Queue overflowed — yield terminal error event. trimmedErrorMessage
     // keeps this consistent with the settle-promise error path above.
     const message = trimmedErrorMessage(err);
     yield { type: "error", error: message };
-    record({ type: "agent.external.invoked", agentId, principal: ownerUserId, tenantId, status: "error", error: message });
+    recordInvocation(tenantId, agentId, ownerUserId, "error", message);
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     handle.abortRun(runId);
     handle.clearRunContext(runId);
   }

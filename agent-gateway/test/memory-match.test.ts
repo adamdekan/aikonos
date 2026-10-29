@@ -144,3 +144,30 @@ test("mergeRecall: empty keyword tier surfaces semantic entries alone", () => {
   assert.deepEqual(result.recalled.map((c) => c.id), ["only-semantic"]);
   assert.equal(result.via.get("only-semantic"), "semantic");
 });
+
+test("F202 matchMemoryConcepts: a 10k-tag concept and a 1 MiB prompt stay bounded", () => {
+  // WHY: matching runs synchronously on the parent's shared event loop; one
+  // member's bundle with uncapped tags (and a 4 KB phrase tag) against a huge
+  // prompt stalled every user's requests for seconds.
+  const tags = Array.from({ length: 10_000 }, (_, i) => `tag word ${i}`);
+  tags.push("a ".repeat(2000));
+  const bundle = Array.from({ length: 600 }, (_, i) => concept({ id: `c${i}`, tags, title: "x" }));
+  const prompt = "a ".repeat(512 * 1024);
+  const started = performance.now();
+  matchMemoryConcepts(prompt, bundle);
+  // ponytail: generous ceiling for slow CI; the unbounded path took seconds.
+  assert.ok(performance.now() - started < 1500, `recall took ${performance.now() - started} ms`);
+});
+
+test("F202 matchMemoryConcepts: only the first 32 tags of at most 64 chars count", () => {
+  const late = concept({ id: "late", tags: [...Array.from({ length: 32 }, (_, i) => `t${i}`), "deploy"] });
+  const long = concept({ id: "long", tags: ["deploy " + "x".repeat(64)] });
+  assert.equal(matchMemoryConcepts("deploy " + "x".repeat(64), [late, long]).recalled.length, 0);
+  assert.equal(matchMemoryConcepts("about t3", [late]).recalled.length, 1);
+});
+
+test("F202 matchMemoryConcepts: keywords past the prompt clip are not matched", () => {
+  const c = concept({ tags: ["needle"] });
+  assert.equal(matchMemoryConcepts("x ".repeat(5000) + "needle", [c]).recalled.length, 0);
+  assert.equal(matchMemoryConcepts("needle " + "x ".repeat(5000), [c]).recalled.length, 1);
+});

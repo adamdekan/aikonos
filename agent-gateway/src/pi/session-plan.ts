@@ -344,13 +344,16 @@ export async function resolveSessionPlan(
     throw new Error(`resolveSessionPlan: proxyBaseUrl must not contain credentials — key must never travel in the plan`);
   }
 
-  // Resolve user skills from south (FGA-backed). Failure → warn + all tools.
+  // Resolve user skills from south (FGA-backed). Failure → warn + no registry
+  // tools (F207: fail closed; an FGA outage must not widen the tool set — the
+  // next idle plan re-check restores it).
   let userSkills: string[] | undefined;
   try {
     const resp = await south.listUserSkills({ tenantId: identity.tenantId, userId: identity.userId });
     userSkills = resp.skills;
   } catch (err) {
-    log.warn({ err: String(err), userId: identity.userId }, "listUserSkills RPC failed — all tools visible");
+    userSkills = [];
+    log.warn({ err: String(err), userId: identity.userId }, "listUserSkills RPC failed — no registry tools visible");
   }
 
   // Resolve granted skill bundles for the session (FGA-backed via ListUserAgentSkills).

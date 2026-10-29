@@ -92,6 +92,21 @@ function credsFingerprint(c: ProviderCredentials): string {
     .digest("hex");
 }
 
+// F54: per-call ceilings for a child-relayed usage event. The child is
+// untrusted, so a negative, NaN or 1e308 value must not reach the broker's
+// spend and TPM counters (negative spend evades a cap; a huge one locks the
+// whole tenant out). Sized well above one real LLM call.
+const MAX_USAGE_TOKENS_PER_CALL = 10_000_000;
+const MAX_USAGE_COST_PER_CALL = 1_000;
+
+// usageNumber clamps one relayed usage field to [0, max]; anything that is not
+// a finite positive number books as 0. Token counts are int64 on the wire.
+function usageNumber(v: unknown, max: number, integer: boolean): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return 0;
+  const n = Math.min(v, max);
+  return integer ? Math.floor(n) : n;
+}
+
 // ── ChildHandle ────────────────────────────────────────────────────────────────
 
 export interface ChildHandle {
@@ -708,10 +723,15 @@ export class ChildSupervisor {
   // knows one — scheduler/external send ""). source distinguishes a subagent
   // branch child from an ordinary pooled one via handle.isSubagentBranch — a fact recorded at fork time, never
   // derived here from the pool key's shape.
+  //
+  // F54: every relayed number is child-reported, so it is clamped (usageNumber)
+  // before it is booked against the shared spend and TPM counters.
   private forwardUsage(handle: ChildHandle, msg: UsageEvent, sessionId: string): void {
-    const cacheRead = msg.cacheRead ?? 0;
-    const cacheWrite = msg.cacheWrite ?? 0;
-    if (msg.inputTokens === 0 && msg.outputTokens === 0 && cacheRead === 0 && cacheWrite === 0) {
+    const tokensIn = usageNumber(msg.inputTokens, MAX_USAGE_TOKENS_PER_CALL, true);
+    const tokensOut = usageNumber(msg.outputTokens, MAX_USAGE_TOKENS_PER_CALL, true);
+    const cacheRead = usageNumber(msg.cacheRead, MAX_USAGE_TOKENS_PER_CALL, true);
+    const cacheWrite = usageNumber(msg.cacheWrite, MAX_USAGE_TOKENS_PER_CALL, true);
+    if (tokensIn === 0 && tokensOut === 0 && cacheRead === 0 && cacheWrite === 0) {
       return;
     }
     if (!this.deps.emitLlmUsage) return;
@@ -720,14 +740,14 @@ export class ChildSupervisor {
         tenantId: handle.tenantId,
         userId: handle.userId,
         agentId: handle.agentId,
-        provider: msg.provider ?? "",
-        model: msg.model ?? "",
-        tokensIn: msg.inputTokens,
-        tokensOut: msg.outputTokens,
+        provider: typeof msg.provider === "string" ? msg.provider.slice(0, 256) : "",
+        model: typeof msg.model === "string" ? msg.model.slice(0, 256) : "",
+        tokensIn,
+        tokensOut,
         cacheRead,
         cacheWrite,
-        cost: msg.cost ?? 0,
-        runId: msg.runId,
+        cost: usageNumber(msg.cost, MAX_USAGE_COST_PER_CALL, false),
+        runId: String(msg.runId).slice(0, 256),
         sessionId,
         source: handle.isSubagentBranch ? "subagent" : "chat",
         quantity: 0,

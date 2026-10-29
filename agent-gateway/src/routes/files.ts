@@ -5,7 +5,7 @@
 // the existing JSON-only proxy chain needs no multipart handling.
 // Registered by registerFilesRoutes(app, ctx) called from src/app.ts at the
 // same position these routes previously occupied inline in server.ts.
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, onRequestAsyncHookHandler } from "fastify";
 import { requireUser } from "../auth/require-user.js";
 import type { JwksResolver, VerifyOptions } from "../auth/verify.js";
 import type { NorthClient } from "../broker/north.js";
@@ -30,6 +30,17 @@ export interface FilesCtx {
 // cap instead of picking its own number.
 export const FILE_UPLOAD_BODY_LIMIT = 14 * 1024 * 1024;
 
+// authBeforeBody is an onRequest hook for the large-body routes (F57): it
+// verifies the bearer before Fastify reads and buffers up to
+// FILE_UPLOAD_BODY_LIMIT, so an unauthenticated caller is refused 401 without
+// the gateway holding its body. The handler's own requireUser stays the
+// authority for the principal it acts as.
+export function authBeforeBody(ctx: Pick<FilesCtx, "jwksResolver" | "verifyOpts">): onRequestAsyncHookHandler {
+  return async (req, reply) => {
+    if (!(await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts))) return reply;
+  };
+}
+
 export function registerFilesRoutes(app: FastifyInstance, ctx: FilesCtx): void {
   app.get<{ Querystring: { path?: string } }>("/files/content", async (req, reply) => {
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
@@ -51,7 +62,7 @@ export function registerFilesRoutes(app: FastifyInstance, ctx: FilesCtx): void {
 
   app.post<{ Body: { path?: string; contentBase64?: string } }>(
     "/files",
-    { bodyLimit: FILE_UPLOAD_BODY_LIMIT },
+    { bodyLimit: FILE_UPLOAD_BODY_LIMIT, onRequest: authBeforeBody(ctx) },
     async (req, reply) => {
       const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
       if (!principal) return;

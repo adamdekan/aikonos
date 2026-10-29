@@ -70,6 +70,24 @@ export const MAX_SKILL_FILES = 100;
 // inside a single parseSkillMd call.
 export const MAX_SKILL_TOTAL_BYTES = 20 * 1024 * 1024;
 
+// G11: caps the local headers one zip may hold, counted before any other
+// work. Entries outside the skill root, directories and sibling trees are
+// free padding against MAX_SKILL_FILES, so without this a 14 MiB upload of
+// ~450k empty entries stalls the shared event loop.
+export const MAX_ZIP_ENTRIES = 1000;
+
+// G20: extras keys a plain object would treat as its prototype chain.
+const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+// ZipEntry is one local header's location, recorded by listZipEntries' single
+// pass so readZipEntry is a lookup rather than a re-walk of every header.
+interface ZipEntry {
+  compression: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  dataStart: number;
+}
+
 const DRIVE_PREFIX_RE = /^[A-Za-z]:/;
 
 // isValidSkillFilePath mirrors the broker's validSkillFilePath rule
@@ -89,20 +107,26 @@ export function isValidSkillFilePath(rel: string): boolean {
 }
 
 /**
- * Returns the list of entry paths found in a ZIP buffer.
- * Throws with a descriptive message when the buffer is not a valid ZIP.
+ * Returns the entries of a ZIP buffer, keyed by path, in header order.
+ * Throws with a descriptive message when the buffer is not a valid ZIP, holds
+ * more than MAX_ZIP_ENTRIES headers, or names one path twice (G11: a
+ * duplicate would make which copy is read depend on the reader).
  */
-export function listZipEntries(buf: Buffer): string[] {
+export function listZipEntries(buf: Buffer): Map<string, ZipEntry> {
   if (buf.length < 4 || buf.readUInt32LE(0) !== ZIP_SIG) {
     throw new Error("invalid zip: missing local file header signature");
   }
 
-  const paths: string[] = [];
+  const entries = new Map<string, ZipEntry>();
   let offset = 0;
+  let headers = 0;
 
   while (offset + 30 <= buf.length) {
     const sig = buf.readUInt32LE(offset);
     if (sig !== ZIP_SIG) break; // end of local entries (central dir or EOF)
+    if (++headers > MAX_ZIP_ENTRIES) {
+      throw new Error(`invalid zip: more than ${MAX_ZIP_ENTRIES} entries`);
+    }
 
     const compressedSize = buf.readUInt32LE(offset + 18);
     const nameLen = buf.readUInt16LE(offset + 26);
@@ -114,73 +138,64 @@ export function listZipEntries(buf: Buffer): string[] {
       throw new Error("invalid zip: local file header truncated (name extends past buffer)");
     }
     const entryName = buf.toString("utf8", offset + 30, offset + 30 + nameLen);
-    paths.push(entryName);
+    if (entries.has(entryName)) {
+      throw new Error(`invalid zip: duplicate entry "${entryName}"`);
+    }
+    const dataStart = offset + 30 + nameLen + extraLen;
+    entries.set(entryName, {
+      compression: buf.readUInt16LE(offset + 8),
+      compressedSize,
+      uncompressedSize: buf.readUInt32LE(offset + 22),
+      dataStart,
+    });
 
-    offset += 30 + nameLen + extraLen + compressedSize;
+    offset = dataStart + compressedSize;
   }
 
-  if (paths.length === 0) {
+  if (entries.size === 0) {
     throw new Error("invalid zip: no entries found");
   }
 
-  return paths;
+  return entries;
 }
 
 /**
  * Returns the uncompressed content of a STORED (0) or DEFLATE (8) entry by name.
  * DEFLATE entries are inflated via zlib (zip stores raw deflate, no zlib header).
  */
-function readZipEntry(buf: Buffer, targetName: string): Buffer | null {
-  let offset = 0;
-
-  while (offset + 30 <= buf.length) {
-    if (buf.readUInt32LE(offset) !== ZIP_SIG) break;
-
-    const compression = buf.readUInt16LE(offset + 8);
-    const compressedSize = buf.readUInt32LE(offset + 18);
-    const uncompressedSize = buf.readUInt32LE(offset + 22);
-    const nameLen = buf.readUInt16LE(offset + 26);
-    const extraLen = buf.readUInt16LE(offset + 28);
-
-    const entryName = buf.toString("utf8", offset + 30, offset + 30 + nameLen);
-    const dataStart = offset + 30 + nameLen + extraLen;
-
-    if (entryName === targetName) {
-      const raw = buf.subarray(dataStart, dataStart + compressedSize);
-      if (compression === 0) {
-        if (uncompressedSize > MAX_ENTRY_DECOMPRESSED_BYTES) {
-          throw new Error(
-            `zip entry "${targetName}" decompresses beyond the ${MAX_ENTRY_DECOMPRESSED_BYTES}-byte limit`,
-          );
-        }
-        return raw.subarray(0, uncompressedSize);
-      }
-      if (compression === 8) {
-        try {
-          return inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_DECOMPRESSED_BYTES });
-        } catch (err) {
-          // Do not leak the raw zlib stack — rethrow descriptive. Node throws a
-          // RangeError (ERR_BUFFER_TOO_LARGE) specifically when maxOutputLength
-          // is exceeded; any other failure is genuine stream corruption and
-          // must not be mislabeled as a size-cap breach.
-          if (err instanceof RangeError) {
-            throw new Error(
-              `zip entry "${targetName}" decompresses beyond the ${MAX_ENTRY_DECOMPRESSED_BYTES}-byte limit`,
-            );
-          }
-          const message = err instanceof Error ? err.message : String(err);
-          throw new Error(`zip entry "${targetName}" failed to decompress: ${message}`);
-        }
-      }
+function readZipEntry(buf: Buffer, entries: Map<string, ZipEntry>, targetName: string): Buffer | null {
+  const entry = entries.get(targetName);
+  if (!entry) return null;
+  const { compression, compressedSize, uncompressedSize, dataStart } = entry;
+  const raw = buf.subarray(dataStart, dataStart + compressedSize);
+  if (compression === 0) {
+    if (uncompressedSize > MAX_ENTRY_DECOMPRESSED_BYTES) {
       throw new Error(
-        `zip entry "${targetName}" uses unsupported compression ${compression} (only STORED and DEFLATE)`,
+        `zip entry "${targetName}" decompresses beyond the ${MAX_ENTRY_DECOMPRESSED_BYTES}-byte limit`,
       );
     }
-
-    offset = dataStart + compressedSize;
+    return raw.subarray(0, uncompressedSize);
   }
-
-  return null;
+  if (compression === 8) {
+    try {
+      return inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_DECOMPRESSED_BYTES });
+    } catch (err) {
+      // Do not leak the raw zlib stack — rethrow descriptive. Node throws a
+      // RangeError (ERR_BUFFER_TOO_LARGE) specifically when maxOutputLength
+      // is exceeded; any other failure is genuine stream corruption and
+      // must not be mislabeled as a size-cap breach.
+      if (err instanceof RangeError) {
+        throw new Error(
+          `zip entry "${targetName}" decompresses beyond the ${MAX_ENTRY_DECOMPRESSED_BYTES}-byte limit`,
+        );
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`zip entry "${targetName}" failed to decompress: ${message}`);
+    }
+  }
+  throw new Error(
+    `zip entry "${targetName}" uses unsupported compression ${compression} (only STORED and DEFLATE)`,
+  );
 }
 
 // ── Frontmatter parser ────────────────────────────────────────────────────────
@@ -266,6 +281,7 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
 
   // zipPaths is populated once for zip input and reused for both SKILL.md lookup and extras build.
   let zipBuf: Buffer | null = null;
+  let zipEntries: Map<string, ZipEntry> | null = null;
   let zipPaths: string[] | null = null;
   // root anchors extras extraction at SKILL.md's parent directory: "" when
   // SKILL.md is at the zip's top level, else the "<dir>/" prefix of the
@@ -274,7 +290,8 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
 
   if (opts.zip) {
     zipBuf = Buffer.isBuffer(input) ? input : Buffer.from(input);
-    zipPaths = listZipEntries(zipBuf); // throws on invalid zip
+    zipEntries = listZipEntries(zipBuf); // throws on invalid zip
+    zipPaths = [...zipEntries.keys()];
 
     // Locate SKILL.md (top-level or inside one directory)
     const skillPath =
@@ -287,7 +304,7 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
 
     root = skillPath === "SKILL.md" ? "" : skillPath.slice(0, skillPath.length - "SKILL.md".length);
 
-    const content = readZipEntry(zipBuf, skillPath);
+    const content = readZipEntry(zipBuf, zipEntries, skillPath);
     if (!content) {
       throw new Error(`invalid zip: could not read entry "${skillPath}"`);
     }
@@ -323,9 +340,14 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
   // the zip's true top level), a first-level directory that is itself a
   // skill (has its own "<dir>/SKILL.md") is excluded wholesale — it's a
   // sibling skill's tree, not an extra of this one.
-  const extras: Record<string, Buffer> = {};
-  if (opts.zip && zipBuf !== null && zipPaths !== null && root !== null) {
+  // G20: no prototype, and the prototype-bearing names are refused outright
+  // (PROTOTYPE_KEYS) — a plain-object extras[relPath] = content for a file
+  // named "__proto__" swapped the object's prototype and dropped the file, and
+  // every later consumer of the extras object would face the same trap.
+  const extras: Record<string, Buffer> = Object.create(null) as Record<string, Buffer>;
+  if (opts.zip && zipBuf !== null && zipEntries !== null && zipPaths !== null && root !== null) {
     const buf = zipBuf;
+    const entries = zipEntries;
     const anchoredRoot = root;
 
     const siblingSkillDirs = new Set<string>();
@@ -345,7 +367,7 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
       if (relPath === "SKILL.md") continue; // the skill body itself, not an extra
       if (anchoredRoot === "" && siblingSkillDirs.has(relPath.split("/")[0])) continue; // sibling skill's own tree
 
-      if (!isValidSkillFilePath(relPath)) {
+      if (!isValidSkillFilePath(relPath) || PROTOTYPE_KEYS.has(relPath)) {
         throw new Error(`invalid zip: unsafe file path "${relPath}"`);
       }
       candidates.push({ fullPath: p, relPath });
@@ -357,7 +379,7 @@ export function parseSkillMd(input: Buffer | string, opts: ParseOptions): Parsed
 
     let totalBytes = 0;
     for (const { fullPath, relPath } of candidates) {
-      const content = readZipEntry(buf, fullPath);
+      const content = readZipEntry(buf, entries, fullPath);
       if (content) {
         totalBytes += content.length;
         if (totalBytes > MAX_SKILL_TOTAL_BYTES) {

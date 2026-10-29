@@ -648,6 +648,16 @@ class BaseLink {
   }
 
   private dispatch(msg: IpcMessage): void {
+    // F53: the peer may be a compromised child, and serialization:"json" hands
+    // over any JSON value. A string, number or null would make `"seq" in msg`
+    // throw inside the 'message' listener — an uncaught exception that kills
+    // the parent and every user's runs. Drop anything that is not a kinded
+    // object before touching it.
+    if (typeof msg !== "object" || msg === null || typeof (msg as { kind?: unknown }).kind !== "string") {
+      console.error(`ipc: dropped a malformed message (${msg === null ? "null" : typeof msg})`);
+      return;
+    }
+
     // Try to resolve a pending request first (reply messages carry seq).
     if ("seq" in msg) {
       const key = `${msg.kind}:${msg.seq}`;
@@ -663,15 +673,34 @@ class BaseLink {
 
     const list = this.handlers.get(msg.kind);
     if (list) {
-      for (const h of list) h(msg);
+      for (const h of list) runHandler(h, msg);
       return;
     }
 
     // Not a pending reply and no registered handler — unknown or unhandled kind.
     if (this.unknownKindHandler) {
-      this.unknownKindHandler(msg);
+      runHandler(this.unknownKindHandler, msg);
     }
   }
+}
+
+// runHandler contains a handler failure to the one message (F53): a handler
+// that throws on a malformed field — or, if async, rejects — is logged and the
+// message dropped, instead of an uncaught exception or unhandled rejection
+// taking the parent down.
+function runHandler(h: (msg: IpcMessage) => void, msg: IpcMessage): void {
+  try {
+    const r: unknown = h(msg);
+    if (r instanceof Promise) r.catch((err: unknown) => ipcHandlerFailed(msg, err));
+  } catch (err) {
+    ipcHandlerFailed(msg, err);
+  }
+}
+
+function ipcHandlerFailed(msg: IpcMessage, err: unknown): void {
+  // stderr, not the pino logger: this module stays dependency-free so the
+  // child can load it without pulling the parent's logging stack.
+  console.error(`ipc: ${String(msg.kind).slice(0, 64)} handler failed: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 // ── ParentLink ────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import type { JwksResolver, VerifyOptions } from "../auth/verify.js";
 import type { NorthClient } from "../broker/north.js";
 import type { SouthClient } from "../broker/south.js";
 import { extractMultipartFile } from "./admin.js";
-import { FILE_UPLOAD_BODY_LIMIT } from "./files.js";
+import { authBeforeBody, FILE_UPLOAD_BODY_LIMIT } from "./files.js";
 import { parseSkillMd, MAX_SKILL_FILES } from "../pi/skill-parser.js";
 import { sendError } from "../http-errors.js";
 import { log } from "../log.js";
@@ -25,6 +25,7 @@ export interface SkillsCtx {
       | "sendSkillTransfer"
       | "getSkillTransferPreview"
       | "acceptSkillTransfer"
+      | "listWorkspaceFiles"
       | "uploadWorkspaceFile"
     >;
     south: Pick<SouthClient, "listUserAgentSkills">;
@@ -112,7 +113,7 @@ export async function handleSkillImport(
   reply: ImportReply,
   jwksResolver: JwksResolver,
   verifyOpts: VerifyOptions,
-  north: Pick<NorthClient, "listPersonalSkills" | "uploadWorkspaceFile" | "deletePersonalSkill">,
+  north: Pick<NorthClient, "listPersonalSkills" | "listWorkspaceFiles" | "uploadWorkspaceFile" | "deletePersonalSkill">,
 ): Promise<void> {
   const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
   if (!principal) return;
@@ -218,7 +219,24 @@ export async function handleSkillImport(
     return;
   }
 
-  if (existingNames.has(name)) {
+  // G15: listPersonalSkills stops after 50 names, so it can only suggest a
+  // free name, never prove one. Probe the target folder itself: any entry
+  // under Skills/<name>/ (SKILL.md or a stale extra) is an existing skill.
+  let exists = existingNames.has(name);
+  if (!exists) {
+    try {
+      const resp = await north.listWorkspaceFiles(
+        { tenantId: principal.tenant, userId: principal.sub, path: `Skills/${name}`, recursive: false },
+        principal.token,
+      );
+      exists = (resp.files ?? []).length > 0;
+    } catch (err) {
+      sendError(reply, log, err, { route: "POST /skills/import" });
+      return;
+    }
+  }
+
+  if (exists) {
     reply.code(409).send({
       error: `a skill named "${name}" already exists`,
       suggested_name: firstFreeName(existingNames, name),
@@ -307,7 +325,7 @@ export function registerSkillsRoutes(app: FastifyInstance, ctx: SkillsCtx): void
 
   app.post<{ Body: Buffer }>(
     "/skills/import",
-    { bodyLimit: FILE_UPLOAD_BODY_LIMIT },
+    { bodyLimit: FILE_UPLOAD_BODY_LIMIT, onRequest: authBeforeBody(ctx) },
     async (req, reply) => handleSkillImport(req, reply, jwksResolver, verifyOpts, clients.north),
   );
 

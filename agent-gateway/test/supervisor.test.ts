@@ -1429,6 +1429,42 @@ test("CP3 usage-forward: a fully-zero usage event is skipped (nothing happened, 
   assert.equal(emitLlmUsageCalls.length, 0, "an all-zero usage event must not be forwarded");
 });
 
+test("F54 usage-forward: relayed usage is clamped to finite, non-negative, per-call-capped numbers", async () => {
+  // WHY: the child is untrusted and its usage relay is booked verbatim against
+  // the shared spend caps — a negative cost evades a cap, a 1e308 one poisons it.
+  const { spawnFn, records } = makeFakeSpawnFn();
+  const proxy = makeFakeProxy();
+  const emitLlmUsageCalls: Array<Record<string, unknown>> = [];
+  const deps = makeFakeDeps({ emitLlmUsage: async (req) => { emitLlmUsageCalls.push(req); } });
+  const { factory } = makeBridgeFactory();
+  const supervisor = new ChildSupervisor(proxy.proxy, deps, factory, spawnFn, makeFakeCredentials());
+
+  const identity = makeIdentity();
+  const handle = await supervisor.getOrSpawn(supervisor.keyFor(identity), identity);
+  await flushAsync();
+  const rec = records[0];
+  assert.ok(rec, "spawn record must exist");
+
+  const runId = "run-usage-clamp";
+  const runPromise = supervisor.run(handle, { runId, threadId: "th-c", text: "hi" }, () => {});
+  await flushAsync();
+
+  rec.child.childLink.send({ kind: "usage", runId, inputTokens: 1e308, outputTokens: -5, cacheRead: Number.NaN, cacheWrite: 2.7, cost: -100 });
+  rec.child.childLink.send({ kind: "usage", runId, inputTokens: -1, outputTokens: -1, cost: 1e9 });
+  await flushAsync();
+  rec.child.childLink.send({ kind: "done", runId });
+  await flushAsync();
+  await runPromise;
+
+  assert.equal(emitLlmUsageCalls.length, 1, "a turn that clamps to all-zero tokens is not booked");
+  const c = emitLlmUsageCalls[0]!;
+  assert.equal(c.tokensIn, 10_000_000);
+  assert.equal(c.tokensOut, 0);
+  assert.equal(c.cacheRead, 0);
+  assert.equal(c.cacheWrite, 2);
+  assert.equal(c.cost, 0, "a negative cost books as 0");
+});
+
 test("CP3 usage-forward: an emitLlmUsage rejection never fails the run", async () => {
   const { spawnFn, records } = makeFakeSpawnFn();
   const proxy = makeFakeProxy();

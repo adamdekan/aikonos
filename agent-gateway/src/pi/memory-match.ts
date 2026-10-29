@@ -13,9 +13,24 @@
 // buildKeywordPattern rather than reimplement the boundary logic. Keywords for
 // a concept are its tags plus its title (the title matched as one phrase).
 // Frontmatter only — bodies are never matched and never injected.
-import { buildKeywordPattern } from "./skill-match.js";
+import { buildKeywordPattern, MATCH_PROMPT_CLIP_CHARS } from "./skill-match.js";
 
 export const MEMORY_RECALL_CAP = 3;
+
+// F202: one member-authored bundle must not pin the shared event loop. The
+// broker caps a concept's bytes but not its tag count, so recall considers at
+// most MAX_RECALL_CONCEPTS concepts and, per concept, the first
+// MAX_RECALL_TAGS tags of at most MAX_RECALL_TAG_CHARS (personal skill
+// keywords' limits). Stored bundles predate any broker-side cap, so the
+// gateway enforces these itself.
+const MAX_RECALL_CONCEPTS = 512;
+const MAX_RECALL_TAGS = 32;
+const MAX_RECALL_TAG_CHARS = 64;
+
+// recallTags is the bounded tag list both recall tiers read.
+export function recallTags(concept: MemoryConceptLike): string[] {
+  return concept.tags.slice(0, MAX_RECALL_TAGS).filter((tag) => tag.length <= MAX_RECALL_TAG_CHARS);
+}
 
 // MemoryConceptLike is the structural subset of the proto MemoryConceptMeta
 // that the recall path reads — matching (tags/title/status/stale/id) plus the
@@ -47,7 +62,7 @@ function countKeywordMatches(message: string, keywords: string[]): number {
 // Shared by matchMemoryConcepts and memory-semantic.ts's semanticRecall so the
 // two tiers apply the exact same eligibility rule.
 export function recallableConcepts<T extends MemoryConceptLike>(concepts: T[]): T[] {
-  return concepts.filter((concept) => concept.status !== "deprecated");
+  return concepts.filter((concept) => concept.status !== "deprecated").slice(0, MAX_RECALL_CONCEPTS);
 }
 
 // matchMemoryConcepts computes the recall set for one turn.
@@ -62,10 +77,11 @@ export function matchMemoryConcepts<T extends MemoryConceptLike>(
   message: string,
   concepts: T[],
 ): { recalled: T[] } {
+  const text = message.slice(0, MATCH_PROMPT_CLIP_CHARS);
   const recalled = recallableConcepts(concepts)
     .map((concept) => ({
       concept,
-      count: countKeywordMatches(message, [...concept.tags, concept.title]),
+      count: countKeywordMatches(text, [...recallTags(concept), concept.title]),
     }))
     .filter((candidate) => candidate.count > 0)
     .sort(

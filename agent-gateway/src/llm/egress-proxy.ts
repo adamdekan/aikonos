@@ -18,9 +18,10 @@
 //   4. Model allowlist — model not in child's list → 400, not forwarded.
 //      Fail-closed: unparseable body or missing/non-string model → 400.
 //   5. Key lives only in the in-memory Map — never logged, never in a plan.
-//   6. Header smuggle guard: cookie, x-api-key, x-forwarded-for, x-real-ip
-//      are stripped from inbound requests so a child cannot inject upstream
-//      session or billing state.
+//   6. Header allowlist (F61): only FORWARDED_HEADERS reach the upstream, so a
+//      child cannot inject upstream session, routing or billing state (cookie,
+//      x-api-key, openai-organization, x-litellm-*, ...). Request bodies are
+//      capped at MAX_REQUEST_BODY_BYTES (413 beyond it).
 //   7. HTTPS upstream: forward() selects node:https for https: upstreams —
 //      the real production upstream (openrouter.ai) is never contacted over
 //      cleartext.
@@ -52,6 +53,23 @@ import { randomBytes } from "node:crypto";
 import { resolveDialectRequest, isRecord } from "./provider-dialect.js";
 import { shouldFailover } from "./provider-fallback.js";
 import { log } from "../log.js";
+
+// F61: a completion body carries the prompt, history and any inline base64
+// images. Sized for the largest vision request; anything above it is a child
+// trying to exhaust parent memory.
+export const MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
+
+// F61: the only child-sent headers forwarded upstream — what Pi's OpenAI and
+// Anthropic clients need (session-plan.ts sets HTTP-Referer and X-Title). Auth
+// and content-type/length are set by the proxy itself.
+const FORWARDED_HEADERS = new Set([
+  "accept",
+  "user-agent",
+  "anthropic-version",
+  "anthropic-beta",
+  "http-referer",
+  "x-title",
+]);
 
 // Spend-caps CP4: userId is optional here (not on RegisterOptions/ChildEntry
 // below either) so every pre-existing call site — production and test — that
@@ -342,17 +360,10 @@ export class EgressProxy {
       return;
     }
 
-    // Must read + buffer the body to extract the model field for allowlist check.
-    // Completion request bodies are small (text prompt, not file uploads).
-    const bodyChunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => bodyChunks.push(chunk));
-    req.on("end", () => {
-      this.finishRequest(entry, Buffer.concat(bodyChunks), req, res);
-    });
     // Guarded exactly like the attempt-chain error/close handlers: this listener
     // outlives the response, so an inbound-stream error arriving after any path
-    // has already replied (a 400 from finishRequest, the budget 429, or a piped
-    // upstream response) would make writeHead throw ERR_HTTP_HEADERS_SENT
+    // has already replied (a 400 from finishRequest, the budget 429, the 413
+    // below, or a piped upstream response) would make writeHead throw ERR_HTTP_HEADERS_SENT
     // synchronously here — uncaught, killing the parent and every user's runs.
     req.on("error", () => {
       if (!res.headersSent) {
@@ -360,6 +371,34 @@ export class EgressProxy {
       } else if (!res.writableEnded) {
         res.destroy();
       }
+    });
+
+    // Must read + buffer the body to extract the model field for allowlist check.
+    // Capped (F61): a declared oversize body is refused unread, and a chunked
+    // one is cut off at the cap. The 413 closes the connection, and the socket
+    // is torn down once it is written.
+    const tooLarge = (): void => {
+      res.writeHead(413, { connection: "close" }).end("request body too large", () => req.destroy());
+    };
+    if (Number(req.headers["content-length"]) > MAX_REQUEST_BODY_BYTES) {
+      tooLarge();
+      return;
+    }
+    const bodyChunks: Buffer[] = [];
+    let bodyBytes = 0;
+    req.on("data", (chunk: Buffer) => {
+      if (res.headersSent) return;
+      bodyBytes += chunk.length;
+      if (bodyBytes > MAX_REQUEST_BODY_BYTES) {
+        bodyChunks.length = 0;
+        tooLarge();
+        return;
+      }
+      bodyChunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (res.headersSent) return;
+      this.finishRequest(entry, Buffer.concat(bodyChunks), req, res);
     });
   }
 
@@ -543,27 +582,12 @@ export class EgressProxy {
       "content-length": String(outBody.length),
       ...authHeaders,
     };
-    // Preserve any extra Pi SDK headers (HTTP-Referer, X-Title) the child sends.
-    // Strip headers that could inject upstream session or billing state:
-    // cookie and x-api-key could hijack an upstream session; x-forwarded-for
-    // and x-real-ip could forge origin identity at the upstream.
+    // Preserve the Pi SDK headers the upstream needs (FORWARDED_HEADERS). An
+    // allowlist, not a denylist: any other child-chosen header (cookie,
+    // x-api-key, x-forwarded-*, an AI gateway's routing or billing header)
+    // could inject upstream session, origin or billing state.
     for (const [key, val] of Object.entries(inReq.headers)) {
-      if (
-        key === "authorization" ||
-        key === "api-key" ||
-        key === "content-length" ||
-        key === "content-type" ||
-        key === "host" ||
-        key === "transfer-encoding" ||
-        key === "connection" ||
-        key === "cookie" ||
-        key === "x-api-key" ||
-        key === "x-forwarded-for" ||
-        key === "x-real-ip"
-      ) {
-        continue;
-      }
-      if (typeof val === "string") {
+      if (FORWARDED_HEADERS.has(key) && typeof val === "string") {
         forwardHeaders[key] = val;
       }
     }
@@ -681,7 +705,8 @@ export class EgressProxy {
         return;
       }
       if (!clientRes.headersSent) {
-        clientRes.writeHead(timedOut ? 504 : 502).end(timedOut ? "upstream timed out" : String(err));
+        // F66: never echo the transport error (upstream host and port) to the child.
+        clientRes.writeHead(timedOut ? 504 : 502).end(timedOut ? "upstream timed out" : "upstream connection failed");
       } else if (!clientRes.writableEnded) {
         // Headers were already sent to the client — can't 504/502 anymore
         // (timeout or otherwise), and there is deliberately no retry either:

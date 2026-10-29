@@ -31,7 +31,7 @@ test("503-equivalent: broker TRANSIENT_FAILURE fails even when audit is fine", (
     auditStatus: () => ({ state: "connected" }),
   });
   assert.equal(result.ok, false);
-  assert.match(result.checks.broker, /not-ready/);
+  assert.equal(result.checks.broker, "not-ready", "no channel state leaks to an unauthenticated caller");
   assert.equal(result.checks.audit, "ok");
 });
 
@@ -42,6 +42,7 @@ test("503-equivalent: audit disconnected fails even when broker is READY", () =>
   });
   assert.equal(result.ok, false);
   assert.equal(result.checks.broker, "ok");
-  assert.match(result.checks.audit, /not-ready/);
-  assert.match(result.checks.audit, /connection refused/);
+  // F209: the unauthenticated body never carries the dependency's error text.
+  assert.equal(result.checks.audit, "not-ready");
+  assert.doesNotMatch(JSON.stringify(result), /connection refused/);
 });

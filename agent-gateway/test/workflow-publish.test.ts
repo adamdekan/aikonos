@@ -415,7 +415,9 @@ const TEST_RUN_ID = "test-run-pub-001";
 function makeWiredPair(bridge: BridgeLike): { server: RemoteBridgeServer; child: ChildLink } {
   const [parentSide, childSide] = makePairedChannel();
   const parentLink = new ParentLink(parentSide);
-  const server = new RemoteBridgeServer(parentLink, (_identity, _approver) => bridge);
+  // F207: the membership backstop fails closed on an empty set, so the harness
+  // stores the full tool list the way a real plan would.
+  const server = new RemoteBridgeServer(parentLink, (_identity, _approver) => bridge, TOOL_NAMES);
   server.setRunContext(TEST_RUN_ID, { tenantId: "t1", userId: "u1", agentId: "a1" }, async () => true);
   const child = new ChildLink(childSide);
   return { server, child };

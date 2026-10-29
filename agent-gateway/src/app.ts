@@ -3,9 +3,6 @@
 // route group against the supplied ctx with zero module-scope side effects.
 // src/server.ts is the only caller; it owns config load, client construction,
 // and process bootstrap.
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Logger } from "pino";
 import type { JwksResolver, VerifyOptions } from "./auth/verify.js";
@@ -48,11 +45,12 @@ export interface AppCtx {
   rateLimitChecker?: RateLimitChecker;
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-const UI_PATH = join(here, "..", "public", "index.html");
-
 export function buildApp(ctx: AppCtx): FastifyInstance {
-  const app = Fastify({ logger: false });
+  // F57: bound how long one request may take to arrive (headers + body), so a
+  // slow-sent 14 MiB upload cannot hold a connection open indefinitely —
+  // Fastify's own default is no limit. Responses (the /agui SSE stream) are
+  // not affected.
+  const app = Fastify({ logger: false, requestTimeout: 120_000 });
 
   app.get("/healthz", async () => ({ ok: true }));
 
@@ -73,10 +71,8 @@ export function buildApp(ctx: AppCtx): FastifyInstance {
   });
 
   registerAuditRoutes(app, { jwksResolver: ctx.jwksResolver, verifyOpts: ctx.verifyOpts, north: ctx.clients.north });
-  app.get("/", async (_req, reply) => {
-    // Read fresh each request so UI edits don't require a server restart.
-    reply.type("text/html").send(readFileSync(UI_PATH, "utf8"));
-  });
+  // F65: no GET / — the legacy unauthenticated demo UI is gone (the webui
+  // supersedes it), so / is a plain 404.
 
   // POST /approve/:id + GET /approvals: the caller's own pending approvals.
   // GET /pending-approvals + POST /pending-approvals/:taskId: broker-held ones.

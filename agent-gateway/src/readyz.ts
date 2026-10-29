@@ -23,11 +23,14 @@ export function evaluateReadyz(deps: ReadyzDeps): ReadyzResult {
   const audit = deps.auditStatus();
   const auditOk = audit.state === "connected" || audit.state === "disabled";
 
+  // F209: /readyz is unauthenticated, so it reports only ok/not-ready. The
+  // channel state and the NATS error text (internal hosts and ports) stay in
+  // the server log, which the audit consumer's log.warn already writes.
   return {
     ok: brokerOk && auditOk,
     checks: {
-      broker: brokerOk ? "ok" : `not-ready (state=${connectivityState[state]})`,
-      audit: auditOk ? "ok" : `not-ready (state=${audit.state}${audit.lastError ? `: ${audit.lastError}` : ""})`,
+      broker: brokerOk ? "ok" : "not-ready",
+      audit: auditOk ? "ok" : "not-ready",
     },
   };
 }

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
-import { EgressProxy, type TransportLike, type _TestTransports } from "../src/llm/egress-proxy.js";
+import { EgressProxy, MAX_REQUEST_BODY_BYTES, type TransportLike, type _TestTransports } from "../src/llm/egress-proxy.js";
 import {
   resolveSessionPlan,
   type ResolveIdentity,
@@ -1124,6 +1124,11 @@ test("CP5 egress-proxy fix-4: cookie/x-api-key/x-forwarded-for/x-real-ip NOT for
         "x-api-key": "upstream-billing-key",
         "x-forwarded-for": "1.2.3.4",
         "x-real-ip": "5.6.7.8",
+        // F61: routing/billing headers outside the allowlist.
+        "openai-organization": "org-someone-else",
+        "x-litellm-key": "other-team",
+        "x-forwarded-host": "evil.example",
+        "x-title": "aikonOS Agent Gateway",
       },
       body: JSON.stringify({ model: "test-model", messages: [] }),
     });
@@ -1135,9 +1140,74 @@ test("CP5 egress-proxy fix-4: cookie/x-api-key/x-forwarded-for/x-real-ip NOT for
     assert.ok(!("x-api-key" in h), `upstream must not receive x-api-key header`);
     assert.ok(!("x-forwarded-for" in h), `upstream must not receive x-forwarded-for header`);
     assert.ok(!("x-real-ip" in h), `upstream must not receive x-real-ip header`);
+    assert.ok(!("openai-organization" in h), "F61: unlisted headers are not forwarded");
+    assert.ok(!("x-litellm-key" in h), "F61: unlisted headers are not forwarded");
+    assert.ok(!("x-forwarded-host" in h), "F61: unlisted headers are not forwarded");
+    assert.equal(h["x-title"], "aikonOS Agent Gateway", "allowlisted SDK headers still reach the upstream");
   } finally {
     await proxy.stop();
     await headerClose();
+  }
+});
+
+test("F61 egress-proxy: a body over MAX_REQUEST_BODY_BYTES gets 413 and never reaches the upstream", async () => {
+  // WHY: the proxy buffers the body to check the model, so an uncapped body
+  // lets a compromised child OOM the parent (every user's runs).
+  let upstreamHits = 0;
+  const upstream = http.createServer((req, res) => {
+    upstreamHits++;
+    req.resume();
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const uAddr = upstream.address();
+  assert.ok(uAddr && typeof uAddr === "object");
+  const proxy = new EgressProxy();
+  await proxy.start();
+  try {
+    const { childBaseUrl } = proxy.register({
+      upstreamBaseUrl: `http://127.0.0.1:${uAddr.port}`,
+      realApiKey: "sk-key",
+      tenantId: "t", agentId: "a", modelAllowlist: ["m"],
+    });
+    const url = new URL("chat/completions", childBaseUrl.endsWith("/") ? childBaseUrl : childBaseUrl + "/");
+    // Declared oversize: refused before any byte is read.
+    const declared = await new Promise<number>((resolve, reject) => {
+      const r = http.request(url, { method: "POST", headers: { "content-type": "application/json", "content-length": String(MAX_REQUEST_BODY_BYTES + 1) } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      r.on("error", reject);
+      r.write("{");
+    });
+    assert.equal(declared, 413);
+    // Chunked (no content-length): cut off at the cap.
+    const chunked = await new Promise<number>((resolve, reject) => {
+      const r = http.request(url, { method: "POST", headers: { "content-type": "application/json" } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      r.on("error", () => resolve(-1));
+      const chunk = Buffer.alloc(1024 * 1024, 0x20);
+      let sent = 0;
+      const pump = (): void => {
+        while (sent <= MAX_REQUEST_BODY_BYTES + chunk.length) {
+          sent += chunk.length;
+          if (!r.write(chunk)) {
+            r.once("drain", pump);
+            return;
+          }
+        }
+        r.end();
+      };
+      pump();
+      void reject;
+    });
+    assert.ok(chunked === 413 || chunked === -1, `expected 413 or a reset, got ${chunked}`);
+    assert.equal(upstreamHits, 0, "an oversize body must never be forwarded");
+  } finally {
+    await proxy.stop();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
 });
 

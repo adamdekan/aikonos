@@ -1,6 +1,7 @@
 // Separate hardened Fastify server for the external API surface (`:8090`).
 // This instance NEVER mounts requireUser / OIDC routes. It registers:
-//   - @fastify/rate-limit (cfg.externalRateLimit req/min per IP)
+//   - @fastify/rate-limit (cfg.externalRateLimit req/min per client IP, and
+//     again per authenticated agent in rest.ts)
 //   - @fastify/cors (cfg.externalCorsOrigins allowlist)
 //   - body-size cap (256 KiB; the route enforces a 16 KiB prompt cap and a
 //     200 KiB history-content cap, leaving room for JSON framing + up to
@@ -33,9 +34,21 @@ export function buildExternalApp(
   log: Logger,
   supervisor: ChildSupervisor,
 ): FastifyInstance {
-  const app = Fastify({ logger: false, bodyLimit: BODY_LIMIT });
+  // F56: trustProxy is the configured hop count or proxy list (default one
+  // hop: Traefik), so req.ip is the real client and not the proxy every
+  // request shares. Never `true`: a direct client could then pick its bucket.
+  // A hop count becomes the same per-hop function Fastify builds from a number
+  // at runtime (its types only admit the function form).
+  const trust = cfg.externalTrustProxy ?? 1;
+  const app = Fastify({
+    logger: false,
+    bodyLimit: BODY_LIMIT,
+    trustProxy: typeof trust === "number" ? (_addr: string, hop: number) => hop < trust : trust,
+  });
 
-  // Rate-limit: max cfg.externalRateLimit requests per minute per IP.
+  // Rate-limit: max cfg.externalRateLimit requests per minute per client IP.
+  // Runs before auth, so it is the bound on unauthenticated traffic (and the
+  // south RPC each invoke's key resolution costs); SCIM shares it.
   void app.register(rateLimit, {
     max: cfg.externalRateLimit,
     timeWindow: "1 minute",
@@ -52,9 +65,14 @@ export function buildExternalApp(
   // Health check — separate from the internal :8080 /healthz.
   app.get("/healthz", async () => ({ ok: true, surface: "external" }));
 
-  registerExternalRoutes(app, cfg, clients, log, supervisor);
-  registerScimRoutes(app, cfg, clients, log);
-  registerClientMetadataRoute(app, cfg);
+  // Registered as a plugin so the routes load after @fastify/rate-limit: its
+  // onRoute hook only limits routes added once it has loaded, and routes added
+  // directly here were never limited at all (F56).
+  void app.register(async (scope) => {
+    registerExternalRoutes(scope, cfg, clients, log, supervisor);
+    registerScimRoutes(scope, cfg, clients, log);
+    registerClientMetadataRoute(scope, cfg);
+  });
 
   return app;
 }

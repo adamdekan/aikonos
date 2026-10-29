@@ -19,6 +19,7 @@ import {
   extractOpenAIUsage,
   extractAnthropicUsage,
 } from "./provider-dialect.js";
+import { redactProviderText } from "../http-errors.js";
 // ── callVisionProvider ───────────────────────────────────────────────────────
 
 export interface VisionCallProvider {
@@ -146,7 +147,10 @@ export async function callVisionProvider(opts: CallVisionProviderOptions): Promi
   try {
     let response: Response;
     try {
-      response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+      // G3: redirect "manual" — following a 3xx would re-send the api-key /
+      // x-api-key header (undici strips only authorization) and the body to
+      // another host. The 3xx is returned as-is and fails the !ok check below.
+      response = await fetch(url, { method: "POST", headers, body, signal: controller.signal, redirect: "manual" });
     } catch {
       // Never interpolate the caught error into the message: some transport
       // errors echo back request details that could include the key.
@@ -157,7 +161,8 @@ export async function callVisionProvider(opts: CallVisionProviderOptions): Promi
     }
 
     if (!response.ok) {
-      const snippet = (await response.text().catch(() => "")).slice(0, 512);
+      // F66: the body reaches the model / workflow result — redacted and clipped.
+      const snippet = redactProviderText((await response.text().catch(() => "")).slice(0, 4096));
       throw new VisionProviderError(
         `vision provider ${provider.id}: upstream returned ${response.status}${snippet ? `: ${snippet}` : ""}`,
         response.status,

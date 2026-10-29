@@ -100,6 +100,17 @@ export function trimmedErrorMessage(err: unknown): string {
       : "internal error";
 }
 
+// trimmedErrorText is trimmedErrorMessage for an error already flattened with
+// String(err) — the `error` field of a GovernanceBridge result, which reaches
+// the child (and so the model and the chat) over IPC. A gRPC-shaped string
+// ("Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090") gets the same
+// caller-class/infra-class treatment; any other text is gateway-authored and
+// passes through so the model can still act on it (F66).
+export function trimmedErrorText(text: string): string {
+  const m = /^(?:[A-Za-z]*Error: )?(\d+) [A-Z_]+: ([\s\S]*)$/.exec(text);
+  return m ? trimmedErrorMessage({ code: Number(m[1]), details: m[2] }) : text;
+}
+
 // AG-13: the broker refuses a yes on a step-up approval without a recent
 // multi-factor sign-in with PERMISSION_DENIED "step_up_required", and names the
 // tenant's acr (if any) in a trailer for the web UI's re-authentication.
@@ -136,6 +147,16 @@ export function sendError(reply: ErrorReply, log: Logger, err: unknown, opts: Se
 // tokens and anything past the first ~300 chars are dropped so a credential or
 // endpoint echoed back by an SDK cannot reach the browser.
 export function providerErrorMessage(raw: string): string {
+  const msg = redactProviderText(raw);
+  return `The model provider refused or failed this request${msg ? `: ${msg}` : "."}`;
+}
+
+// redactProviderText is providerErrorMessage's cleaning step on its own: the
+// provider's "message" if the text is a JSON error body, with URLs and
+// key-like tokens redacted, whitespace collapsed and a 300-char clip. The
+// parent-side provider calls (reason, vision, embed) use it on an upstream
+// error body before it reaches the model or a workflow result (F66).
+export function redactProviderText(raw: string): string {
   let msg = raw;
   const json = /"message"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(raw);
   if (json) {
@@ -148,6 +169,5 @@ export function providerErrorMessage(raw: string): string {
     .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]")
     .replace(/\s+/g, " ")
     .trim();
-  if (msg.length > 300) msg = `${msg.slice(0, 300)}…`;
-  return `The model provider refused or failed this request${msg ? `: ${msg}` : "."}`;
+  return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
 }

@@ -22,7 +22,6 @@ RUN npm ci && npm cache clean --force
 
 COPY agent-gateway/tsconfig.json ./
 COPY agent-gateway/src ./src
-COPY agent-gateway/public ./public
 
 # Generate the gRPC stubs into gen/ts/proto/* (the layout the source imports).
 # --proto_path=. makes `import "proto/...";` resolve.

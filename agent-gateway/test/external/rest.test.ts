@@ -445,3 +445,64 @@ test("AG-17 S6: X-Aikonos-Subject-Token forwarded as user_assertion; run owner i
   assert.equal(ownerUserId, "alice-sub");
   await app.close();
 });
+
+// ── F56: rate-limit buckets ────────────────────────────────────────────────────
+
+function doneSupervisor(): ChildSupervisor {
+  return {
+    keyFor: () => "__single__",
+    getOrSpawn: async () => ({ setRunContext: () => {}, clearRunContext: () => {}, abortRun: () => {} }),
+    run: async (_h: unknown, prompt: { runId: string }, onEvent: (evt: { kind: string; runId: string }) => void) => {
+      onEvent({ kind: "done", runId: prompt.runId });
+    },
+  } as unknown as ChildSupervisor;
+}
+
+function invoke(app: import("fastify").FastifyInstance, agentId: string, key: string, clientIp: string) {
+  return app.inject({
+    method: "POST",
+    url: `/v1/agents/${agentId}/invoke`,
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-forwarded-for": clientIp },
+    body: JSON.stringify({ prompt: "hello" }),
+  });
+}
+
+test("F56: bad-auth flooding from one client IP does not block a valid key from another", async () => {
+  // WHY: behind Traefik every request shared the proxy's IP, so 61 garbage
+  // requests a minute locked every agent and the SCIM IdP out.
+  const south = makeSouth(AUTO_AGENT_ID, "auto");
+  south.resolveAgentApiKey = async () => ({ valid: false, agentId: "", tenantId: "", principal: "" });
+  const app = buildExternalApp({ ...baseCfg, externalRateLimit: 3 }, makeClients(south), log, doneSupervisor());
+  await app.ready();
+  for (let i = 0; i < 3; i++) assert.equal((await invoke(app, AUTO_AGENT_ID, "tk_garbage", "203.0.113.9")).statusCode, 401);
+  assert.equal((await invoke(app, AUTO_AGENT_ID, "tk_garbage", "203.0.113.9")).statusCode, 429, "the flooding IP is limited");
+  south.resolveAgentApiKey = makeResolve(AUTO_AGENT_ID);
+  assert.equal((await invoke(app, AUTO_AGENT_ID, RAW_KEY_AUTO, "198.51.100.7")).statusCode, 200, "another client keeps its own bucket");
+  await app.close();
+});
+
+test("F56: each authenticated agent has its own bucket, across client IPs", async () => {
+  const south = makeSouth(AUTO_AGENT_ID, "auto");
+  let resolvedAgent = AUTO_AGENT_ID;
+  south.resolveAgentApiKey = async () => ({ valid: true, agentId: resolvedAgent, tenantId: TENANT, principal: `svc-${resolvedAgent}` });
+  const app = buildExternalApp({ ...baseCfg, externalRateLimit: 2 }, makeClients(south), log, doneSupervisor());
+  await app.ready();
+  assert.equal((await invoke(app, AUTO_AGENT_ID, RAW_KEY_AUTO, "198.51.100.1")).statusCode, 200);
+  assert.equal((await invoke(app, AUTO_AGENT_ID, RAW_KEY_AUTO, "198.51.100.2")).statusCode, 200);
+  assert.equal((await invoke(app, AUTO_AGENT_ID, RAW_KEY_AUTO, "198.51.100.3")).statusCode, 429, "a key cannot outrun its bucket by switching IPs");
+  resolvedAgent = MANUAL_AGENT_ID;
+  south.getAgentSpec = async () => ({ found: true, name: "b", approvalMode: "auto", skills: [], llmModel: "", gatewayEnabled: true });
+  assert.equal((await invoke(app, MANUAL_AGENT_ID, RAW_KEY_MANUAL, "198.51.100.4")).statusCode, 200, "another agent's bucket is untouched");
+  await app.close();
+});
+
+test("F56: X-Forwarded-For is ignored when no proxy is trusted", async () => {
+  const south = makeSouth(AUTO_AGENT_ID, "auto");
+  south.resolveAgentApiKey = async () => ({ valid: false, agentId: "", tenantId: "", principal: "" });
+  const app = buildExternalApp({ ...baseCfg, externalRateLimit: 2, externalTrustProxy: false }, makeClients(south), log, doneSupervisor());
+  await app.ready();
+  await invoke(app, AUTO_AGENT_ID, "tk_x", "203.0.113.1");
+  await invoke(app, AUTO_AGENT_ID, "tk_x", "203.0.113.2");
+  assert.equal((await invoke(app, AUTO_AGENT_ID, "tk_x", "203.0.113.3")).statusCode, 429, "a spoofed XFF must not mint a fresh bucket");
+  await app.close();
+});
