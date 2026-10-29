@@ -28,36 +28,25 @@ volumes:
 
 services:
 
-  # ── OpenFGA: loopback-only host publish for admin curls ──────────────────────
-  # deploy/onprem/README.md documents ad-hoc `curl localhost:8082` calls from the
-  # deploy host (SSH'd in), so the port stays published — but bound to 127.0.0.1,
-  # not every interface. (The seed script no longer needs it: it runs the fga CLI
-  # inside the compose network.) Publishing needs the `mesh` membership below:
-  # current Docker releases publish no port for a service only on an internal network.
-  #
+  # ── OpenFGA: backend-only, no host publish ───────────────────────────────────
   # OpenFGA runs with no authentication (no OPENFGA_AUTHN_METHOD is set anywhere),
-  # and its write API is what grants group membership and skill access. A
-  # 0.0.0.0 publish therefore let anyone who could reach TCP 8082 on this host
-  # rewrite the authorization tuples that SubmitPlan and InvokeTool depend on —
-  # bypassing the ReBAC gate without touching the broker, OIDC, or Biscuit. The
-  # on-prem network is not a trust boundary: NATS logs on this same host show
-  # completed TCP connections from outside its subnet.
+  # and its write API is what grants group membership and skill access. On
+  # `mesh` it sat beside the gateway, webui, keycloak, nats and every attached
+  # MCP container, so any compromised mesh peer could rewrite the tuples
+  # SubmitPlan and InvokeTool depend on, bypassing ReBAC without touching the
+  # broker, OIDC or Biscuit. It is now on `backend` only, as in base and Azure;
+  # the broker is the only app service there. Admin reads and writes go through
+  # the fga CLI inside the network:
+  #   docker compose run --rm fga-cli store list
+  # (see deploy/onprem/README.md "Reaching OpenFGA").
   #
-  # Loopback keeps every documented workflow working (they all run on the host)
-  # and closes the remote path. Azure drops the publish entirely (`!reset []`).
-  # `mesh` network membership (separate from the port) predates this and is
-  # left as-is.
-  #
-  # `!override` is required, not decoration: a plain `ports:` list here MERGES
-  # with the base file's, so the rendered config kept both 0.0.0.0:8082 and
-  # 127.0.0.1:8082 and the interface stayed open. Verify any change to this block
-  # against the rendered output, not the source:
+  # `!override` / `!reset` are required, not decoration: plain lists MERGE with
+  # the base file's. Verify against the rendered output, not the source:
   #   docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml \
-  #     config --format json | jq '.services.openfga.ports'
+  #     config --format json | jq '.services.openfga | {networks, ports}'
   openfga:
-    networks: [backend, mesh]
-    ports: !override
-      - "127.0.0.1:8082:8080"
+    networks: !override [backend]
+    ports: !reset []
 
   # ── NATS: no host publish ────────────────────────────────────────────────────
   # Base compose.yaml publishes 4222 (client) + 8222 (monitoring) for local dev.
@@ -73,6 +62,39 @@ services:
   # keep it closed here even if a local-dev publish is ever added back.
   minio:
     ports: !reset []
+
+  # ── No host publish for what the mesh already reaches ───────────────────────
+  # The on-prem network is not a trust boundary (see NATS above). Keycloak's
+  # dev admin console, the broker's gRPC ports and unauthenticated 9092 policy
+  # bundle, the unauthenticated OTLP receivers, Loki, Tempo, Prometheus (with
+  # remote-write enabled) and docs-mcp are all reached in-network; nothing
+  # off-host needs them.
+  keycloak:
+    ports: !reset []
+
+  broker:
+    ports: !reset []
+
+  aikonos-docs-mcp:
+    ports: !reset []
+
+  otel-collector:
+    ports: !reset []
+
+  loki:
+    ports: !reset []
+
+  tempo:
+    ports: !reset []
+
+  prometheus:
+    ports: !reset []
+
+  # Grafana: host loopback only, for the documented SSH tunnel
+  # (deploy/onprem/README.md "Reaching Grafana").
+  grafana:
+    ports: !override
+      - "127.0.0.1:3030:3000"
 
   # ── Vault: durable `file` storage backend, no dev-mode ───────────────────────
   # Base compose.yaml's vault service stays dev-mode for local dev; this overlay

@@ -2,7 +2,8 @@
 # scripts/compose-dev-ca.sh
 #
 # DEV-ONLY — mints a static root CA + per-service leaf certs for compose mTLS.
-# Output: deploy/compose/tls/{ca,broker,agent-gateway}.{crt,key}
+# Output: deploy/compose/tls/{ca,broker,agent-gateway}.{crt,key}, plus
+#         deploy/compose/tls/{broker,agent-gateway}/ (that leaf + ca.crt only)
 #
 # Each leaf carries BOTH a URI-SAN (SPIFFE ID) and a DNS-SAN (compose service
 # name) so the broker's trust-domain check AND gRPC's hostname verification both
@@ -129,6 +130,15 @@ mint_leaf "agent-gateway" "spiffe://aikonos.com/agent-gateway" "agent-gateway"
 # secrets) — make the leaf keys world-readable so the services can load them.
 # Runs unconditionally (also on the idempotent skip path) to fix pre-existing perms.
 chmod 0644 "${TLS_DIR}/broker.key" "${TLS_DIR}/agent-gateway.key" 2>/dev/null || true
+
+# Each service mounts only its own directory (compose.yaml: tls/<name>:/tls),
+# so ca.key, ca.srl and the other service's key never enter a runtime
+# container. Refreshed on every run, so --force and certs dropped in by hand
+# at the top level both reach the services.
+for name in broker agent-gateway; do
+  mkdir -p "${TLS_DIR}/${name}"
+  cp "${TLS_DIR}/${name}.crt" "${TLS_DIR}/${name}.key" "${TLS_DIR}/ca.crt" "${TLS_DIR}/${name}/"
+done
 
 echo "[compose-dev-ca] done. Files in ${TLS_DIR}:"
 ls -1 "${TLS_DIR}"

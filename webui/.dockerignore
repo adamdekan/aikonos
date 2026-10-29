@@ -1,0 +1,6 @@
+# `COPY web/ ./` takes the whole web/ tree; secrets and key material never
+# enter the build context (the build is configured by ARGs, not .env files).
+**/.env
+**/.env.*
+**/*.key
+**/*.pem

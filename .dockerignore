@@ -11,4 +11,13 @@ planner/.venv/
 desktop/
 **/__pycache__/
 *.log
-.env.local
+# Secrets and key material never enter a build context: the broker builder
+# runs COPY . ., which keeps whatever is here in its cached layers. `.env.*`
+# also matches the .example templates; no image needs them.
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+deploy/compose/tls/
+backups/
+.claude/

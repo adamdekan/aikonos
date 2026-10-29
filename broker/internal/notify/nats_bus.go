@@ -5,6 +5,8 @@ package notify
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -23,9 +25,28 @@ func newNATSBus(url string, logger *zap.Logger) (*natsBus, error) {
 		nats.ReconnectWait(2*time.Second),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("nats connect %s: %w", url, err)
+		return nil, fmt.Errorf("nats connect %s: %w", RedactURL(url), err)
 	}
 	return &natsBus{conn: conn, logger: logger}, nil
+}
+
+// RedactURL returns a NATS URL (or comma-separated list, as nats.Connect
+// takes) safe to log: compose passes the client token as the userinfo
+// (nats://<token>@nats:4222), and url.Redacted masks only a password, never a
+// token-as-username.
+func RedactURL(raw string) string {
+	parts := strings.Split(raw, ",")
+	for i, p := range parts {
+		u, err := url.Parse(strings.TrimSpace(p))
+		switch {
+		case err != nil && strings.Contains(p, "@"):
+			parts[i] = "[redacted]"
+		case err == nil && u.User != nil:
+			u.User = url.User("REDACTED")
+			parts[i] = u.String()
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 func (b *natsBus) Enabled() bool { return true }

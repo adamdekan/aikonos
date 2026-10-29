@@ -723,7 +723,7 @@ func main() {
 	}
 	defer eventBus.Close()
 	if eventBus.Enabled() {
-		log.Info("Event bus connected", zap.String("nats_url", viper.GetString("nats.url")))
+		log.Info("Event bus connected", zap.String("nats_url", notify.RedactURL(viper.GetString("nats.url"))))
 	} else {
 		log.Warn("Event bus DISABLED (nats.url unset) — StreamTaskEvents unavailable, events dropped")
 	}

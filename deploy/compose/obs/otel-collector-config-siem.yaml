@@ -9,6 +9,8 @@
 #
 # Settings from env:
 #   AIKONOS_SIEM_OTLP_ENDPOINT    — OTLP-HTTP base URL, e.g. https://siem.example:4318
+#                                  Use https:// — the Authorization header below is
+#                                  sent with every export, in clear over http://.
 #   AIKONOS_SIEM_OTLP_AUTH_HEADER — full Authorization header value, e.g. "Bearer <token>"
 #                                  or "Api-Key <key>" (format is receiver-specific).
 #                                  Leave unset for an endpoint that needs no auth —
@@ -116,7 +118,9 @@ service:
       processors: [batch, redaction]
       exporters: [otlphttp/loki, otlphttp/siem]
 
+    # Metrics leave the host here too, so their attributes get the same
+    # redaction as traces and logs (it also masks log bodies, not only keys).
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [batch, redaction]
       exporters: [prometheus, otlphttp/siem]

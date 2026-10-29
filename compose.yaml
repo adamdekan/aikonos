@@ -58,7 +58,7 @@ x-postgres-caps: &postgres-caps
 #   mesh    — bridge with egress: broker, gateway, webui, nats, keycloak.
 #             Must NOT be internal: broker (web.fetch SSRF-guarded egress, connector
 #             OAuth refresh) and agent-gateway (OpenRouter LLM, OAuth) need outbound
-#             internet. dev-ca-mint also needs no isolation.
+#             internet.
 #   backend — internal: datastores (postgres, vault, minio, opa, openfga) + one-shots.
 #             Only the broker joins both backend AND mesh — the trusted intermediary.
 #   obs     — bridge: telemetry services (otel-collector, grafana, loki, tempo,
@@ -71,8 +71,8 @@ x-postgres-caps: &postgres-caps
 # interface). So nothing that is only on `backend` takes `ports:` here. Tools reach those services from inside instead:
 # the OpenFGA seed runs the fga CLI in the `fga-cli` one-off below, and the
 # Vault seed, the backup and compose-verify use `docker compose exec` / `run`.
-# On-prem keeps OpenFGA on host loopback for its admin workflow by also joining
-# it to `mesh` (deploy/compose/compose.onprem.yaml).
+# OpenFGA stays backend-only in every variant: it runs without authentication,
+# so a mesh peer (gateway child, attached MCP container) must not reach it.
 networks:
   mesh:
     # Stable explicit name so external compose projects (e.g. a self-hosted MCP
@@ -284,12 +284,16 @@ services:
     # by default in dev); mesh-isolated, low marginal value.
     image: nats:2.10-alpine
     networks: [mesh]
+    # Clients authenticate with AIKONOS_NATS_TOKEN (nats://<token>@nats:4222):
+    # NATS carries the audit stream, and mesh also holds the webui, keycloak and
+    # any attached MCP container. The monitoring port (8222) stays unauthenticated.
     command:
       - --port=4222
       - --http_port=8222
       - --server_name=nats-0
       - --js
       - --store_dir=/data/jetstream
+      - --auth=${AIKONOS_NATS_TOKEN:?set AIKONOS_NATS_TOKEN (openssl rand -hex 32)}
     ports:
       - "4222:4222"   # NATS client
       - "8222:8222"   # NATS monitoring
@@ -370,16 +374,19 @@ services:
   # ── One-shots ────────────────────────────────────────────────────────────────
 
   # Mints dev-CA certs if absent (idempotent). Must run before broker/gateway
-  # so the TLS files exist when those services start.
+  # so the TLS files exist when those services start. Pinned by digest and with
+  # no network: it generates the CA key, so a retagged image must not run here
+  # and nothing it runs may phone home. Refresh the digest together with
+  # deploy/compose/compose.digests.yaml.
   dev-ca-mint:
     <<: *hardening
-    image: alpine/openssl:latest
+    image: alpine/openssl:latest@sha256:a31e47e338dac84c48788c23bb003be27ed325b7a2185d359f22e3ba4e78bcab
     # Run as the host user so it can write the bind-mounted tls dir (owned by
     # the host user, mode 755) and the certs it mints stay host-owned — the
     # same result as the Taskfile's host-side `bash scripts/compose-dev-ca.sh`.
     user: "${AIKONOS_HOST_UID:-1000}:${AIKONOS_HOST_GID:-1000}"
     profiles: [core, full]
-    networks: [mesh]
+    network_mode: none
     entrypoint: ["/bin/sh", "/scripts/compose-dev-ca.sh"]
     volumes:
       - ./scripts/compose-dev-ca.sh:/scripts/compose-dev-ca.sh:ro
@@ -469,15 +476,18 @@ services:
       AIKONOS_POLICY_OPA_ENDPOINT:          http://opa:8181
       # The broker serves OPA this policy, archiving each revision first.
       AIKONOS_POLICY_BUNDLE_DIR:            /policies
-      AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER}
+      AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER:?set AIKONOS_OIDC_ISSUER}
       AIKONOS_OIDC_JWKS_URL:                ${AIKONOS_OIDC_JWKS_URL:-}
       AIKONOS_OIDC_AUDIENCE:                ${AIKONOS_OIDC_AUDIENCE}
       AIKONOS_OIDC_SUBJECT_CLAIM:           ${AIKONOS_OIDC_SUBJECT_CLAIM:-sub}
       AIKONOS_OIDC_TENANT_CLAIM:            ${AIKONOS_OIDC_TENANT_CLAIM}
       AIKONOS_SPIFFE_SANDBOX_PATH_PREFIX:   ""
       AIKONOS_CAPABILITY_ROOT_KEY:          ${AIKONOS_CAPABILITY_ROOT_KEY}
-      AIKONOS_DEV_MODE:                     ${AIKONOS_DEV_MODE:-true}
-      AIKONOS_NATS_URL:                     ${AIKONOS_NATS_URL}
+      # Fails closed: an unset or blank AIKONOS_DEV_MODE means production, so the
+      # broker refuses to start without OIDC, OpenFGA and a capability key. Local
+      # dev sets AIKONOS_DEV_MODE=true explicitly (.env.local.example).
+      AIKONOS_DEV_MODE:                     ${AIKONOS_DEV_MODE:-false}
+      AIKONOS_NATS_URL:                     nats://${AIKONOS_NATS_TOKEN}@nats:4222
       AIKONOS_AUDIT_MINIO_ENDPOINT:         ${AIKONOS_AUDIT_MINIO_ENDPOINT}
       AIKONOS_AUDIT_BUCKET:                 ${AIKONOS_AUDIT_BUCKET}
       AIKONOS_AUDIT_ACCESS_KEY:             ${AIKONOS_AUDIT_ACCESS_KEY}
@@ -500,6 +510,8 @@ services:
       # under core/full; empty URL makes the
       # office.* toolproxy plugins report unavailable instead of failing.
       AIKONOS_OFFICE_WORKER_URL:            ${AIKONOS_OFFICE_WORKER_URL:-http://office-worker:8081}
+      # Shared bearer the broker sends and office-worker checks on every job.
+      AIKONOS_OFFICE_WORKER_TOKEN:          ${AIKONOS_OFFICE_WORKER_TOKEN:?set AIKONOS_OFFICE_WORKER_TOKEN (openssl rand -hex 32)}
       AIKONOS_OFFICE_JOB_TIMEOUT_MS:        ${AIKONOS_OFFICE_JOB_TIMEOUT_MS:-120000}
       AIKONOS_OFFICE_MAX_CONCURRENCY:       ${AIKONOS_OFFICE_MAX_CONCURRENCY:-4}
       AIKONOS_VAULT_ADDR:                   ${AIKONOS_VAULT_ADDR}
@@ -533,14 +545,17 @@ services:
       AIKONOS_BASELINE_DRIFT_MULTIPLIER:            ${AIKONOS_BASELINE_DRIFT_MULTIPLIER:-2.0}
       AIKONOS_BASELINE_RETENTION_WINDOWS:           ${AIKONOS_BASELINE_RETENTION_WINDOWS:-10080}
     volumes:
-      - ./deploy/compose/tls:/tls:ro
+      # Only this service's leaf + ca.crt (compose-dev-ca.sh copies them in);
+      # the CA private key stays out of every runtime container.
+      - ./deploy/compose/tls/broker:/tls:ro
       - ./deploy/compose/llm-providers.yaml:/seed/llm-providers.yaml:ro
       - ./policies/opa:/policies:ro
       - workspace-data:/workspace
+    # 9092 (the policy bundle OPA downloads) is deliberately not published:
+    # OPA fetches it over `backend`, and the listener has no authentication.
     ports:
       - "9090:9090"   # broker north (gRPC)
       - "9091:9091"   # broker south (gRPC)
-      - "9092:9092"   # broker HTTP: the policy bundle OPA downloads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -581,8 +596,13 @@ services:
       dockerfile: Dockerfile
     profiles: [core, full]
     networks: [office]
+    # tini as PID 1: it reaps the orphans a killed job (or a double-forking
+    # model script) leaves behind, which node does not, so zombies cannot
+    # exhaust pids_limit; it also forwards SIGTERM on `docker stop`.
+    init: true
     environment:
       PORT:                   "8081"
+      AIKONOS_OFFICE_WORKER_TOKEN: ${AIKONOS_OFFICE_WORKER_TOKEN:?set AIKONOS_OFFICE_WORKER_TOKEN (openssl rand -hex 32)}
       OFFICE_JOB_TIMEOUT_MS:  ${AIKONOS_OFFICE_JOB_TIMEOUT_MS:-120000}
       OFFICE_MAX_CONCURRENCY: ${AIKONOS_OFFICE_MAX_CONCURRENCY:-4}
     healthcheck:
@@ -637,7 +657,7 @@ services:
       # container-facing JWKS while checking `iss` against the browser-facing
       # issuer (split-horizon — see deploy/compose/.env.local.example). It forwards the
       # verified token north; it no longer mints tokens (ROPC removed).
-      AIKONOS_OIDC_ISSUER:        ${AIKONOS_OIDC_ISSUER}
+      AIKONOS_OIDC_ISSUER:        ${AIKONOS_OIDC_ISSUER:?set AIKONOS_OIDC_ISSUER}
       AIKONOS_OIDC_JWKS_URL:      ${AIKONOS_OIDC_JWKS_URL:-}
       AIKONOS_OIDC_AUDIENCE:      ${AIKONOS_OIDC_AUDIENCE}
       # Claim names for principal + tenant. Default sub/tenant_id (Keycloak);
@@ -649,7 +669,7 @@ services:
       AIKONOS_SCHEDULER_TICK_MS:  ${AIKONOS_SCHEDULER_TICK_MS}
       # NATS for the in-gateway audit SSE bridge (absorbed from the removed
       # observability console). webui /audit/stream → gateway /api/audit/stream.
-      AIKONOS_NATS_URL:           nats://nats:4222
+      AIKONOS_NATS_URL:           nats://${AIKONOS_NATS_TOKEN}@nats:4222
       PORT:                      "8080"
       AIKONOS_API_KEY_PEPPER:     ${AIKONOS_API_KEY_PEPPER:-}
       AIKONOS_EXTERNAL_PORT:      "8090"
@@ -673,7 +693,7 @@ services:
       AIKONOS_GATEWAY_SUBAGENT_MAX_WIDTH:          ${AIKONOS_GATEWAY_SUBAGENT_MAX_WIDTH:-3}
       AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS:  ${AIKONOS_GATEWAY_SUBAGENT_BRANCH_TIMEOUT_MS:-180000}
     volumes:
-      - ./deploy/compose/tls:/tls:ro
+      - ./deploy/compose/tls/agent-gateway:/tls:ro
     ports:
       - "8080:8080"
       - "8090:8090"
@@ -777,10 +797,11 @@ services:
     environment:
       CORPUS_ROOT: /corpus
       PORT: "8060"
-    # Port published for local-test convenience.
-    # In production, dials aikonos-docs-mcp:8060 by container DNS over the mesh.
+    # Port published on host loopback only, for local-test convenience (the
+    # server has no authentication). In production, dials aikonos-docs-mcp:8060
+    # by container DNS over the mesh.
     ports:
-      - "8060:8060"
+      - "127.0.0.1:8060:8060"
     volumes:
       - ./docs:/corpus/docs:ro
       - ./README.md:/corpus/README.md:ro

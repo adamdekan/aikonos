@@ -26,12 +26,12 @@
     "jose": "^6.2.3",
     "nats": "^2.29.2",
     "pino": "^9.6.0",
+    "tsx": "^4.19.2",
     "typebox": "^1.1.38"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
     "ts-proto": "^2.11.8",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }
