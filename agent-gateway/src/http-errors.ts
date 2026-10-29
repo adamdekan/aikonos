@@ -139,6 +139,16 @@ export function sendError(reply: ErrorReply, log: Logger, err: unknown, opts: Se
 // tokens and anything past the first ~300 chars are dropped so a credential or
 // endpoint echoed back by an SDK cannot reach the browser.
 export function providerErrorMessage(raw: string): string {
+  const msg = redactProviderText(raw);
+  return `The model provider refused or failed this request${msg ? `: ${msg}` : "."}`;
+}
+
+// redactProviderText is providerErrorMessage's cleaning step on its own: the
+// provider's "message" if the text is a JSON error body, with URLs and
+// key-like tokens redacted, whitespace collapsed and a 300-char clip. The
+// parent-side provider calls (reason, vision, embed) use it on an upstream
+// error body before it reaches the model or a workflow result (F66).
+export function redactProviderText(raw: string): string {
   let msg = raw;
   const json = /"message"\s*:\s*("(?:[^"\\]|\\.)*")/.exec(raw);
   if (json) {
@@ -151,6 +161,5 @@ export function providerErrorMessage(raw: string): string {
     .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]")
     .replace(/\s+/g, " ")
     .trim();
-  if (msg.length > 300) msg = `${msg.slice(0, 300)}…`;
-  return `The model provider refused or failed this request${msg ? `: ${msg}` : "."}`;
+  return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
 }

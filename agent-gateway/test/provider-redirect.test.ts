@@ -1,4 +1,4 @@
-// G3 / L-23: the parent-side provider calls (reason, vision, embed) send the
+// G3 / L-23 (and F66): the parent-side provider calls (reason, vision, embed) send the
 // real key in api-key / x-api-key, which fetch's redirect handling does NOT
 // strip on a cross-origin hop (undici drops only authorization and cookie). A
 // provider (or a MITM on an http endpoint) answering 307 must fail the call
@@ -65,5 +65,25 @@ test("G3: a 307 from the provider fails reason/vision/embed calls and never reac
   } finally {
     await provider.close();
     await target.close();
+  }
+});
+
+test("F66: an upstream error body is redacted before it reaches the model", async () => {
+  const provider = await listen((req, res) => {
+    req.resume();
+    res.writeHead(400).end(JSON.stringify({ error: { message: "bad key sk-live-abcdefghijklmnop for https://internal.example/v1" } }));
+  });
+  try {
+    await assert.rejects(
+      callReasonProvider({
+        provider: { id: "anth", endpoint: provider.url, api: "anthropic-messages", apiKey: KEY },
+        modelId: "m",
+        instruction: "hi",
+        maxTokens: 16,
+      }),
+      (err: Error) => /upstream returned 400: bad key \[redacted\] for \[url\]/.test(err.message),
+    );
+  } finally {
+    await provider.close();
   }
 });

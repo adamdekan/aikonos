@@ -11,6 +11,14 @@
 // Phase-1-bounded impersonation (broker owner-grant still required). Closing this
 // gap requires running the child under a distinct OS uid with no read access to
 // /tls — a non-goal for Phase 2/3; see design §3b.
+//
+// M-24 / F55 (still open, defence-in-depth): fork({uid}) needs CAP_SETUID, which
+// the container drops. Node's --permission fs-read allowlist does not fit
+// either: the child loads through the tsx ESM hook, which needs worker threads
+// (--allow-worker, which Node itself warns can invalidate the permission
+// model), a writable cache dir and reads outside any app-dir allowlist. The
+// same uid also lets the child read /proc/<ppid>/environ. The real fix is a
+// separate container or uid for the child.
 import {
   ChildLink,
   type Channel,
