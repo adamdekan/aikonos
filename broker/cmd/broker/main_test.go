@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
 func TestInitMeter_DisabledWhenNoEndpoint(t *testing.T) {
@@ -75,5 +82,36 @@ func TestBuildConnectorCredentials_ReadsPerProviderKeys(t *testing.T) {
 
 	if len(creds) != 2 {
 		t.Fatalf("len(creds) = %d, want 2 (exactly the registered providers)", len(creds))
+	}
+}
+
+// F37: the unauthenticated bundle listener binds every interface only in dev
+// mode or when configured to.
+func TestBundleHTTPAddr(t *testing.T) {
+	log := zap.NewNop()
+	if got := bundleHTTPAddr("", false, log); got != "127.0.0.1:9092" {
+		t.Errorf("non-dev default = %q, want loopback", got)
+	}
+	if got := bundleHTTPAddr("", true, log); got != ":9092" {
+		t.Errorf("dev default = %q, want :9092", got)
+	}
+	if got := bundleHTTPAddr("10.0.0.5:9092", false, log); got != "10.0.0.5:9092" {
+		t.Errorf("configured = %q", got)
+	}
+}
+
+// G48/F200: requests over the cap are refused before the handler runs, except
+// on the exempt file-upload methods.
+func TestRequestSizeInterceptor(t *testing.T) {
+	big := &brokerv1.CreateTaskRequest{Prompt: strings.Repeat("a", 100)}
+	called := false
+	handler := func(context.Context, any) (any, error) { called = true; return nil, nil }
+	ic := requestSizeInterceptor(50, map[string]bool{"/exempt": true})
+
+	if _, err := ic(context.Background(), big, &grpc.UnaryServerInfo{FullMethod: "/other"}, handler); status.Code(err) != codes.ResourceExhausted || called {
+		t.Fatalf("oversized: err=%v called=%v, want ResourceExhausted and no handler", err, called)
+	}
+	if _, err := ic(context.Background(), big, &grpc.UnaryServerInfo{FullMethod: "/exempt"}, handler); err != nil || !called {
+		t.Fatalf("exempt: err=%v called=%v", err, called)
 	}
 }

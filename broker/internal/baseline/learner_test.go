@@ -3,6 +3,7 @@ package baseline
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -160,5 +161,28 @@ func TestLearner_Recompute_AggregatesListErrors(t *testing.T) {
 	}
 	if len(store.upserted) != 0 {
 		t.Fatalf("expected no baseline upsert when listing windows failed")
+	}
+}
+
+// G38: configs that crash the ticker or silently disable drift are refused.
+func TestConfig_Validate(t *testing.T) {
+	good := Config{WindowSize: time.Minute, LearnInterval: time.Hour, MinSampleWindows: 30, DriftMultiplier: 2, RetentionWindows: 10080}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	for name, mut := range map[string]func(*Config){
+		"zero window":          func(c *Config) { c.WindowSize = 0 },
+		"negative learn":       func(c *Config) { c.LearnInterval = -time.Second },
+		"zero min samples":     func(c *Config) { c.MinSampleWindows = 0 },
+		"retention < samples":  func(c *Config) { c.RetentionWindows = 10 },
+		"NaN multiplier":       func(c *Config) { c.DriftMultiplier = math.NaN() },
+		"Inf multiplier":       func(c *Config) { c.DriftMultiplier = math.Inf(1) },
+		"multiplier below one": func(c *Config) { c.DriftMultiplier = 0.5 },
+	} {
+		c := good
+		mut(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

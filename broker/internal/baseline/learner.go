@@ -28,6 +28,25 @@ type Config struct {
 	RetentionWindows int
 }
 
+// Validate rejects a config that would crash the broker (a zero ticker
+// interval) or silently switch drift detection off (G38): NaN/Inf or < 1
+// multiplier, or a retention too short to ever reach MinSampleWindows.
+func (c Config) Validate() error {
+	switch {
+	case c.WindowSize <= 0:
+		return fmt.Errorf("baseline: window_seconds must be > 0")
+	case c.LearnInterval <= 0:
+		return fmt.Errorf("baseline: learn_interval_seconds must be > 0")
+	case c.MinSampleWindows < 1:
+		return fmt.Errorf("baseline: min_sample_windows must be >= 1")
+	case c.RetentionWindows < c.MinSampleWindows:
+		return fmt.Errorf("baseline: retention_windows (%d) must be >= min_sample_windows (%d)", c.RetentionWindows, c.MinSampleWindows)
+	case !(c.DriftMultiplier >= 1) || math.IsInf(c.DriftMultiplier, 0): // !(>=) also rejects NaN
+		return fmt.Errorf("baseline: drift_multiplier must be a finite number >= 1, got %v", c.DriftMultiplier)
+	}
+	return nil
+}
+
 // percentile returns the pth (0..100) nearest-rank percentile of sorted
 // ascending values. Pure. Empty input returns 0.
 func percentile(sorted []float64, p float64) float64 {

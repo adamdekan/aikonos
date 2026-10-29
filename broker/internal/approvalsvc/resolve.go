@@ -14,6 +14,10 @@ import (
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
+// MaxReasonBytes caps an approve/deny or cancel reason (G48, F179): it is
+// stored as denial_reason and published verbatim.
+const MaxReasonBytes = 512
+
 // Resolve encapsulates the approve-and-mint logic shared by north
 // ApproveTask and south ApproveGatewayTask. It loads the pending approval,
 // checks FGA can_approve, resolves the vote, transitions the task, and mints
@@ -38,6 +42,9 @@ func Resolve(
 	argsDigest string,
 	stepUp StepUp,
 ) (respStatus brokerv1.TaskStatus, capTokens map[int32]string, eventType string, decision auditv1.PolicyDecision, err error) {
+	if len(reason) > MaxReasonBytes {
+		return 0, nil, "", 0, status.Errorf(codes.InvalidArgument, "reason longer than %d bytes", MaxReasonBytes)
+	}
 	ar, err := store.GetPendingApprovalByTask(ctx, tenantID, taskID)
 	if err != nil {
 		if err == pgx.ErrNoRows {

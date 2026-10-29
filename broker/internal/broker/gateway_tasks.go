@@ -50,6 +50,9 @@ func persistManagedTask(
 	t *db.Task,
 	traceID string,
 ) (*brokerv1.TaskHandle, error) {
+	if err := validateTaskFields(t); err != nil {
+		return nil, err
+	}
 	if err := store.Create(ctx, t); err != nil {
 		if errors.Is(err, db.ErrClientRequestIDExists) {
 			// Idempotent replay: a task with this (tenant, client_request_id) pair
