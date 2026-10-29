@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkOutputSizes, OutputTooLargeError, DEFAULT_MAX_OUTPUT_BYTES } from '../src/size-check.js';
+import {
+  checkOutputSizes,
+  OutputTooLargeError,
+  DEFAULT_MAX_OUTPUT_BYTES,
+  MAX_TOTAL_OUTPUT_BYTES,
+} from '../src/size-check.js';
 
 test('checkOutputSizes passes when every output is under the cap', () => {
   assert.doesNotThrow(() =>
@@ -65,4 +70,21 @@ test('checkOutputSizes fails the whole job on the first oversize file (no partia
       ),
     OutputTooLargeError
   );
+});
+
+// The broker cuts a response off past 88 MiB in total; 50 outputs each under
+// the per-file cap used to pass here and then fail there with a raw read error.
+test('checkOutputSizes refuses outputs whose total is past the total cap with 413', () => {
+  const outputs = Array.from({ length: 10 }, (_, i) => ({ filename: `p${i}.pdf`, buffer: { length: 9 << 20 } }));
+  assert.throws(
+    () => checkOutputSizes(outputs, 10 << 20),
+    (err) => {
+      assert.ok(err instanceof OutputTooLargeError);
+      assert.equal(err.statusCode, 413);
+      assert.equal(err.cap, MAX_TOTAL_OUTPUT_BYTES);
+      assert.match(err.message, /total cap/);
+      return true;
+    }
+  );
+  assert.doesNotThrow(() => checkOutputSizes(outputs.slice(0, 8), 10 << 20));
 });

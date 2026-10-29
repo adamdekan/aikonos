@@ -31,11 +31,13 @@ export async function withJobDir(fn, { root = tmpdir() } = {}) {
   }
 }
 
-// Only these keys of the worker's own environment reach a subprocess — the
-// worker's secrets (AIKONOS_OFFICE_WORKER_TOKEN) must not be handed to a
-// model-authored script. OPENBLAS_NUM_THREADS=1 keeps numpy's address-space
-// footprint independent of the host's core count, so run-script.js's
-// RLIMIT_AS fits on any host.
+// Only these keys of the worker's own environment reach a subprocess, so a
+// script does not inherit AIKONOS_OFFICE_WORKER_TOKEN through its env. That
+// is not secrecy: a script runs as the worker's uid and can read the server's
+// (and tini's) /proc/<pid>/environ directly — the shared-uid residual in
+// API.md "Job isolation", closed only by a per-job sandbox.
+// OPENBLAS_NUM_THREADS=1 keeps numpy's address-space footprint independent of
+// the host's core count, so run-script.js's RLIMIT_AS fits on any host.
 const PASSTHROUGH_ENV = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'];
 const SWEEP_ROUNDS = 20;
 
@@ -51,6 +53,11 @@ function jobEnv(extra, jobId) {
 // leave the job's process group, but they keep the environment they were
 // started with. Linux only: without /proc there is nothing to scan and the
 // tracked groups are the only kill.
+//
+// One environ in memory at a time, searched as raw bytes: this runs in the
+// shared server after every job, and a script can leave hundreds of untagged
+// processes with ~2 MiB environments behind. ponytail: sequential scan, a
+// few ms per round on a container's pid count.
 async function taggedPids(tag) {
   let entries;
   try {
@@ -58,19 +65,20 @@ async function taggedPids(tag) {
   } catch {
     return [];
   }
-  const hits = await Promise.all(
-    entries
-      .filter((e) => /^\d+$/.test(e) && Number(e) !== process.pid)
-      .map(async (e) => {
-        try {
-          const env = (await readFile(`/proc/${e}/environ`)).toString('latin1').split('\0');
-          return env.includes(tag) ? Number(e) : null;
-        } catch {
-          return null; // exited, or another uid's process
-        }
-      })
-  );
-  return hits.filter((pid) => pid !== null);
+  const first = Buffer.from(`${tag}\0`);
+  const inner = Buffer.from(`\0${tag}\0`);
+  const pids = [];
+  for (const e of entries) {
+    if (!/^\d+$/.test(e) || Number(e) === process.pid) continue;
+    let env;
+    try {
+      env = await readFile(`/proc/${e}/environ`);
+    } catch {
+      continue; // exited, or another uid's process
+    }
+    if (env.subarray(0, first.length).equals(first) || env.includes(inner)) pids.push(Number(e));
+  }
+  return pids;
 }
 
 // Runs handler({ spawn }) with a wall-clock timeout. handler must use the

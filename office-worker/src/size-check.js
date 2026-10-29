@@ -2,8 +2,13 @@
 // before the response is built — a single failing file fails the whole job,
 // never a partial multipart response.
 export class OutputTooLargeError extends Error {
+  // filename null: the outputs' total is over MAX_TOTAL_OUTPUT_BYTES.
   constructor(filename, size, cap) {
-    super(`output file "${filename}" is ${size} bytes, exceeding the ${cap}-byte cap`);
+    super(
+      filename === null
+        ? `outputs total ${size} bytes, exceeding the ${cap}-byte total cap`
+        : `output file "${filename}" is ${size} bytes, exceeding the ${cap}-byte cap`
+    );
     this.name = 'OutputTooLargeError';
     this.statusCode = 413;
     this.filename = filename;
@@ -24,6 +29,12 @@ export class InvalidCapError extends Error {
 // its 10 MiB workspace cap): no output is ever unbounded.
 export const DEFAULT_MAX_OUTPUT_BYTES = 50 << 20;
 
+// The broker holds a whole response in memory and cuts it off past 88 MiB
+// (office_client.go officeMaxResponseTotalBytes); refusing here, under that
+// with room for the result part, gives the caller a clear 413 instead of a
+// broker-side read error. A 50-range split or 50-page thumbnail can reach it.
+export const MAX_TOTAL_OUTPUT_BYTES = 80 << 20;
+
 // outputs: [{ filename, buffer, ... }]. maxBytes undefined/null means no cap
 // was supplied — DEFAULT_MAX_OUTPUT_BYTES applies. Any other value must be a
 // finite positive number: a non-numeric or degenerate cap (e.g. a string,
@@ -34,10 +45,15 @@ export function checkOutputSizes(outputs, maxBytes) {
   if (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes <= 0) {
     throw new InvalidCapError(maxBytes);
   }
+  let total = 0;
   for (const output of outputs) {
     const size = output.buffer.length;
     if (size > maxBytes) {
       throw new OutputTooLargeError(output.filename, size, maxBytes);
     }
+    total += size;
+  }
+  if (total > MAX_TOTAL_OUTPUT_BYTES) {
+    throw new OutputTooLargeError(null, total, MAX_TOTAL_OUTPUT_BYTES);
   }
 }

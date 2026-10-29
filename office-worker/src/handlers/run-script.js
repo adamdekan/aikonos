@@ -36,10 +36,10 @@ export const SCRIPT_MAX_AS_MB = Number(process.env.OFFICE_SCRIPT_MAX_AS_MB) || 1
 // RLIMIT_FSIZE: largest single file a script may write (outputs are capped at
 // the broker's 10 MiB anyway). It bounds one file, not the job's total.
 const SCRIPT_MAX_FILE_BYTES = 64 << 20;
-// RLIMIT_NPROC counts every task of the uid, host-wide, so it cannot be a
-// per-job cap; it is a fork-bomb backstop for a runner without compose's
-// pids_limit (512), set high enough not to trip on a busy dev host.
-const SCRIPT_MAX_PROCS = 1024;
+// No RLIMIT_NPROC: it counts every task of the real uid across the user
+// namespace (host-wide without userns-remap), so on a dev host where uid 1000
+// already runs ~1024 threads node aborts at startup. compose's pids_limit is
+// the per-container fork-bomb bound.
 
 // Bytes of each child stream kept in memory. Everything past it is drained
 // and dropped (never left in the pipe, or the child would block), keeping the
@@ -124,12 +124,11 @@ export async function runNodeScript({ jobDir, spawn, script, filename = 'script.
   // RLIMIT_AS headroom) does not grow with the host's core count.
   return runCommand({
     spawn,
-    ...limited(NODE_MAX_OLD_SPACE_MB + SCRIPT_MAX_AS_MB, process.execPath, [
-      `--max-old-space-size=${NODE_MAX_OLD_SPACE_MB}`,
-      '--v8-pool-size=2',
-      scriptPath,
-      ...args,
-    ]),
+    ...limited(
+      process.execPath,
+      [`--max-old-space-size=${NODE_MAX_OLD_SPACE_MB}`, '--v8-pool-size=2', scriptPath, ...args],
+      NODE_MAX_OLD_SPACE_MB + SCRIPT_MAX_AS_MB
+    ),
     cwd: jobDir,
   });
 }
@@ -139,24 +138,21 @@ export async function runNodeScript({ jobDir, spawn, script, filename = 'script.
 export async function runPythonScript({ jobDir, spawn, script, filename = 'script.py', args = [] }) {
   const scriptPath = join(jobDir, filename);
   await writeFile(scriptPath, script, 'utf8');
-  return runCommand({ spawn, ...limited(SCRIPT_MAX_AS_MB, VENV_PYTHON, [scriptPath, ...args]), cwd: jobDir });
+  return runCommand({ spawn, ...limited(VENV_PYTHON, [scriptPath, ...args]), cwd: jobDir });
 }
 
-// Wraps a model-authored script's interpreter in prlimit (util-linux, in the
-// base image). Fixed helpers and soffice are not wrapped: they are not
-// attacker code and legitimately need more address space. A missing prlimit
-// fails the op (spawn error) rather than running the script unbounded.
-function limited(asMb, cmd, args) {
+// Wraps cmd in prlimit (util-linux, in the base image) as { cmd, args } for
+// runCommand. Used for model-authored scripts and for the python programs
+// that parse a caller document (fixed helpers, markitdown): those are not
+// attacker code, but a forged zip header or a deflate bomb makes them
+// decompress past any size check. pandoc gets its own heap cap (docx.js);
+// soffice is not wrapped: it legitimately needs more address space. A missing
+// prlimit fails the op (spawn error) rather than running the program
+// unbounded.
+export function limited(cmd, args, asMb = SCRIPT_MAX_AS_MB) {
   return {
     cmd: 'prlimit',
-    args: [
-      `--as=${asMb * 1024 * 1024}`,
-      `--fsize=${SCRIPT_MAX_FILE_BYTES}`,
-      `--nproc=${SCRIPT_MAX_PROCS}`,
-      '--',
-      cmd,
-      ...args,
-    ],
+    args: [`--as=${asMb * 1024 * 1024}`, `--fsize=${SCRIPT_MAX_FILE_BYTES}`, '--', cmd, ...args],
   };
 }
 
@@ -164,7 +160,7 @@ function limited(asMb, cmd, args) {
 // under src/scripts/ — used by the declarative XML-edit and extract ops that
 // take no user code, only a script name relative to SCRIPTS_DIR plus args.
 export function runFixedPythonScript({ jobDir, spawn, script, args = [] }) {
-  return runCommand({ spawn, cmd: VENV_PYTHON, args: [join(SCRIPTS_DIR, script), ...args], cwd: jobDir });
+  return runCommand({ spawn, ...limited(VENV_PYTHON, [join(SCRIPTS_DIR, script), ...args]), cwd: jobDir });
 }
 
 // Rejects a caller-supplied filename (params.output_filename) that would

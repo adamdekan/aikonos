@@ -67,7 +67,7 @@ multipart, never partial output parts.
 | `413` | An ingress cap was exceeded (see "Ingress caps"), or an output artifact exceeded `max_output_bytes`. Error names the offending part and the cap. |
 | `500` | Handler error / unexpected failure. |
 | `501` | Op is in the route table but not yet implemented. |
-| `503` | Every job slot is busy and the wait queue (2 × `OFFICE_MAX_CONCURRENCY`) is full; retry later. |
+| `503` | Every job slot is busy and the wait queue (2 × `OFFICE_MAX_CONCURRENCY`) is full, or the request bodies already held in memory leave no room for this one (see "Ingress caps"); retry later. |
 | `504` | Job exceeded its wall-clock timeout; any subprocess (group) the handler spawned was killed. |
 
 ## Ingress caps
@@ -93,18 +93,33 @@ knob no deployment has needed to move.
 The broker's cap covers the **compressed** input only. The fixed zip helpers
 (`docx/pptx.edit`, `format:"xml"` extract) therefore refuse any archive member
 over 50 MiB uncompressed, an archive over 200 MiB uncompressed, and an edit
-that would grow a member past 50 M characters; `xlsx.extract` clamps `range`
-to the sheet's used area and refuses more than 1 M cells; `pptx.thumbnail`
-clamps `dpi` to [50, 300] and `max_pages` to [1, 50].
+that would grow a member past 50 M characters. The 50 MiB holds even when a
+forged header declares a smaller size (no member is ever decompressed past
+it), only stored and deflated members are read, and a regex `replace` with
+group references (`\1`, `\g<0>`) is bounded before it is expanded.
+`xlsx.extract` clamps `range` to the sheet's used area and refuses more than
+1 M cells; `pptx.thumbnail` clamps `dpi` to [50, 300] and `max_pages` to
+[1, 50].
+
+Request bodies are held in memory from parsing until their job ends. A
+request whose declared `Content-Length` (or, without one, the most a request
+can carry: 16 × 11 MiB + 8 × 2 MiB) would take the bodies held at once past
+512 MiB gets `503` before its body is read.
 
 Model-authored scripts (`*.create`, `xlsx.edit`) run under `prlimit`:
 `RLIMIT_AS` of `OFFICE_SCRIPT_MAX_AS_MB` (default 1024) for python, and that
 plus the V8 heap for node, which also gets `--max-old-space-size`
 (`OFFICE_NODE_MAX_OLD_SPACE_MB`, default 256; it bounds the JS heap only —
 Buffers live outside it, which is why the address-space limit is the real
-bound); `RLIMIT_FSIZE` of 64 MiB per file written; `RLIMIT_NPROC` as a
-fork-bomb backstop (it counts the uid's tasks container-wide, so compose's
-`pids_limit` is the real bound). Same not-in-compose caveat for both knobs.
+bound); `RLIMIT_FSIZE` of 64 MiB per file written. The python programs
+that parse a caller document — the fixed helpers and `markitdown`
+(`pptx.extract`) — run under the same python limits, and `pandoc`
+(`docx.extract`) under a GHC heap cap of the same size (`+RTS -M`; its
+runtime cannot start under `RLIMIT_AS`), as a backstop for any
+decompression the caps above miss.
+There is no `RLIMIT_NPROC`: it counts every task of the uid host-wide (no
+userns-remap), so it aborted node on busy dev hosts; compose's `pids_limit`
+is the fork-bomb bound. Same not-in-compose caveat for both knobs.
 These are **per job**: `OFFICE_MAX_CONCURRENCY` jobs at their limits can still
 sum past the container's 2g `mem_limit`, which stays the backstop, and the
 512 MiB `/tmp` tmpfs is shared by every job (no per-job disk quota). Each
@@ -117,7 +132,9 @@ checked against the request's `params.max_output_bytes`. The **first**
 oversize artifact fails the **whole** job with a single `413` error — no
 partial multipart response, no output parts at all reach the caller. An
 absent `max_output_bytes` applies the server default (50 MiB); any other
-non-positive or non-numeric value is a `400`.
+non-positive or non-numeric value is a `400`. The outputs together may not
+exceed 80 MiB (also `413`), under the broker's 88 MiB whole-response cap — a
+50-range `split` or 50-page `thumbnail` of large pages can reach it.
 
 ## Timeout semantics
 
@@ -159,8 +176,12 @@ the same uid in one container. The job dir's `0700` mode keeps other uids
 out but not a concurrent job's script, which can read or overwrite another
 in-flight job's files while both run. The post-job sweep stops a script from
 persisting into later jobs, but a process that rewrites its own environment
-before the sweep (`exec env -i ...`) escapes it. A per-job sandbox (PID and
-mount namespace, e.g. bwrap/nsjail, or gVisor) is the fix.
+before the sweep (`exec env -i ...`) escapes it. A script can also read the
+worker's own environment, including `AIKONOS_OFFICE_WORKER_TOKEN`, from
+`/proc/<pid>/environ` (the minimal job env only keeps it from being
+inherited); the token authenticates calls to this worker only, on its
+internal network. A per-job sandbox (PID and mount namespace, e.g.
+bwrap/nsjail, or gVisor) is the fix for all three.
 
 ## Checkpoint 2: script-runtime ops
 
@@ -209,8 +230,9 @@ Request: `file` part + `params`. Two modes:
   Response: no file parts, `result: { content: "<markdown>" }`.
 - **`format: "xml"`:** `params: { "format": "xml", "member": string
   (required, e.g. "word/document.xml"), "pattern"?: string (Python regex,
-  at most 1024 chars), "context_chars"?: non-negative integer (default 200),
-  "echo_cap"?: non-negative integer (default 20000 chars) }`. Without
+  at most 1024 chars), "context_chars"?: integer in [0, 2000] (default 200),
+  "echo_cap"?: integer in [0, 200000] (default 20000 chars) }`; a value
+  outside its range is a `400`. Without
   `pattern`, returns the member's content truncated to `echo_cap`. With `pattern`, returns each match with `context_chars` of
   surrounding context, accumulating until `echo_cap` would be exceeded (then
   stops, `truncated: true`) — the full member is never returned for a large

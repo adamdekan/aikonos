@@ -139,6 +139,9 @@ test('runNodeScript spawns node under prlimit with the per-job heap ceiling ahea
     // alone does not bound Buffers.
     assert.equal(cmd, 'prlimit');
     assert.ok(wrapped.some((a) => a.startsWith('--as=')), 'an address-space limit must be set');
+    // RLIMIT_NPROC counts the uid's tasks host-wide: on a busy dev host it
+    // made node abort at startup (uv_thread_create), so it must not be set.
+    assert.ok(!wrapped.some((a) => a.startsWith('--nproc')), 'no RLIMIT_NPROC');
     const sep = wrapped.indexOf('--');
     assert.equal(wrapped[sep + 1], process.execPath);
     const args = wrapped.slice(sep + 2);

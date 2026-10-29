@@ -5,7 +5,8 @@
  * corpusRoot is captured from createApp closure — never re-read from env per call.
  */
 
-import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import express from 'express';
+import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -22,6 +23,22 @@ const LIST_PAGE_MAX = 200;
 
 function csv(value) {
   return value ? value.split(',').map((v) => v.trim()).filter(Boolean) : undefined;
+}
+
+// The SDK's Host check (the one createMcpExpressApp installs), plus the
+// stderr line it does not write: a DNS-rebinding probe must leave a trace,
+// like an Origin denial below. The SDK check is synchronous, so a denial is
+// a call that returned without reaching next().
+function auditedHostValidation(allowedHosts) {
+  const validate = hostHeaderValidation(allowedHosts);
+  return (req, res, next) => {
+    let allowed = false;
+    validate(req, res, () => {
+      allowed = true;
+    });
+    if (allowed) return next();
+    process.stderr.write(`[docs-mcp] denied request with Host ${JSON.stringify(req.headers.host)}\n`);
+  };
 }
 
 // MCP clients here are server-side (the broker); only a browser sends
@@ -45,8 +62,10 @@ function originValidation(allowedOrigins) {
 export function createApp({ corpusRoot, allowedHosts = DEFAULT_ALLOWED_HOSTS, allowedOrigins = [] }) {
   // Host validation runs before the JSON body parser, so a rebinding request
   // is refused (403) without its body being read.
-  const app = createMcpExpressApp({ allowedHosts });
+  const app = express();
   app.disable('x-powered-by');
+  app.use(auditedHostValidation(allowedHosts));
+  app.use(express.json());
   app.use(originValidation(allowedOrigins));
 
   // Health probe — Node socket connect in compose healthcheck (no curl in slim image).

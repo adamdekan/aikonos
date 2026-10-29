@@ -5,6 +5,8 @@ import {
   buildMultipartResponse,
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_UPLOAD_FILES,
+  MAX_FIELDS,
+  MAX_FIELD_BYTES,
 } from './multipart.js';
 import { KNOWN_OPS, HANDLERS, SOFFICE_OPS } from './ops.js';
 import { createSemaphore } from './semaphore.js';
@@ -29,6 +31,12 @@ const SOFFICE_TIMEOUT_MS = 180000;
 // that drips (or never sends) its body cannot hold a slot; it gets this long
 // to deliver it. Same not-an-env-var reasoning as SOFFICE_TIMEOUT_MS.
 const BODY_TIMEOUT_MS = 30000;
+
+// Request bodies are held in memory from parsing until their job ends, and
+// they are parsed before a job slot is taken, so their total is bounded on its
+// own: 16 files x 11 MiB per request times every open connection is past the
+// container's 2g mem_limit. Same not-an-env-var reasoning as SOFFICE_TIMEOUT_MS.
+const MAX_BUFFERED_BYTES = 512 << 20;
 
 // Shared secret the broker sends (X-Aikonos-Office-Token). The worker runs
 // model-authored scripts, so the internal `office` network is not the only
@@ -89,11 +97,17 @@ export function createServer({
   // memory for requests nobody is still waiting on.
   maxQueue = maxConcurrency * 2,
   bodyTimeoutMs = BODY_TIMEOUT_MS,
+  maxBufferedBytes = MAX_BUFFERED_BYTES,
   token = process.env[TOKEN_ENV] || '',
 } = {}) {
   const semaphore = createSemaphore(maxConcurrency, maxQueue);
   const uploadLimits = { maxUploadBytes, maxUploadFiles };
-  const ctx = { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits, bodyTimeoutMs, token };
+  // ponytail: charged by declared size, not bytes read — node never reads a
+  // body past its Content-Length, and the caps reject anything over the most
+  // one request can carry, which is what a chunked body is charged.
+  const perRequest = maxUploadFiles * maxUploadBytes + MAX_FIELDS * MAX_FIELD_BYTES;
+  const buffered = { bytes: 0, max: maxBufferedBytes, perRequest };
+  const ctx = { jobTimeoutMs, sofficeTimeoutMs, semaphore, buffered, uploadLimits, bodyTimeoutMs, token };
 
   const server = http.createServer((req, res) => {
     handleRequest(req, res, ctx).catch((err) => {
@@ -112,7 +126,7 @@ export function createServer({
 }
 
 async function handleRequest(req, res, ctx) {
-  const { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits, bodyTimeoutMs, token } = ctx;
+  const { jobTimeoutMs, sofficeTimeoutMs, semaphore, buffered, uploadLimits, bodyTimeoutMs, token } = ctx;
   const url = new URL(req.url, 'http://office-worker');
 
   // Unauthenticated: the compose healthcheck probes it without the secret.
@@ -150,11 +164,21 @@ async function handleRequest(req, res, ctx) {
     return;
   }
 
+  const declared = req.headers['content-length'];
+  const charge = Math.min(declared === undefined ? Infinity : Number(declared), buffered.perRequest);
+  if (buffered.bytes + charge > buffered.max) {
+    console.warn(`office-worker: refused ${opKey}: ${buffered.bytes} request bytes already buffered`);
+    sendJson(res, 503, { error: 'office-worker is busy (request memory budget in use); retry later' });
+    return;
+  }
+  buffered.bytes += charge;
+
   let parsed;
   try {
     parsed = await parseWithTimeout(req, uploadLimits, bodyTimeoutMs);
     await semaphore.acquire();
   } catch (err) {
+    buffered.bytes -= charge;
     sendJson(res, err.statusCode || 500, { error: err.message });
     return;
   }
@@ -178,5 +202,6 @@ async function handleRequest(req, res, ctx) {
     sendJson(res, status, { error: err.message });
   } finally {
     semaphore.release();
+    buffered.bytes -= charge;
   }
 }
