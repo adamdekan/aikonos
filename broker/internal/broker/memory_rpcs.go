@@ -301,7 +301,7 @@ func (s *BrokerService) VerifyMemoryConcept(ctx context.Context, req *brokerv1.V
 	}
 	verifier := memoryHumanVerifier + user
 	entry := map[string]any{"by": verifier, "at": time.Now().UTC().Format(time.RFC3339)}
-	meta, err := s.amendMemoryConcept(ctx, tenant, user, verifier, seg, req, req.GetContentSha256(), "verified", memoryVerifiedEvent, func(fm map[string]any) {
+	meta, err := s.amendMemoryConcept(ctx, tenant, verifier, seg, req, req.GetContentSha256(), "verified", func(fm map[string]any) {
 		// A non-list `verified` is unusable to TrustTier anyway, so a malformed
 		// one is replaced rather than appended to.
 		existing, _ := fm["verified"].([]any)
@@ -310,6 +310,7 @@ func (s *BrokerService) VerifyMemoryConcept(ctx context.Context, req *brokerv1.V
 	if err != nil {
 		return nil, err
 	}
+	s.emitMemoryEvent(ctx, tenant, user, seg, req, memoryVerifiedEvent)
 	return &brokerv1.VerifyMemoryConceptResponse{Meta: meta}, nil
 }
 
@@ -323,12 +324,13 @@ func (s *BrokerService) DeprecateMemoryConcept(ctx context.Context, req *brokerv
 	if err != nil {
 		return nil, err
 	}
-	meta, err := s.amendMemoryConcept(ctx, tenant, user, memoryUserActor+user, seg, req, "", "deprecated", memoryDeprecatedEvent, func(fm map[string]any) {
+	meta, err := s.amendMemoryConcept(ctx, tenant, memoryUserActor+user, seg, req, "", "deprecated", func(fm map[string]any) {
 		fm["status"] = "deprecated"
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.emitMemoryEvent(ctx, tenant, user, seg, req, memoryDeprecatedEvent)
 	return &brokerv1.DeprecateMemoryConceptResponse{Meta: meta}, nil
 }
 
@@ -348,14 +350,16 @@ func (s *BrokerService) DeleteMemoryConcept(ctx context.Context, req *brokerv1.D
 		return nil, status.Errorf(codes.InvalidArgument, "%v", verr)
 	}
 
-	defer memorybundle.LockBundle(tenant, seg)()
-
-	if derr := s.deps.Workspace.Local.Delete(ctx, tenant, seg, memorybundle.ConceptPath(id)); derr != nil {
-		return nil, fileError("delete memory concept", derr)
-	}
-	if err := s.finishMemoryMutation(ctx, tenant, user, memoryUserActor+user, seg, req, "deleted", memoryDeletedEvent); err != nil {
+	if err := func() error {
+		defer memorybundle.LockBundle(tenant, seg)()
+		if derr := s.deps.Workspace.Local.Delete(ctx, tenant, seg, memorybundle.ConceptPath(id)); derr != nil {
+			return fileError("delete memory concept", derr)
+		}
+		return s.finishMemoryMutation(ctx, tenant, memoryUserActor+user, seg, req, "deleted")
+	}(); err != nil {
 		return nil, err
 	}
+	s.emitMemoryEvent(ctx, tenant, user, seg, req, memoryDeletedEvent)
 	return &brokerv1.DeleteMemoryConceptResponse{}, nil
 }
 
@@ -364,8 +368,9 @@ func (s *BrokerService) DeleteMemoryConcept(ctx context.Context, req *brokerv1.D
 // amendMemoryConcept is the read-modify-write Verify and Deprecate share, held
 // under the bundle lock for the whole concept+index+log sequence so a concurrent
 // memory.write cannot interleave its own index regeneration. A non-empty
-// wantSHA must match the file as loaded under that lock (G19).
-func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, user, actor, seg string, ref memoryConceptRef, wantSHA, verb, eventType string, mutate func(map[string]any)) (*brokerv1.MemoryConceptMeta, error) {
+// wantSHA must match the file as loaded under that lock (G19). The caller
+// audits after it returns, with the lock released.
+func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, actor, seg string, ref memoryConceptRef, wantSHA, verb string, mutate func(map[string]any)) (*brokerv1.MemoryConceptMeta, error) {
 	be := s.deps.Workspace.Local
 	id := ref.GetId()
 
@@ -394,15 +399,15 @@ func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, user, ac
 	if perr != nil {
 		return nil, status.Errorf(codes.Internal, "re-parse amended memory concept: %v", perr)
 	}
-	if err := s.finishMemoryMutation(ctx, tenant, user, actor, seg, ref, verb, eventType); err != nil {
+	if err := s.finishMemoryMutation(ctx, tenant, actor, seg, ref, verb); err != nil {
 		return nil, err
 	}
 	return memoryMeta(ref.GetScope(), ref.GetGroupId(), ref.GetAgentId(), id, c, time.Now().UTC()), nil
 }
 
-// finishMemoryMutation regenerates the derived index, appends the log line and
-// audits. Callers hold the bundle lock.
-func (s *BrokerService) finishMemoryMutation(ctx context.Context, tenant, user, actor, seg string, ref memoryConceptRef, verb, eventType string) error {
+// finishMemoryMutation regenerates the derived index and appends the log line.
+// Callers hold the bundle lock.
+func (s *BrokerService) finishMemoryMutation(ctx context.Context, tenant, actor, seg string, ref memoryConceptRef, verb string) error {
 	be := s.deps.Workspace.Local
 	if _, err := memorybundle.RegenerateIndex(ctx, be, tenant, seg); err != nil {
 		return status.Errorf(codes.Internal, "regenerate memory index: %v", err)
@@ -411,13 +416,13 @@ func (s *BrokerService) finishMemoryMutation(ctx context.Context, tenant, user, 
 	if err := memorybundle.AppendLogEntry(ctx, be, tenant, seg, entry); err != nil {
 		return status.Errorf(codes.Internal, "append memory log: %v", err)
 	}
-	s.emitMemoryEvent(ctx, tenant, user, seg, ref, eventType)
 	return nil
 }
 
-// emitMemoryEvent records a management mutation. Fire-and-forget: the mutation
-// already landed, so an audit failure is recorded and never returned
-// (workflowsvc.Publish precedent).
+// emitMemoryEvent records a management mutation. The mutation already landed,
+// so an audit failure is recorded and never returned (workflowsvc.Publish
+// precedent). Emit waits for the audit store, so callers emit only after
+// releasing the bundle lock: a slow store must not stall memory.write.
 func (s *BrokerService) emitMemoryEvent(ctx context.Context, tenant, user, seg string, ref memoryConceptRef, eventType string) {
 	if s.deps.Audit == nil {
 		return

@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/adamdekan/aikonos/broker/internal/notify"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
 
@@ -143,5 +145,151 @@ func TestKeySegment_ConfinesTenantToItsPrefix(t *testing.T) {
 	key := objectKey(&auditv1.AuditEvent{EventId: "e/../x", TenantId: "victim/2026/10/29/x"})
 	if n := strings.Count(key, "/"); n != 4 {
 		t.Fatalf("object key %q must have exactly the 4 layout separators, got %d", key, n)
+	}
+}
+
+// F30 review: a walk that runs out of time comes back Truncated, before the
+// caller's deadline, instead of failing the RPC with no verdict at all.
+func TestReader_VerifyChain_OutOfTimeIsIncompleteNotError(t *testing.T) {
+	old := verifyMargin
+	verifyMargin = 200 * time.Millisecond
+	defer func() { verifyMargin = old }()
+	events, _ := buildChain(t, 1000, "k")
+	store := &fakeStore{objects: map[string][]byte{}, getDelay: 20 * time.Millisecond}
+	for i, e := range events { // 25 day directories, in chain order
+		store.objects[fmt.Sprintf("tenant1/2026/01/%02d/%s.json", i/40+1, e.EventId)] = mustMarshalEvent(e)
+	}
+	r := &Reader{store: store, cfg: Config{SigningKey: "k"}, logger: nopLogger()}
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+
+	report, _, err := r.VerifyChain(ctx, "tenant1")
+	if err != nil {
+		t.Fatalf("out of time must give an incomplete report, not an error: %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("VerifyChain must return before the caller's deadline")
+	}
+	if !report.Truncated || report.OK || report.Skipped != 0 || report.Total >= len(events) {
+		t.Fatalf("want Truncated, !OK, no skips, partial Total; got %+v", report)
+	}
+	// The verified part is a gap-free prefix: an intact chain cut short shows
+	// no break, so the verdict is "incomplete", never "broken".
+	if len(report.Breaks) != 0 || len(report.SignatureFailures) != 0 {
+		t.Fatalf("a cut walk over an intact chain must report no breaks, got %+v", report.Breaks)
+	}
+}
+
+// F31 review: a key-resolution failure names no error: a Vault client error
+// carries the internal Vault URL and KV path.
+func TestVerifyChain_KeyResolutionFailureLeaksNoError(t *testing.T) {
+	events, _ := buildChain(t, 1, "k")
+	broken := &fakeKeySource{forVersionErr: errors.New(`Get "http://vault:8200/v1/secret/data/aikonos/audit?version=0": connection refused`)}
+	report := VerifyChainVersioned(context.Background(), events, broken)
+	if len(report.SignatureFailures) != 1 {
+		t.Fatalf("want 1 signature failure, got %+v", report.SignatureFailures)
+	}
+	if d := report.SignatureFailures[0].Detail; d != "signing key for version 0 unavailable" {
+		t.Fatalf("detail %q must be the fixed string", d)
+	}
+}
+
+// fakeBus records what Emit publishes to the live stream.
+type fakeBus struct {
+	subjects []string
+	payloads [][]byte
+}
+
+func (b *fakeBus) Enabled() bool { return true }
+func (b *fakeBus) Publish(_ context.Context, subject string, payload []byte) error {
+	b.subjects = append(b.subjects, subject)
+	b.payloads = append(b.payloads, payload)
+	return nil
+}
+func (b *fakeBus) Subscribe(string) (notify.Subscription, error) { return nil, nil }
+func (b *fakeBus) Close() error                                  { return nil }
+
+// F28 review: an event dropped on a full queue still reaches the live stream
+// the alerting engine consumes, so a stalled store cannot hide a denial.
+func TestEmit_DroppedEventStillPublished(t *testing.T) {
+	bus := &fakeBus{}
+	e := &Emitter{
+		queue:       make(chan uploadJob), // no worker: always full
+		dropTimeout: time.Millisecond,
+		logger:      zap.NewNop(),
+		lastHash:    map[string]string{},
+		keySource:   staticKeySource{},
+		bus:         bus,
+	}
+	deny := ev("denied", "t1")
+	deny.Decision = auditv1.PolicyDecision_DENY
+	if err := e.Emit(context.Background(), deny); err == nil {
+		t.Fatal("Emit must report the drop")
+	}
+	if len(bus.payloads) != 1 || bus.subjects[0] != notify.AuditSubject("t1") {
+		t.Fatalf("dropped event must be published once on the tenant audit subject, got %v", bus.subjects)
+	}
+	if got, err := unmarshalAuditEvent(bus.payloads[0]); err != nil || got.EventId != "denied" || got.Decision != auditv1.PolicyDecision_DENY {
+		t.Fatalf("published payload is not the dropped event: %v %v", got, err)
+	}
+}
+
+// F28 review: a write that landed although the client saw an error counts as
+// persisted, so the next event does not fork the chain.
+func TestEmit_LandedWriteDespiteErrorLeavesNoFork(t *testing.T) {
+	ctx := context.Background()
+	e, _ := NewEmitter(ctx, Config{SigningKey: "k"})
+	store := &fakeStore{objects: map[string][]byte{}, putLandsErr: errors.New("timeout after write")}
+	old := putBackoff
+	putBackoff = time.Millisecond
+	defer func() { putBackoff = old }()
+	e.logger = zap.NewNop()
+	e.startSink(ctx, store, 8)
+	defer e.Close()
+
+	if err := e.Emit(ctx, ev("a", "t1")); err != nil {
+		t.Fatalf("a write that landed is persisted: %v", err)
+	}
+	store.putLandsErr = nil
+	if err := e.Emit(ctx, ev("b", "t1")); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reader{store: store, cfg: Config{SigningKey: "k"}, logger: nopLogger()}
+	report, _, err := r.VerifyChain(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || report.Total != 2 {
+		t.Fatalf("want one unforked chain of 2, got %+v", report)
+	}
+}
+
+// F28 review: only the ALLOW per-RPC envelope skips the wait for persistence;
+// a denied envelope and every other event report a failed write.
+func TestEmit_OnlyAllowedRPCEnvelopeSkipsTheWait(t *testing.T) {
+	ctx := context.Background()
+	e, _ := NewEmitter(ctx, Config{})
+	store := &fakeStore{objects: map[string][]byte{}, putErr: errors.New("minio down")}
+	old := putBackoff
+	putBackoff = time.Millisecond
+	defer func() { putBackoff = old }()
+	e.logger = zap.NewNop()
+	e.startSink(ctx, store, 8)
+	defer e.Close()
+
+	for _, tc := range []struct {
+		eventType string
+		decision  auditv1.PolicyDecision
+		wantErr   bool
+	}{
+		{RPCEventType, auditv1.PolicyDecision_ALLOW, false},
+		{RPCEventType, auditv1.PolicyDecision_DENY, true},
+		{"aikonos.memory.verified", auditv1.PolicyDecision_ALLOW, true},
+	} {
+		x := ev(tc.eventType+tc.decision.String(), "t1")
+		x.EventType, x.Decision = tc.eventType, tc.decision
+		if err := e.Emit(ctx, x); (err != nil) != tc.wantErr {
+			t.Errorf("%s %s: err=%v, want error=%v", tc.eventType, tc.decision, err, tc.wantErr)
+		}
 	}
 }

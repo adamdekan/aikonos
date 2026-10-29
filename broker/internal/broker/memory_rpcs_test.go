@@ -9,6 +9,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1071,5 +1072,68 @@ func TestVerifyMemoryConcept_TagCapRefused(t *testing.T) {
 		ContentSha256: conceptSHA(t, deps.Workspace.Local, testTenantUUID, memUser, "facts/tags")})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("over-cap tags: want FailedPrecondition, got %v", err)
+	}
+}
+
+// lockProbeAudit records which events were emitted while the bundle lock was
+// held: Emit waits for the audit store, so emitting under the lock would stall
+// every memory.write on the bundle for as long as the store is slow.
+type lockProbeAudit struct {
+	tenant, seg string
+	mu          sync.Mutex
+	seen, held  []string
+}
+
+func (p *lockProbeAudit) Emit(_ context.Context, e *auditv1.AuditEvent) error {
+	got := make(chan func(), 1)
+	go func() { got <- memorybundle.LockBundle(p.tenant, p.seg) }()
+	held := false
+	select {
+	case unlock := <-got:
+		unlock()
+	case <-time.After(500 * time.Millisecond):
+		held = true
+		go func() { (<-got)() }() // take and drop it once the RPC lets go
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen = append(p.seen, e.EventType)
+	if held {
+		p.held = append(p.held, e.EventType)
+	}
+	return nil
+}
+
+func TestMemoryMutations_AuditAfterReleasingTheBundleLock(t *testing.T) {
+	user := memUser + ".audit-unlocked"
+	deps, _ := memoryDeps(t, memoryFGA(t, &fakeFGA{}), t.TempDir())
+	probe := &lockProbeAudit{tenant: testTenantUUID, seg: user}
+	deps.Audit = probe
+	svc := NewBrokerService(deps)
+	seedConcept(t, deps.Workspace.Local, testTenantUUID, user, "facts/sla", slaSpec())
+	ctx := ctxWithIdentity(testTenantUUID, user)
+
+	got, err := svc.GetMemoryConcept(ctx, &brokerv1.GetMemoryConceptRequest{Scope: "user", Id: "facts/sla"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla", ContentSha256: got.ContentSha256}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeprecateMemoryConcept(ctx, &brokerv1.DeprecateMemoryConceptRequest{Scope: "user", Id: "facts/sla"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DeleteMemoryConcept(ctx, &brokerv1.DeleteMemoryConceptRequest{Scope: "user", Id: "facts/sla"}); err != nil {
+		t.Fatal(err)
+	}
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	for _, want := range []string{memoryVerifiedEvent, memoryDeprecatedEvent, memoryDeletedEvent} {
+		if !slices.Contains(probe.seen, want) {
+			t.Errorf("%s not emitted (saw %v)", want, probe.seen)
+		}
+	}
+	if len(probe.held) != 0 {
+		t.Fatalf("audited while holding the bundle lock: %v", probe.held)
 	}
 }

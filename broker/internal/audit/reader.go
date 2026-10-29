@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -24,9 +25,19 @@ const maxScanObjects = 5000
 // and keeps only each event's link (~250 bytes), so the cap bounds memory and
 // run time rather than coverage of any realistic tenant; past it the report is
 // Truncated and OK=false. A var so tests can lower it.
-// ponytail: one full walk per Verify call; verify from a persisted checkpoint
-// of the last verified head hash if trails outgrow this.
+// ponytail: one walk per Verify call, cut here or verifyMargin before the
+// caller's deadline (an "incomplete" verdict); verify from a persisted,
+// signed checkpoint of the last verified head if trails outgrow a deadline.
 var maxVerifyObjects = 1_000_000
+
+// verifyWorkers bounds the concurrent object GETs of one VerifyChain walk.
+const verifyWorkers = 16
+
+// verifyMargin is how long before the caller's deadline VerifyChain stops
+// walking, to leave time to build and return the report: a walk that runs out
+// of time comes back Truncated ("incomplete"), never as an error. A var so
+// tests can shorten it.
+var verifyMargin = 2 * time.Second
 
 // maxLimit is the maximum page size a caller may request.
 const maxLimit = 200
@@ -309,8 +320,9 @@ func (r *Reader) walkOldest(ctx context.Context, prefix string, visit func(objMe
 // (ChainReport{}, false, nil) when the store is not configured, and a non-nil
 // error when a listing fails — callers must propagate it rather than treat it
 // as a clean report. An object that cannot be fetched or decoded counts in
-// Skipped, and a walk cut at maxVerifyObjects sets Truncated; either leaves
-// part of the chain unverified, so OK is false.
+// Skipped, and a walk cut at maxVerifyObjects, or stopped verifyMargin before
+// ctx's deadline, sets Truncated; either leaves part of the chain unverified,
+// so OK is false. Objects are fetched verifyWorkers at a time.
 func (r *Reader) VerifyChain(ctx context.Context, tenant string) (ChainReport, bool, error) {
 	if r.store == nil {
 		return ChainReport{}, false, nil
@@ -320,31 +332,57 @@ func (r *Reader) VerifyChain(ctx context.Context, tenant string) (ChainReport, b
 		keySource = staticKeySource{key: r.cfg.SigningKey}
 	}
 	v := newChainVerifier(ctx, keySource)
-	seen, skipped, truncated := 0, 0, false
-	_, err := r.walkOldest(ctx, keySegment(tenant)+"/", func(m objMeta) bool {
-		if seen == maxVerifyObjects {
+	walkCtx := ctx
+	if dl, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		walkCtx, cancel = context.WithDeadline(ctx, dl.Add(-verifyMargin))
+		defer cancel()
+	}
+	var (
+		mu      sync.Mutex // guards v and skipped
+		wg      sync.WaitGroup
+		slots   = make(chan struct{}, verifyWorkers)
+		skipped int
+	)
+	seen, truncated := 0, false
+	_, err := r.walkOldest(walkCtx, keySegment(tenant)+"/", func(m objMeta) bool {
+		if seen == maxVerifyObjects || walkCtx.Err() != nil {
 			truncated = true
 			return false
 		}
 		seen++
-		data, err := r.store.get(ctx, m.key)
-		if err != nil {
-			r.logger.Warn("audit reader: get object failed in VerifyChain, skipping", zap.String("key", m.key), zap.Error(err))
-			skipped++
-			return true
-		}
-		ev, err := unmarshalAuditEvent(data)
-		if err != nil {
-			r.logger.Warn("audit reader: undecodable object in VerifyChain, skipping", zap.String("key", m.key), zap.Error(err))
-			skipped++
-			return true
-		}
-		v.add(ev)
+		slots <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			// ctx, not walkCtx: a started fetch completes, so a cut walk has
+			// verified a gap-free prefix (a gap reads as a missing predecessor).
+			data, err := r.store.get(ctx, m.key)
+			var ev *auditv1.AuditEvent
+			if err == nil {
+				ev, err = unmarshalAuditEvent(data)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				r.logger.Warn("audit reader: unreadable object in VerifyChain, skipping", zap.String("key", m.key), zap.Error(err))
+				skipped++
+				return
+			}
+			v.add(ev)
+		}()
 		return true
 	})
+	wg.Wait()
+	if err != nil && walkCtx.Err() != nil {
+		err, truncated = nil, true // the listing ran out of time, not the store
+	}
 	if err != nil {
 		r.logger.Warn("audit reader: list objects failed in VerifyChain", zap.String("tenant", tenant), zap.Error(err))
 		return ChainReport{}, true, err
+	}
+	for version, kerr := range v.keyErrs {
+		r.logger.Warn("audit reader: signing key unavailable in VerifyChain", zap.Int32("signing_key_version", version), zap.Error(kerr))
 	}
 	report := v.report()
 	report.Truncated = truncated
