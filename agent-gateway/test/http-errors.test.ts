@@ -14,6 +14,12 @@ test("grpcToHttp: PERMISSION_DENIED → 403", () => {
   assert.equal(grpcToHttp(grpcErr(status.PERMISSION_DENIED)), 403);
 });
 
+test("grpcToHttp: UNAUTHENTICATED (session revoked) → 401 with the broker's reason", () => {
+  const err = grpcErr(status.UNAUTHENTICATED, "session revoked; sign in again");
+  assert.equal(grpcToHttp(err), 401);
+  assert.equal(trimmedErrorMessage(err), "session revoked; sign in again");
+});
+
 test("grpcToHttp: NOT_FOUND → 404", () => {
   assert.equal(grpcToHttp(grpcErr(status.NOT_FOUND)), 404);
 });

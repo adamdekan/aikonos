@@ -23,6 +23,10 @@ function grpcCode(err: unknown): number | undefined {
 // code outside this table — map to 500.
 export function grpcToHttp(err: unknown): number {
   switch (grpcCode(err)) {
+    // A revoked session (AG-06) or a rejected bearer: 401 sends the web UI back
+    // to sign-in instead of a dead-end 500.
+    case status.UNAUTHENTICATED:
+      return 401;
     case status.PERMISSION_DENIED:
       return 403;
     case status.NOT_FOUND:
