@@ -13,7 +13,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/policy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -137,5 +139,86 @@ func TestCancelTask_InternalGetError(t *testing.T) {
 	_, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.CancelTaskRequest{TenantId: testTenantUUID, TaskId: "x"})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expected Internal, got %v", err)
+	}
+}
+
+// newCancelSvcWithFGA wires CancelTask to a fake OpenFGA so the tenant-admin
+// fallback (requireTenantAdmin) is exercised for a non-owner caller.
+func newCancelSvcWithFGA(t *testing.T, store taskStore, fga *fakeFGA) *BrokerService {
+	t.Helper()
+	srv := fga.server(t)
+	t.Cleanup(srv.Close)
+	eng, err := policy.NewEngine(context.Background(), policy.Config{
+		OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	em, err := audit.NewEmitter(context.Background(), audit.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewBrokerService(Deps{Logger: zap.NewNop(), Policy: eng, Audit: em, Tasks: store})
+}
+
+func TestCancelTask_TenantAdmin_Succeeds(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateExecuting)
+	store := &fakeCancelTaskStore{task: task}
+	svc := newCancelSvcWithFGA(t, store, &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}})
+
+	_, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "admin@example.com"), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: task.TaskID.String(),
+	})
+	if err != nil {
+		t.Fatalf("admin cancel: %v", err)
+	}
+	if task.State != db.TaskStateCancelled {
+		t.Fatalf("state = %s, want CANCELLED", task.State)
+	}
+}
+
+func TestCancelTask_OtherMember_PermissionDenied(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateExecuting)
+	store := &fakeCancelTaskStore{task: task}
+	svc := newCancelSvcWithFGA(t, store, &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}})
+
+	_, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "eve@example.com"), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: task.TaskID.String(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+	if len(store.transitions) != 0 {
+		t.Fatalf("task must not transition, got %v", store.transitions)
+	}
+}
+
+// A delegated task belongs to its recipient; the delegator may not cancel it.
+func TestCancelTask_Delegator_PermissionDenied(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateExecuting)
+	delegator := "bob@example.com"
+	task.DelegatedByUserID = &delegator
+	store := &fakeCancelTaskStore{task: task}
+	svc := newCancelSvcWithFGA(t, store, &fakeFGA{})
+
+	_, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, delegator), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: task.TaskID.String(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+}
+
+// An FGA transport error on the admin fallback fails closed.
+func TestCancelTask_AdminCheckError_FailsClosed(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateExecuting)
+	store := &fakeCancelTaskStore{task: task}
+	svc := newCancelSvcWithFGA(t, store, &fakeFGA{checkErr: true})
+
+	_, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "eve@example.com"), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: task.TaskID.String(),
+	})
+	if status.Code(err) != codes.Internal || len(store.transitions) != 0 {
+		t.Fatalf("want Internal and no transition, got %v / %v", err, store.transitions)
 	}
 }
