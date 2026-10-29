@@ -95,11 +95,15 @@ func agentDirGuard(rel string) error {
 // missing file → NotFound, a remote-backend 403 → PermissionDenied, a full
 // quota → ResourceExhausted, everything else → Internal. The Internal message
 // is generic (F41): the underlying error carries absolute volume paths and
-// remote backend bodies, so it is logged here and never returned. The same
-// holds for the remote-backend sentinels: they wrap DB connect errors, OBO
-// exchange errors and Graph URLs, so the caller gets a fixed message (the
-// sentinel's own text for reconnect, which the webui keys off).
+// remote backend bodies, so it is logged here and never returned. The three
+// remote-backend sentinels likewise return only their own text: they wrap DB
+// connect errors, OBO exchange errors and Graph URLs (drive and item ids), and
+// the webui keys off the reconnect sentinel's text.
 func fileError(verb string, err error) error {
+	backend := func(code codes.Code, sentinel error) error {
+		slog.Default().Warn("workspace file operation failed", "op", verb, "error", err)
+		return status.Error(code, sentinel.Error())
+	}
 	switch {
 	case errors.Is(err, workspacefs.ErrQuota):
 		return status.Errorf(codes.ResourceExhausted, "%v", err)
@@ -112,14 +116,11 @@ func fileError(verb string, err error) error {
 	case errors.Is(err, workspacefs.ErrIntegrityMismatch):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	case errors.Is(err, workspacefs.ErrUnavailable):
-		slog.Default().Warn("workspace backend unavailable", "op", verb, "error", err)
-		return status.Error(codes.Unavailable, verb+" temporarily unavailable")
+		return backend(codes.Unavailable, workspacefs.ErrUnavailable)
 	case errors.Is(err, workspacefs.ErrReconnectRequired):
-		slog.Default().Warn("workspace backend needs reconnect", "op", verb, "error", err)
-		return status.Error(codes.FailedPrecondition, workspacefs.ErrReconnectRequired.Error())
+		return backend(codes.FailedPrecondition, workspacefs.ErrReconnectRequired)
 	case errors.Is(err, workspacefs.ErrForbidden):
-		slog.Default().Warn("workspace backend denied", "op", verb, "error", err)
-		return status.Error(codes.PermissionDenied, workspacefs.ErrForbidden.Error())
+		return backend(codes.PermissionDenied, workspacefs.ErrForbidden)
 	case errors.Is(err, fs.ErrNotExist):
 		return status.Error(codes.NotFound, "file not found")
 	default:

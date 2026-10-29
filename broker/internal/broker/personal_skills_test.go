@@ -407,6 +407,43 @@ func TestSendSkillTransfer_AuditEmitted(t *testing.T) {
 	}
 }
 
+// TestSendSkillTransfer_LoopBoundedBySenderQuota (F33): every send snapshots
+// into a fresh staging segment, but all of them are charged to the sender's
+// quota together with the sender's own files, so a send loop stops with
+// ResourceExhausted instead of filling the shared volume, and the failed
+// snapshot leaves no partial segment behind.
+func TestSendSkillTransfer_LoopBoundedBySenderQuota(t *testing.T) {
+	root := t.TempDir()
+	store := newMemEnvelopeStore()
+	deps, _ := xferDeps(t, xferGrantedFGA(t, xferAlice, xferBob), root, store)
+	ws := workspacefs.New(root)
+	ws.SetQuota(3*int64(len(demoSkillMd)), 0)
+	deps.Workspace.Local = ws
+	svc := NewBrokerService(deps)
+	writeXferSkillMd(t, ws, testTenantUUID, xferAlice, "demo")
+
+	sent := 0
+	for ; sent < 10; sent++ {
+		_, err := svc.SendSkillTransfer(ctxWithIdentity(testTenantUUID, xferAlice), &brokerv1.SendSkillTransferRequest{
+			TenantId: testTenantUUID, UserId: xferAlice, Name: "demo",
+			Recipient: &brokerv1.EnvelopeRecipient{Target: &brokerv1.EnvelopeRecipient_UserId{UserId: xferBob}},
+		})
+		if err != nil {
+			if status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("send %d: got %v, want ResourceExhausted", sent+1, err)
+			}
+			break
+		}
+	}
+	// The quota holds three copies: the sender's own SKILL.md and two snapshots.
+	if sent != 2 {
+		t.Fatalf("sends before the quota stopped them: %d, want 2", sent)
+	}
+	if dirs := xferStagingDirs(t, root, testTenantUUID); len(dirs) != sent {
+		t.Errorf("staging segments %v, want one per successful send (%d)", dirs, sent)
+	}
+}
+
 // ── injection flags surfaced in preview ───────────────────────────────────────
 
 // TestSendSkillTransfer_InjectionFlags_SurfaceInPreview verifies a crafted

@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/adamdekan/aikonos/broker/internal/workspacepath"
 )
 
@@ -41,8 +43,43 @@ const (
 	DefaultQuotaEntries = 20000
 )
 
-// MaxListEntries caps one ListDir result. Past it ListDir returns the first
-// MaxListEntries entries together with ErrListTruncated.
+// stagingPrefix starts every skill-transfer staging segment: a pseudo-user
+// segment a transfer snapshot is copied into (personalskill.Snapshot).
+const stagingPrefix = "xfer-"
+
+// StagingSeg names a fresh staging segment for a snapshot taken from owner's
+// workspace. As a pseudo-user it would get an empty quota of its own on every
+// transfer, so the name carries the owner's tag (F33): the owner's dir and all
+// of their staging segments share one quota (see quotaPool).
+func StagingSeg(owner string) string {
+	return stagingPrefix + ownerTag(sanitizeSeg(owner)) + "-" + uuid.NewString()
+}
+
+// ownerTag is the 16-hex-digit tag of a user dir name (the owner's
+// sanitizeSeg form), so quotaPool can find the owner's dir from a staging
+// segment's tag by hashing the tenant dir's entries.
+func ownerTag(dirName string) string {
+	sum := sha256.Sum256([]byte(dirName))
+	return hex.EncodeToString(sum[:8])
+}
+
+// stagingOwnerTag returns the owner tag of a StagingSeg segment, and false
+// for every other user segment (an untagged pre-F33 "xfer-<uuid>" included).
+func stagingOwnerTag(user string) (string, bool) {
+	rest, ok := strings.CutPrefix(user, stagingPrefix)
+	if !ok || len(rest) < 17 || rest[16] != '-' {
+		return "", false
+	}
+	if _, err := hex.DecodeString(rest[:16]); err != nil {
+		return "", false
+	}
+	return rest[:16], true
+}
+
+// MaxListEntries caps one ListDir result, raised to the entry quota when that
+// is larger: a workspace within its quota always lists in full (every caller
+// but the list RPC treats a truncated listing as an error). Past the cap
+// ListDir returns the first entries together with ErrListTruncated.
 const MaxListEntries = 5000
 
 // Sentinel errors let the RPC layer map to gRPC codes: ErrInvalidPath/ErrTooLarge
@@ -60,8 +97,8 @@ var (
 	// user's workspace past its byte or entry quota.
 	ErrQuota = errors.New("workspacefs: workspace quota exceeded")
 
-	// ErrListTruncated is returned by ListDir, alongside the first
-	// MaxListEntries entries, when the listing was cut short. A caller that
+	// ErrListTruncated is returned by ListDir, alongside the entries up to
+	// its cap, when the listing was cut short. A caller that
 	// can show a partial listing checks for it; every other caller sees an
 	// error and fails closed.
 	ErrListTruncated = errors.New("workspacefs: listing truncated")
@@ -279,13 +316,68 @@ func (s *Store) signingEnabled() bool { return len(s.sessionKey) > 0 }
 // user's or another path's record no longer verifies there.
 func (s *Store) sign(tenant, user, clean string, data []byte) string {
 	rel, _ := filepath.Rel(s.userDir(tenant, user), clean)
+	return s.signSegs(sanitizeSeg(tenant), sanitizeSeg(user), filepath.ToSlash(rel), data)
+}
+
+// signSegs is sign over the on-disk tenant and user dir names.
+func (s *Store) signSegs(tenantSeg, userSeg, rel string, data []byte) string {
 	mac := hmac.New(sha256.New, s.sessionKey)
-	for _, part := range []string{sanitizeSeg(tenant), sanitizeSeg(user), filepath.ToSlash(rel)} {
+	for _, part := range []string{tenantSeg, userSeg, rel} {
 		mac.Write([]byte(part))
 		mac.Write([]byte{0})
 	}
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// ResignLegacySessions is the F40 migration: every session record whose
+// sidecar is the pre-F40 content-only MAC under the current key gets a
+// path-bound sidecar, so it still reads once allowUnsignedSessions is off. A
+// record with no sidecar, or one matching neither MAC, is left as it is for
+// the operator to review and counted in unverified. Idempotent; run before
+// serving (it does not take the per-user locks).
+func (s *Store) ResignLegacySessions() (resigned, unverified int, err error) {
+	if s.root == "" || !s.signingEnabled() {
+		return 0, 0, errors.New("workspacefs: re-signing sessions needs a workspace root and a session signing key")
+	}
+	root, err := filepath.EvalSymlinks(s.root)
+	if err != nil {
+		return 0, 0, err
+	}
+	dirs, _ := filepath.Glob(filepath.Join(root, "*", "*", filepath.FromSlash(sessionsDir)))
+	for _, dir := range dirs {
+		if real, rerr := filepath.EvalSymlinks(dir); rerr != nil || real != dir {
+			continue // F44: never follow a planted symlink out of the user dir
+		}
+		userDir := filepath.Dir(filepath.Dir(dir))
+		tenantSeg, userSeg := filepath.Base(filepath.Dir(userDir)), filepath.Base(userDir)
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.HasSuffix(path, sigSuffix) {
+				return err
+			}
+			data, _, rerr := s.readAtClean(path)
+			sig, _, serr := s.readAtClean(path + sigSuffix)
+			rel, _ := filepath.Rel(userDir, path)
+			bound := s.signSegs(tenantSeg, userSeg, filepath.ToSlash(rel), data)
+			switch {
+			case rerr != nil || serr != nil:
+				unverified++
+			case hmac.Equal(sig, []byte(bound)):
+			case hmac.Equal(sig, []byte(s.signLegacy(data))):
+				if werr := os.WriteFile(path+sigSuffix, []byte(bound), 0o640); werr != nil {
+					return werr
+				}
+				resigned++
+			default:
+				unverified++
+			}
+			return nil
+		})
+		if err != nil {
+			return resigned, unverified, err
+		}
+	}
+	return resigned, unverified, nil
 }
 
 // signLegacy is the pre-F40 content-only MAC, accepted only while
@@ -437,7 +529,7 @@ func (s *Store) List(ctx context.Context, tenant, user string) ([]FileInfo, erro
 // exclusion, both as the scope target itself and as a descendant); a
 // non-existent dir returns an empty slice with a nil error rather than an
 // error, so callers can treat "not there yet" and "empty" identically. More
-// than MaxListEntries entries returns the first MaxListEntries with
+// entries than the list cap (see MaxListEntries) returns the first ones with
 // ErrListTruncated.
 func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive bool) ([]FileInfo, error) {
 	base := s.userDir(tenant, user)
@@ -459,10 +551,11 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 		return nil, fmt.Errorf("workspacefs: list: %w", err)
 	}
 
+	limit := max(MaxListEntries, s.quotaEntries)
 	var out []FileInfo
 	add := func(fi FileInfo) error {
-		if len(out) >= MaxListEntries {
-			return ErrListTruncated // stops the walk; out keeps the first MaxListEntries
+		if len(out) >= limit {
+			return ErrListTruncated // stops the walk; out keeps the first limit entries
 		}
 		out = append(out, fi)
 		return nil
@@ -711,6 +804,9 @@ func (s *Store) Write(ctx context.Context, tenant, user, rel string, data []byte
 // overwrite counts only its net growth, and every directory the change has to
 // create counts as an entry. Caller holds lockUser.
 //
+// A user's quota covers their own dir plus their staging segments (see
+// StagingSeg), whichever of them the write lands in.
+//
 // ponytail: walks the user dir on every Write/Mkdir — bounded by the entry
 // quota itself; keep a per-user counter if write latency ever shows it.
 func (s *Store) checkQuota(tenant, user, clean string, size int64) error {
@@ -718,28 +814,38 @@ func (s *Store) checkQuota(tenant, user, clean string, size int64) error {
 		return nil
 	}
 	base := s.userDir(tenant, user)
-	var usedBytes int64
-	usedEntries := 0
-	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if path == base {
-			return nil
-		}
-		usedEntries++
-		if !d.IsDir() {
-			if info, ierr := d.Info(); ierr == nil {
-				usedBytes += info.Size()
-			}
-		}
-		return nil
-	})
+	tag, staging := stagingOwnerTag(user)
+	if !staging {
+		tag = ownerTag(filepath.Base(base))
+	}
+	dirs, err := quotaPool(filepath.Dir(base), tag)
 	if err != nil {
 		return fmt.Errorf("workspacefs: quota: %w", err)
+	}
+	var usedBytes int64
+	usedEntries := 0
+	for _, dir := range dirs {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if path == dir {
+				return nil
+			}
+			usedEntries++
+			if !d.IsDir() {
+				if info, ierr := d.Info(); ierr == nil {
+					usedBytes += info.Size()
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("workspacefs: quota: %w", err)
+		}
 	}
 	newEntries := 0
 	if info, lerr := os.Lstat(clean); lerr == nil {
@@ -761,6 +867,78 @@ func (s *Store) checkQuota(tenant, user, clean string, size int64) error {
 		return fmt.Errorf("%w: %d entry limit", ErrQuota, s.quotaEntries)
 	}
 	return nil
+}
+
+// SweepStaging removes every transfer staging segment last modified before
+// cutoff (F33). Past the transfer TTL nothing reads a segment any more —
+// preview and accept refuse an expired envelope — yet one nobody answered
+// would stay on the volume, charged to its sender, for good. Returns how many
+// segments it removed.
+func (s *Store) SweepStaging(cutoff time.Time) (int, error) {
+	if s.root == "" {
+		return 0, nil
+	}
+	tenants, err := os.ReadDir(s.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	removed := 0
+	for _, t := range tenants {
+		if !t.IsDir() {
+			continue
+		}
+		tenantDir := filepath.Join(s.root, t.Name())
+		segs, err := os.ReadDir(tenantDir)
+		if err != nil {
+			return removed, err
+		}
+		for _, seg := range segs {
+			info, ierr := seg.Info()
+			if ierr != nil || !seg.IsDir() || !isStagingSeg(seg.Name()) || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(tenantDir, seg.Name())); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// isStagingSeg reports whether name is a staging segment: a StagingSeg name
+// or a pre-F33 "xfer-<uuid>". A user dir that merely starts with "xfer-" is
+// never one.
+func isStagingSeg(name string) bool {
+	rest, ok := strings.CutPrefix(name, stagingPrefix)
+	if _, tagged := stagingOwnerTag(name); tagged {
+		rest = rest[17:]
+	}
+	_, err := uuid.Parse(rest)
+	return ok && len(rest) == 36 && err == nil
+}
+
+// quotaPool lists the dirs under tenantDir that share tag's quota: the
+// owner's own dir (the one whose name hashes to tag) and every staging
+// segment tagged with it.
+func quotaPool(tenantDir, tag string) ([]string, error) {
+	entries, err := os.ReadDir(tenantDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && (strings.HasPrefix(e.Name(), stagingPrefix+tag+"-") || ownerTag(e.Name()) == tag) {
+			dirs = append(dirs, filepath.Join(tenantDir, e.Name()))
+		}
+	}
+	return dirs, nil
 }
 
 // Delete removes a file, or an empty directory. A non-empty directory is
@@ -811,7 +989,8 @@ func (s *Store) Delete(ctx context.Context, tenant, user, rel string) error {
 // NEW location whenever the destination resolves under SessionsDirPrefix and
 // signing is enabled; otherwise any sidecar at the destination is removed so
 // one can't linger for a path that is no longer (or never was) a session
-// record. Directories are never signed (no single content blob to hash).
+// record. Directories are never signed (no single content blob to hash). A
+// session record that fails readAndVerify is not moved at all (F40).
 func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileInfo, error) {
 	defer s.lockUser(tenant, user)()
 	fromClean, fromIsSession, err := s.resolveSession(tenant, user, from)
@@ -836,6 +1015,13 @@ func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileIn
 		// Sidecars are bound to their record's path (F40), and a directory
 		// move would carry them somewhere they no longer verify.
 		return FileInfo{}, fmt.Errorf("%w: directories are not moved into, within or out of %s", ErrInvalidPath, sessionsDir)
+	}
+	if fromIsSession {
+		// The destination is re-signed below, so a tampered record must not
+		// move: that would launder it into a validly signed one.
+		if _, _, _, err := s.readAndVerify(tenant, user, from); err != nil {
+			return FileInfo{}, err
+		}
 	}
 	if _, err := os.Lstat(toClean); err == nil {
 		return FileInfo{}, fmt.Errorf("%w: %q", ErrExists, to)

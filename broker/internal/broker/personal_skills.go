@@ -57,6 +57,11 @@ const (
 	// skillTransferExpiry mirrors SendEnvelope's ordinary delegation expiry —
 	// no dedicated transfer TTL is called for in the spec.
 	skillTransferExpiry = 72 * time.Hour
+
+	// StagingSweepAge is how old a staging segment must be before the
+	// broker's sweep removes it (workspacefs.SweepStaging): the transfer TTL,
+	// plus an hour so an accept already under way can finish.
+	StagingSweepAge = skillTransferExpiry + time.Hour
 )
 
 // ── FGA skill gate ────────────────────────────────────────────────────────────
@@ -231,9 +236,16 @@ func (s *BrokerService) SendSkillTransfer(ctx context.Context, req *brokerv1.Sen
 
 	// Snapshot once, shared by every fan-out envelope (spec step 2-3): a
 	// group send must not re-read/re-scan the sender's folder per recipient.
-	stagingSeg := "xfer-" + uuid.New().String()
+	// The segment is charged to the sender's quota (F33), so looping sends
+	// cannot fill the shared volume; a snapshot that fails part-way (e.g. on
+	// that quota) is GC'd rather than left behind.
+	stagingSeg := workspacefs.StagingSeg(sender)
 	result, err := personalskill.Snapshot(ctx, be, tenant, sender, name, stagingSeg, toolproxy.ScanForInjection)
 	if err != nil {
+		s.gcStagingSegment(ctx, be, tenant, stagingSeg)
+		if errors.Is(err, workspacefs.ErrQuota) {
+			return nil, status.Error(codes.ResourceExhausted, workspacefs.ErrQuota.Error())
+		}
 		return nil, status.Errorf(codes.FailedPrecondition, "snapshot personal skill: %v", err)
 	}
 

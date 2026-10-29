@@ -57,10 +57,16 @@ const minSecretBytes = 32
 // weakSecret reports why a key is unfit outside dev mode (F199, F227) — a
 // shipped placeholder (the example env files' "<...-CHANGE-ME>" and
 // "...-change-me" values are public) or too short — or "" when it is fine.
-func weakSecret(key string) string {
+//
+// The "<" prefix test runs only on operator text (binary=false): a random
+// binary key (Vault-generated or base64-decoded) starts with 0x3C one time in
+// 256. The change-me substrings stay on for binary keys — the local example's
+// session key decodes to "...-change-me" — since random bytes hit them about
+// once in 2^56.
+func weakSecret(key string, binary bool) string {
 	l := strings.ToLower(key)
 	switch {
-	case strings.HasPrefix(l, "<"), strings.Contains(l, "change-me"), strings.Contains(l, "changeme"):
+	case !binary && strings.HasPrefix(l, "<"), strings.Contains(l, "change-me"), strings.Contains(l, "changeme"):
 		return "is a placeholder"
 	case len(key) < minSecretBytes:
 		return fmt.Sprintf("is shorter than %d bytes", minSecretBytes)
@@ -68,12 +74,18 @@ func weakSecret(key string) string {
 	return ""
 }
 
-// secretsGuard runs weakSecret over every named secret value. Like
-// devModeGuard it returns the findings, and a fatal error only when devMode is
-// false: dev mode keeps the shipped local keys working, with a WARN.
-func secretsGuard(devMode bool, secrets map[string]string) (weak []string, fatal error) {
-	for name, value := range secrets {
-		if why := weakSecret(value); why != "" {
+// secretsGuard runs weakSecret over every named secret: text holds
+// operator-supplied strings used as keys as-is, keys holds binary key bytes.
+// Like devModeGuard it returns the findings, and a fatal error only when
+// devMode is false: dev mode keeps the shipped local keys working, with a WARN.
+func secretsGuard(devMode bool, text map[string]string, keys map[string][]byte) (weak []string, fatal error) {
+	for name, value := range text {
+		if why := weakSecret(value, false); why != "" {
+			weak = append(weak, name+" "+why)
+		}
+	}
+	for name, value := range keys {
+		if why := weakSecret(string(value), true); why != "" {
 			weak = append(weak, name+" "+why)
 		}
 	}

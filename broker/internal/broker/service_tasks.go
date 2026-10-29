@@ -127,15 +127,24 @@ func (s *BrokerService) CreateTask(ctx context.Context, req *brokerv1.CreateTask
 	return persistManagedTask(ctx, s.deps, s.deps.Tasks, t, traceID)
 }
 
+// maxEnvelopeTasks caps how many tasks one envelope stamps as delegated by
+// its sender (F139). Every run of a chat started from the inbox is one task,
+// so this is the delegated chat's turn budget.
+const maxEnvelopeTasks = 50
+
 // envelopeDelegator resolves CreateTaskRequest.envelope_id (AG-17): when the
-// caller is the addressed recipient of an unexpired envelope in their tenant
-// that they have ACCEPTED, it returns the envelope, whose sender and limits
-// the task then carries (applyEnvelopeLimits). F139: a delivered or dismissed
-// envelope the recipient never accepted does not let them stamp arbitrary
-// tasks as delegated_by the sender. Anything else is
+// caller is the addressed recipient of a live (pending, delivered, accepted or
+// dismissed) envelope in their tenant, it returns the envelope, whose sender
+// and limits the task then carries (applyEnvelopeLimits). F139: at most
+// maxEnvelopeTasks tasks per envelope, so the recipient cannot stamp an
+// unbounded stream of unrelated work as delegated_by the sender for the
+// envelope's lifetime. Anything else is
 // ignored rather than failing the chat — the task is just not marked
 // delegated — and audited as aikonos.broker.task.delegation_ignored with the
 // reason.
+//
+// ponytail: count-then-create, so concurrent runs can pass the cap by a few;
+// a row lock on the envelope would make it exact.
 func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, owner, envelopeID string) *db.Envelope {
 	reason := "envelope_not_found"
 	var env *db.Envelope
@@ -152,10 +161,17 @@ func (s *BrokerService) envelopeDelegator(ctx context.Context, traceID, tenant, 
 			reason = "envelope_not_recipient"
 		case !envelopeUsable(env):
 			reason = "envelope_not_active"
-		case env.State != db.EnvelopeAccepted:
-			reason = "envelope_not_accepted"
 		default:
-			return env
+			n, err := s.deps.Tasks.CountEnvelopeTasks(ctx, tenant, owner, envelopeID)
+			switch {
+			case err != nil:
+				s.deps.Logger.Error("CreateTask: envelope task count failed", zap.Error(err))
+				reason = "envelope_count_failed"
+			case n >= maxEnvelopeTasks:
+				reason = "envelope_task_cap"
+			default:
+				return env
+			}
 		}
 	}
 	ctxStruct, _ := structpb.NewStruct(map[string]any{"reason": reason, "envelope_id": envelopeID})

@@ -97,6 +97,23 @@ func TestFileError_BackendSentinelsDoNotLeakDetail(t *testing.T) {
 	}
 }
 
+// F41: a remote backend wraps upstream detail (token errors, Graph URLs with
+// drive and item ids) around its sentinel; only the sentinel's own text
+// reaches the caller, and reconnect_needed stays grep-stable.
+func TestFileError_BackendSentinelsHideDetail(t *testing.T) {
+	upstream := errors.New(`Get "https://graph.microsoft.com/v1.0/drives/b!drive123/items/item456": dial tcp: i/o timeout`)
+	for _, sentinel := range []error{workspacefs.ErrUnavailable, workspacefs.ErrReconnectRequired, workspacefs.ErrForbidden} {
+		err := fileError("read", fmt.Errorf("onedrivefs: %w: %v", sentinel, upstream))
+		msg := status.Convert(err).Message()
+		if msg != sentinel.Error() {
+			t.Errorf("%v: message %q, want the sentinel's own text", sentinel, msg)
+		}
+	}
+	if msg := status.Convert(fileError("read", fmt.Errorf("x: %w", workspacefs.ErrReconnectRequired))).Message(); !strings.Contains(msg, "reconnect_needed") {
+		t.Errorf("reconnect message %q lost reconnect_needed", msg)
+	}
+}
+
 func TestUploadWorkspaceFile_RoundTrip(t *testing.T) {
 	svc := filesSvc(t, t.TempDir())
 	ctx := ctxWithIdentity(testTenantUUID, "alice@example.com")

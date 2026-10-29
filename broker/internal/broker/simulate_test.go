@@ -148,6 +148,11 @@ func (n *noopTaskStore) CountEnvelopesByPayloadRef(_ context.Context, _, _ strin
 	return 0, nil
 }
 
+func (n *noopTaskStore) CountEnvelopeTasks(_ context.Context, _, _, _ string) (int, error) {
+	n.t.Fatalf("SimulatePolicy must not touch the task store: CountEnvelopeTasks")
+	return 0, nil
+}
+
 // compile-time check that noopTaskStore satisfies taskStore
 var _ taskStore = (*noopTaskStore)(nil)
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -791,7 +792,9 @@ func TestQuota_WriteAndMkdirStop(t *testing.T) {
 	}
 }
 
-// F33: ListDir stops at MaxListEntries and says so.
+// F33: a workspace within its entry quota lists in full even past
+// MaxListEntries (every caller but the list RPC fails on a truncated
+// listing); with no entry quota, ListDir stops at MaxListEntries and says so.
 func TestListDir_Truncated(t *testing.T) {
 	s := New(t.TempDir())
 	dir := filepath.Join(s.userDir(tenant, user), "many")
@@ -804,11 +807,152 @@ func TestListDir_Truncated(t *testing.T) {
 		}
 	}
 	got, err := s.ListDir(context.Background(), tenant, user, "", true)
+	if err != nil || len(got) != MaxListEntries+2 {
+		t.Fatalf("within the default quota: got %d entries, %v; want all %d", len(got), err, MaxListEntries+2)
+	}
+
+	s.SetQuota(0, 0)
+	got, err = s.ListDir(context.Background(), tenant, user, "", true)
 	if !errors.Is(err, ErrListTruncated) {
 		t.Fatalf("got %v, want ErrListTruncated", err)
 	}
 	if len(got) != MaxListEntries {
 		t.Fatalf("got %d entries, want %d", len(got), MaxListEntries)
+	}
+}
+
+// F33: a transfer staging segment is a pseudo-user, but it does not get a
+// fresh quota per transfer: the owner's dir and every staging segment of
+// theirs share one quota, whichever of them a write lands in.
+func TestQuota_StagingChargedToOwner(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetQuota(100, 0)
+	ctx := context.Background()
+
+	// Own dir nearly full: a snapshot into a fresh staging segment must not
+	// get a quota of its own on top.
+	if _, err := s.Write(ctx, "t2", user, "own.txt", make([]byte, 90)); err != nil {
+		t.Fatalf("own write: %v", err)
+	}
+	if _, err := s.Write(ctx, "t2", StagingSeg(user), "SKILL.md", make([]byte, 20)); !errors.Is(err, ErrQuota) {
+		t.Fatalf("staging write past the owner's own usage: got %v, want ErrQuota", err)
+	}
+
+	if _, err := s.Write(ctx, tenant, user, "own.txt", make([]byte, 40)); err != nil {
+		t.Fatalf("own write: %v", err)
+	}
+	if _, err := s.Write(ctx, tenant, StagingSeg(user), "SKILL.md", make([]byte, 50)); err != nil {
+		t.Fatalf("first staging write: %v", err)
+	}
+	if _, err := s.Write(ctx, tenant, StagingSeg(user), "SKILL.md", make([]byte, 60)); !errors.Is(err, ErrQuota) {
+		t.Fatalf("a fresh staging segment of the same owner: got %v, want ErrQuota", err)
+	}
+	if _, err := s.Write(ctx, tenant, user, "more.txt", make([]byte, 20)); !errors.Is(err, ErrQuota) {
+		t.Fatalf("own write past own + staging: got %v, want ErrQuota", err)
+	}
+	if _, err := s.Write(ctx, tenant, StagingSeg("bob"), "SKILL.md", make([]byte, 60)); err != nil {
+		t.Fatalf("another owner's staging pool is separate: %v", err)
+	}
+	if _, ok := stagingOwnerTag("xfer-" + "55555555-5555-5555-5555-555555555555"); ok {
+		t.Fatal("an untagged pre-F33 staging segment parsed as tagged")
+	}
+}
+
+// F33: staging segments past the transfer TTL are swept; fresh ones, and a
+// user dir that only looks like one, are kept.
+func TestSweepStaging(t *testing.T) {
+	root := t.TempDir()
+	s := New(root)
+	ctx := context.Background()
+	old := time.Now().Add(-100 * time.Hour)
+	segs := map[string]bool{ // segment -> want swept
+		StagingSeg(user): true,
+		"xfer-55555555-5555-5555-5555-555555555555": true,
+		"xfer-bob":        false,
+		StagingSeg("bob"): false, // fresh
+	}
+	for seg, swept := range segs {
+		if _, err := s.Write(ctx, tenant, seg, "SKILL.md", []byte("x")); err != nil {
+			t.Fatalf("write %s: %v", seg, err)
+		}
+		if swept || seg == "xfer-bob" {
+			if err := os.Chtimes(s.userDir(tenant, seg), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	n, err := s.SweepStaging(time.Now().Add(-73 * time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("SweepStaging = %d, %v; want 2", n, err)
+	}
+	for seg, swept := range segs {
+		if _, err := os.Stat(s.userDir(tenant, seg)); os.IsNotExist(err) != swept {
+			t.Errorf("%s: removed=%v, want %v", seg, os.IsNotExist(err), swept)
+		}
+	}
+}
+
+// F40: a tampered session record is not moved — re-signing at the
+// destination would launder it into a validly signed one.
+func TestMove_TamperedSessionRefused(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetSessionSigningKey([]byte(testSessionKey))
+	ctx := context.Background()
+	src := ".agent/Sessions/x.json"
+	if _, err := s.Write(ctx, tenant, user, src, []byte(`{"id":"x"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	full := filepath.Join(s.userDir(tenant, user), src)
+	if err := os.WriteFile(full, []byte(`{"id":"x","injected":true}`), 0o640); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	if _, err := s.Move(ctx, tenant, user, src, ".agent/Sessions/y.json"); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("move of a tampered record: got %v, want ErrIntegrityMismatch", err)
+	}
+	if _, err := os.Lstat(full); err != nil {
+		t.Fatalf("refused move must leave the source in place: %v", err)
+	}
+	if _, err := s.Move(ctx, tenant, user, src, "archive/x.json"); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("move out of Sessions (then back in) is the same laundering path: got %v", err)
+	}
+}
+
+// F40 migration: a record whose sidecar is the pre-F40 content-only MAC is
+// re-signed path-bound and reads with the switch off; a record with no
+// sidecar or a sidecar matching neither MAC is left alone and still refused.
+func TestResignLegacySessions(t *testing.T) {
+	s := New(t.TempDir())
+	s.SetSessionSigningKey([]byte(testSessionKey))
+	ctx := context.Background()
+	if _, err := s.Write(ctx, tenant, user, ".agent/Sessions/current.json", []byte(`{"id":"c"}`)); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.userDir(tenant, user), ".agent", "Sessions")
+	raw := func(name, data string, sig []byte) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if sig != nil {
+			if err := os.WriteFile(filepath.Join(dir, name+sigSuffix), sig, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	raw("legacy.json", `{"id":"l"}`, []byte(s.signLegacy([]byte(`{"id":"l"}`))))
+	raw("nosig.json", `{"id":"n"}`, nil)
+	raw("tampered.json", `{"id":"t","injected":true}`, []byte(s.signLegacy([]byte(`{"id":"t"}`))))
+
+	resigned, unverified, err := s.ResignLegacySessions()
+	if err != nil || resigned != 1 || unverified != 2 {
+		t.Fatalf("ResignLegacySessions = %d, %d, %v; want 1 re-signed, 2 unverified", resigned, unverified, err)
+	}
+	for name, want := range map[string]error{"current.json": nil, "legacy.json": nil, "nosig.json": ErrIntegrityMismatch, "tampered.json": ErrIntegrityMismatch} {
+		if _, _, err := s.Read(ctx, tenant, user, ".agent/Sessions/"+name); !errors.Is(err, want) && err != want {
+			t.Errorf("%s after re-sign: got %v, want %v", name, err, want)
+		}
+	}
+	if resigned, _, _ := s.ResignLegacySessions(); resigned != 0 {
+		t.Errorf("second run re-signed %d, want 0 (idempotent)", resigned)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -131,6 +132,11 @@ func main() {
 	// Defaults
 	viper.SetDefault("broker.grpc_port_north", 9090) // frontend → broker
 	viper.SetDefault("broker.grpc_port_south", 9091) // sandbox → broker
+	// Per-connection stream cap and per-peer-IP connection cap (F200). Each
+	// gateway replica multiplexes every user through one connection per
+	// server, so the stream cap is sized for that shared channel.
+	viper.SetDefault("broker.grpc_max_streams", defaultGRPCMaxStreams)
+	viper.SetDefault("broker.grpc_max_conns_per_ip", 64)
 	viper.SetDefault("broker.tenant_id", "aikonos-dev")
 	// The UUID tenant the gateway queries by (AIKONOS_TENANT_ID); DB tenant_id
 	// columns are UUIDs, so the LLM-provider seed must use this, not the
@@ -676,23 +682,26 @@ func main() {
 	// F199/F227: refuse placeholder or short HMAC keys outside dev mode. The
 	// audit key is checked even when empty (an unsigned chain is forgeable);
 	// an empty pepper or session key already fails closed where it is used.
+	// Operator text and binary keys are checked apart (see weakSecret).
 	{
-		auditKey, _ := auditKeySource.Current()
-		secrets := map[string]string{
-			"audit signing key": auditKey,
-			"gateway grant key": string(gatewayGrantKey),
+		text := map[string]string{}
+		keys := map[string][]byte{"gateway grant key": gatewayGrantKey}
+		if auditKey, version := auditKeySource.Current(); version == 0 {
+			text["audit signing key"] = auditKey // the env key, used as-is
+		} else {
+			keys["audit signing key"] = []byte(auditKey) // decoded from Vault
 		}
 		if pepper := viper.GetString("api_key.pepper"); pepper != "" {
-			secrets["api key pepper"] = pepper
+			text["api key pepper"] = pepper
 		}
 		if len(workspaceSessionKey) > 0 {
-			secrets["workspace session signing key"] = string(workspaceSessionKey)
+			keys["workspace session signing key"] = workspaceSessionKey
 		} else if raw := viper.GetString("workspace.session_signing_key"); raw != "" {
-			secrets["workspace session signing key"] = raw // set but undecodable, e.g. a "<...>" placeholder
+			text["workspace session signing key"] = raw // set but undecodable, e.g. a "<...>" placeholder
 		}
-		maps.Copy(secrets, transportSecrets(viper.GetString("office.worker_url"),
+		maps.Copy(text, transportSecrets(viper.GetString("office.worker_url"),
 			os.Getenv("AIKONOS_OFFICE_WORKER_TOKEN"), viper.GetString("nats.url")))
-		weak, guardErr := secretsGuard(viper.GetBool("dev_mode"), secrets)
+		weak, guardErr := secretsGuard(viper.GetBool("dev_mode"), text, keys)
 		if guardErr != nil {
 			log.Fatal("startup guard", zap.Error(guardErr))
 		}
@@ -872,6 +881,15 @@ func main() {
 	sharedWorkspace.SetQuota(viper.GetInt64("workspace.quota_bytes"), viper.GetInt("workspace.quota_entries"))
 	if viper.GetBool("workspace.allow_unsigned_sessions") {
 		log.Warn("workspace.allow_unsigned_sessions is on — session records without a path-bound sidecar are read unverified (migration only)")
+		// F40 migration: while the switch is on, every start upgrades the
+		// pre-F40 sidecars that still verify, so turning it off afterwards
+		// only refuses the records counted as unverified.
+		resigned, unverified, err := sharedWorkspace.ResignLegacySessions()
+		if err != nil {
+			log.Error("workspace session re-sign failed", zap.Error(err))
+		}
+		log.Warn("workspace session re-sign: legacy sidecars upgraded; unverified records are refused once allow_unsigned_sessions is off",
+			zap.Int("resigned", resigned), zap.Int("unverified", unverified))
 	}
 	sharedWorkspaceRouter := &workspacefs.Router{Local: sharedWorkspace}
 	if workspacePrefResolver != nil {
@@ -1004,7 +1022,8 @@ func main() {
 
 	northUnary, northStream := northInterceptors(oidcValidator, auditEmitter,
 		viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), revocationChecker, provisioner.Interceptor(), log)
-	northServer := grpc.NewServer(append(serverLimits(),
+	maxStreams := uint32(viper.GetInt("broker.grpc_max_streams"))
+	northServer := grpc.NewServer(append(serverLimits(maxStreams),
 		grpc.Creds(northCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.MaxRecvMsgSize(maxMsgBytes),
@@ -1144,7 +1163,7 @@ func main() {
 	southCreds := grpccredentials.MTLSServerCredentials(svidSrc, bundleSrc,
 		identity.SouthAuthorizer())
 
-	southServer := grpc.NewServer(append(serverLimits(),
+	southServer := grpc.NewServer(append(serverLimits(maxStreams),
 		grpc.Creds(southCreds),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
@@ -1211,11 +1230,12 @@ func main() {
 	northAddr := fmt.Sprintf(":%d", viper.GetInt("broker.grpc_port_north"))
 	southAddr := fmt.Sprintf(":%d", viper.GetInt("broker.grpc_port_south"))
 
-	northLis, err := net.Listen("tcp", northAddr)
+	maxConns := viper.GetInt("broker.grpc_max_conns_per_ip")
+	northLis, err := listenLimited(northAddr, maxConns)
 	if err != nil {
 		log.Fatal("Failed to listen (north)", zap.Error(err))
 	}
-	southLis, err := net.Listen("tcp", southAddr)
+	southLis, err := listenLimited(southAddr, maxConns)
 	if err != nil {
 		log.Fatal("Failed to listen (south)", zap.Error(err))
 	}
@@ -1244,6 +1264,9 @@ func main() {
 	go runApprovalExpiryLoop(ctx, taskRepo, auditEmitter, log)
 	// AG-03: suspend agents orphaned past identity.orphan_grace_days.
 	go runOrphanSweepLoop(ctx, northSvc, viper.GetString("tenant_id"), log)
+
+	// F33: transfer staging nobody answered.
+	go runStagingSweepLoop(ctx, sharedWorkspace, log)
 
 	// F34: alert history retention.
 	if days := viper.GetInt("alerting.retention_days"); days > 0 {
@@ -1278,6 +1301,10 @@ var largeRequestMethods = map[string]bool{
 	brokerv1.BrokerService_UpsertAgentSkill_FullMethodName:    true,
 }
 
+// defaultGRPCMaxStreams is broker.grpc_max_streams' default: per connection,
+// so it bounds a gateway replica's in-flight RPCs, not one user's.
+const defaultGRPCMaxStreams = 1000
+
 // shutdownGrace is how long each server drains before its remaining streams
 // are cut, so a stuck StreamTaskEvents cannot hold exit (and the singleton
 // lock) forever.
@@ -1286,10 +1313,12 @@ const shutdownGrace = 10 * time.Second
 // serverLimits are the connection limits both gRPC servers share: a stream cap
 // per connection, an idle-connection reaper, a ping-flood policy and a bound
 // on the TLS handshake. MaxConnectionAge is deliberately unset — it would cut
-// long-lived StreamTaskEvents streams.
-func serverLimits() []grpc.ServerOption {
+// long-lived StreamTaskEvents streams. maxStreams must leave room for a
+// gateway replica's whole load: it reaches each server over one connection,
+// and a slow InvokeTool holds its stream for up to the MCP timeout.
+func serverLimits(maxStreams uint32) []grpc.ServerOption {
 	return []grpc.ServerOption{
-		grpc.MaxConcurrentStreams(100),
+		grpc.MaxConcurrentStreams(maxStreams),
 		grpc.ConnectionTimeout(10 * time.Second),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: 15 * time.Minute,
@@ -1350,6 +1379,66 @@ func migrateWorkspaces(ctx context.Context, root, tenant string, dir *db.UserDir
 	if err != nil {
 		log.Error("workspace migration failed", zap.Error(err))
 	}
+}
+
+// listenLimited listens on addr and keeps at most maxConns connections open
+// per remote IP (≤0: no cap); a connection past its IP's cap is closed at
+// once. With the per-connection stream cap this bounds what one peer can make
+// the server buffer before authentication (F200). The cap is per IP, not
+// global, so a peer holding its whole share (or anyone reaching a published
+// port) cannot lock the gateway's own connections out.
+//
+// ponytail: refusals are not logged — under a flood the log would be the
+// next target; count them in a metric if they need watching.
+func listenLimited(addr string, maxConns int) (net.Listener, error) {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil || maxConns <= 0 {
+		return lis, err
+	}
+	return &perIPListener{Listener: lis, max: maxConns, open: map[string]int{}}, nil
+}
+
+type perIPListener struct {
+	net.Listener
+	max  int
+	mu   sync.Mutex
+	open map[string]int
+}
+
+func (l *perIPListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ip, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+		l.mu.Lock()
+		if l.open[ip] >= l.max {
+			l.mu.Unlock()
+			_ = c.Close()
+			continue
+		}
+		l.open[ip]++
+		l.mu.Unlock()
+		return &perIPConn{Conn: c, release: sync.OnceFunc(func() {
+			l.mu.Lock()
+			if l.open[ip]--; l.open[ip] <= 0 {
+				delete(l.open, ip)
+			}
+			l.mu.Unlock()
+		})}, nil
+	}
+}
+
+// perIPConn gives its IP's slot back on the first Close.
+type perIPConn struct {
+	net.Conn
+	release func()
+}
+
+func (c *perIPConn) Close() error {
+	c.release()
+	return c.Conn.Close()
 }
 
 // requestSizeInterceptor refuses a request over limit unless its method is in
@@ -1516,6 +1605,28 @@ func runAlertPruneLoop(ctx context.Context, repo *db.AlertRepo, retentionDays in
 			}
 			if removed > 0 {
 				log.Info("alert retention: pruned alerts", zap.Int64("removed", removed), zap.Time("cutoff", cutoff))
+			}
+		}
+	}
+}
+
+// runStagingSweepLoop removes skill-transfer staging segments older than the
+// transfer TTL every hour (workspacefs.SweepStaging), so an unanswered
+// transfer does not hold disk, or its sender's quota, for good.
+func runStagingSweepLoop(ctx context.Context, ws *workspacefs.Store, log *zap.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			removed, err := ws.SweepStaging(now.Add(-brokersvc.StagingSweepAge))
+			if err != nil {
+				log.Warn("staging sweep failed", zap.Error(err))
+			}
+			if removed > 0 {
+				log.Info("staging sweep: removed expired transfer snapshots", zap.Int("removed", removed))
 			}
 		}
 	}
