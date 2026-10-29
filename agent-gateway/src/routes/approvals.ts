@@ -36,10 +36,12 @@ export function registerApprovalRoutes(app: FastifyInstance, ctx: ApprovalRoutes
 
   // Pending approvals for a user (the CopilotKit frontend polls this to render
   // approval modals, since it can't easily surface AG-UI CUSTOM events).
-  app.get("/approvals", async (req, reply) => {
+  // ?threadId= narrows it to one chat's run.
+  app.get<{ Querystring: { threadId?: string } }>("/approvals", async (req, reply) => {
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
-    reply.send({ approvals: ctx.approvals.listForUser(principal.sub) });
+    const threadId = typeof req.query?.threadId === "string" ? req.query.threadId : undefined;
+    reply.send({ approvals: ctx.approvals.listForUser(principal.sub, threadId || undefined) });
   });
 
   // Broker-held approvals the caller may decide (AG-07): survives a gateway

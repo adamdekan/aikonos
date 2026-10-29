@@ -66,9 +66,13 @@ export class ApprovalRegistry {
     return "resolved";
   }
 
-  listForUser(user: string): ApprovalInfo[] {
+  // threadId narrows the list to one chat's run (the chat's poll), so a card
+  // from the same user's other tab never shows up in this chat.
+  listForUser(user: string, threadId?: string): ApprovalInfo[] {
     const out: ApprovalInfo[] = [];
-    for (const [, p] of this.pending) if (p.user === user) out.push(p.info);
+    for (const [, p] of this.pending) {
+      if (p.user === user && (!threadId || p.info.threadId === threadId)) out.push(p.info);
+    }
     return out;
   }
 
