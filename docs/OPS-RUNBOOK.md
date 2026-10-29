@@ -49,6 +49,18 @@ and most of them fail closed. Before the first `up`, check each item that
 applies; the variables are described in `deploy/compose/README.md` "Security
 settings (0.7.5)".
 
+- **Deploy the broker and the gateway together, broker first.** The 0.7.5
+  gateway calls the new north RPC `MintSessionGrant` and sends an
+  `owner_grant` on its south reads and approval votes; a 0.7.4 broker has
+  neither. Outside dev mode the 0.7.5 broker refuses south reads and gateway
+  votes that carry no owner grant, so a 0.7.4 gateway fails against it. Upgrade
+  every broker replica, then the gateway, in one maintenance window;
+  `docker compose up -d` starts them in that order.
+- **Database migrations.** `062_scheduled_runs_pin_claim`,
+  `063_plan_step_consumed`, `064_scim_token_expiry` and `065_alerts_retention`
+  apply through the `migrate` one-shot (`deploy/compose/migrate.sh`), which the
+  broker waits for on `docker compose up`. It is idempotent; to run it alone:
+  `docker compose up migrate`.
 - **New required secrets.** `.env` must set `AIKONOS_NATS_BROKER_PASSWORD`,
   `AIKONOS_NATS_GATEWAY_PASSWORD` (two different values) and
   `AIKONOS_OFFICE_WORKER_TOKEN` (`openssl rand -hex 32` each), or every
@@ -130,6 +142,12 @@ settings (0.7.5)".
 - **SCIM group adoption.** SCIM no longer adopts an existing aikonOS group that
   already has members or grants: the create is refused with 409. Rename the
   Entra group, or clear that group in Access Control and let Entra retry.
+- **SCIM deactivations from before the upgrade.** A user whose IdP sent an
+  upper-case GUID `externalId` and who was deactivated before the upgrade is
+  still not blocked under the lower-case subject in their tokens, until SCIM
+  writes that user again. After the upgrade, restart provisioning in the IdP
+  (in Entra: the enterprise app → Provisioning → Restart provisioning) so every
+  deactivation is sent again.
 - **Kill switch.** `aikonosctl kill-switch user` now requires
   `--tenant <tenant-uuid>`; update any script that calls it.
 - **On-prem deploy hook.** The hook now requires signed commits and refuses a
@@ -184,6 +202,15 @@ settings (0.7.5)".
 - **Windows app.** The app refuses a plain-http server that is not on the PC,
   and an http identity provider, unless `AIKONOS_DESKTOP_ALLOW_HTTP=1` is set on
   that PC ([16-desktop-client.md](16-desktop-client.md)).
+- **Recovery.** If a guard blocks the stack after the upgrade, use the narrow
+  switch for that guard first (`AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS`,
+  `AIKONOS_VAULT_ALLOW_INSECURE_HTTP`, `AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE`,
+  `AIKONOS_DEPLOY_REQUIRE_SIGNED=false`, `AIKONOS_DEPLOY_ALLOW_ROLLBACK=1`).
+  `AIKONOS_DEV_MODE=true` on the broker and the gateway is the last-resort
+  recovery switch: it relaxes every production check at once (weak or
+  placeholder secrets, the gateway OIDC settings, the durable audit store and
+  the Vault audit key, owner grants on south calls and gateway votes, the
+  office-worker token). Fix the cause, then set it back to `false`.
 
 ---
 
@@ -477,6 +504,10 @@ restarts, set `AIKONOS_CAPABILITY_ROOT_KEY` in `.env` (base64 64-byte ed25519 pr
 key) and recreate the broker. Otherwise the read-or-created key now **persists** in the
 durable Vault across restarts (all variants); it is only regenerated on a `down -v`
 (dev) or a fresh `vault-data` volume — harmless since tokens are per-request.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The broker exits with `Failed to init capability minter` and `capability.root_key: invalid ed25519 private key size 48`, or a base64 decode error | `AIKONOS_CAPABILITY_ROOT_KEY` holds a hex string (`openssl rand -hex 32`, as older azure/onprem examples said) or a placeholder | Leave it empty (Vault read-or-create), or set a base64-encoded 64-byte ed25519 private key; then `docker compose up -d --force-recreate broker` |
 
 ### Audit signing key (CP1.2)
 The broker reads-or-creates a versioned 32-byte HMAC key at Vault KV-v2 path
