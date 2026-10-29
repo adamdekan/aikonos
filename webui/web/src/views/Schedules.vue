@@ -18,6 +18,10 @@ const newKind     = ref("CRON");
 const newCron     = ref("0 9 * * *"); // daily 09:00 — valid default if submitted untouched
 const newRunAt    = ref("");
 const newActor    = ref(""); // "" = no agent; the broker's identity.obo=enforce rejects that
+// Standing approvals: gated calls to these tools run unattended without a
+// human. None unless the user ticks them (L-25).
+const PREAPPROVABLE = ["web.fetch", "doc.read", "doc.write"];
+const newTools    = ref([]);
 
 // Exactly one agent → preselect it; several → make the user choose.
 function defaultActor() {
@@ -105,7 +109,7 @@ async function submit() {
       kind:          newKind.value,
       cronExpr:      newKind.value === "CRON" ? newCron.value.trim() : "",
       runAt:         newKind.value === "ONCE" ? localInputToIso(newRunAt.value) : undefined,
-      approvedTools: ["web.fetch", "doc.read", "doc.write"],
+      approvedTools: [...newTools.value],
       actorAgentId:  newActor.value,
     });
     if (result.schedule) {
@@ -114,6 +118,7 @@ async function submit() {
     newPrompt.value = "";
     newCron.value   = "0 9 * * *";
     newRunAt.value  = "";
+    newTools.value  = [];
   } catch (e) {
     error.value = e.message || "Failed to create schedule";
   }
@@ -230,6 +235,13 @@ onMounted(() => {
           </select>
         </label>
       </div>
+      <fieldset class="form-row form-inline preapprove" data-testid="new-tools">
+        <legend>Pre-approve when it runs unattended (no one is asked)</legend>
+        <label v-for="t in PREAPPROVABLE" :key="t" class="form-inline">
+          <input v-model="newTools" type="checkbox" :value="t" :data-testid="`new-tool-${t}`" />
+          <code>{{ t }}</code>
+        </label>
+      </fieldset>
       <div class="form-actions">
         <button type="submit" class="btn-accent">
           <Icon name="plus" :size="15" />
@@ -304,6 +316,9 @@ onMounted(() => {
             <template v-else-if="s.delegationExpiresAt">
               Delegation until {{ new Date(s.delegationExpiresAt).toLocaleDateString() }}
             </template>
+          </span>
+          <span v-if="s.approvedTools?.length" class="schedule-next" :data-testid="`approved-tools-${s.id}`">
+            Pre-approved: <code>{{ s.approvedTools.join(", ") }}</code>
           </span>
         </div>
         <div v-if="editingId === s.id" class="schedule-actions">
@@ -450,6 +465,21 @@ onMounted(() => {
   flex-direction: row;
   align-items: flex-start;
   gap: 0.75rem;
+}
+
+.preapprove {
+  border: none;
+  margin: 0;
+  padding: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.preapprove legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
 }
 
 .field {

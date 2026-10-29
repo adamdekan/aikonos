@@ -112,8 +112,28 @@ describe("Schedules.vue", () => {
     await flushPromises();
 
     expect(schedApiView.createSchedule).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: "daily report", kind: "CRON", cronExpr: `${TZ_PREFIX}0 9 * * *`, approvedTools: ["web.fetch", "doc.read", "doc.write"] }),
+      expect.objectContaining({ prompt: "daily report", kind: "CRON", cronExpr: `${TZ_PREFIX}0 9 * * *`, approvedTools: [] }),
     );
+  });
+
+  // L-25: a standing approval lets a gated call run unattended with no human,
+  // so a schedule carries one only when the user ticks it.
+  it("a new schedule pre-approves only the tools the user ticks, and the row shows them", async () => {
+    schedApiView.listSchedules.mockResolvedValue({ schedules: [] });
+    schedApiView.createSchedule.mockResolvedValue({ schedule: { ...SAMPLE_SCHED, approvedTools: ["doc.read"] } });
+    const router = makeRouter();
+    await router.push("/schedules");
+    const w = mount(Schedules, { global: { plugins: [router] } });
+    await flushPromises();
+
+    await w.find("[data-testid='new-prompt']").setValue("daily report");
+    await w.find("[data-testid='new-tool-doc.read']").setValue(true);
+    await w.find("[data-testid='create-schedule-form']").trigger("submit");
+    await flushPromises();
+
+    expect(schedApiView.createSchedule).toHaveBeenCalledWith(expect.objectContaining({ approvedTools: ["doc.read"] }));
+    expect(w.find(`[data-testid='approved-tools-${SAMPLE_SCHED.id}']`).text()).toContain("doc.read");
+    expect(w.find("[data-testid='new-tool-doc.read']").element.checked).toBe(false);
   });
 
   it("changing the recurrence selector's frequency/time updates the emitted cronExpr", async () => {

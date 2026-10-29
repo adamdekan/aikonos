@@ -803,7 +803,7 @@ describe("Chat.vue — group delegation (CP4)", () => {
   });
 });
 
-describe("Chat.vue — Enter confirms delegate modal (CP2)", () => {
+describe("Chat.vue — Enter and the delegate modal (F212)", () => {
   let router;
   let wrapper;
 
@@ -837,25 +837,25 @@ describe("Chat.vue — Enter confirms delegate modal (CP2)", () => {
     await flushPromises();
   }
 
-  it("Enter while delegate modal is open calls delegate() with stripped intent", async () => {
+  // F212: Enter anywhere but on the focused Confirm button (the still-held
+  // Enter that opened the modal, Enter on Cancel) must not delegate.
+  it("Enter on the page or on Cancel does not delegate; Cancel still cancels", async () => {
     const w = await mountChat();
-    const target = { userId: "user:alice", displayName: "Alice" };
-    const text = "@Alice do the thing";
+    await submitWithDelegate(w, "@Alice do the thing", { userId: "user:alice", displayName: "Alice" });
 
-    await submitWithDelegate(w, text, target);
-
-    // Dispatch Enter keydown on document — modal is open.
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true }));
+    const cancel = document.body.querySelector("[data-testid='delegate-cancel-btn']");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    cancel.dispatchEvent(enter);
     await flushPromises();
-    await nextTick();
+    expect(mockDelegate).not.toHaveBeenCalled();
+    expect(enter.defaultPrevented).toBe(false); // the browser's own Enter-to-click on Cancel stays
 
-    expect(mockDelegate).toHaveBeenCalledOnce();
-    expect(mockDelegate).toHaveBeenCalledWith({
-      to: "user:alice",
-      intent: "do the thing",
-      scopes: [],
-      maxCost: 50,
-    });
+    cancel.click();
+    await flushPromises();
+    expect(mockDelegate).not.toHaveBeenCalled();
+    expect(document.body.querySelector("[data-testid='delegate-confirm-btn']")).toBeNull();
   });
 
   it("Enter while delegate modal is closed does NOT call delegate()", async () => {
