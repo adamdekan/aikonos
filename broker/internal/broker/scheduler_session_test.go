@@ -231,3 +231,30 @@ func TestReportScheduledRunResult_NonJSONRecordSkipsWrite(t *testing.T) {
 		t.Fatalf("non-JSON session record must not be written, got %v", files)
 	}
 }
+
+// TestReportScheduledRunResult_ExistingSessionNotOverwritten: session_id is the
+// gateway's choice, so a report naming one of the owner's existing sessions
+// must not replace it (and re-sign forged history); the result still lands.
+func TestReportScheduledRunResult_ExistingSessionNotOverwritten(t *testing.T) {
+	runID, sessionID := uuid.New(), uuid.New()
+	owner := "alice@example.com"
+	rel := ".agent/Sessions/" + sessionID.String() + ".json"
+	wsRoot := t.TempDir()
+	original := []byte(`{"id":"` + sessionID.String() + `","title":"interactive"}`)
+	if _, err := sessionTestStore(wsRoot).Write(context.Background(), testTenantUUID, owner, rel, original); err != nil {
+		t.Fatal(err)
+	}
+	repo := &fakeReportStore{runs: map[string]*db.ScheduledRun{runID.String(): {ScheduledRunID: runID, OwnerUserID: owner}}}
+	svc := sandboxSvcForSessionTest(t, repo, wsRoot)
+
+	if _, err := svc.ReportScheduledRunResult(gwReportCtx(), &brokerv1.ReportScheduledRunResultRequest{
+		TenantId: testTenantUUID, Id: runID.String(), Success: true, Summary: "ok",
+		SessionId: sessionID.String(), SessionRecord: []byte(`{"id":"forged"}`),
+	}); err != nil {
+		t.Fatalf("the result must still be recorded: %v", err)
+	}
+	got, _, err := sessionTestStore(wsRoot).Read(context.Background(), testTenantUUID, owner, rel)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("existing session replaced: got %q, %v", got, err)
+	}
+}

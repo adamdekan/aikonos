@@ -56,7 +56,7 @@ type WorkflowRow struct {
 // back from the jsonb column (Postgres' canonical text form), so it matches
 // migration 062's backfill hash. A workflow schedule pins it (F18): versions
 // are append-only, but PublishVersion rewrites the published version's
-// definition in place.
+// definition in place (and re-pins only the owner's own schedules to it).
 func WorkflowDefinitionSHA256(def []byte) string {
 	sum := sha256.Sum256(def)
 	return hex.EncodeToString(sum[:])
@@ -455,24 +455,50 @@ func (r *WorkflowRepo) PublishVersion(ctx context.Context, tenant string, lineag
 		if err != nil {
 			return fmt.Errorf("marshal groups: %w", err)
 		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback(ctx)
 
-		tag, err := conn.Exec(ctx, `
+		// Same hash as WorkflowDefinitionSHA256 over the stored definition.
+		const defSHA = `encode(sha256(convert_to(definition::text, 'UTF8')), 'hex')`
+		var owner, oldSHA, newSHA string
+		err = tx.QueryRow(ctx, `SELECT owner_user_id, `+defSHA+` FROM workflows WHERE lineage_id = $1 AND version = $2 FOR UPDATE`,
+			lineageID, version,
+		).Scan(&owner, &oldSHA)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrVersionNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load workflow version: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `
 		UPDATE workflows
 		SET status            = 'published',
 		    visibility_kind   = 'shared',
 		    visibility_groups = $3,
 		    definition        = $4
 		WHERE lineage_id = $1
-		  AND version    = $2`,
+		  AND version    = $2
+		RETURNING `+defSHA,
 			lineageID, version, groupsJSON, definitionJSON,
-		)
-		if err != nil {
+		).Scan(&newSHA); err != nil {
 			return fmt.Errorf("publish workflow version: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			return ErrVersionNotFound
+		// F18: publishing only merges the requires manifest computed from the
+		// version's unchanged steps, so the owner's own schedules confirmed
+		// against the pre-publish definition follow it instead of parking as
+		// workflow_changed. Anyone else's schedule re-confirms as usual.
+		if _, err := tx.Exec(ctx, `
+		UPDATE scheduled_runs SET workflow_definition_sha256 = $5, updated_at = NOW()
+		WHERE workflow_lineage_id = $1 AND workflow_version = $2
+		  AND owner_user_id = $3 AND workflow_definition_sha256 = $4`,
+			lineageID, version, owner, oldSHA, newSHA,
+		); err != nil {
+			return fmt.Errorf("re-pin owner schedules: %w", err)
 		}
-		return nil
+		return tx.Commit(ctx)
 	})
 }
 

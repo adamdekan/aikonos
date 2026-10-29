@@ -57,6 +57,10 @@ func (stubScheduledStore) ClaimDue(_ context.Context, _ string, _ time.Time, _ i
 	return nil, nil
 }
 
+func (stubScheduledStore) MarkClaimed(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (stubScheduledStore) ReportResult(_ context.Context, _, _ string, _ bool, _ string) error {
 	return nil
 }

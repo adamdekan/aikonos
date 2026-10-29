@@ -121,6 +121,18 @@ func (f *fakeWorkflowPinStore) SetVersionPin(_ context.Context, _, userID string
 	return nil
 }
 
+// ResolveVersionForUser is the user's pin, else the current approved version.
+func (f *fakeWorkflowPinStore) ResolveVersionForUser(ctx context.Context, tenant, userID string, lineageID uuid.UUID) (int, error) {
+	if v, ok := f.pins[userID+"/"+lineageID.String()]; ok {
+		return v, nil
+	}
+	cur, err := f.GetCurrent(ctx, tenant, lineageID)
+	if err != nil {
+		return 0, err
+	}
+	return cur.Version, nil
+}
+
 func (f *fakeWorkflowPinStore) ClearVersionPin(_ context.Context, _, userID string, lineageID uuid.UUID) error {
 	f.clears = append(f.clears, userID+"/"+lineageID.String())
 	return nil

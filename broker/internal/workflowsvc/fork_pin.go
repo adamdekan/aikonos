@@ -165,7 +165,8 @@ func Pin(
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid lineage_id: %v", err)
 	}
-	if _, err := loadAccessible(ctx, store, ap, tenantID, userID, lineageID, emitter, logger); err != nil {
+	current, err := loadAccessible(ctx, store, ap, tenantID, userID, lineageID, emitter, logger)
+	if err != nil {
 		return nil, err
 	}
 
@@ -173,6 +174,11 @@ func Pin(
 	row, err := store.GetVersion(ctx, tenantID, lineageID, int(req.Version))
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "workflow version not found: %v", err)
+	}
+	// A non-owner pins only an approved version shared with them (as Get).
+	if current.OwnerUserID != userID && (row.ApprovalState != "approved" || !MayAccessWorkflow(ctx, ap, userID, row)) {
+		emitWorkflowDenied(ctx, emitter, logger, tenantID, userID, "aikonos.broker.workflow.access_denied", lineageID)
+		return nil, errWorkflowNotFound
 	}
 	if row.ApprovalState != "approved" {
 		return nil, status.Errorf(codes.FailedPrecondition,

@@ -70,6 +70,7 @@ type scheduledRunStore interface {
 	Park(ctx context.Context, tenantID, id, reason string) error
 	Delete(ctx context.Context, tenantID, id string) error
 	ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int, requireActor bool) ([]*db.ScheduledRun, error)
+	MarkClaimed(ctx context.Context, tenantID, id string) error
 	ReportResult(ctx context.Context, tenantID, id string, ok bool, summary string) error
 }
 
@@ -164,7 +165,10 @@ type Deps struct {
 	Scheduled scheduledRunStore
 	// SchedulerMinInterval is the shortest gap a new/edited cron schedule may
 	// fire at (AIKONOS_SCHEDULER_MIN_INTERVAL). 0 disables the floor. Enforced
-	// write-time only, at validateScheduleTiming — see enforceCronFloor.
+	// write-time only, at validateScheduleTiming — see enforceCronFloor. A
+	// run that outlasts its interval does not overlap the next fire: ClaimDue
+	// holds the schedule until the run reports, for up to an hour (see
+	// db.scheduledRunClaimTTL for the run-timeout limit).
 	SchedulerMinInterval time.Duration
 	// Workspace groups the workspace-backend dependency cluster (C5 phase 2 —
 	// see WorkspaceDeps): the workspace filesystem, the per-user backend

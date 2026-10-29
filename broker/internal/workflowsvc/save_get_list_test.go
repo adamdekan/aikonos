@@ -1063,3 +1063,57 @@ func TestList_Unbound_MixedMcpAndMissingSkill_GreysOnNonMcpOnly(t *testing.T) {
 		t.Errorf("missing_requirements: want [doc.write] (mcp excluded), got %v", item.MissingRequirements)
 	}
 }
+
+// TestSharedLineage_MemberAccess (F17/F190): a member of the group a lineage is
+// shared with can still Get, Pin, Rate and ListVersions it. But a member reads
+// and pins only versions the owner shared: not v1, saved privately before v2
+// was published, and not a proposed draft, even through their own pin.
+func TestSharedLineage_MemberAccess(t *testing.T) {
+	const member = "member@example.com"
+	lineageID := uuid.New()
+	store := newFakePinStore()
+	private := sourceWorkflowRow(lineageID) // v1: approved, private
+	shared := publishedRow(lineageID, testWFOwner, "wf", minimalValidWorkflowJSON())
+	shared.Version = 2 // the published, current version
+	draft := shared
+	draft.Version, draft.ApprovalState = 3, "proposed"
+	for _, r := range []db.WorkflowRow{private, shared, draft} {
+		store.addVersion(r)
+	}
+	ap := &fakeWorkflowAccessPolicy{enabled: true, skillGrant: map[string]bool{"group:" + testGroupAlpha: true}}
+	ctx, em, lid := context.Background(), newEmitter(t), lineageID.String()
+
+	got, err := Get(ctx, testWFTenant, member, &brokerv1.GetWorkflowRequest{LineageId: lid}, store, ap, nil, em, zap.NewNop())
+	if err != nil || got.Version != 2 {
+		t.Fatalf("member Get: want v2, got %v, %v", got, err)
+	}
+	if _, err := Pin(ctx, testWFTenant, member, &brokerv1.SetWorkflowVersionPinRequest{LineageId: lid, Version: 2}, store, ap, em, zap.NewNop()); err != nil {
+		t.Fatalf("member Pin v2: %v", err)
+	}
+	if _, err := Rate(ctx, testWFTenant, member, &brokerv1.RateWorkflowRunRequest{LineageId: lid, Version: 2, Rating: brokerv1.WorkflowRating_RATING_SUCCESS}, store, ap, em, zap.NewNop()); err != nil {
+		t.Fatalf("member Rate: %v", err)
+	}
+	if _, err := ListVersions(ctx, testWFTenant, member, &brokerv1.ListWorkflowVersionsRequest{LineageId: lid}, store, ap, em, zap.NewNop()); err != nil {
+		t.Fatalf("member ListVersions: %v", err)
+	}
+
+	for _, v := range []int32{1, 3} {
+		if _, err := Pin(ctx, testWFTenant, member, &brokerv1.SetWorkflowVersionPinRequest{LineageId: lid, Version: v}, store, ap, em, zap.NewNop()); status.Code(err) != codes.NotFound {
+			t.Errorf("member Pin v%d: want NotFound, got %v", v, err)
+		}
+		if p := store.pins[member+"/"+lid]; p != 2 {
+			t.Errorf("member pin moved to v%d", p)
+		}
+		store.pins[member+"/"+lid] = int(v) // a pin set before the gate existed
+		if _, err := Get(ctx, testWFTenant, member, &brokerv1.GetWorkflowRequest{LineageId: lid}, store, ap, nil, em, zap.NewNop()); status.Code(err) != codes.NotFound {
+			t.Errorf("member Get through a pin to v%d: want NotFound, got %v", v, err)
+		}
+		store.pins[member+"/"+lid] = 2
+	}
+
+	// The owner still reads every version, including the private one.
+	store.pins[testWFOwner+"/"+lid] = 1
+	if got, err := Get(ctx, testWFTenant, testWFOwner, &brokerv1.GetWorkflowRequest{LineageId: lid}, store, ap, nil, em, zap.NewNop()); err != nil || got.Version != 1 {
+		t.Fatalf("owner Get pinned v1: got %v, %v", got, err)
+	}
+}
