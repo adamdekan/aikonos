@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
@@ -11,12 +12,52 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
 )
 
+// tokenLocks serialises the read → refresh → write-back of one stored token
+// (and RevokeConnector's read → revoke → delete), so parallel tool calls do
+// not spend one rotating refresh token twice and a refresh racing a
+// disconnect cannot write the deleted secret back (G22). The broker is a
+// singleton (cmd/broker/singleton.go), so a process lock covers it.
+// ponytail: per-process; a Vault KV-v2 cas write if replicas ever share tokens.
+var tokenLocks = struct {
+	mu sync.Mutex
+	m  map[string]*tokenLock
+}{m: map[string]*tokenLock{}}
+
+type tokenLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// LockToken locks the stored token of (tenant, user, connectorID) and returns
+// its unlock.
+func LockToken(tenant, user, connectorID string) (unlock func()) {
+	key := tenant + "\x00" + user + "\x00" + connectorID
+	tokenLocks.mu.Lock()
+	l := tokenLocks.m[key]
+	if l == nil {
+		l = &tokenLock{}
+		tokenLocks.m[key] = l
+	}
+	l.refs++
+	tokenLocks.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		tokenLocks.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(tokenLocks.m, key)
+		}
+		tokenLocks.mu.Unlock()
+	}
+}
+
 // FreshAccessToken returns a usable access token for a user's connection,
 // refreshing it against the provider if the stored one has expired and
 // persisting the rotated token back to the store. A missing connection yields a
 // clear "not connected" error; a failed refresh yields "reconnect needed".
 func (r *Registry) FreshAccessToken(ctx context.Context, store secrets.Provider, p Provider, tenant, user string) (string, error) {
 	connectorID := p.ConnectorID()
+	defer LockToken(tenant, user, connectorID)()
 	stored, err := readStored(ctx, store, tenant, user, connectorID, p.DisplayName())
 	if err != nil {
 		return "", err
@@ -68,6 +109,7 @@ func (r *Registry) refresh(ctx context.Context, store secrets.Provider, cfg *oau
 			RefreshToken: refresh,
 			ExpiresAt:    tok.Expiry,
 			Scopes:       stored.Scopes,
+			TokenURL:     stored.TokenURL,
 		}); werr != nil && r.Logger != nil {
 			r.Logger.Warn("connector token write-back failed; connection may need re-link",
 				zap.String("provider", provider),

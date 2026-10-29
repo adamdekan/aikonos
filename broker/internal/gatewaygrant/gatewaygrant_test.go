@@ -36,7 +36,10 @@ func TestRoundTrip(t *testing.T) {
 		if exp := g.Expires; exp.Before(time.Now().Add(59*time.Minute)) || exp.After(time.Now().Add(time.Hour)) {
 			t.Errorf("Expires %v, want ~1h ahead", exp)
 		}
-		g.Expires = time.Time{}
+		if iat := g.IssuedAt; iat.Before(time.Now().Add(-time.Minute)) || iat.After(time.Now()) {
+			t.Errorf("IssuedAt %v, want ~now", iat)
+		}
+		g.Expires, g.IssuedAt = time.Time{}, time.Time{}
 		if g != testGrant {
 			t.Errorf("got %+v, want %+v", g, testGrant)
 		}
@@ -179,7 +182,7 @@ func TestMalformedWrongFieldCount(t *testing.T) {
 // malformedWrongVersion: an unknown version prefix must be ErrMalformed.
 // WHY: version gate blocks future format changes from being misinterpreted.
 func TestMalformedWrongVersion(t *testing.T) {
-	badPayload := []byte("v3|tenant|subject|actor|kind|grant|9999999999")
+	badPayload := []byte("v4|tenant|subject|actor|kind|grant|1|9999999999")
 	token := buildRawToken(testKey, badPayload)
 	_, err := Verify(testKey, token, true)
 	if !errors.Is(err, ErrMalformed) {
@@ -218,4 +221,16 @@ func buildRawToken(key, payload []byte) string {
 		base64.RawURLEncoding.EncodeToString(payload),
 		base64.RawURLEncoding.EncodeToString(sig),
 	)
+}
+
+// A v2 token minted before the v3 upgrade still verifies, with no IssuedAt.
+func TestV2StillAccepted(t *testing.T) {
+	token := buildRawToken(testKey, []byte("v2|tenant-abc|user-xyz|agent-1|scheduled|sched-1|9999999999"))
+	g, err := Verify(testKey, token, false)
+	if err != nil {
+		t.Fatalf("Verify v2: %v", err)
+	}
+	if !g.IssuedAt.IsZero() || g.Subject != "user-xyz" || !g.Expires.Equal(time.Unix(9999999999, 0)) {
+		t.Errorf("v2 grant = %+v", g)
+	}
 }

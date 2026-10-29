@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,5 +285,58 @@ func TestFreshAccessToken_RefreshesAndWritesBack(t *testing.T) {
 	stored := store.tokens[key("t", "u", "gdrive")]
 	if stored.AccessToken != "refreshed-at" || stored.RefreshToken != "rotated-rt" {
 		t.Fatalf("write-back did not persist rotated token: %+v", stored)
+	}
+}
+
+// TestFreshAccessToken_ConcurrentRefreshSpendsRotatingTokenOnce pins G22: two
+// parallel calls on an expired token refresh once; the second reads the
+// rotated token instead of replaying the spent refresh token.
+func TestFreshAccessToken_ConcurrentRefreshSpendsRotatingTokenOnce(t *testing.T) {
+	var mu sync.Mutex
+	valid, refreshes := "rt-0", 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Form.Get("refresh_token") != valid { // strict reuse detection
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		refreshes++
+		valid = fmt.Sprintf("rt-%d", refreshes)
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": fmt.Sprintf("at-%d", refreshes), "refresh_token": valid,
+			"token_type": "Bearer", "expires_in": 3600,
+		})
+	}))
+	defer srv.Close()
+	orig := googleEndpoint
+	googleEndpoint.TokenURL = srv.URL
+	defer func() { googleEndpoint = orig }()
+
+	r := testRegistry()
+	store := &fakeSecrets{tokens: map[string]*secrets.ConnectorToken{
+		key("t", "u", "gdrive"): {AccessToken: "expired-at", RefreshToken: "rt-0", ExpiresAt: time.Now().Add(-time.Hour)},
+	}}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = r.FreshAccessToken(context.Background(), store, ProviderGoogleDrive, "t", "u")
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("parallel refresh: %v", err)
+		}
+	}
+	if refreshes != 1 {
+		t.Fatalf("want one refresh, got %d", refreshes)
 	}
 }

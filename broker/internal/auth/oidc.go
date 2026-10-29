@@ -4,7 +4,8 @@
 // The validator verifies a JWT's signature against the issuer's JWKS, checks
 // issuer/audience/expiry, and projects the claims into an *Identity. Keys are
 // fetched from the issuer's discovery document (or an explicit JWKS URL) and
-// cached, with a forced refresh on an unknown key id (handles key rotation).
+// cached for MaxAge, with a forced refresh on an unknown key id (handles key
+// rotation; the max age handles key withdrawal).
 //
 // Dev mode: when Issuer is empty the validator is disabled — Validate is never
 // called and the OIDC interceptor passes calls through. This keeps the broker
@@ -40,19 +41,31 @@ type OIDCConfig struct {
 	// Empty means no azp requirement (unchanged behavior for single-client
 	// deployments that don't set azp at all).
 	AuthorizedParty string
-	// MinRefresh bounds how often a missing-kid miss can trigger a JWKS refetch.
+	// MinRefresh bounds how often a JWKS fetch may be attempted (a missing-kid
+	// miss or an aged-out set), failed attempts included.
 	MinRefresh time.Duration
+	// MaxAge is how long a fetched JWKS is trusted before it is refetched, so
+	// a key the IdP withdrew stops validating; default 10m. When the IdP is
+	// down the old set is served for jwksStaleGrace more, then nothing is.
+	MaxAge time.Duration
 }
+
+// jwksStaleGrace is how long past MaxAge a JWKS is still served while every
+// refetch fails; after it validation fails closed until the IdP is back.
+const jwksStaleGrace = time.Hour
 
 // Validator verifies OIDC bearer tokens against a cached JWKS.
 type Validator struct {
 	cfg        OIDCConfig
 	httpClient *http.Client
 
-	mu        sync.RWMutex
+	mu        sync.RWMutex // guards keys, jwksURL, lastFetch; never held across HTTP
 	keys      *jose.JSONWebKeySet
 	jwksURL   string
 	lastFetch time.Time
+
+	fetchMu     sync.Mutex // one JWKS fetch at a time; guards lastAttempt
+	lastAttempt time.Time
 }
 
 var sigAlgs = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.ES256}
@@ -72,6 +85,9 @@ func NewValidator(cfg OIDCConfig) (*Validator, error) {
 	}
 	if cfg.MinRefresh == 0 {
 		cfg.MinRefresh = time.Minute
+	}
+	if cfg.MaxAge == 0 {
+		cfg.MaxAge = 10 * time.Minute
 	}
 	if cfg.Issuer != "" && cfg.Audience == "" {
 		return nil, errors.New("oidc: Audience is required when Issuer is set (empty audience accepts tokens for any client of the issuer)")
@@ -135,6 +151,10 @@ func (v *Validator) Validate(ctx context.Context, raw string) (*Identity, error)
 	}
 	if err := std.Validate(expected); err != nil {
 		return nil, fmt.Errorf("claims invalid: %w", err)
+	}
+	// go-jose checks exp only when present; a token without one never expires.
+	if std.Expiry == nil {
+		return nil, errors.New("claims invalid: missing exp")
 	}
 	if v.cfg.AuthorizedParty != "" && custom.AuthorizedParty != v.cfg.AuthorizedParty {
 		return nil, fmt.Errorf("claims invalid: azp mismatch")
@@ -201,8 +221,14 @@ func stringClaim(claims map[string]json.RawMessage, name string) string {
 }
 
 // keyForID returns the verification key for kid, refreshing the JWKS once if
-// the key is not currently cached (key rotation).
+// the key is not currently cached (key rotation) or the set is older than
+// MaxAge (key withdrawal). An aged set is refetched by one caller while the
+// others keep using it; past MaxAge+jwksStaleGrace it is not used at all.
 func (v *Validator) keyForID(ctx context.Context, kid string) (interface{}, error) {
+	if age := v.age(); age >= v.cfg.MaxAge && v.fetchMu.TryLock() {
+		_ = v.refreshLocked(ctx) // failure: lookup below falls back to, or refuses, the old set
+		v.fetchMu.Unlock()
+	}
 	if k := v.lookup(kid); k != nil {
 		return k.Key, nil
 	}
@@ -215,10 +241,17 @@ func (v *Validator) keyForID(ctx context.Context, kid string) (interface{}, erro
 	return nil, fmt.Errorf("no JWKS key for kid %q", kid)
 }
 
+// age is the time since the last successful JWKS fetch.
+func (v *Validator) age() time.Duration {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return time.Since(v.lastFetch)
+}
+
 func (v *Validator) lookup(kid string) *jose.JSONWebKey {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.keys == nil {
+	if v.keys == nil || time.Since(v.lastFetch) >= v.cfg.MaxAge+jwksStaleGrace {
 		return nil
 	}
 	// kid may be empty if the IdP omits it and publishes a single key.
@@ -232,27 +265,44 @@ func (v *Validator) lookup(kid string) *jose.JSONWebKey {
 	return &matches[0]
 }
 
+// refresh refetches the JWKS, waiting for a fetch already in flight. Readers
+// (lookup) are never blocked by the HTTP calls.
 func (v *Validator) refresh(ctx context.Context) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if !v.lastFetch.IsZero() && time.Since(v.lastFetch) < v.cfg.MinRefresh {
-		return nil // rate-limit refetch storms on bad kids
-	}
+	v.fetchMu.Lock()
+	defer v.fetchMu.Unlock()
+	return v.refreshLocked(ctx)
+}
 
-	if v.jwksURL == "" {
-		u, err := v.discoverJWKS(ctx)
-		if err != nil {
+// refreshLocked fetches and swaps in the JWKS; the caller holds fetchMu.
+// Attempts, failed ones included, are spaced MinRefresh apart so bad kids or
+// an IdP outage cannot turn every request into a fetch.
+func (v *Validator) refreshLocked(ctx context.Context) error {
+	if !v.lastAttempt.IsZero() && time.Since(v.lastAttempt) < v.cfg.MinRefresh {
+		return nil
+	}
+	v.lastAttempt = time.Now()
+	// One caller hanging up must not burn the attempt for everyone else.
+	ctx = context.WithoutCancel(ctx)
+
+	v.mu.RLock()
+	u := v.jwksURL
+	v.mu.RUnlock()
+	if u == "" {
+		var err error
+		if u, err = v.discoverJWKS(ctx); err != nil {
 			return err
 		}
-		v.jwksURL = u
 	}
 
-	set, err := v.fetchJWKS(ctx, v.jwksURL)
+	set, err := v.fetchJWKS(ctx, u)
 	if err != nil {
 		return err
 	}
+	v.mu.Lock()
+	v.jwksURL = u
 	v.keys = set
 	v.lastFetch = time.Now()
+	v.mu.Unlock()
 	return nil
 }
 

@@ -66,6 +66,9 @@ func (s *BrokerService) UpsertM365Connection(ctx context.Context, req *brokerv1.
 	if conn == nil || conn.GetEntraTenantId() == "" || conn.GetClientId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "connection.entra_tenant_id and connection.client_id are required")
 	}
+	if !connector.ValidM365ID(conn.GetEntraTenantId()) || !connector.ValidM365ID(conn.GetClientId()) {
+		return nil, status.Error(codes.InvalidArgument, "connection.entra_tenant_id and connection.client_id must be a GUID or domain name (letters, digits, '.' and '-')")
+	}
 
 	// Secret handling mirrors UpsertLlmProvider: write to Vault when supplied,
 	// otherwise preserve the stored has_secret value — a blank secret on an
@@ -239,6 +242,10 @@ func (s *BrokerService) resolveM365TestApp(ctx context.Context, tenant string, r
 	if tenantID == "" || clientID == "" || secret == "" {
 		return connector.M365App{}, status.Error(codes.FailedPrecondition,
 			"m365 connection not configured: entra_tenant_id, client_id, and a client secret are all required")
+	}
+	if !connector.ValidM365ID(tenantID) || !connector.ValidM365ID(clientID) {
+		return connector.M365App{}, status.Error(codes.InvalidArgument,
+			"entra_tenant_id and client_id must be a GUID or domain name (letters, digits, '.' and '-')")
 	}
 	return connector.M365App{TenantID: tenantID, ClientID: clientID, ClientSecret: secret}, nil
 }

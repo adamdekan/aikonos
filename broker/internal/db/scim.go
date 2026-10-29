@@ -148,16 +148,29 @@ func (r *ScimRepo) RevokeToken(ctx context.Context, tenantID string, id uuid.UUI
 	})
 }
 
+// ErrScimTokenExpired is returned by ResolveToken for an unrevoked token past
+// its expires_at (migration 064): the admin rotates it.
+var ErrScimTokenExpired = errors.New("scim: token expired")
+
 // ResolveToken returns the id of the active token with this hash and stamps
-// its last use; ErrNotFound when none.
+// its last use; ErrNotFound when none, ErrScimTokenExpired (with the id, use
+// not stamped) when it has expired.
 func (r *ScimRepo) ResolveToken(ctx context.Context, tenantID, hash string) (uuid.UUID, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (uuid.UUID, error) {
-		var id uuid.UUID
-		err := conn.QueryRow(ctx, `UPDATE scim_tokens SET last_used_at = NOW()
-		  WHERE tenant_id = $1 AND token_hash = $2 AND revoked_at IS NULL RETURNING id`,
-			tenantID, hash).Scan(&id)
+		var (
+			id   uuid.UUID
+			live bool
+		)
+		err := conn.QueryRow(ctx, `UPDATE scim_tokens
+		  SET last_used_at = CASE WHEN expires_at > NOW() THEN NOW() ELSE last_used_at END
+		  WHERE tenant_id = $1 AND token_hash = $2 AND revoked_at IS NULL
+		  RETURNING id, expires_at > NOW()`,
+			tenantID, hash).Scan(&id, &live)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, ErrNotFound
+		}
+		if err == nil && !live {
+			return id, ErrScimTokenExpired
 		}
 		return id, err
 	})

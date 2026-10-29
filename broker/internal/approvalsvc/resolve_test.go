@@ -107,3 +107,33 @@ func TestArgsDigest_Canonical(t *testing.T) {
 		t.Fatal("nil args must digest like {}")
 	}
 }
+
+// lateVoteStore reports that another vote resolved the gate first.
+type lateVoteStore struct {
+	resolvingStore
+	transitioned bool
+}
+
+func (f *lateVoteStore) ResolveApproval(context.Context, string, string, string, bool, string) (db.ApprovalState, bool, error) {
+	return db.ApprovalApproved, false, db.ErrApprovalAlreadyResolved
+}
+
+func (f *lateVoteStore) Transition(context.Context, string, string, db.TaskState, db.TaskState) error {
+	f.transitioned = true
+	return nil
+}
+
+// TestResolve_LateVoteMintsNothing pins F174: a caller whose vote lands after
+// another resolved the gate neither transitions the task nor gets tokens.
+func TestResolve_LateVoteMintsNothing(t *testing.T) {
+	st := &lateVoteStore{resolvingStore: resolvingStore{task: &db.Task{OwnerUserID: "alice@example.com"}}}
+	mint := func(_, _ string, _ db.OnBehalfOf, _ []StepScope) (map[int32]string, error) {
+		t.Fatal("a late vote must not mint")
+		return nil, nil
+	}
+	_, toks, _, _, err := Resolve(context.Background(), st, &fakeAccessPolicy{}, mint, zap.NewNop(),
+		"tenant", "task", "bob@example.com", true, "", ArgsDigest(nil), StepUp{})
+	if status.Code(err) != codes.FailedPrecondition || toks != nil || st.transitioned {
+		t.Fatalf("late vote: err=%v tokens=%v transitioned=%v", err, toks, st.transitioned)
+	}
+}

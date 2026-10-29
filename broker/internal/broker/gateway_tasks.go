@@ -71,6 +71,13 @@ func persistManagedTask(
 			)
 			return &brokerv1.TaskHandle{TaskId: t.TaskID.String(), TraceId: t.TraceID}, nil
 		}
+		if errors.Is(err, db.ErrClientRequestIDConflict) {
+			// Another owner holds this key: no replay, no FGA write, and none
+			// of that owner's ids in the reply.
+			emitTaskAudit(ctx, deps, traceID, t.TenantID.String(), "", t.OwnerUserID,
+				"aikonos.broker.task.client_request_id_conflict", auditv1.PolicyDecision_DENY, t)
+			return nil, status.Error(codes.AlreadyExists, "client_request_id already in use")
+		}
 		deps.Logger.Error("persistManagedTask: DB insert failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to create task")
 	}
@@ -283,10 +290,14 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 		}
 	}
 	// AG-06: a blocked subject (or tenant) loses every outstanding grant, and
-	// a revoke-all on the subject or actor voids grants issued before it. The
-	// token carries only its expiry; every mint site uses GatewayGrantTTL.
-	// ponytail: issued = expiry - TTL; a TTL change across a restart skews it
-	// by the difference until old grants expire.
+	// a revoke-all on the subject or actor voids grants issued before it. A v3
+	// grant carries its issue time (F244); a v1/v2 one only its expiry, so it
+	// is taken as issued at expiry - max(TTL, v2GrantMaxTTL): never later
+	// than its real mint, whatever the TTL was then.
+	issued := g.IssuedAt
+	if issued.IsZero() {
+		issued = g.Expires.Add(-max(s.deps.GatewayGrantTTL, v2GrantMaxTTL))
+	}
 	st, rerr := s.deps.Revocation.OnBehalfOf(ctx, tenantID, g.Subject, g.Actor)
 	if rerr != nil {
 		s.deps.Logger.Error("verifyOwnerGrant: revocation state read failed", zap.Error(rerr))
@@ -296,7 +307,7 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "subject_blocked", nil)
 		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant refused: user is blocked")
 	}
-	if st.Revoked(g.Expires.Add(-s.deps.GatewayGrantTTL)) {
+	if st.Revoked(issued) {
 		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "grant_revoked", nil)
 		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant revoked")
 	}
@@ -308,6 +319,11 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 	}
 	return g, nil
 }
+
+// v2GrantMaxTTL bounds the lifetime assumed for a grant without an issue
+// time (v1/v2, minted before F244). A revoke-all within this window voids
+// such grants even if they were minted after it: fail safe until they expire.
+const v2GrantMaxTTL = 24 * time.Hour
 
 // emitGrantDenied fires a DENY audit event for an owner-grant rejection.
 // Fire-and-forget, nil-guards deps.Audit (same shape as emitToolDenied).

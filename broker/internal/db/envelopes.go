@@ -80,8 +80,8 @@ func (r *TaskRepo) CreateEnvelope(ctx context.Context, e *Envelope, initial Enve
 	})
 }
 
-// ListInbox returns envelopes addressed to a user. Pending/delivered always;
-// accepted/rejected/completed only when includeResolved is true.
+// ListInbox returns envelopes addressed to a user. Unexpired pending/delivered
+// always; accepted/rejected/completed only when includeResolved is true.
 func (r *TaskRepo) ListInbox(ctx context.Context, tenantID, userID string, includeResolved bool) ([]*Envelope, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*Envelope, error) {
 		states := "('PENDING','DELIVERED')"
@@ -95,6 +95,7 @@ func (r *TaskRepo) ListInbox(ctx context.Context, tenantID, userID string, inclu
 		WHERE to_target->>'type' = 'user'
 		  AND to_target->>'id' = $1
 		  AND state IN %s
+		  AND (state NOT IN ('PENDING','DELIVERED') OR expires_at > NOW())
 		ORDER BY created_at DESC
 		LIMIT 100`, states), userID)
 		if err != nil {
@@ -130,8 +131,9 @@ func (r *TaskRepo) GetEnvelope(ctx context.Context, tenantID, envelopeID string)
 	})
 }
 
-// RespondEnvelope transitions a pending/delivered envelope to ACCEPTED or
-// REJECTED. Only the addressed recipient may respond. Returns the new state.
+// RespondEnvelope transitions an unexpired pending/delivered envelope to
+// ACCEPTED or REJECTED. Only the addressed recipient may respond. Returns the
+// new state.
 func (r *TaskRepo) RespondEnvelope(ctx context.Context, tenantID, envelopeID, userID string, accepted bool) (EnvelopeState, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (EnvelopeState, error) {
 		newState := EnvelopeAccepted
@@ -147,7 +149,8 @@ func (r *TaskRepo) RespondEnvelope(ctx context.Context, tenantID, envelopeID, us
 		WHERE envelope_id = $2
 		  AND to_target->>'type' = 'user'
 		  AND to_target->>'id' = $3
-		  AND state IN ('PENDING','DELIVERED')`, tsCol),
+		  AND state IN ('PENDING','DELIVERED')
+		  AND expires_at > NOW()`, tsCol),
 			string(newState), envelopeID, userID,
 		)
 		if err != nil {

@@ -253,7 +253,7 @@ func sanitizeSeg(seg string) string {
 }
 
 func (s *Store) userDir(tenant, user string) string {
-	return filepath.Join(s.root, sanitizeSeg(tenant), sanitizeSeg(user))
+	return workspacepath.Dir(s.root, tenant, user)
 }
 
 // CleanRel validates and cleans a caller-supplied workspace-relative path in

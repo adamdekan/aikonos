@@ -51,13 +51,11 @@ func New(root string) *Store { return &Store{root: root} }
 func (s *Store) Enabled() bool { return s.root != "" }
 
 // configDir returns the (tenant, user) config directory under the shared
-// sanitize rule (F42r). workspacepath.SanitizeSeg never errors, so the error
-// return is always nil; kept only so the five call sites below don't need a
-// signature change.
+// sanitize rule (F42r; collision-free since F175, with the one-time move of
+// the old directory). The error return is always nil; kept only so the five
+// call sites below don't need a signature change.
 func (s *Store) configDir(tenant, user string) (string, error) {
-	t := workspacepath.SanitizeSeg(tenant)
-	u := workspacepath.SanitizeSeg(user)
-	return filepath.Join(s.root, t, u, "config"), nil
+	return filepath.Join(workspacepath.Dir(s.root, tenant, user), "config"), nil
 }
 
 // legacySanitizeSeg is connectorstore's pre-F42r reject-only rule: segments

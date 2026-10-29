@@ -49,6 +49,7 @@ func (s *mapSecrets) DeleteConnector(_ context.Context, t, u, c string) error {
 }
 
 type mcpOAuthFixture struct {
+	fga   *fakeFGAForMcp
 	fake  *mcpfake.Server
 	repo  *fakeMcpRepo
 	vault *fakeMcpSecrets
@@ -63,7 +64,7 @@ func newMcpOAuthFixture(t *testing.T) *mcpOAuthFixture {
 	t.Cleanup(fgaSrv.Close)
 	fake := mcpfake.New()
 	t.Cleanup(fake.Close)
-	f := &mcpOAuthFixture{fake: fake, repo: &fakeMcpRepo{}, vault: &fakeMcpSecrets{}}
+	f := &mcpOAuthFixture{fga: fga, fake: fake, repo: &fakeMcpRepo{}, vault: &fakeMcpSecrets{}}
 	f.deps = testMcpDeps(t, fgaSrv.URL, f.repo, f.vault)
 	f.deps.Mcp.AllowPrivate = true
 	f.deps.Secrets = &mapSecrets{m: map[string]*secrets.ConnectorToken{}}
@@ -126,7 +127,17 @@ func TestMcpOAuth_AddConnectListDisconnect(t *testing.T) {
 	}
 
 	alice := ctxWithIdentity(testTenantUUID, "alice@example.com")
+	// F140: without can_access on the connection it is neither offered nor
+	// can a link be started.
 	provs, err := f.svc.ListConnectorProviders(alice, &brokerv1.ListConnectorProvidersRequest{})
+	if err != nil || len(provs.Providers) != 0 {
+		t.Fatalf("offered without can_access: %v %v", provs, err)
+	}
+	if _, err := f.svc.BeginConnectorAuth(alice, &brokerv1.BeginConnectorAuthRequest{UserId: "alice@example.com", McpConnectionId: conn.Id}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("begin without can_access: want PermissionDenied, got %v", err)
+	}
+	f.fga.allowed["user:alice@example.com||can_access||mcp_connector:"+conn.Id] = true
+	provs, err = f.svc.ListConnectorProviders(alice, &brokerv1.ListConnectorProvidersRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

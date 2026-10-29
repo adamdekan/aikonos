@@ -44,7 +44,7 @@ const (
 
 	// BlockedBy marks AG-06 blocks set by SCIM. Reactivation lifts only these,
 	// never a block an admin set by hand.
-	BlockedBy = "scim"
+	BlockedBy = db.ScimBlockedBy
 )
 
 // Store is the persisted SCIM state; *db.ScimRepo satisfies it.
@@ -65,6 +65,15 @@ type Store interface {
 type Tuples interface {
 	WriteRelations(ctx context.Context, rels ...policy.Relation) error
 	DeleteRelations(ctx context.Context, rels ...policy.Relation) error
+	ReadTuples(ctx context.Context, f policy.ReadFilter) ([]policy.Relation, error)
+}
+
+// groupSubjectTypes are the FGA types with a relation that accepts
+// group#member (policies/fga/model.fga; TestGroupSubjectTypesMatchModel keeps
+// the two in step).
+var groupSubjectTypes = []string{
+	"user", "group", "tenant", "workspace", "skill", "mcp_connector", "task",
+	"agent", "document", "artifact", "agentskill", "skill_submission",
 }
 
 // Blocks is the AG-06 user block; *revocation.Checker satisfies it.
@@ -309,7 +318,7 @@ func (h *Handler) listUsers(ctx context.Context, tenant string, q url.Values) (i
 	items := []any{}
 	for _, u := range users {
 		if attr == "userName" && !strings.EqualFold(u.UserName, val) ||
-			attr == "externalId" && u.ExternalID != val ||
+			attr == "externalId" && canonicalSubject(u.ExternalID) != canonicalSubject(val) ||
 			attr == "id" && u.ID.String() != val {
 			continue
 		}
@@ -362,7 +371,21 @@ func parseBool(v any) (bool, bool) {
 	return false, false
 }
 
-func validateUser(u db.ScimUser) error {
+// canonicalSubject puts a GUID-shaped externalId in the form OIDC tokens carry
+// it (Entra oid, Keycloak sub: lower-case, hyphenated). Blocks and tuples
+// match the token subject byte for byte, so an upper-case GUID from the IdP
+// would block nobody. Other subjects are kept as sent: they may be
+// case-sensitive.
+func canonicalSubject(s string) string {
+	if id, err := uuid.Parse(s); err == nil {
+		return id.String()
+	}
+	return s
+}
+
+// validateUser checks u and canonicalises its externalId in place.
+func validateUser(u *db.ScimUser) error {
+	u.ExternalID = canonicalSubject(u.ExternalID)
 	if strings.TrimSpace(u.UserName) == "" {
 		return badRequest("invalidValue", "userName is required")
 	}
@@ -371,7 +394,8 @@ func validateUser(u db.ScimUser) error {
 	if strings.TrimSpace(u.ExternalID) == "" {
 		return badRequest("invalidValue", "externalId is required: map it to the user's OIDC subject (Entra objectId)")
 	}
-	if strings.HasPrefix(u.ExternalID, "svc-") || strings.ContainsAny(u.ExternalID, " #:*") {
+	// group- is the group memory segment, refused as a north subject (F175).
+	if strings.HasPrefix(u.ExternalID, "svc-") || strings.HasPrefix(u.ExternalID, "group-") || strings.ContainsAny(u.ExternalID, " #:*") {
 		return badRequest("invalidValue", "externalId %q is not a valid subject", u.ExternalID)
 	}
 	if len(u.UserName) > 256 || len(u.ExternalID) > 256 {
@@ -386,7 +410,7 @@ func (h *Handler) createUser(ctx context.Context, req Request, body []byte) (int
 		return 0, nil, err
 	}
 	u := db.ScimUser{UserName: b.UserName, ExternalID: b.ExternalID, DisplayName: b.DisplayName, Emails: b.Emails, Active: active == nil || *active}
-	if err := validateUser(u); err != nil {
+	if err := validateUser(&u); err != nil {
 		return 0, nil, err
 	}
 	// Block before the row exists: a failure leaves no active user behind.
@@ -548,8 +572,12 @@ func setUserAttr(u *db.ScimUser, op, path string, raw json.RawMessage) error {
 
 // saveUser validates next against prev, moves the block, then persists.
 func (h *Handler) saveUser(ctx context.Context, req Request, prev, next db.ScimUser) (int, any, error) {
-	if err := validateUser(next); err != nil {
+	if err := validateUser(&next); err != nil {
 		return 0, nil, err
+	}
+	// A row stored before canonicalisation keeps its stored subject.
+	if canonicalSubject(prev.ExternalID) == next.ExternalID {
+		next.ExternalID = prev.ExternalID
 	}
 	// The subject keys every block and tuple; moving it would leave both
 	// behind on the old subject.
@@ -786,6 +814,13 @@ func (h *Handler) createGroup(ctx context.Context, req Request) (int, any, error
 	if _, err := h.subjects(ctx, req.Tenant, members); err != nil {
 		return 0, nil, err
 	}
+	if inUse, err := h.groupInUse(ctx, fga); err != nil {
+		return 0, nil, err
+	} else if inUse {
+		h.emit(ctx, req, "aikonos.broker.scim.group.claim_refused", "group:"+fga, map[string]any{"display_name": b.DisplayName})
+		return 0, nil, &Error{Status: http.StatusConflict, ScimType: "uniqueness",
+			Detail: fmt.Sprintf("group %q is already managed in aikonOS; rename the IdP group or have an admin clear its tuples first", fga)}
+	}
 	g := db.ScimGroup{DisplayName: b.DisplayName, ExternalID: b.ExternalID, FGAGroup: fga, Members: members}
 	// The row first: its unique fga_group stops two IdP groups from sharing
 	// one FGA group. Tuples second; on failure the row goes again.
@@ -803,6 +838,25 @@ func (h *Handler) createGroup(ctx context.Context, req Request) (int, any, error
 	}
 	h.emit(ctx, req, "aikonos.broker.scim.group.created", "group:"+fga, map[string]any{"scim_id": g.ID.String(), "display_name": g.DisplayName, "members_added": len(members)})
 	return http.StatusCreated, groupJSON(g, false), nil
+}
+
+// groupInUse reports whether group:<fga> already has a tuple, as an object
+// (members, managers) or as a subject set in a grant: such a group was made
+// by an admin, a JIT rule or a grant, and a SCIM client adopting it could add
+// anyone to whatever it confers. A read failure counts as in use.
+// ponytail: read-then-create, so an admin grant racing the create can slip in.
+func (h *Handler) groupInUse(ctx context.Context, fga string) (bool, error) {
+	rels, err := h.Tuples.ReadTuples(ctx, policy.ReadFilter{Object: "group:" + fga})
+	if err != nil || len(rels) > 0 {
+		return true, err
+	}
+	for _, typ := range groupSubjectTypes {
+		rels, err := h.Tuples.ReadTuples(ctx, policy.ReadFilter{User: "group:" + fga + "#member", Object: typ + ":"})
+		if err != nil || len(rels) > 0 {
+			return true, err
+		}
+	}
+	return false, nil
 }
 
 func (h *Handler) putGroup(ctx context.Context, req Request, id uuid.UUID) (int, any, error) {

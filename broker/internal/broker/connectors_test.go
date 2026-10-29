@@ -285,6 +285,18 @@ func TestCallerIdentity_SvcPrincipalRejectedEvenWithSubject(t *testing.T) {
 	}
 }
 
+// TestCallerIdentity_GroupSegmentPrincipalRejected pins F175: a subject shaped
+// like the group memory segment would alias that group's workspace directory.
+func TestCallerIdentity_GroupSegmentPrincipalRejected(t *testing.T) {
+	svc := NewBrokerService(testConnectorDeps(t))
+	ctx := ctxWithSubjectIdentity(testTenantUUID, "group-finance", "")
+
+	_, err := svc.ListConnectors(ctx, &brokerv1.ListConnectorsRequest{TenantId: testTenantUUID})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("group- principal must be PermissionDenied, got %v", err)
+	}
+}
+
 // TestUpsertThrottle_InstanceIsolation verifies two service instances have
 // independent throttle state (the old package-level singleton broke this).
 func TestUpsertThrottle_InstanceIsolation(t *testing.T) {

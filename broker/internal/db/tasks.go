@@ -41,6 +41,12 @@ var ErrBudgetExceeded = errors.New("cost budget exceeded")
 // treat it as an idempotent replay rather than a genuine error.
 var ErrClientRequestIDExists = errors.New("client_request_id already exists for tenant")
 
+// ErrClientRequestIDConflict is returned by Create when the existing row for
+// the (tenant_id, client_request_id) pair belongs to another owner. t is left
+// untouched so the caller never learns that owner's task or trace id, and the
+// call must not be treated as a replay.
+var ErrClientRequestIDConflict = errors.New("client_request_id is in use by another owner")
+
 // clientRequestIDUniqueIndex is the partial unique index name from migration
 // 031 — used to distinguish this specific unique-violation from any other.
 const clientRequestIDUniqueIndex = "idx_tasks_tenant_client_request_id"
@@ -204,6 +210,9 @@ func (r *TaskRepo) Create(ctx context.Context, t *Task) error {
 				existing, getErr := r.getByClientRequestID(ctx, conn, t.TenantID.String(), t.ClientRequestID)
 				if getErr != nil {
 					return fmt.Errorf("resolve existing task for client_request_id: %w", getErr)
+				}
+				if existing.OwnerUserID != t.OwnerUserID {
+					return ErrClientRequestIDConflict
 				}
 				t.TaskID = existing.TaskID
 				t.TraceID = existing.TraceID

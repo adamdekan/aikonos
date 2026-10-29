@@ -70,6 +70,7 @@ type Checker struct {
 
 	mu    sync.Mutex
 	cache map[string]entry
+	gen   uint64 // bumped by reset; a load begun before a write is not cached
 }
 
 // New builds a Checker over store.
@@ -128,6 +129,7 @@ func (c *Checker) cached(key string, load func() (State, error)) (State, error) 
 	now := c.now()
 	c.mu.Lock()
 	e, ok := c.cache[key]
+	gen := c.gen
 	c.mu.Unlock()
 	if ok && now.Before(e.exp) {
 		return e.st, nil
@@ -137,6 +139,12 @@ func (c *Checker) cached(key string, load func() (State, error)) (State, error) 
 		return State{}, err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		// A write landed while this load ran: its answer may predate the
+		// write, so it is returned to this caller only, never cached.
+		return st, nil
+	}
 	// ponytail: whole-map sweep at a size bound; an LRU if principals per TTL
 	// window ever reach the tens of thousands.
 	if len(c.cache) > 10000 {
@@ -147,7 +155,6 @@ func (c *Checker) cached(key string, load func() (State, error)) (State, error) 
 		}
 	}
 	c.cache[key] = entry{st: st, exp: now.Add(TTL)}
-	c.mu.Unlock()
 	return st, nil
 }
 
@@ -155,6 +162,7 @@ func (c *Checker) cached(key string, load func() (State, error)) (State, error) 
 func (c *Checker) reset() {
 	c.mu.Lock()
 	c.cache = map[string]entry{}
+	c.gen++
 	c.mu.Unlock()
 }
 

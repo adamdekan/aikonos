@@ -23,6 +23,12 @@ import (
 // map this to PermissionDenied, not Internal.
 var ErrVoterNotInApproverSet = errors.New("approval: voter is not in the approver set")
 
+// ErrApprovalAlreadyResolved is returned by ResolveApproval when another vote
+// resolved the gate first. Only the call that resolves a gate may act on the
+// result (transition the task, mint tokens), so callers must not treat this
+// as their own decision.
+var ErrApprovalAlreadyResolved = errors.New("approval: already resolved")
+
 // PolicyDecision values mirror the plan_steps.policy_decision CHECK constraint.
 type PolicyDecision string
 
@@ -475,9 +481,11 @@ func (r *TaskRepo) WithdrawApproval(ctx context.Context, tenantID, taskID, by st
 
 // ResolveApproval records one approver's vote and, once the n-of-m threshold
 // is met (or any denial), resolves the gate. Returns the resulting state and
-// whether the gate is now resolved. Idempotent per approver — a repeated vote
-// from the same user does not double-count. A row past expires_at reads as
-// missing (pgx.ErrNoRows), so an expired gate cannot be voted on (M-09).
+// whether this vote resolved the gate. Idempotent per approver — a repeated
+// vote from the same user does not double-count. A row past expires_at reads
+// as missing (pgx.ErrNoRows), so an expired gate cannot be voted on (M-09); a
+// gate another vote already resolved returns ErrApprovalAlreadyResolved, after
+// the approver-set check so a non-voter learns nothing.
 func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, approver string, approved bool, reason string) (ApprovalState, bool, error) {
 	return withConn2(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (ApprovalState, bool, error) {
 		tx, err := conn.Begin(ctx)
@@ -503,15 +511,14 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 		if err != nil {
 			return "", false, err
 		}
-		if state != ApprovalPending {
-			return state, true, nil // already resolved
-		}
-
 		// SoD: when an explicit approver_set is configured, only members may vote.
 		// An empty set (legacy rows) admits any voter but the requester of an
 		// n >= 2 gate (MayVote).
 		if !MayVote(approverSet, requester, requiresN, approver) {
 			return ApprovalPending, false, fmt.Errorf("%w (approval %s)", ErrVoterNotInApproverSet, approvalID)
+		}
+		if state != ApprovalPending {
+			return state, false, fmt.Errorf("%w (approval %s)", ErrApprovalAlreadyResolved, approvalID)
 		}
 
 		if approved {

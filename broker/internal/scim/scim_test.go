@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -143,10 +145,29 @@ func (t *memTuples) DeleteRelations(_ context.Context, rels ...policy.Relation) 
 	return nil
 }
 
+// ReadTuples matches like OpenFGA's Read: exact user and relation when set,
+// and an object that is either exact or a bare "type:" prefix.
+func (t *memTuples) ReadTuples(_ context.Context, f policy.ReadFilter) ([]policy.Relation, error) {
+	var out []policy.Relation
+	for r := range t.set {
+		if f.User != "" && r.User != f.User || f.Relation != "" && r.Relation != f.Relation {
+			continue
+		}
+		if strings.HasSuffix(f.Object, ":") && !strings.HasPrefix(r.Object, f.Object) ||
+			!strings.HasSuffix(f.Object, ":") && f.Object != "" && r.Object != f.Object {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// memBlocks mirrors RevocationRepo.BlockUser: an active block is kept, except
+// that a non-SCIM block takes over a SCIM one.
 type memBlocks struct{ blocks map[string]db.UserBlock }
 
 func (b *memBlocks) BlockUser(_ context.Context, _, subject, reason, by string) (bool, error) {
-	if _, ok := b.blocks[subject]; ok {
+	if cur, ok := b.blocks[subject]; ok && (cur.By != BlockedBy || by == BlockedBy) {
 		return false, nil
 	}
 	b.blocks[subject] = db.UserBlock{Reason: reason, By: by}
@@ -358,6 +379,7 @@ func TestUserValidation(t *testing.T) {
 	for name, body := range map[string]string{
 		"no externalId":   `{"userName":"c@contoso.com"}`,
 		"svc subject":     `{"userName":"c@contoso.com","externalId":"svc-x"}`,
+		"group subject":   `{"userName":"c@contoso.com","externalId":"group-x"}`,
 		"no userName":     `{"externalId":"oid-c"}`,
 		"active not bool": `{"userName":"c@contoso.com","externalId":"oid-c","active":"maybe"}`,
 	} {
@@ -412,5 +434,87 @@ func TestListPaging(t *testing.T) {
 	_, body := f.call(t, "GET", "/Users?startIndex=2&count=1", "")
 	if body["totalResults"].(float64) != 3 || body["itemsPerPage"].(float64) != 1 || body["startIndex"].(float64) != 2 {
 		t.Fatalf("paging: %v", body)
+	}
+}
+
+// TestGroupCreateRefusesManagedGroup pins F4: an IdP group whose slug names a
+// group that already has tuples (members, or grants to group#member) is not
+// adopted, so a SCIM token cannot add members to an admin-managed group.
+func TestGroupCreateRefusesManagedGroup(t *testing.T) {
+	for name, seed := range map[string]policy.Relation{
+		"has members":  {User: "user:oid-admin", Relation: "member", Object: "group:approvers"},
+		"holds grants": {User: "group:approvers#member", Relation: "approver", Object: "tenant:aikonos-dev"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture()
+			f.tuples.set[seed] = true
+			_, u := f.call(t, "POST", "/Users", `{"userName":"e@contoso.com","externalId":"oid-e"}`)
+			code, body := f.call(t, "POST", "/Groups", `{"displayName":"Approvers","members":[{"value":"`+u["id"].(string)+`"}]}`)
+			if code != 409 || body["scimType"] != "uniqueness" {
+				t.Fatalf("want 409 uniqueness, got %d %v", code, body)
+			}
+			if f.member("oid-e", "approvers") {
+				t.Fatal("member tuple written to an admin-managed group")
+			}
+			if !strings.Contains(strings.Join(f.audit.events, "\n"), "aikonos.broker.scim.group.claim_refused group:approvers") {
+				t.Fatalf("refusal not audited: %v", f.audit.events)
+			}
+		})
+	}
+}
+
+// TestGroupSubjectTypesMatchModel keeps groupSubjectTypes in step with the
+// FGA model: every type with a relation that accepts group#member.
+func TestGroupSubjectTypesMatchModel(t *testing.T) {
+	raw, err := os.ReadFile("../../../policies/fga/model.fga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	typ := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "type "); ok {
+			typ = name
+		} else if strings.Contains(line, "group#member") && (len(want) == 0 || want[len(want)-1] != typ) {
+			want = append(want, typ)
+		}
+	}
+	if !slices.Equal(groupSubjectTypes, want) {
+		t.Fatalf("groupSubjectTypes = %v, model has %v", groupSubjectTypes, want)
+	}
+}
+
+// TestUserExternalIDCanonical pins F133: an upper-case GUID externalId is
+// stored, blocked and looked up in the lower-case form the token carries.
+func TestUserExternalIDCanonical(t *testing.T) {
+	f := newFixture()
+	const upper, lower = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	code, body := f.call(t, "POST", "/Users", `{"userName":"g@contoso.com","externalId":"`+upper+`","active":false}`)
+	if code != 201 || body["externalId"] != lower {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	if _, ok := f.blocks.blocks[lower]; !ok {
+		t.Fatalf("block not on the token subject: %v", f.blocks.blocks)
+	}
+	if _, body = f.call(t, "GET", `/Users?filter=externalId eq "`+upper+`"`, ""); body["totalResults"].(float64) != 1 {
+		t.Fatalf("lookup by the IdP's form: %v", body)
+	}
+	// Non-GUID subjects may be case-sensitive and are kept as sent.
+	if _, body = f.call(t, "POST", "/Users", `{"userName":"h@contoso.com","externalId":"Oid-H"}`); body["externalId"] != "Oid-H" {
+		t.Fatalf("non-GUID subject changed: %v", body)
+	}
+}
+
+// TestAdminBlockSurvivesScimReactivation pins F134: an admin block on top of
+// a SCIM block takes it over, so the IdP re-enabling the user lifts nothing.
+func TestAdminBlockSurvivesScimReactivation(t *testing.T) {
+	f := newFixture()
+	_, body := f.call(t, "POST", "/Users", `{"externalId":"oid-i","userName":"i@contoso.com","active":false}`)
+	if changed, _ := f.blocks.BlockUser(context.Background(), tenant, "oid-i", "incident", "admin@contoso.com"); !changed {
+		t.Fatal("an admin block must take over a SCIM block")
+	}
+	f.call(t, "PATCH", "/Users/"+body["id"].(string), `{"Operations":[{"op":"Replace","path":"active","value":true}]}`)
+	if f.blocks.blocks["oid-i"].By != "admin@contoso.com" {
+		t.Fatalf("reactivation lifted the admin block: %v", f.blocks.blocks)
 	}
 }

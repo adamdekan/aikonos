@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -43,6 +45,10 @@ type Config struct {
 	SecretID   string // approle secret_id; required for approle auth
 	KVMount    string // KV-v2 mount; defaults to "secret"
 	JWTPath    string // SA token path; defaults to defaultJWTPath (kubernetes auth only)
+	// AllowInsecureHTTP admits an http:// Addr on a routable host (see
+	// checkVaultAddr). Off by default: the client token and every secret
+	// would cross the network in clear.
+	AllowInsecureHTTP bool
 }
 
 // VaultClient is a minimal KV-v2 + kubernetes-auth client. It is deliberately
@@ -70,6 +76,9 @@ type VaultClient struct {
 func NewVaultClient(cfg Config) (*VaultClient, error) {
 	if cfg.Addr == "" {
 		return nil, nil
+	}
+	if err := checkVaultAddr(cfg.Addr, cfg.AllowInsecureHTTP); err != nil {
+		return nil, err
 	}
 	method := cfg.AuthMethod
 	if method == "" {
@@ -103,9 +112,41 @@ func NewVaultClient(cfg Config) (*VaultClient, error) {
 		secretID:   cfg.SecretID,
 		kvMount:    mount,
 		jwtPath:    jwtPath,
-		httpc:      &http.Client{Timeout: 10 * time.Second},
-		now:        time.Now,
+		httpc: &http.Client{
+			Timeout: 10 * time.Second,
+			// Never follow a redirect: Go replays custom headers such as
+			// X-Vault-Token (and 307/308 bodies) to the new host. A 3xx then
+			// surfaces as a non-2xx status error at the caller.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		now: time.Now,
 	}, nil
+}
+
+// checkVaultAddr refuses an http:// Vault address on a routable host unless
+// allowInsecure is set. Plain http stays allowed for loopback and for a
+// single-label host (a container-network service name such as the compose
+// "vault"), whose traffic stays on the private backend network.
+// ponytail: a single label is a proxy for "private network"; TLS on the
+// compose Vault listener would let this require https everywhere.
+func checkVaultAddr(addr string, allowInsecure bool) error {
+	u, err := url.Parse(addr)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("secrets: invalid vault address %q", addr)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		if allowInsecure || host == "localhost" || ip != nil && ip.IsLoopback() || ip == nil && !strings.Contains(host, ".") {
+			return nil
+		}
+		return fmt.Errorf("secrets: vault address %q is plain http on a routable host; use https or set vault.allow_insecure_http (AIKONOS_VAULT_ALLOW_INSECURE_HTTP)", addr)
+	default:
+		return fmt.Errorf("secrets: vault address %q must be http(s)", addr)
+	}
 }
 
 type loginResponse struct {
@@ -182,33 +223,51 @@ func (c *VaultClient) ensureToken(ctx context.Context) error {
 	return c.login(ctx)
 }
 
-// do performs an authenticated Vault request, logging in as needed.
+// do performs an authenticated Vault request, logging in as needed. A 403
+// (the client token was revoked or its policy changed) drops the token and
+// retries once with a fresh login, so a revoked token does not stall secret
+// access until its lease runs out.
 func (c *VaultClient) do(ctx context.Context, method, path string, payload any) (*http.Response, error) {
-	c.mu.Lock()
-	if err := c.ensureToken(ctx); err != nil {
-		c.mu.Unlock()
-		return nil, err
-	}
-	token := c.token
-	c.mu.Unlock()
-
-	var rdr io.Reader
+	var body []byte
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
-		rdr = bytes.NewReader(b)
+		body = b
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.addr+path, rdr)
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		c.mu.Lock()
+		if err := c.ensureToken(ctx); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+		token := c.token
+		c.mu.Unlock()
+
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.addr+path, rdr)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("X-Vault-Token", token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := c.httpc.Do(req)
+		if err != nil || resp.StatusCode != http.StatusForbidden || attempt > 0 {
+			return resp, err
+		}
+		resp.Body.Close()
+		c.mu.Lock()
+		if c.token == token { // another caller may already have re-logged in
+			c.token = ""
+		}
+		c.mu.Unlock()
 	}
-	req.Header.Set("X-Vault-Token", token)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	return c.httpc.Do(req)
 }
 
 // dataPath is the KV-v2 data path for a connector secret. KV-v2 inserts the

@@ -58,6 +58,11 @@ func (s *BrokerService) callerIdentity(ctx context.Context, reqTenant, reqUser s
 	if strings.HasPrefix(user, "svc-") {
 		return "", "", status.Error(codes.PermissionDenied, "svc- user_id not permitted on the north-bound API")
 	}
+	// group-<gid> is the group memory bundle's workspace segment: a subject of
+	// that shape would read and write that group's files as its own (F175).
+	if strings.HasPrefix(user, memoryGroupSegPrefix) {
+		return "", "", status.Error(codes.PermissionDenied, "group- user_id not permitted on the north-bound API")
+	}
 
 	// Passive directory upsert — best-effort, never blocks the RPC.
 	// At least one display field required; subject-only entries add nothing to the directory.

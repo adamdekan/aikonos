@@ -12,9 +12,12 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -31,6 +34,9 @@ func (f *fakeIdempotentCreateStore) Create(_ context.Context, t *db.Task) error 
 	if t.ClientRequestID != "" {
 		key := t.TenantID.String() + "|" + t.ClientRequestID
 		if existing, ok := f.byKey[key]; ok {
+			if existing.OwnerUserID != t.OwnerUserID {
+				return db.ErrClientRequestIDConflict
+			}
 			t.TaskID = existing.TaskID
 			t.TraceID = existing.TraceID
 			return db.ErrClientRequestIDExists
@@ -162,5 +168,53 @@ func TestCreateTask_DuplicateClientRequestID_RepairsRelationsNotAudit(t *testing
 	}
 	if em.count() != auditAfterFirst {
 		t.Errorf("expected the dedup path to NOT re-emit an audit event, got %d events before and %d after", auditAfterFirst, em.count())
+	}
+}
+
+// TestCreateTask_ClientRequestIDOfAnotherOwner_Refused proves a second owner
+// replaying another owner's client_request_id gets AlreadyExists: no FGA
+// owner/approver write on the first owner's task, no task or trace id in the
+// reply, and an audited denial.
+func TestCreateTask_ClientRequestIDOfAnotherOwner_Refused(t *testing.T) {
+	fga := &fakeFGA{}
+	srv := fga.server(t)
+	t.Cleanup(srv.Close)
+
+	eng, err := policy.NewEngine(context.Background(), policy.Config{
+		OPAEndpoint:     "http://unused",
+		OpenFGAEndpoint: srv.URL,
+		OpenFGAStoreID:  "store-1",
+	})
+	if err != nil {
+		t.Fatalf("policy.NewEngine: %v", err)
+	}
+	em := &recordingEmitter{}
+	store := &fakeIdempotentCreateStore{}
+	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Policy: eng, Audit: em, Tasks: store})
+
+	req := &brokerv1.CreateTaskRequest{TenantId: testTenantUUID, Prompt: "x", ClientRequestId: "shared-key"}
+	if _, err := svc.CreateTask(ctxWithIdentity(testTenantUUID, "alice@example.com"), req); err != nil {
+		t.Fatalf("alice CreateTask: %v", err)
+	}
+	writesAfterAlice := len(fga.writes)
+
+	h, err := svc.CreateTask(ctxWithIdentity(testTenantUUID, "mallory@example.com"), req)
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists for another owner's key, got %v", err)
+	}
+	if h != nil {
+		t.Fatalf("no handle may be returned on a conflict, got %v", h)
+	}
+	if len(fga.writes) != writesAfterAlice {
+		t.Fatalf("expected no FGA write for the second owner, got %d new writes", len(fga.writes)-writesAfterAlice)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected one stored task, got %d", len(store.created))
+	}
+	em.mu.Lock()
+	last := em.events[len(em.events)-1]
+	em.mu.Unlock()
+	if last.EventType != "aikonos.broker.task.client_request_id_conflict" || last.Decision != auditv1.PolicyDecision_DENY {
+		t.Fatalf("expected an audited DENY conflict, got %s/%s", last.EventType, last.Decision)
 	}
 }

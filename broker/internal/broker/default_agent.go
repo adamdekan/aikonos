@@ -208,7 +208,7 @@ func (s *BrokerService) GetMyDefaultAgent(ctx context.Context, req *brokerv1.Get
 	}
 	id, err := s.deps.Agents.UserDefault(ctx, tenant, user)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get default agent: %v", err)
+		return nil, s.internalErr("get default agent", err)
 	}
 	return &brokerv1.MyDefaultAgent{AgentId: id}, nil
 }
@@ -241,7 +241,7 @@ func (s *BrokerService) SetMyDefaultAgent(ctx context.Context, req *brokerv1.Set
 		}
 	}
 	if err := s.deps.Agents.SetUserDefault(ctx, tenant, user, id); err != nil {
-		return nil, status.Errorf(codes.Internal, "set default agent: %v", err)
+		return nil, s.internalErr("set default agent", err)
 	}
 	emitAgentEvent(ctx, s.deps, tenant, user, id, "aikonos.broker.agent.default.set", "", nil)
 	return &brokerv1.MyDefaultAgent{AgentId: id}, nil

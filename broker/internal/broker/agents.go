@@ -602,7 +602,7 @@ func (s *BrokerService) ListMyAgents(ctx context.Context, req *brokerv1.ListMyAg
 		// Dev allow-all: return all tenant agents (mirrors CheckFGA stub behaviour).
 		rows, err := s.deps.Agents.List(ctx, tenant)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list agents: %v", err)
+			return nil, s.internalErr("list agents", err)
 		}
 		out := make([]*brokerv1.MyAgent, 0, len(rows))
 		for _, row := range rows {
@@ -615,7 +615,7 @@ func (s *BrokerService) ListMyAgents(ctx context.Context, req *brokerv1.ListMyAg
 
 	refs, err := s.deps.Policy.ListObjects(ctx, "user:"+user, "can_use", "agent")
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list accessible agents: %v", err)
+		return nil, s.internalErr("list accessible agents", err)
 	}
 	if len(refs) == 0 {
 		return &brokerv1.ListMyAgentsResponse{Agents: []*brokerv1.MyAgent{}}, nil
@@ -630,7 +630,7 @@ func (s *BrokerService) ListMyAgents(ctx context.Context, req *brokerv1.ListMyAg
 
 	rows, err := s.deps.Agents.List(ctx, tenant)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list agents: %v", err)
+		return nil, s.internalErr("list agents", err)
 	}
 	out := make([]*brokerv1.MyAgent, 0)
 	for _, row := range rows {
@@ -663,7 +663,7 @@ func (s *BrokerService) GetAgentSoul(ctx context.Context, req *brokerv1.GetAgent
 		if errors.Is(err, db.ErrAgentNotFound) {
 			return nil, status.Errorf(codes.NotFound, "agent not found")
 		}
-		return nil, status.Errorf(codes.Internal, "fetch agent: %v", err)
+		return nil, s.internalErr("fetch agent", err)
 	}
 	if err := s.requireAgentOwnerOrAdmin(ctx, user, req.AgentId); err != nil {
 		return nil, err
@@ -693,7 +693,7 @@ func (s *BrokerService) SetAgentSoul(ctx context.Context, req *brokerv1.SetAgent
 		if errors.Is(err, db.ErrAgentNotFound) {
 			return nil, status.Errorf(codes.NotFound, "agent not found")
 		}
-		return nil, status.Errorf(codes.Internal, "fetch agent: %v", err)
+		return nil, s.internalErr("fetch agent", err)
 	}
 	if err := s.requireAgentOwnerOrAdmin(ctx, user, req.AgentId); err != nil {
 		return nil, err
@@ -706,11 +706,19 @@ func (s *BrokerService) SetAgentSoul(ctx context.Context, req *brokerv1.SetAgent
 		if errors.Is(err, db.ErrAgentNotFound) {
 			return nil, status.Errorf(codes.NotFound, "agent not found")
 		}
-		return nil, status.Errorf(codes.Internal, "set soul: %v", err)
+		return nil, s.internalErr("set soul", err)
 	}
 	s.emitAgentAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
 		"aikonos.broker.agent.soul.updated", agent, auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.SetAgentSoulResponse{Soul: cleaned}, nil
+}
+
+// internalErr logs err and returns a fixed Internal status naming only op:
+// member-facing RPCs must not reflect backend errors (FGA URLs and store ids,
+// SQL constraint names) to the caller (F180).
+func (s *BrokerService) internalErr(op string, err error) error {
+	s.deps.Logger.Error(op+" failed", zap.Error(err))
+	return status.Error(codes.Internal, op+" failed")
 }
 
 func (s *BrokerService) emitAgentAudit(ctx context.Context, traceID, tenant, actor, eventType string, a *db.Agent, decision auditv1.PolicyDecision) {

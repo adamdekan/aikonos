@@ -34,6 +34,20 @@ func TestRevocationRepo_BlockAndEpochs(t *testing.T) {
 	if err != nil || blocks["bob"].Reason != "left" || blocks["bob"].By != "admin" {
 		t.Fatalf("blocks = %+v %v", blocks, err)
 	}
+	// F134: an admin block takes over a SCIM one (so SCIM reactivation cannot
+	// lift it); a repeated SCIM block changes nothing.
+	if _, err := repo.BlockUser(ctx, tenant, "dan", "idp", ScimBlockedBy); err != nil {
+		t.Fatal(err)
+	}
+	if changed, _ := repo.BlockUser(ctx, tenant, "dan", "idp again", ScimBlockedBy); changed {
+		t.Fatal("a repeated SCIM block must be a no-op")
+	}
+	if changed, err := repo.BlockUser(ctx, tenant, "dan", "incident", "admin"); err != nil || !changed {
+		t.Fatalf("admin over SCIM block: %v %v", changed, err)
+	}
+	if blocks, _ := repo.UserBlocks(ctx, tenant); blocks["dan"].By != "admin" || blocks["dan"].Reason != "incident" {
+		t.Fatalf("dan's block = %+v", blocks["dan"])
+	}
 	if changed, err := repo.UnblockUser(ctx, tenant, "bob", "admin"); err != nil || !changed {
 		t.Fatalf("unblock: %v %v", changed, err)
 	}

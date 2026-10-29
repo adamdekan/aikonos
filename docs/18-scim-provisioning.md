@@ -104,10 +104,13 @@ maps to `objectId`.
 
 SCIM manages the membership of the groups it creates. It does not grant those
 groups anything: an admin grants a group roles, skills or connectors in Access
-Control as usual (for example `group:finance-team#member`). If an Entra group
-gives the same name as a group already used in aikonOS, SCIM adds and removes
-members of that group; a member added by hand and removed in Entra loses the
-tuple. Two Entra groups that give the same name are refused (409) for the second.
+Control as usual (for example `group:finance-team#member`), after SCIM has
+created the group. SCIM does not adopt a group already used in aikonOS: if an
+Entra group gives the name of a group that has members or grants, the create is
+refused (409, audited as `scim.group.claim_refused`), so a provisioning token
+cannot add members to a group an admin manages by hand. Rename the Entra group,
+or remove that group's members and grants in Access Control and let Entra retry.
+Two Entra groups that give the same name are refused (409) for the second.
 
 ## Token rotation and revocation
 
@@ -116,6 +119,9 @@ tuple. Two Entra groups that give the same name are refused (409) for the second
   Connection**. Entra retries failed calls, so a short gap loses nothing.
 - **Revoke:** Provisioning → token row → **Revoke**. Use this when a token may
   have leaked. Provisioning stops until a new token is created and entered.
+- **Expiry:** a token works for 365 days from its creation (tokens that existed
+  before the upgrade: 365 days from the upgrade). An expired token is refused
+  with 401 and audited with reason `expired_token`; rotate it as above.
 
 Every token change is audited (`aikonos.broker.scim.token.created`,
 `aikonos.broker.scim.token.revoked`), and a call with an unknown token or under
@@ -129,14 +135,15 @@ Every token change is audited (`aikonos.broker.scim.token.created`,
 | `aikonos.broker.scim.user.deactivated` / `.reactivated` | `active` changed (block set / lifted) |
 | `aikonos.broker.scim.group.created` / `.updated` / `.deleted` | Group changes, with the members added and removed |
 | `aikonos.broker.scim.token.created` / `.revoked` | Admin token changes |
-| `aikonos.broker.scim.auth.denied` | Unknown or revoked token, or the tenant is on `jit` |
+| `aikonos.broker.scim.auth.denied` | Unknown, revoked or expired token, or the tenant is on `jit` |
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
 | Test Connection fails with 403 | `provisioning.mode` is still `jit` |
-| 401 | Token wrong, rotated or revoked |
+| 401 | Token wrong, rotated, revoked or expired (365 days) |
+| 409 `group ... is already managed in aikonOS` | The Entra group's name matches a group that already has members or grants; see "Group names and grants" |
 | 400 `externalId is required` | The `externalId` mapping is missing; map it to `objectId` |
 | 400 `externalId cannot change` | The mapping was changed after users were created. Delete and re-provision those users. |
 | A provisioned user signs in but has no groups | `externalId` is not the subject the OIDC token carries (check `AIKONOS_OIDC_SUBJECT_CLAIM`) |

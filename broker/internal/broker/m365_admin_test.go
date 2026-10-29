@@ -196,6 +196,10 @@ func TestUpsertM365Connection_RequiresTenantAndClientID(t *testing.T) {
 		nil,
 		{ClientId: "client-1"},
 		{EntraTenantId: "entra-1"},
+		// G7: ids that would re-target the token endpoint path or query.
+		{EntraTenantId: "../common", ClientId: "client-1"},
+		{EntraTenantId: "contoso.com/x?y=", ClientId: "client-1"},
+		{EntraTenantId: "entra-1", ClientId: "client#1"},
 	}
 	for _, conn := range cases {
 		_, err := svc.UpsertM365Connection(ctx, &brokerv1.UpsertM365ConnectionRequest{Connection: conn})

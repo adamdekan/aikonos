@@ -69,6 +69,14 @@ func TestListPendingApprovalsFor_TwoApproversOneOutsider(t *testing.T) {
 	if count("carol@example.com") != 0 {
 		t.Fatal("a resolved gate must leave every list")
 	}
+	// F174: a late vote on the resolved gate is not a resolution of its own,
+	// and an outsider is refused as an outsider, not told it was resolved.
+	if _, resolved, err := repo.ResolveApproval(ctx, tenant, id, "bob@example.com", true, ""); !errors.Is(err, ErrApprovalAlreadyResolved) || resolved {
+		t.Fatalf("late vote: resolved=%v err=%v, want ErrApprovalAlreadyResolved", resolved, err)
+	}
+	if _, _, err := repo.ResolveApproval(ctx, tenant, id, "dave@example.com", true, ""); !errors.Is(err, ErrVoterNotInApproverSet) {
+		t.Fatalf("outsider on a resolved gate: err=%v, want ErrVoterNotInApproverSet", err)
+	}
 }
 
 // AG-07 (M-09): an approval past expires_at cannot be loaded or voted on; the

@@ -350,11 +350,23 @@ func (s *BrokerService) RevokeConnector(ctx context.Context, req *brokerv1.Revok
 		return nil, status.Error(codes.InvalidArgument, "connector_id required")
 	}
 
-	// Best-effort provider revoke before deleting the secret.
+	// Best-effort provider revoke before deleting the secret. A link stored
+	// without a refresh token revokes its access token instead (G23). A failed
+	// revoke does not stop the local delete, but is audited: the provider may
+	// still honour the grant until it expires.
+	// Held to the end: a refresh that read the token before the delete must
+	// not write it back after (G22).
+	defer connector.LockToken(tenant, user, req.ConnectorId)()
+	upstreamFailed := false
 	if prov, ok := providerFromConnectorID(req.ConnectorId); ok {
 		if tok, rerr := s.deps.Secrets.ReadConnector(ctx, tenant, user, req.ConnectorId); rerr == nil {
-			if err := s.deps.OAuth.Revoke(ctx, prov, tok.RefreshToken); err != nil {
+			revokeTok := tok.RefreshToken
+			if revokeTok == "" {
+				revokeTok = tok.AccessToken
+			}
+			if err := s.deps.OAuth.Revoke(ctx, prov, revokeTok); err != nil {
 				s.deps.Logger.Warn("RevokeConnector: provider revoke failed (continuing)", zap.Error(err))
+				upstreamFailed = true
 			}
 		}
 	}
@@ -370,6 +382,10 @@ func (s *BrokerService) RevokeConnector(ctx context.Context, req *brokerv1.Revok
 
 	s.emitConnectorAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
 		"aikonos.broker.connector.revoked", auditv1.PolicyDecision_ALLOW)
+	if upstreamFailed {
+		s.emitConnectorAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
+			"aikonos.broker.connector.upstream_revoke_failed", auditv1.PolicyDecision_DENY)
+	}
 	return &brokerv1.RevokeConnectorResponse{Success: true}, nil
 }
 

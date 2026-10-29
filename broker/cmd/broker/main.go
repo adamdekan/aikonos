@@ -181,6 +181,7 @@ func main() {
 	viper.SetDefault("vault.role_id", "")
 	viper.SetDefault("vault.secret_id", "")
 	viper.SetDefault("vault.kv_mount", "secret")
+	viper.SetDefault("vault.allow_insecure_http", false)
 	// Connector OAuth apps (platform secrets). Empty client_id → that provider
 	// is unconfigured: its connector RPCs/tools are unavailable.
 	viper.SetDefault("connectors.redirect_uri", "")
@@ -498,6 +499,8 @@ func main() {
 		RoleID:     viper.GetString("vault.role_id"),
 		SecretID:   viper.GetString("vault.secret_id"),
 		KVMount:    viper.GetString("vault.kv_mount"),
+		// http:// on a routable host needs this explicit opt-in (F176).
+		AllowInsecureHTTP: viper.GetBool("vault.allow_insecure_http"),
 	})
 	if err != nil {
 		log.Fatal("Failed to init Vault secrets provider", zap.Error(err))
@@ -940,10 +943,18 @@ func main() {
 		grpc.MaxSendMsgSize(maxMsgBytes),
 		grpc.ChainUnaryInterceptor(
 			auth.OIDCInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
-			provisioner.Interceptor(),
-			auth.TenantInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
+			auth.TenantInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
 			auth.RevocationInterceptor(revocationChecker, auditEmitter, log),
+			// After the tenant and revocation gates: a blocked, revoked or
+			// tenant-less caller must not be JIT-provisioned into groups.
+			provisioner.Interceptor(),
 			auth.AuditInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), log),
+		),
+		// StreamTaskEvents passes the same identity gates as unary calls.
+		grpc.ChainStreamInterceptor(
+			auth.OIDCStreamInterceptor(oidcValidator, auditEmitter, viper.GetString("broker.tenant_id"), log),
+			auth.TenantStreamInterceptor(auditEmitter, viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), log),
+			auth.RevocationStreamInterceptor(revocationChecker, auditEmitter, log),
 		),
 	)
 
@@ -1062,7 +1073,10 @@ func main() {
 		}
 	}()
 	brokerv1.RegisterBrokerServiceServer(northServer, northSvc)
-	reflection.Register(northServer)
+	// Reflection maps the whole API surface for anyone who can connect; dev only.
+	if viper.GetBool("dev_mode") {
+		reflection.Register(northServer)
+	}
 
 	// ── gRPC server — South bound (sandbox → Broker) ─────────────────────────
 	// mTLS using SPIFFE SVID; only SPIFFE auth, no OIDC
@@ -1128,7 +1142,9 @@ func main() {
 		ApprovalNotify:       approvalNotify, // SubmitPlan builds approval gates (AG-07)
 	})
 	brokerv1.RegisterSandboxServiceServer(southServer, sandboxSvc)
-	reflection.Register(southServer) // dev convenience; south is mTLS+SPIFFE-gated
+	if viper.GetBool("dev_mode") {
+		reflection.Register(southServer) // dev convenience; grpcurl elsewhere needs -proto
+	}
 
 	// ── Start listeners ───────────────────────────────────────────────────────
 	northAddr := fmt.Sprintf(":%d", viper.GetInt("broker.grpc_port_north"))

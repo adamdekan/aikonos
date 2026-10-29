@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 
 	"github.com/adamdekan/aikonos/broker/internal/provisioning"
@@ -106,6 +108,44 @@ func TestProvisioner_ClaimFalse_NoTuples(t *testing.T) {
 	defer tw.mu.Unlock()
 	if len(tw.written) != 0 {
 		t.Errorf("expected no tuples written; got %v", tw.written)
+	}
+}
+
+// blockedRevocations reports every user as blocked.
+type blockedRevocations struct{}
+
+func (blockedRevocations) User(context.Context, string, string) (revocation.State, error) {
+	return revocation.State{Blocked: true}, nil
+}
+
+// TestInterceptor_BlockedOrTenantlessNotProvisioned pins F173/G47: in the
+// north chain order (revocation before provisioning) a blocked caller is
+// refused before Seen runs, and a tenant-less identity is never provisioned.
+func TestInterceptor_BlockedOrTenantlessNotProvisioned(t *testing.T) {
+	store := &fakeRuleStore{rules: []db.ProvisioningRule{{Matcher: "*@contoso.com", Groups: []string{"devs"}}}}
+	tw := &fakeTupleWrite{}
+	p := newProvisioner(store, tw, &fakeAudit{})
+	info := &grpc.UnaryServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/GetMe"}
+	ok := func(context.Context, any) (any, error) { return "ok", nil }
+	prov := p.Interceptor()
+	chain := func(ctx context.Context) (any, error) {
+		return auth.RevocationInterceptor(blockedRevocations{}, nil, zap.NewNop())(ctx, nil, info,
+			func(ctx context.Context, req any) (any, error) { return prov(ctx, req, info, ok) })
+	}
+
+	blocked := &auth.Identity{Subject: "sub1", Email: "alice@contoso.com", TenantID: "11111111-1111-1111-1111-111111111111"}
+	if _, err := chain(auth.WithIdentity(context.Background(), blocked)); err == nil {
+		t.Fatal("blocked caller: want an error")
+	}
+	if _, err := prov(auth.WithIdentity(context.Background(), identity("sub2", "bob@contoso.com")), nil, info, ok); err != nil {
+		t.Fatalf("tenant-less passthrough: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+	if len(tw.written) != 0 {
+		t.Fatalf("expected no tuples for a blocked or tenant-less caller; got %v", tw.written)
 	}
 }
 

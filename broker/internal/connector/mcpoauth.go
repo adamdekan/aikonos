@@ -127,10 +127,19 @@ func (r *Registry) McpExchange(ctx context.Context, hc *http.Client, m McpOAuth,
 // the connection reconnect_needed.
 func (r *Registry) FreshMcpAccessToken(ctx context.Context, hc *http.Client, store secrets.Provider, m McpOAuth, tenant, user string) (string, error) {
 	connectorID := McpConnectorID(m.ConnectionID)
+	defer LockToken(tenant, user, connectorID)()
 	stored, err := readStored(ctx, store, tenant, user, connectorID, m.Name)
 	if err != nil {
 		return "", err
 	}
+	// F140: an admin who repoints the connection's token endpoint must not
+	// receive the users' stored refresh tokens. A token stored before the
+	// endpoint was recorded is bound to the current one on this refresh.
+	if stored.TokenURL != "" && stored.TokenURL != m.TokenURL {
+		r.recordStatus(tenant, user, connectorID, StatusReconnectNeeded)
+		return "", fmt.Errorf("%s token endpoint changed — reconnect needed", m.Name)
+	}
+	stored.TokenURL = m.TokenURL
 	return r.refresh(mcpTokenContext(ctx, hc, m.Resource), store, r.mcpConfig(m), stored,
 		tenant, user, connectorID, m.Name, string(McpProvider(m.ConnectionID)))
 }

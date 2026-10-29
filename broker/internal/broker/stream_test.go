@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -52,7 +53,7 @@ func TestStreamTaskEvents_DisabledBus(t *testing.T) {
 
 func TestStreamTaskEvents_ForwardsEvents(t *testing.T) {
 	bus := notify.NewMemoryBus()
-	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Notify: bus, TenantID: testTenantUUID})
+	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Notify: bus, TenantID: testTenantUUID, Tasks: aliceTask()})
 
 	ctx, cancel := context.WithCancel(ctxWithIdentity(testTenantUUID, "alice@example.com"))
 	stream := &fakeStream{ctx: ctx}
@@ -99,7 +100,7 @@ func TestStreamTaskEvents_ForwardsEvents(t *testing.T) {
 
 func TestStreamTaskEvents_OtherTaskNotForwarded(t *testing.T) {
 	bus := notify.NewMemoryBus()
-	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Notify: bus, TenantID: testTenantUUID})
+	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Notify: bus, TenantID: testTenantUUID, Tasks: aliceTask()})
 
 	ctx, cancel := context.WithCancel(ctxWithIdentity(testTenantUUID, "alice@example.com"))
 	defer cancel()
@@ -161,6 +162,32 @@ func TestStreamTaskEvents_SpoofedTenant_RejectedBeforeSubscribe(t *testing.T) {
 	defer bus.mu.Unlock()
 	if bus.subscribed {
 		t.Fatalf("bus was subscribed (subjects=%v) despite the spoofed tenant_id — pre-change behavior (req.TenantId trusted directly)", bus.subscribeArgs)
+	}
+}
+
+// aliceTask is a task store whose every task is owned by alice.
+func aliceTask() taskStore {
+	return &fakeGetTaskStore{task: &db.Task{OwnerUserID: "alice@example.com"}}
+}
+
+// TestStreamTaskEvents_NonReader_RejectedBeforeSubscribe pins F136: a tenant
+// member who is neither the owner, an approver nor an admin may not stream a
+// task's events, and is refused before any subscription.
+func TestStreamTaskEvents_NonReader_RejectedBeforeSubscribe(t *testing.T) {
+	bus := &recordingBus{Bus: notify.NewMemoryBus()}
+	svc := newCancelSvcWithFGA(t, aliceTask(), &fakeFGA{})
+	svc.deps.Notify = bus
+
+	ctx, cancel := context.WithTimeout(ctxWithIdentity(testTenantUUID, "eve@example.com"), 2*time.Second)
+	defer cancel()
+	err := svc.StreamTaskEvents(&brokerv1.StreamTaskEventsRequest{TaskId: "t1", TenantId: testTenantUUID}, &fakeStream{ctx: ctx})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for a non-reader, got %v", err)
+	}
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	if bus.subscribed {
+		t.Fatalf("bus was subscribed (subjects=%v) for a caller who may not read the task", bus.subscribeArgs)
 	}
 }
 

@@ -73,7 +73,7 @@ func TestOIDCInterceptor_ValidTokenInjectsIdentity(t *testing.T) {
 }
 
 func TestTenantInterceptor(t *testing.T) {
-	ic := TenantInterceptor(nil, "test-tenant", zap.NewNop())
+	ic := TenantInterceptor(nil, "test-tenant", "", zap.NewNop())
 
 	// No identity on context (dev mode): pass through.
 	if _, err := ic(context.Background(), nil, testInfo, okHandler); err != nil {
@@ -90,6 +90,74 @@ func TestTenantInterceptor(t *testing.T) {
 	ctx = WithIdentity(context.Background(), &Identity{Subject: "a"})
 	if _, err := ic(ctx, nil, testInfo, okHandler); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("want PermissionDenied, got %v", err)
+	}
+}
+
+// TestTenantInterceptor_ForeignTenantRefused pins F10/G10: the admin gate is
+// evaluated on the configured tenant, so a token naming another tenant is
+// refused (and audited) before any handler, whatever its subject.
+func TestTenantInterceptor_ForeignTenantRefused(t *testing.T) {
+	const own = "11111111-1111-1111-1111-111111111111"
+	rec := &recordingEmitter{}
+	ic := TenantInterceptor(rec, "test-tenant", own, zap.NewNop())
+
+	ctx := WithIdentity(context.Background(), &Identity{Subject: "admin", TenantID: "22222222-2222-2222-2222-222222222222"})
+	if _, err := ic(ctx, nil, testInfo, okHandler); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("foreign tenant: want PermissionDenied, got %v", err)
+	}
+	if ev := rec.only(t); ev.EventType != "auth.tenant.mismatch" || ev.Decision != auditv1.PolicyDecision_DENY {
+		t.Fatalf("audit = %s/%s", ev.EventType, ev.Decision)
+	}
+
+	ctx = WithIdentity(context.Background(), &Identity{Subject: "admin", TenantID: "11111111-1111-1111-1111-111111111111"})
+	if _, err := ic(ctx, nil, testInfo, okHandler); err != nil {
+		t.Fatalf("own tenant: %v", err)
+	}
+}
+
+// fakeServerStream is a ServerStream carrying only a context.
+type fakeServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *fakeServerStream) Context() context.Context { return s.ctx }
+
+// TestStreamInterceptors_GateLikeUnary pins F136: a streaming RPC gets the
+// north OIDC and tenant gate, and its handler sees the verified identity.
+func TestStreamInterceptors_GateLikeUnary(t *testing.T) {
+	idp := newTestIDP(t)
+	v := mustValidator(t, OIDCConfig{Issuer: idp.srv.URL, Audience: "aikonos-broker", TenantClaim: "tenant_id"})
+	oidc := OIDCStreamInterceptor(v, nil, "t", zap.NewNop())
+	tenant := TenantStreamInterceptor(nil, "t", "", zap.NewNop())
+	info := &grpc.StreamServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/StreamTaskEvents", IsServerStream: true}
+
+	var seen *Identity
+	handler := func(_ any, ss grpc.ServerStream) error {
+		seen, _ = IdentityFromContext(ss.Context())
+		return nil
+	}
+	run := func(ctx context.Context) error {
+		return oidc(nil, &fakeServerStream{ctx: ctx}, info, func(srv any, ss grpc.ServerStream) error {
+			return tenant(srv, ss, info, handler)
+		})
+	}
+
+	if err := run(context.Background()); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("no bearer: want Unauthenticated, got %v", err)
+	}
+	noTenant := idp.mint(t, jwt.Claims{Issuer: idp.srv.URL, Subject: "bob", Audience: jwt.Audience{"aikonos-broker"},
+		Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour))}, nil)
+	if err := run(metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+noTenant))); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("no tenant claim: want PermissionDenied, got %v", err)
+	}
+	ok := idp.mint(t, jwt.Claims{Issuer: idp.srv.URL, Subject: "bob", Audience: jwt.Audience{"aikonos-broker"},
+		Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour))}, map[string]any{"tenant_id": "t-1"})
+	if err := run(metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+ok))); err != nil {
+		t.Fatalf("valid token: %v", err)
+	}
+	if seen == nil || seen.Subject != "bob" || seen.TenantID != "t-1" {
+		t.Fatalf("handler did not see the verified identity: %+v", seen)
 	}
 }
 

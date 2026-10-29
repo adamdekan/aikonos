@@ -170,7 +170,7 @@ func safeJoin(base, tenant, task, rel string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("doc.write: %w", err)
 	}
-	taskDir := filepath.Join(base, sanitizeSeg(tenant), sanitizeSeg(task))
+	taskDir := workspacepath.Dir(base, tenant, task)
 	return filepath.Join(taskDir, clean), nil
 }
 

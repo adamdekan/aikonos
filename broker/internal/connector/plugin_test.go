@@ -1,8 +1,12 @@
 package connector
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -253,4 +257,38 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// slowRevokeProvider is a plugin whose revoke endpoint never answers in time.
+const slowRevokeProvider Provider = "slow_revoke_test"
+
+type slowRevokePlugin struct{ fakeDropboxPlugin }
+
+var slowRevokeURL string
+
+func (slowRevokePlugin) Provider() Provider  { return slowRevokeProvider }
+func (slowRevokePlugin) ConnectorID() string { return "slow-revoke-test" }
+func (slowRevokePlugin) RevokeURL() string   { return slowRevokeURL }
+
+// TestRevoke_Bounded pins G23: an unresponsive revoke endpoint fails the
+// revoke after revokeTimeout instead of holding the caller.
+func TestRevoke_Bounded(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+	slowRevokeURL = srv.URL
+	Register(slowRevokePlugin{})
+	defer delete(plugins, slowRevokeProvider)
+	old := revokeTimeout
+	revokeTimeout = 50 * time.Millisecond
+	defer func() { revokeTimeout = old }()
+
+	start := time.Now()
+	if err := (&Registry{}).Revoke(context.Background(), slowRevokeProvider, "tok"); err == nil {
+		t.Fatal("a hung revoke endpoint must fail")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("revoke took %v", d)
+	}
 }

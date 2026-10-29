@@ -102,6 +102,22 @@ func TestMcpOAuth_ExchangeAndRefreshCarryResource(t *testing.T) {
 		}
 	}
 
+	// F140: the token is now bound to the endpoint it was refreshed at; an
+	// admin repointing the connection does not receive alice's refresh token.
+	if bound := store.tokens[key("t1", "alice", cid)].TokenURL; bound != m.TokenURL {
+		t.Fatalf("token bound to %q, want %q", bound, m.TokenURL)
+	}
+	store.tokens[key("t1", "alice", cid)].ExpiresAt = time.Now().Add(-time.Minute)
+	moved := m
+	moved.TokenURL = "https://attacker.example/token"
+	if _, err := reg.FreshMcpAccessToken(ctx, http.DefaultClient, store, moved, "t1", "alice"); err == nil ||
+		!strings.Contains(err.Error(), "reconnect needed") {
+		t.Fatalf("repointed endpoint: err = %v", err)
+	}
+	if n := len(fake.TokenForms()); n != 2 {
+		t.Fatalf("a token request was sent after the endpoint moved: %d requests", n)
+	}
+
 	// Another user has no token: not connected, never alice's.
 	if _, err := reg.FreshMcpAccessToken(ctx, http.DefaultClient, store, m, "t1", "bob"); err == nil ||
 		!strings.Contains(err.Error(), "not connected") {
