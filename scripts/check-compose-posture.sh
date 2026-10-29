@@ -3,8 +3,8 @@ set -euo pipefail
 
 # scripts/check-compose-posture.sh
 #
-# Renders the compose config for each variant (local / azure / onprem) from
-# its .env example, every profile enabled, and fails on network-exposure
+# Renders the compose config for each variant (local / local-entra / azure /
+# onprem) from its .env example, every profile enabled, and fails on network-exposure
 # regressions the source files hide (a plain `ports:` list in an overlay merges
 # with the base file's, so only the rendered config tells the truth):
 #
@@ -41,7 +41,8 @@ bad() { echo "POSTURE [$1] $2" >&2; fail=1; }
 render() {
   local variant="$1" env_file="$2"
   local files=(-f compose.yaml)
-  [[ "$variant" != local ]] && files+=(-f "deploy/compose/compose.${variant}.yaml")
+  # local and local-entra are the base file alone.
+  [[ "$variant" != local* ]] && files+=(-f "deploy/compose/compose.${variant}.yaml")
   docker compose --env-file "$env_file" "${files[@]}" "${PROFILES[@]}" config --format json
 }
 
@@ -49,7 +50,7 @@ render() {
 violations() {
   jq -r --arg variant "$1" '
     .services as $s
-    | ( if $variant != "local" then
+    | ( if ($variant | startswith("local") | not) then
           $s | to_entries[] | .key as $svc | (.value.ports // [])[]
           | select((.host_ip // "") != "127.0.0.1")
           | select(($svc == "traefik") and ((.published|tostring) == "80" or (.published|tostring) == "443") | not)
@@ -86,7 +87,7 @@ violations() {
   '
 }
 
-for variant in local azure onprem; do
+for variant in local local-entra azure onprem; do
   env_file="deploy/compose/.env.${variant}.example"
   out="$(render "$variant" "$env_file" | violations "$variant")"
   while IFS= read -r line; do
@@ -112,4 +113,4 @@ if [[ "$fail" -eq 1 ]]; then
   echo "check-compose-posture: FAIL" >&2
   exit 1
 fi
-echo "check-compose-posture: OK — local/azure/onprem rendered configs keep the network posture."
+echo "check-compose-posture: OK — local/local-entra/azure/onprem rendered configs keep the network posture."

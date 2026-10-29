@@ -308,6 +308,10 @@ jobs:
       - name: Run compose network-posture check
         run: bash scripts/check-compose-posture.sh
 
+      # Seeded bad configs: each posture rule must still fail its own regression.
+      - name: Compose network-posture rule regressions
+        run: bash scripts/tests/compose-posture.test.sh
+
       # The release workflow runs only on tags; this runs its local logic
       # (scripts/release-assemble.sh, scripts/verify-release.sh) on every push.
       # It also fails when compose.yaml gains a service that is built from
