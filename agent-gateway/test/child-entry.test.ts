@@ -305,6 +305,31 @@ test("CP3 bridge-client gate: deny (allow:false) is surfaced faithfully", async 
   assert.equal(result.reason, "denied by policy");
 });
 
+test("bridge-client: an earlier run ending does not clear a later run's id; each call carries its own run", async () => {
+  // WHY: activeRunId was one shared field. A run that ended while a later run
+  // on the same child was mid-call cleared it ("no active runId"), and the
+  // later run's calls could be tagged with the wrong run.
+  const [parentSide, childSide] = makePairedChannel();
+  const parentLink = new ParentLink(parentSide);
+  const client = new RemoteBridgeClient(new ChildLink(childSide));
+  const seen: string[] = [];
+  parentLink.on("gate", (msg: GateRequest) => {
+    seen.push(`${msg.toolCallId}@${msg.runId}`);
+    parentLink.send({ kind: "gate-result", seq: msg.seq, allow: true } satisfies GateResult);
+  });
+
+  let releaseB!: () => void;
+  const bHeld = new Promise<void>((r) => { releaseB = r; });
+  const runB = client.withRun("run-b", async () => {
+    await bHeld; // run-a starts and ends while run-b waits
+    return client.gate("tc-b", "web_fetch", {});
+  });
+  await client.withRun("run-a", () => client.gate("tc-a", "web_fetch", {}));
+  releaseB();
+  await withTimeout(runB, 500, "run-b gate after run-a ended");
+  assert.deepEqual(seen, ["tc-a@run-a", "tc-b@run-b"]);
+});
+
 // ── bridge-client: execute ─────────────────────────────────────────────────────
 
 test("CP3 bridge-client execute: sends execute IPC request and resolves from matching execute-result", async () => {

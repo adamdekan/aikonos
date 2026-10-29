@@ -306,7 +306,7 @@ async function resolveMcpTools(
             // unparseable schema — use open object
           }
         }
-        tools.push({ name, schema, toolId: name });
+        tools.push({ name, schema, toolId: name, ...(t.description ? { description: t.description } : {}) });
       }
     } catch (err) {
       log.warn({ err: String(err), server: server.id }, "listMcpServerToolsSouth failed — skipping server in plan");
@@ -314,6 +314,15 @@ async function resolveMcpTools(
   }
 
   return tools;
+}
+
+// mcpParameters turns an MCP tool's inputSchema into the tool's parameters.
+// MCP requires an object schema; anything else gets an open object so the tool
+// stays callable. Exported for tests.
+export function mcpParameters(schema: Record<string, unknown> | undefined) {
+  return schema && schema.type === "object"
+    ? Type.Unsafe<Record<string, unknown>>(schema)
+    : Type.Object({}, { additionalProperties: true });
 }
 
 // resolveSessionPlan runs in the trusted parent. It fires the south RPCs, picks
@@ -546,33 +555,26 @@ export async function createSessionFromPlan(
   const activeStaticTools = allStaticTools.filter((t) => allowedSet.has(t.name));
 
   // MCP tools from the plan — each routes through the bridge client exactly like
-  // static tools. Schema comes from the plan (serialised by resolveSessionPlan).
+  // static tools: the tool_call hook (gateToolCall) has already gated the call,
+  // so execute only runs it (a second gate here would raise a second approval).
+  // The model sees the server's own input schema and description.
   const mcpToolDefs = plan.mcpTools
     .filter((t) => allowedSet.has(t.name))
-    .map((t) => {
-      const capturedName = t.name;
-      return defineTool({
+    .map((t) =>
+      defineTool({
         name: t.name,
         label: `MCP: ${t.name}`,
-        description: `MCP tool ${t.name}`,
-        parameters: Type.Object({}, { additionalProperties: true }),
-        execute: async (toolCallId, _params) => {
-          const decision = await bridge.gate(
-            toolCallId,
-            capturedName,
-            (_params as Record<string, unknown>) ?? {},
-          );
-          if (!decision.allow) {
-            return { content: [{ type: "text" as const, text: `aikonOS: ${decision.reason ?? "denied"}` }], details: {} };
-          }
+        description: t.description || `MCP tool ${t.name}`,
+        parameters: mcpParameters(t.schema),
+        execute: async (toolCallId) => {
           const r = await bridge.execute(toolCallId);
           const body = r.ok
             ? typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2)
             : `ERROR: ${r.error ?? "tool failed"}`;
           return { content: [{ type: "text" as const, text: body }], details: r.output };
         },
-      });
-    });
+      }),
+    );
 
   // Register load_skill built-in when bundles are present. Activating a bundle
   // has no effect on tool authorization —

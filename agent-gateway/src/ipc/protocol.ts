@@ -346,6 +346,8 @@ export interface McpTool {
   name: string;
   schema: Record<string, unknown>;
   toolId: string;
+  // The server's own tool description, shown to the model. Not a secret.
+  description?: string;
 }
 
 // SkillBundleEntry is the secret-free wire shape for a granted skill bundle.
