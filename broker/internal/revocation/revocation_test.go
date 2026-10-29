@@ -138,3 +138,39 @@ func TestChecker_AgentStatus(t *testing.T) {
 		t.Fatalf("unknown agent: refusal = %q", st.AgentRefusal())
 	}
 }
+
+// midLoadStore calls during before it answers a UserState read, standing in for
+// a write that commits while the read is in flight.
+type midLoadStore struct {
+	fakeStore
+	during func()
+}
+
+func (m *midLoadStore) UserState(ctx context.Context, t, s string) (bool, time.Time, error) {
+	blocked, nb, err := m.fakeStore.UserState(ctx, t, s)
+	if m.during != nil {
+		f := m.during
+		m.during = nil
+		f()
+	}
+	return blocked, nb, err
+}
+
+// TestChecker_LoadRacingBlockNotCached pins F178: an answer read before a
+// local block landed is not cached past that block's reset.
+func TestChecker_LoadRacingBlockNotCached(t *testing.T) {
+	ctx := context.Background()
+	store := &midLoadStore{}
+	c := New(store)
+	store.during = func() {
+		if _, err := c.BlockUser(ctx, "t", "bob", "incident", "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, _ := c.User(ctx, "t", "bob"); st.Blocked {
+		t.Fatal("the in-flight read predates the block")
+	}
+	if st, _ := c.User(ctx, "t", "bob"); !st.Blocked {
+		t.Fatal("the pre-block answer was cached past the block's reset")
+	}
+}

@@ -219,19 +219,29 @@ func (s *BrokerService) GetTaskState(ctx context.Context, req *brokerv1.GetTaskS
 		return nil, err
 	}
 
-	t, err := s.deps.Tasks.Get(ctx, tenant, req.TaskId)
+	t, err := s.readableTask(ctx, span.SpanContext().TraceID().String(), tenant, user, req.TaskId)
+	if err != nil {
+		return nil, err
+	}
+	return taskToProto(t), nil
+}
+
+// readableTask loads the task if user may read it: the owner, an approver of
+// this task (so they can see what they decide), or a tenant admin. An FGA
+// error fails closed; a denial is audited as task.get_denied. Shared by
+// GetTaskState and StreamTaskEvents.
+func (s *BrokerService) readableTask(ctx context.Context, traceID, tenant, user, taskID string) (*db.Task, error) {
+	t, err := s.deps.Tasks.Get(ctx, tenant, taskID)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "task %s not found", req.TaskId)
+			return nil, status.Errorf(codes.NotFound, "task %s not found", taskID)
 		}
-		s.deps.Logger.Error("GetTaskState: DB query failed", zap.Error(err))
+		s.deps.Logger.Error("readableTask: DB query failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to get task")
 	}
 
-	// Owner, an approver of this task (so they can see what they decide), or a
-	// tenant admin. An FGA error fails closed.
 	if t.OwnerUserID != user {
-		ok, ferr := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_approve", "task:"+req.TaskId)
+		ok, ferr := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_approve", "task:"+taskID)
 		switch {
 		case ferr != nil:
 			err = status.Error(codes.Internal, "authorization check failed")
@@ -239,7 +249,7 @@ func (s *BrokerService) GetTaskState(ctx context.Context, req *brokerv1.GetTaskS
 			err = s.requireTenantAdmin(ctx, user)
 		}
 		if err != nil {
-			emitTaskAudit(ctx, s.deps, span.SpanContext().TraceID().String(), tenant, req.TaskId, user,
+			emitTaskAudit(ctx, s.deps, traceID, tenant, taskID, user,
 				"aikonos.broker.task.get_denied", auditv1.PolicyDecision_DENY, t)
 			if status.Code(err) == codes.PermissionDenied {
 				return nil, status.Error(codes.PermissionDenied, "only the task owner, an approver, or a tenant admin may read this task")
@@ -247,8 +257,7 @@ func (s *BrokerService) GetTaskState(ctx context.Context, req *brokerv1.GetTaskS
 			return nil, err
 		}
 	}
-
-	return taskToProto(t), nil
+	return t, nil
 }
 
 // ApproveTask records a human approval or rejection for a task awaiting human
@@ -505,15 +514,21 @@ func (s *BrokerService) StreamTaskEvents(req *brokerv1.StreamTaskEventsRequest, 
 		return status.Error(codes.Unimplemented, "event streaming requires NATS (not configured)")
 	}
 
-	ctx := stream.Context()
-	tenant, _, err := s.callerIdentity(ctx, req.TenantId, "")
+	ctx, span := tracer.Start(stream.Context(), "broker.task.stream_events")
+	defer span.End()
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, "")
 	if err != nil {
+		return err
+	}
+	// The events are the task's: same readers as GetTaskState (F136).
+	if _, err := s.readableTask(ctx, span.SpanContext().TraceID().String(), tenant, user, req.TaskId); err != nil {
 		return err
 	}
 
 	sub, err := s.deps.Notify.Subscribe(notify.TaskSubject(tenant, req.TaskId))
 	if err != nil {
-		return status.Errorf(codes.Internal, "subscribe failed: %v", err)
+		s.deps.Logger.Error("StreamTaskEvents: subscribe failed", zap.Error(err))
+		return status.Error(codes.Internal, "subscribe failed")
 	}
 	defer sub.Unsubscribe()
 

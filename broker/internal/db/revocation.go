@@ -101,15 +101,23 @@ func (r *RevocationRepo) SetAgentStatus(ctx context.Context, tenantID, agentID, 
 	})
 }
 
+// ScimBlockedBy is the actor of AG-06 blocks set by SCIM (scim.BlockedBy).
+// SCIM reactivation lifts only blocks with this actor.
+const ScimBlockedBy = "scim"
+
 // BlockUser activates a user block. It reports false when one is already
-// active (the existing block, its reason and actor are kept).
+// active (the existing block, its reason and actor are kept), except that a
+// block by anyone else takes over a SCIM block: an admin's block must survive
+// the IdP re-enabling the user, which lifts only SCIM's own blocks.
 func (r *RevocationRepo) BlockUser(ctx context.Context, tenantID, subject, reason, by string) (bool, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (bool, error) {
 		tag, err := conn.Exec(ctx, `
 		INSERT INTO kill_switches (tenant_id, scope, subject, reason, activated_by)
 		VALUES ($1, 'user', $2, $3, $4)
-		ON CONFLICT (tenant_id, scope, subject) WHERE active DO NOTHING`,
-			tenantID, subject, reason, by,
+		ON CONFLICT (tenant_id, scope, subject) WHERE active DO UPDATE
+		   SET reason = EXCLUDED.reason, activated_by = EXCLUDED.activated_by
+		 WHERE kill_switches.activated_by = $5 AND EXCLUDED.activated_by <> $5`,
+			tenantID, subject, reason, by, ScimBlockedBy,
 		)
 		if err != nil {
 			return false, fmt.Errorf("block user: %w", err)

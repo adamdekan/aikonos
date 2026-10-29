@@ -67,7 +67,7 @@ func TestRevocationInterceptor_BlockAndEpoch(t *testing.T) {
 	rec := &recordingEmitter{}
 	chain := []grpc.UnaryServerInterceptor{
 		OIDCInterceptor(v, rec, "t", zap.NewNop()),
-		TenantInterceptor(rec, "t", zap.NewNop()),
+		TenantInterceptor(rec, "t", "11111111-1111-1111-1111-111111111111", zap.NewNop()),
 		RevocationInterceptor(checker, rec, zap.NewNop()),
 	}
 	call := func() error {

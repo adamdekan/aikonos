@@ -339,6 +339,9 @@ func (s *SandboxService) resolveAgentCredential(ctx context.Context, k *db.Store
 		var reason string
 		if subject, reason = s.verifyUserAssertion(ctx, k, userAssertion); reason != "" {
 			s.emitApiKeyDenied(ctx, k, reason, "")
+			if reason == "assertion_state_unavailable" {
+				return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
+			}
 			// The key itself is valid, so say why (unknown keys stay Valid:false).
 			return nil, status.Error(codes.PermissionDenied, "user assertion rejected: "+reason)
 		}
@@ -420,6 +423,15 @@ func (s *SandboxService) verifyUserAssertion(ctx context.Context, k *db.StoredAp
 	}
 	if id.TenantID != k.TenantID.String() { // no tenant claim refused too, as north does
 		return "", "assertion_tenant_mismatch"
+	}
+	// AG-06: the north interceptor's check. The grant minted below is stamped
+	// now, so the assertion's own iat is the last place a revoke-all can bite.
+	st, err := s.deps.Revocation.User(ctx, k.TenantID.String(), subject)
+	if err != nil {
+		return "", "assertion_state_unavailable"
+	}
+	if st.Revoked(id.IssuedAt) {
+		return "", "assertion_revoked"
 	}
 	ok, err := s.deps.Policy.CheckFGA(ctx, "user:"+subject, "can_use", "agent:"+k.AgentID.String())
 	if err != nil || !ok {

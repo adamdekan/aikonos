@@ -21,6 +21,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/policy"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
@@ -913,6 +914,66 @@ func TestResolveAgentApiKey_UserAssertion(t *testing.T) {
 			if serviceAgentDenied(aud) {
 				t.Fatalf("an asserted subject must skip the service-agent gate, got %v", aud.events)
 			}
+		})
+	}
+}
+
+// TestResolveAgentApiKey_UserAssertionRevoked pins F3/G45: a user assertion
+// issued before the user's revoke-all epoch (or for a blocked user) mints no
+// owner grant, like the north RevocationInterceptor; one issued after it does.
+func TestResolveAgentApiKey_UserAssertionRevoked(t *testing.T) {
+	const alice = "alice-sub"
+	epoch := time.Now().Add(-time.Minute)
+	cases := []struct {
+		name       string
+		iat        time.Time
+		blocked    bool
+		wantReason string
+	}{
+		{"issued before revoke-all", epoch.Add(-time.Hour), false, "assertion_revoked"},
+		{"no iat once an epoch is set", time.Time{}, false, "assertion_revoked"},
+		{"blocked user", time.Now(), true, "assertion_revoked"},
+		{"issued after revoke-all", time.Now(), false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fga := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true},
+				checks: map[string]bool{"user:" + alice + "|can_use|agent:" + apiKeyTestAgentUUID: true}}
+			deps := newApiKeyDepsWithFGA(t, "admin@example.com", fga, &fakeApiKeyStore{}, agentStoreWithAgent(t))
+			aud := &fakeInvokeAudit{}
+			deps.Audit = aud
+			deps.Config = newFakeConfigStore()
+			deps.UserAssertions = fakeAssertions{id: &auth.Identity{Subject: alice, TenantID: apiKeyTestTenantUUID, IssuedAt: tc.iat}}
+			rev := newFakeRevStore()
+			rev.userNB[alice] = epoch
+			if tc.blocked {
+				rev.blocks[alice] = db.UserBlock{}
+			}
+			deps.Revocation = revocation.New(rev)
+			mintResp, err := NewBrokerService(deps).MintAgentApiKey(ctxWithIdentity(apiKeyTestTenantUUID, "admin@example.com"), &brokerv1.MintAgentApiKeyRequest{
+				TenantId: apiKeyTestTenantUUID, UserId: "admin@example.com", AgentId: apiKeyTestAgentUUID, TtlDays: 30,
+			})
+			if err != nil {
+				t.Fatalf("MintAgentApiKey: %v", err)
+			}
+			resp, err := NewSandboxService(deps).ResolveAgentApiKey(sandboxCtx(), &brokerv1.ResolveAgentApiKeyRequest{
+				KeyHashHex: apikey.HashForResolve(mintResp.RawKey), TenantId: apiKeyTestTenantUUID, UserAssertion: "token",
+			})
+			if tc.wantReason == "" {
+				if err != nil || !resp.Valid {
+					t.Fatalf("want valid, got resp=%+v err=%v", resp, err)
+				}
+				return
+			}
+			if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != "user assertion rejected: "+tc.wantReason {
+				t.Fatalf("want PermissionDenied %q, got resp=%+v err=%v", tc.wantReason, resp, err)
+			}
+			for _, ev := range aud.events {
+				if ev.EventType == "aikonos.broker.apikey.denied" && ev.Context.Fields["reason"].GetStringValue() == tc.wantReason {
+					return
+				}
+			}
+			t.Fatalf("want %s DENY, got %v", tc.wantReason, aud.events)
 		})
 	}
 }

@@ -14,10 +14,12 @@ import (
 // Interceptor returns a gRPC unary interceptor that reads the verified identity
 // from the context (placed there by the OIDC interceptor) and fires Seen in a
 // goroutine. The handler is always called immediately; provisioning is
-// best-effort and must not affect RPC latency or success.
+// best-effort and must not affect RPC latency or success. It must run after
+// the tenant and revocation interceptors, so a blocked, session-revoked or
+// tenant-less caller is never provisioned into groups.
 func (p *Provisioner) Interceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if id, ok := auth.IdentityFromContext(ctx); ok {
+		if id, ok := auth.IdentityFromContext(ctx); ok && id.TenantID != "" {
 			tenantID := id.TenantID
 			// Seen detaches from ctx intentionally: it spawns a goroutine with a
 			// fresh background context so the RPC cancellation cannot abort the

@@ -29,7 +29,7 @@ func (r *recordingEmitter) only(t *testing.T) *auditv1.AuditEvent {
 
 func TestTenantInterceptor_MissingTenant_EmitsAuthDenied(t *testing.T) {
 	rec := &recordingEmitter{}
-	ic := TenantInterceptor(rec, "test-tenant", zap.NewNop())
+	ic := TenantInterceptor(rec, "test-tenant", "", zap.NewNop())
 
 	ctx := WithIdentity(context.Background(), &Identity{Subject: "alice@example.com"})
 	if _, err := ic(ctx, nil, testInfo, okHandler); err == nil {
@@ -52,7 +52,7 @@ func TestTenantInterceptor_MissingTenant_EmitsAuthDenied(t *testing.T) {
 
 func TestTenantInterceptor_WithTenant_NoEvent(t *testing.T) {
 	rec := &recordingEmitter{}
-	ic := TenantInterceptor(rec, "test-tenant", zap.NewNop())
+	ic := TenantInterceptor(rec, "test-tenant", "", zap.NewNop())
 
 	ctx := WithIdentity(context.Background(), &Identity{Subject: "a", TenantID: "t-1"})
 	if _, err := ic(ctx, nil, testInfo, okHandler); err != nil {

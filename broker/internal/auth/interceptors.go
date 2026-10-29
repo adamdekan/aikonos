@@ -1,7 +1,8 @@
 // broker/internal/auth/interceptors.go
-// gRPC unary interceptors that establish and audit caller identity.
+// gRPC interceptors that establish and audit caller identity.
 //
-//	North-bound chain:  OIDC → tenant → audit
+//	North-bound chain:  OIDC → tenant → revocation → provisioning → audit
+//	                    (streams: OIDC → tenant → revocation)
 //	South-bound chain:  SPIFFE → audit
 //
 // Transport-level mTLS (and SPIFFE trust-domain membership) is enforced by the
@@ -37,15 +38,57 @@ type auditEmitter interface {
 	Emit(ctx context.Context, ev *auditv1.AuditEvent) error
 }
 
+// northCheck is one north-bound gate, shared by the unary and the stream
+// interceptor so a streaming RPC passes the same OIDC, tenant and revocation
+// checks as a unary one. It returns the context the handler runs with.
+type northCheck func(ctx context.Context, method string) (context.Context, error)
+
+func (c northCheck) unary() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx, err := c(ctx, info.FullMethod)
+		if err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+func (c northCheck) stream() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx, err := c(ss.Context(), info.FullMethod)
+		if err != nil {
+			return err
+		}
+		return handler(srv, &ctxStream{ServerStream: ss, ctx: ctx})
+	}
+}
+
+// ctxStream is a ServerStream whose Context carries the checked identity.
+type ctxStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *ctxStream) Context() context.Context { return s.ctx }
+
 // OIDCInterceptor validates the bearer token on north-bound calls and puts the
 // resulting Identity on the context. When the validator is disabled (no issuer
 // configured) it passes calls through unauthenticated — preserving local-dev
 // behaviour where callers carry their user id in the request body.
 func OIDCInterceptor(v *Validator, emitter auditEmitter, defaultTenant string, log *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return oidcCheck(v, emitter, defaultTenant, log).unary()
+}
+
+// OIDCStreamInterceptor is OIDCInterceptor for streaming RPCs.
+func OIDCStreamInterceptor(v *Validator, emitter auditEmitter, defaultTenant string, log *zap.Logger) grpc.StreamServerInterceptor {
+	return oidcCheck(v, emitter, defaultTenant, log).stream()
+}
+
+func oidcCheck(v *Validator, emitter auditEmitter, defaultTenant string, log *zap.Logger) northCheck {
+	return func(ctx context.Context, method string) (context.Context, error) {
 		if !v.Enabled() {
-			log.Debug("OIDC validation disabled (dev mode)", zap.String("method", info.FullMethod))
-			return handler(ctx, req)
+			log.Debug("OIDC validation disabled (dev mode)", zap.String("method", method))
+			return ctx, nil
 		}
 
 		raw, err := BearerFromContext(ctx)
@@ -56,12 +99,12 @@ func OIDCInterceptor(v *Validator, emitter auditEmitter, defaultTenant string, l
 		if err != nil {
 			var svcErr *SvcSubjectError
 			if errors.As(err, &svcErr) {
-				log.Warn("north-bound call with svc- subject rejected", zap.String("method", info.FullMethod), zap.String("subject", svcErr.Subject))
-				emitAuthDenied(ctx, emitter, defaultTenant, "auth.subject.rejected", info.FullMethod, svcErr.Subject, svcErr.Email, "svc_on_north")
+				log.Warn("north-bound call with svc- subject rejected", zap.String("method", method), zap.String("subject", svcErr.Subject))
+				emitAuthDenied(ctx, emitter, defaultTenant, "auth.subject.rejected", method, svcErr.Subject, svcErr.Email, "svc_on_north")
 				return nil, status.Error(codes.PermissionDenied, "svc- subjects may not use the north-bound API")
 			}
-			log.Warn("OIDC token rejected", zap.String("method", info.FullMethod), zap.Error(err))
-			emitAuthDenied(ctx, emitter, defaultTenant, "auth.token.rejected", info.FullMethod, "", "", "invalid_token")
+			log.Warn("OIDC token rejected", zap.String("method", method), zap.Error(err))
+			emitAuthDenied(ctx, emitter, defaultTenant, "auth.token.rejected", method, "", "", "invalid_token")
 			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 		}
 		// Carry the peer SPIFFE ID too when the north-bound caller is itself a
@@ -70,29 +113,47 @@ func OIDCInterceptor(v *Validator, emitter auditEmitter, defaultTenant string, l
 			id.SpiffeID = pid.String()
 		}
 		log.Debug("OIDC token accepted",
-			zap.String("method", info.FullMethod),
+			zap.String("method", method),
 			zap.String("subject", id.Subject),
 			zap.String("tenant", id.TenantID),
 		)
-		return handler(WithIdentity(ctx, id), req)
+		return WithIdentity(ctx, id), nil
 	}
 }
 
 // TenantInterceptor enforces that an authenticated north-bound caller carries a
-// tenant claim. It runs after OIDCInterceptor; in dev mode (no identity on the
-// context) it is a no-op so request-body tenant ids still flow through.
-func TenantInterceptor(emitter auditEmitter, defaultTenant string, log *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+// tenant claim and, when tenantUUID (the deployment's AIKONOS_TENANT_ID) is
+// set, that the claim names that tenant: the admin gate and FGA objects are
+// those of the one configured tenant, so a token for any other tenant is
+// refused here rather than authorised against it. It runs after
+// OIDCInterceptor; in dev mode (no identity on the context) it is a no-op so
+// request-body tenant ids still flow through.
+func TenantInterceptor(emitter auditEmitter, defaultTenant, tenantUUID string, log *zap.Logger) grpc.UnaryServerInterceptor {
+	return tenantCheck(emitter, defaultTenant, tenantUUID, log).unary()
+}
+
+// TenantStreamInterceptor is TenantInterceptor for streaming RPCs.
+func TenantStreamInterceptor(emitter auditEmitter, defaultTenant, tenantUUID string, log *zap.Logger) grpc.StreamServerInterceptor {
+	return tenantCheck(emitter, defaultTenant, tenantUUID, log).stream()
+}
+
+func tenantCheck(emitter auditEmitter, defaultTenant, tenantUUID string, log *zap.Logger) northCheck {
+	return func(ctx context.Context, method string) (context.Context, error) {
 		id, ok := IdentityFromContext(ctx)
 		if !ok {
-			return handler(ctx, req)
+			return ctx, nil
 		}
 		if id.TenantID == "" {
 			log.Warn("authenticated caller has no tenant claim", zap.String("subject", id.Subject))
-			emitAuthDenied(ctx, emitter, defaultTenant, "auth.tenant.missing", info.FullMethod, id.Subject, id.Email, "no_tenant_claim")
+			emitAuthDenied(ctx, emitter, defaultTenant, "auth.tenant.missing", method, id.Subject, id.Email, "no_tenant_claim")
 			return nil, status.Error(codes.PermissionDenied, "token carries no tenant")
 		}
-		return handler(ctx, req)
+		if tenantUUID != "" && !strings.EqualFold(id.TenantID, tenantUUID) {
+			log.Warn("authenticated caller names another tenant", zap.String("subject", id.Subject), zap.String("tenant", id.TenantID))
+			emitAuthDenied(ctx, emitter, defaultTenant, "auth.tenant.mismatch", method, id.Subject, id.Email, "foreign_tenant_claim")
+			return nil, status.Error(codes.PermissionDenied, "token is for another tenant")
+		}
+		return ctx, nil
 	}
 }
 
@@ -109,26 +170,35 @@ type UserRevocations interface {
 // (OIDC disabled, dev) or no checker it is a no-op. A state read failure fails
 // closed with Unavailable.
 func RevocationInterceptor(rc UserRevocations, emitter auditEmitter, log *zap.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return revocationCheck(rc, emitter, log).unary()
+}
+
+// RevocationStreamInterceptor is RevocationInterceptor for streaming RPCs.
+func RevocationStreamInterceptor(rc UserRevocations, emitter auditEmitter, log *zap.Logger) grpc.StreamServerInterceptor {
+	return revocationCheck(rc, emitter, log).stream()
+}
+
+func revocationCheck(rc UserRevocations, emitter auditEmitter, log *zap.Logger) northCheck {
+	return func(ctx context.Context, method string) (context.Context, error) {
 		id, ok := IdentityFromContext(ctx)
 		if !ok || rc == nil {
-			return handler(ctx, req)
+			return ctx, nil
 		}
 		subject := id.PrincipalID()
 		st, err := rc.User(ctx, id.TenantID, subject)
 		if err != nil {
-			log.Error("revocation state read failed", zap.String("method", info.FullMethod), zap.Error(err))
+			log.Error("revocation state read failed", zap.String("method", method), zap.Error(err))
 			return nil, status.Error(codes.Unavailable, "access state could not be read; retry")
 		}
 		if st.Blocked {
-			emitAuthDenied(ctx, emitter, id.TenantID, "auth.subject.blocked", info.FullMethod, subject, id.Email, "user_blocked")
+			emitAuthDenied(ctx, emitter, id.TenantID, "auth.subject.blocked", method, subject, id.Email, "user_blocked")
 			return nil, status.Error(codes.PermissionDenied, "user is blocked")
 		}
 		if st.Revoked(id.IssuedAt) {
-			emitAuthDenied(ctx, emitter, id.TenantID, "auth.token.revoked", info.FullMethod, subject, id.Email, "session_revoked")
+			emitAuthDenied(ctx, emitter, id.TenantID, "auth.token.revoked", method, subject, id.Email, "session_revoked")
 			return nil, status.Error(codes.Unauthenticated, "session revoked; sign in again")
 		}
-		return handler(ctx, req)
+		return ctx, nil
 	}
 }
 

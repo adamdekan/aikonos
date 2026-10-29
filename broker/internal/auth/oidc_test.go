@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,8 @@ type testIDP struct {
 	srv    *httptest.Server
 	signer jose.Signer
 	kid    string
+	// withdrawn serves an empty JWKS (key rolled out); down fails it with 500.
+	withdrawn, down atomic.Bool
 }
 
 func newTestIDP(t *testing.T) *testIDP {
@@ -42,7 +45,14 @@ func newTestIDP(t *testing.T) *testIDP {
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(jwks)
+		switch {
+		case idp.down.Load():
+			w.WriteHeader(http.StatusInternalServerError)
+		case idp.withdrawn.Load():
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{})
+		default:
+			_ = json.NewEncoder(w).Encode(jwks)
+		}
 	})
 	idp.srv = httptest.NewServer(mux)
 	t.Cleanup(idp.srv.Close)
@@ -215,6 +225,82 @@ func TestValidator_Expired(t *testing.T) {
 
 	if _, err := v.Validate(context.Background(), tok); err == nil {
 		t.Fatal("expected expired token to fail")
+	}
+}
+
+// TestValidator_MissingExpRejected pins F8: go-jose checks exp only when it is
+// present, so a token without one would otherwise never expire.
+func TestValidator_MissingExpRejected(t *testing.T) {
+	idp := newTestIDP(t)
+	v := mustValidator(t, OIDCConfig{Issuer: idp.srv.URL, Audience: "aikonos-broker"})
+	tok := idp.mint(t, jwt.Claims{
+		Issuer:   idp.srv.URL,
+		Subject:  "alice@example.com",
+		Audience: jwt.Audience{"aikonos-broker"},
+	}, nil)
+	if _, err := v.Validate(context.Background(), tok); err == nil {
+		t.Fatal("expected a token without exp to fail")
+	}
+}
+
+// TestValidator_WithdrawnKeyRejectedAfterMaxAge pins F248: once the cached
+// JWKS is older than MaxAge it is refetched, so a key the IdP withdrew stops
+// validating instead of being trusted until restart.
+func TestValidator_WithdrawnKeyRejectedAfterMaxAge(t *testing.T) {
+	idp := newTestIDP(t)
+	v := mustValidator(t, OIDCConfig{Issuer: idp.srv.URL, Audience: "aikonos-broker", MinRefresh: time.Nanosecond, MaxAge: time.Hour})
+	tok := idp.mint(t, jwt.Claims{
+		Issuer:   idp.srv.URL,
+		Subject:  "alice@example.com",
+		Audience: jwt.Audience{"aikonos-broker"},
+		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}, nil)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	idp.withdrawn.Store(true)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("within MaxAge the cached key still validates: %v", err)
+	}
+	v.mu.Lock()
+	v.lastFetch = time.Now().Add(-2 * time.Hour)
+	v.mu.Unlock()
+	if _, err := v.Validate(context.Background(), tok); err == nil {
+		t.Fatal("expected a withdrawn key to fail once the JWKS aged out")
+	}
+}
+
+// TestValidator_IdPDownServesStaleThenFailsClosed: while every refetch fails
+// the aged set is served for jwksStaleGrace, then nothing validates.
+func TestValidator_IdPDownServesStaleThenFailsClosed(t *testing.T) {
+	idp := newTestIDP(t)
+	v := mustValidator(t, OIDCConfig{Issuer: idp.srv.URL, Audience: "aikonos-broker", MinRefresh: time.Nanosecond, MaxAge: time.Minute})
+	tok := idp.mint(t, jwt.Claims{
+		Issuer:   idp.srv.URL,
+		Subject:  "alice@example.com",
+		Audience: jwt.Audience{"aikonos-broker"},
+		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}, nil)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	idp.down.Store(true)
+	setAge := func(d time.Duration) {
+		v.mu.Lock()
+		v.lastFetch = time.Now().Add(-d)
+		v.mu.Unlock()
+	}
+	setAge(2 * time.Minute)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("within the stale grace the old set must still validate: %v", err)
+	}
+	setAge(time.Minute + jwksStaleGrace + time.Second)
+	if _, err := v.Validate(context.Background(), tok); err == nil {
+		t.Fatal("expected validation to fail closed past the stale grace")
+	}
+	idp.down.Store(false)
+	if _, err := v.Validate(context.Background(), tok); err != nil {
+		t.Fatalf("expected recovery once the IdP is back: %v", err)
 	}
 }
 

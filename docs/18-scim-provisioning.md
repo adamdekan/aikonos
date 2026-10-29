@@ -104,10 +104,13 @@ maps to `objectId`.
 
 SCIM manages the membership of the groups it creates. It does not grant those
 groups anything: an admin grants a group roles, skills or connectors in Access
-Control as usual (for example `group:finance-team#member`). If an Entra group
-gives the same name as a group already used in aikonOS, SCIM adds and removes
-members of that group; a member added by hand and removed in Entra loses the
-tuple. Two Entra groups that give the same name are refused (409) for the second.
+Control as usual (for example `group:finance-team#member`), after SCIM has
+created the group. SCIM does not adopt a group already used in aikonOS: if an
+Entra group gives the name of a group that has members or grants, the create is
+refused (409, audited as `scim.group.claim_refused`), so a provisioning token
+cannot add members to a group an admin manages by hand. Rename the Entra group,
+or remove that group's members and grants in Access Control and let Entra retry.
+Two Entra groups that give the same name are refused (409) for the second.
 
 ## Token rotation and revocation
 

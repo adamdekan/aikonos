@@ -71,6 +71,13 @@ func persistManagedTask(
 			)
 			return &brokerv1.TaskHandle{TaskId: t.TaskID.String(), TraceId: t.TraceID}, nil
 		}
+		if errors.Is(err, db.ErrClientRequestIDConflict) {
+			// Another owner holds this key: no replay, no FGA write, and none
+			// of that owner's ids in the reply.
+			emitTaskAudit(ctx, deps, traceID, t.TenantID.String(), "", t.OwnerUserID,
+				"aikonos.broker.task.client_request_id_conflict", auditv1.PolicyDecision_DENY, t)
+			return nil, status.Error(codes.AlreadyExists, "client_request_id already in use")
+		}
 		deps.Logger.Error("persistManagedTask: DB insert failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to create task")
 	}
