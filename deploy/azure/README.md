@@ -5,9 +5,9 @@ Runs the existing Docker Compose stack on one Azure VM, fronted by **Traefik**
 so only your tenant's users can reach it. Identity for the app itself swaps from
 Keycloak to Entra by env alone (see `../../docs/12-entra-login.md`).
 
-This is a **dev** target. Datastores stay containerized; Vault is dev-mode in-memory.
-Production hardening (persistent Vault / Azure Key Vault, managed Postgres, Blob
-audit) is out of scope — see the migration plan and `PROJECT-REVIEW-2026-06-10.md`.
+This is a **dev** target. Datastores stay containerized; Vault keeps durable `file` storage
+and is unsealed by hand after every restart. Production hardening (Azure Key Vault, managed
+Postgres, Blob audit) is out of scope — see the migration plan and `PROJECT-REVIEW-2026-06-10.md`.
 
 ## What it builds
 
@@ -100,8 +100,9 @@ re-run it, then `docker compose up -d --force-recreate broker`. (See
   proxy sits in front of Traefik.
 - **Keycloak still runs but is unused** on azure (kept only to satisfy the base
   `depends_on`; it is not routed and is not the IdP). Idle cost ~1-2 GB.
-- **Vault is in-memory.** After any Vault restart, re-run
-  `bash scripts/compose-vault-seed.sh && docker compose up -d broker`.
+- **Vault comes back sealed.** Its data survives a restart, but the broker does not start
+  until Vault is unsealed (`docs/OPS-RUNBOOK.md` "Vault operations"); then
+  `docker compose up -d broker`.
 - **Traefik reads the docker socket (read-only).** Known attack surface; acceptable for
   dev, revisit (socket-proxy) before prod.
 - **oauth2-proxy email claim.** Entra v2 tokens may omit `email`; the overlay keys the

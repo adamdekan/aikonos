@@ -311,6 +311,10 @@ jobs:
       - name: Run compose network-posture check
         run: bash scripts/check-compose-posture.sh
 
+      # Seeded bad configs: each posture rule must still fail its own regression.
+      - name: Compose network-posture rule regressions
+        run: bash scripts/tests/compose-posture.test.sh
+
       # Dev-CA re-run over per-service dirs the mint user cannot write, and
       # nats.conf's per-user subject permissions against the real image.
       - name: Dev-CA mint and NATS auth

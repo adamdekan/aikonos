@@ -56,8 +56,8 @@ docker compose --profile core up --build
 #    - vault-seed: enables approle, writes a policy scoped to the broker's KV
 #      paths (vault-broker-policy.hcl), and injects role_id/secret_id into .env.
 #      Without it the broker can't reach Vault → ephemeral capability key,
-#      connectors + MCP-auth fail. (Re-run after any Vault restart — dev Vault is
-#      in-memory.) The root token is used ONLY by this script, never the broker.
+#      connectors + MCP-auth fail. (Re-run after `docker compose down -v`, which
+#      drops the vault-data volume.) The root token is used ONLY by this script, never the broker.
 #    - openfga-seed: find-or-creates the store, writes model + dev tuples, sets
 #      AIKONOS_POLICY_OPENFGA_STORE_ID in .env. Without it the broker runs the dev
 #      allow-all stub (webui Roles: "OpenFGA is disabled"). Requires jq; the fga
@@ -210,7 +210,8 @@ service is attached only to internal networks. The `backend` datastores (`postgr
 `otel-collector` 4317) and the `obs` dashboards (`grafana` 3030, `prometheus` 9095, `loki` 3100,
 `tempo` 3200 — `obs` is a non-internal bridge) keep their host ports in the local variant.
 `docs-mcp` 8060 is bound to `127.0.0.1` only (it has no authentication), and the broker's policy
-bundle port 9092 is never published (OPA fetches it over `backend`; it has no authentication).
+bundle port 9092 is never published (OPA fetches it over `backend`; it has no authentication, and
+every `backend`, `mesh` and `office` peer can read the bundle, which holds only the Rego policy).
 Compose sets `AIKONOS_POLICY_BUNDLE_HTTP_ADDR=:9092` on the broker so OPA's container can reach
 it; without it the broker binds loopback outside dev mode and every policy decision fails closed.
 The azure and onprem overlays reset every one of these with `ports: !reset []` (Traefik reaches the
@@ -259,8 +260,8 @@ document the compose-wired ones next to their lines; `docs/OPS-RUNBOOK.md`
 | `AIKONOS_WORKSPACE_QUOTA_ENTRIES` | broker | `20000` | `${…:-20000}` | Per-user count of files and folders. `0` turns it off. |
 | `AIKONOS_ALERTING_DENIAL_COOLDOWN_SECONDS` | broker | `60` | not passed | At most one denial alert per (tenant, actor) per window, carrying the suppressed count. `0` alerts on every DENY. Alerting runs only once an overlay gives the broker `AIKONOS_ALERTING_WEBHOOK_URL` or `AIKONOS_ALERTING_SMTP_HOST`. |
 | `AIKONOS_ALERTING_RETENTION_DAYS` | broker | `90` | not passed | Stored alerts older than this are pruned daily. `0` keeps them. |
-| `AIKONOS_EXTERNAL_TRUST_PROXY` | gateway | `1` | base `0`, azure/onprem overlays `1` | Proxy hops (or proxy addresses/CIDRs) whose `X-Forwarded-For` the `:8090` API trusts for the client IP its rate limit keys on. `0` when 8090 is published directly (local), `1` behind Traefik; raise it only for another proxy in front of Traefik. `true` is refused. |
-| `AIKONOS_WEBUI_OIDC_AUTHORITY` | webui | `http://localhost:18080/realms/aikonos` | passed to the build arg and the runtime | Also sets the webui's Content-Security-Policy: sign-in may reach only this origin, so it must equal the authority baked into the bundle. |
+| `AIKONOS_EXTERNAL_TRUST_PROXY` | gateway | `1` | base `0`, azure/onprem overlays `1` | Proxy hops (or proxy addresses/CIDRs) whose `X-Forwarded-For` the `:8090` API trusts for the client IP its rate limit keys on. `0` when 8090 is published directly (local), `1` behind Traefik; raise it only for another proxy in front of Traefik. On a shared `traefik_net`, set Traefik's address instead (`deploy/onprem/README.md`). `true` is refused. |
+| `AIKONOS_WEBUI_OIDC_AUTHORITY` | webui | `http://localhost:18080/realms/aikonos` | passed to the build arg and the runtime | Sets the sign-in authority the SPA uses at runtime and the webui's Content-Security-Policy origin; must be set (the baked `VITE_OIDC_AUTHORITY` is only a fallback). |
 | `AIKONOS_WEBUI_OIDC_REDIRECT_URI` | webui | `http://localhost:4200/auth/callback` | passed to the build arg and the runtime | Its path is the only webui page a same-origin frame may load (silent renew). Set this and the authority at runtime even for an image built with `VITE_OIDC_*`: the CSP and frame policy read only the runtime values, and the webui logs a warning at startup when either is unset. |
 | `OFFICE_SCRIPT_MAX_AS_MB` | office-worker | `1024` | not passed | Address-space limit (MiB) for each model-authored script (node: on top of its heap). |
 | `HOST`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` | docs-mcp | `127.0.0.1`; `aikonos-docs-mcp,localhost,127.0.0.1,[::1]`; none | `HOST=0.0.0.0` | Container bind, Host allowlist, Origin allowlist (see Profiles above). |
@@ -546,7 +547,7 @@ Per-service overrides where the default is too tight:
 | webui | yes | `/tmp:size=32m` | — |
 | postgres | **no** | — | Writes DB data to rootfs; backend-isolated (H1) |
 | minio | **no** | — | Writes runtime state alongside data volume; backend-isolated |
-| vault | **no** | — | Dev-mode inmem + rootfs touches; backend-isolated |
+| vault | **no** | — | Writes keyring + `file` storage to `/vault/file` (volume), may touch `/tmp`; backend-isolated |
 | nats | **no** | — | JetStream store on rootfs; mesh-isolated |
 | keycloak | **no** | — | H2 DB + Quarkus runtime state; mesh-isolated |
 | opa | **no** | — | Not yet verified read-only; backend-isolated |

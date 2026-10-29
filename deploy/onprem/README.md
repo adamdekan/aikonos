@@ -19,6 +19,17 @@ The `:8090` API rate-limits per client IP using the `X-Forwarded-For` of one pro
 Traefik (`AIKONOS_EXTERNAL_TRUST_PROXY=1`). If a load balancer sits in front of Traefik,
 set it to the number of proxies in front of the gateway.
 
+A hop count trusts that many `X-Forwarded-For` entries from any peer, not only from
+Traefik. When other host apps share `traefik_net`, any of their containers (or a `mesh`
+peer) can call `agent-gateway:8090` directly with a forged `X-Forwarded-For`, for example
+the IdP's SCIM egress IP, and use up that client's per-IP bucket. In that case give
+Traefik a fixed address on `traefik_net` (`ipv4_address` in Traefik's own compose file;
+the network needs an explicit subnet) and set `AIKONOS_EXTERNAL_TRUST_PROXY` to that
+address (a comma-separated list of addresses or CIDRs is accepted) instead of `1`.
+Check it with `docker inspect -f '{{(index .NetworkSettings.Networks "traefik_net").IPAddress}}' <traefik-container>`.
+If the address is wrong, every client shares Traefik's one bucket: fix the address, do
+not go back to `1`.
+
 ### Docs site routing
 
 The end-user/administrator documentation site (`docs-site/`) is served at
@@ -530,11 +541,12 @@ and air-gapped mirrors: [`docs/14-signed-releases.md`](../../docs/14-signed-rele
 
 ## Maintenance
 
-**Vault restart (wiped — in-memory dev mode):**
+**Vault restart (comes back sealed; data survives on `vault-data`):**
 
 ```bash
 cd ~/apps/aikonos
-bash scripts/compose-vault-seed.sh
+# once per key share until the threshold is met (docs/OPS-RUNBOOK.md "Vault operations")
+docker compose exec vault vault operator unseal -address=http://127.0.0.1:8200 <unseal_key>
 docker compose up -d --force-recreate broker
 ```
 
@@ -747,7 +759,7 @@ so no external-network declaration is needed.
 | TLS warning / cert mismatch | Cert SANs don't cover the subdomain | Run `openssl x509 -in /path/to/server.crt -noout -ext subjectAltName` |
 | "OpenFGA is disabled — dev allow-all mode" | OpenFGA not seeded | `bash scripts/compose-seed-openfga.sh && docker compose up -d --force-recreate broker` |
 | `/admin/roles` Users tab shows `alice@aikonos.com`, `bob@aikonos.com`, `admin@aikonos.com` | `compose-seed-openfga.sh` was run with `AIKONOS_SEED_DEMO_TUPLES=1` — it seeds Keycloak demo accounts into OpenFGA (demo/local-dev only) | Delete the stale tuples with the fga CLI, once per tuple: `docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fga-cli tuple delete --store-id $STORE_ID user:alice@aikonos.com member tenant:aikonos-dev` (likewise `user:bob@aikonos.com member` and `user:admin@aikonos.com admin`). The script skips demo tuples by default (fail closed) — on on-prem/production, leave `AIKONOS_SEED_DEMO_TUPLES` unset. |
-| `Vault key resolution failed — falling back to EPHEMERAL key` | Vault restarted (in-memory) | `bash scripts/compose-vault-seed.sh && docker compose up -d broker` |
+| Broker exits with `Failed to init Vault secrets provider` or `audit signing key unavailable from Vault` | Vault restarted and is sealed | Unseal it (Maintenance → Vault restart), then `docker compose up -d broker` |
 | `claims invalid: iss` | AIKONOS_OIDC_ISSUER has literal `<ENTRA_TENANT_ID>` | Replace placeholder with actual tenant GUID in `.env` |
 | **401 on every API call; gateway logs `no applicable key found in the JSON Web Key Set`** | **Entra signs ID tokens with an app-specific key only published when `?appid=<client_id>` is on the JWKS URL** | **Append `?appid=<WEBUI_APP_CLIENT_ID>` to `AIKONOS_OIDC_JWKS_URL`, then `docker compose up -d --force-recreate broker agent-gateway`** |
 | Webui blank / "cannot connect to gateway", or the browser console reports a Content-Security-Policy block on the sign-in | `AIKONOS_WEBUI_OIDC_AUTHORITY` wrong or unset: the SPA signs in there and the webui's CSP allows only that origin | Fix it in `.env`, then `docker compose up -d --force-recreate webui` |

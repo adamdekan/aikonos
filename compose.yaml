@@ -492,7 +492,8 @@ services:
       # OPA runs in its own container and fetches the bundle from
       # http://broker:9092 (opa.yaml). Unset, the broker binds 127.0.0.1:9092
       # outside dev mode and OPA gets no policy (every decision fails closed).
-      # The port stays unpublished: only `backend` reaches it.
+      # The port stays unpublished, but ":9092" binds every broker interface:
+      # backend, mesh and office peers can all fetch the bundle (Rego only).
       AIKONOS_POLICY_BUNDLE_HTTP_ADDR:      ":9092"
       AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER:?set AIKONOS_OIDC_ISSUER}
       AIKONOS_OIDC_JWKS_URL:                ${AIKONOS_OIDC_JWKS_URL:-}

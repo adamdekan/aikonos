@@ -160,7 +160,8 @@ services:
     networks: [mesh, traefik_net]
     # Traefik is the one hop in front of :8090, so its X-Forwarded-For names
     # the client the per-IP rate limit keys on (base file: 0, direct publish).
-    # Raise it only if another proxy sits in front of Traefik.
+    # Raise it only if another proxy sits in front of Traefik. A count trusts
+    # any peer; on a shared traefik_net use Traefik's address (onprem README).
     environment:
       AIKONOS_EXTERNAL_TRUST_PROXY: ${AIKONOS_EXTERNAL_TRUST_PROXY:-1}
     labels:

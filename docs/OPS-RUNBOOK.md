@@ -69,6 +69,18 @@ settings (0.7.5)".
 - **Tenant id.** Compose now passes `AIKONOS_TENANT_ID` to the broker and
   requires it. It must equal the tenant claim in users' tokens (the Entra
   `tid`), or the broker refuses every north call as a foreign tenant.
+  On azure, onprem and local-entra the broker's startup and hourly jobs used to
+  run under its built-in tenant `11111111-1111-1111-1111-111111111111`; from the
+  first start they run on the real tenant. The broker seeds the LLM providers
+  and provisioning rules there, creates the tenant default agent (usable by
+  every user) and makes each agent's creator its owner. An hour after start
+  the orphan sweep suspends every active agent that has had no unblocked
+  owner for `identity.orphan_grace_days` (default 7, counted from creation for
+  an agent with no owner, such as one with no recorded creator). In that hour,
+  add an owner to each agent Admin → Agents marks orphaned, or raise that
+  setting; a suspended agent runs again once it has an owner and is
+  activated ([user-lifecycle.md](user-lifecycle.md)). Rows seeded under the
+  old tenant id stay behind; delete them if you want.
 - **Gateway OIDC.** Outside dev mode the gateway refuses to start unless
   `AIKONOS_OIDC_ISSUER` and `AIKONOS_OIDC_JWKS_URL` are both set; the broker
   could derive the JWKS URL by discovery, the gateway cannot.
