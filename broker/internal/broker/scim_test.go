@@ -23,12 +23,13 @@ import (
 type fakeScimStore struct {
 	scim.Store
 	tokens  map[uuid.UUID]string // id → hash of an active token
+	expired map[uuid.UUID]bool   // past expires_at (migration 064)
 	created []db.ScimToken
 	users   []db.ScimUser
 }
 
 func newFakeScimStore() *fakeScimStore {
-	return &fakeScimStore{tokens: map[uuid.UUID]string{}}
+	return &fakeScimStore{tokens: map[uuid.UUID]string{}, expired: map[uuid.UUID]bool{}}
 }
 
 func (f *fakeScimStore) CreateToken(_ context.Context, _, hash, prefix, by string, replaces *uuid.UUID) (db.ScimToken, error) {
@@ -65,6 +66,9 @@ func (f *fakeScimStore) RevokeToken(_ context.Context, _ string, id uuid.UUID, _
 func (f *fakeScimStore) ResolveToken(_ context.Context, _, hash string) (uuid.UUID, error) {
 	for id, h := range f.tokens {
 		if h == hash {
+			if f.expired[id] {
+				return id, db.ErrScimTokenExpired
+			}
 			return id, nil
 		}
 	}
@@ -215,5 +219,51 @@ func TestAddProvisioningRule_RefusedUnderScim(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("want FailedPrecondition, got %v", err)
+	}
+}
+
+// TestScimCall_ExpiredTokenAndBoundedAudit pins F13: an expired token is 401
+// and audited as such, and a bad token's path (attacker-chosen, written to
+// the audit chain unauthenticated) is bounded and stripped of control bytes.
+func TestScimCall_ExpiredTokenAndBoundedAudit(t *testing.T) {
+	const admin = "admin@example.com"
+	deps := newApiKeyDeps(t, admin, &fakeApiKeyStore{}, agentStoreWithAgent(t))
+	aud := &fakeInvokeAudit{}
+	deps.Audit = aud
+	cfg := newFakeConfigStore()
+	cfg.values[apiKeyTestTenantUUID+":provisioning.mode"] = "scim"
+	deps.Config = cfg
+	store := newFakeScimStore()
+	deps.Scim = store
+	deps.Revocation = revocation.New(newFakeRevStore())
+	tok, err := NewBrokerService(deps).CreateScimToken(ctxWithIdentity(apiKeyTestTenantUUID, admin), &brokerv1.CreateScimTokenRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.expired[uuid.MustParse(tok.Token.Id)] = true
+	call := func(token, path string) int32 {
+		resp, err := NewSandboxService(deps).ScimCall(sandboxCtx(), &brokerv1.ScimCallRequest{
+			TenantId: apiKeyTestTenantUUID, TokenHashHex: apikey.HashForResolve(token), Method: "GET", Path: path,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.Status
+	}
+
+	if code := call(tok.RawToken, "/Users"); code != 401 {
+		t.Fatalf("expired token: want 401, got %d", code)
+	}
+	if e := findEvent(aud.events, "aikonos.broker.scim.auth.denied"); e == nil || e.Context.Fields["reason"].GetStringValue() != "expired_token" {
+		t.Fatalf("expired token audit: %v", e)
+	}
+
+	aud.events = nil
+	if code := call("scim_wrong", "/Users/\n"+strings.Repeat("x", 5000)); code != 401 {
+		t.Fatalf("bad token: want 401, got %d", code)
+	}
+	e := findEvent(aud.events, "aikonos.broker.scim.auth.denied")
+	if p := e.Context.Fields["path"].GetStringValue(); len(p) > 140 || strings.ContainsAny(p, "\n") {
+		t.Fatalf("audit path not bounded: %d bytes", len(p))
 	}
 }

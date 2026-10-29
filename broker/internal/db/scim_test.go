@@ -38,6 +38,13 @@ func TestScimRepo_RoundTrip(t *testing.T) {
 	if list, err := repo.ListTokens(ctx, tenant); err != nil || len(list) != 1 || list[0].ID != tok2.ID || list[0].LastUsedAt != nil {
 		t.Fatalf("list tokens: %v %v", list, err)
 	}
+	// F13: past expires_at the token resolves as expired, unstamped.
+	if _, err := pool.Exec(ctx, `UPDATE scim_tokens SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`, tok2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := repo.ResolveToken(ctx, tenant, "hash-2-"+tenant); !errors.Is(err, ErrScimTokenExpired) || id != tok2.ID {
+		t.Fatalf("expired token: %v %v", id, err)
+	}
 	if err := repo.RevokeToken(ctx, tenant, tok2.ID, "admin"); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}

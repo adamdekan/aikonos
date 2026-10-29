@@ -9,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -188,9 +190,15 @@ func (s *SandboxService) ScimCall(ctx context.Context, req *brokerv1.ScimCallReq
 		return fail(http.StatusUnauthorized, "invalid token")
 	}
 	tokenID, err := s.deps.Scim.ResolveToken(ctx, tenant, hash)
-	if errors.Is(err, db.ErrNotFound) {
+	if errors.Is(err, db.ErrNotFound) || errors.Is(err, db.ErrScimTokenExpired) {
+		// Unauthenticated callers reach this: what they sent is bounded and
+		// stripped of control characters before it enters the audit chain.
+		fields := map[string]any{"reason": "invalid_token", "method": auditSafe(req.Method, 16), "path": auditSafe(req.Path, 128)}
+		if errors.Is(err, db.ErrScimTokenExpired) {
+			fields["reason"], fields["token_id"] = "expired_token", tokenID.String()
+		}
 		emitScimAudit(ctx, s.deps, tenant, "scim", "aikonos.broker.scim.auth.denied", "aikonos:tenant:"+tenant,
-			auditv1.PolicyDecision_DENY, map[string]any{"reason": "invalid_token", "method": req.Method, "path": req.Path})
+			auditv1.PolicyDecision_DENY, fields)
 		return fail(http.StatusUnauthorized, "invalid token")
 	}
 	if err != nil {
@@ -212,4 +220,22 @@ func (s *SandboxService) ScimCall(ctx context.Context, req *brokerv1.ScimCallReq
 		Method: req.Method, Path: req.Path, Query: req.Query, Body: req.Body,
 	})
 	return &brokerv1.ScimCallResponse{Status: int32(code), Body: body}, nil
+}
+
+// auditSafe bounds caller-supplied text for an audit field: control
+// characters dropped, at most n bytes (cut on a rune boundary).
+func auditSafe(v string, n int) string {
+	v = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, v)
+	if len(v) <= n {
+		return v
+	}
+	for n > 0 && !utf8.RuneStart(v[n]) {
+		n--
+	}
+	return v[:n] + "…"
 }
