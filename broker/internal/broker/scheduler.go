@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"maps"
 	"strings"
 	"time"
@@ -860,6 +861,13 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			)
 			continue
 		}
+		// F172: stamp the claim only on a run actually handed out, so none of
+		// the skips above leaves a claim a gateway could report on.
+		if cerr := s.deps.Scheduled.MarkClaimed(ctx, req.TenantId, r.ScheduledRunID.String()); cerr != nil {
+			s.deps.Logger.Warn("ClaimDueScheduledRuns: mark claimed failed, skipping run",
+				zap.String("run_id", r.ScheduledRunID.String()), zap.Error(cerr))
+			continue
+		}
 		due := &brokerv1.DueRun{
 			Id:             r.ScheduledRunID.String(),
 			OwnerUserId:    r.OwnerUserID,
@@ -942,8 +950,18 @@ func (s *SandboxService) ReportScheduledRunResult(ctx context.Context, req *brok
 				rel := ".agent/Sessions/" + req.SessionId + ".json"
 				// CP4.2: Write signs this automatically (the resolved path lands
 				// under workspacefs.SessionsDirPrefix) — this session file is read
-				// back as chat history to seed later gateway executions.
-				if _, writeErr := s.deps.Workspace.Local.Write(ctx, req.TenantId, run.OwnerUserID, rel, req.SessionRecord); writeErr != nil {
+				// back as chat history to seed later gateway executions. So it is
+				// create-only: session_id is the gateway's choice, and a report
+				// must never replace (and re-sign) a session the owner already has.
+				if _, _, readErr := s.deps.Workspace.Local.Read(ctx, req.TenantId, run.OwnerUserID, rel); !errors.Is(readErr, fs.ErrNotExist) {
+					s.deps.Logger.Warn("ReportScheduledRunResult: session file exists (or is unreadable), refusing to overwrite it",
+						zap.Error(readErr),
+						zap.String("run_id", req.Id),
+						zap.String("session_id", req.SessionId),
+					)
+					schedulerAudit(s.deps, ctx, traceID, req.TenantId, run.OwnerUserID,
+						"aikonos.scheduler.session.persist_denied", req.SessionId, auditv1.PolicyDecision_DENY, runOBO(run))
+				} else if _, writeErr := s.deps.Workspace.Local.Write(ctx, req.TenantId, run.OwnerUserID, rel, req.SessionRecord); writeErr != nil {
 					s.deps.Logger.Warn("ReportScheduledRunResult: session file write failed",
 						zap.String("run_id", req.Id),
 						zap.String("session_id", req.SessionId),

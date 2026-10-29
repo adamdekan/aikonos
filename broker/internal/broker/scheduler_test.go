@@ -17,6 +17,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -200,11 +201,17 @@ type parkClaimStore struct {
 	fakeClaimDueStore
 	now    time.Time
 	parked map[string]string // run id → reason
+	marked []string          // MarkClaimed run ids
 }
 
 func (f *parkClaimStore) ClaimDue(ctx context.Context, tenant string, now time.Time, limit int, requireActor bool) ([]*db.ScheduledRun, error) {
 	f.now = now
 	return f.fakeClaimDueStore.ClaimDue(ctx, tenant, now, limit, requireActor)
+}
+
+func (f *parkClaimStore) MarkClaimed(_ context.Context, _, id string) error {
+	f.marked = append(f.marked, id)
+	return nil
 }
 
 func (f *parkClaimStore) Park(_ context.Context, _, id, reason string) error {
@@ -233,6 +240,35 @@ func TestClaimDueScheduledRuns_IgnoresGatewayClock(t *testing.T) {
 	}
 	if store.now.Before(before) {
 		t.Fatalf("ClaimDue got now=%v, want the broker clock (>= %v)", store.now, before)
+	}
+}
+
+// TestClaimDueScheduledRuns_ClaimsOnlyHandedOutRuns (F172): only a run the
+// broker hands to the gateway gets the claim a report needs; a fire skipped
+// after ClaimDue (here a suspended actor) leaves nothing to report on.
+func TestClaimDueScheduledRuns_ClaimsOnlyHandedOutRuns(t *testing.T) {
+	suspended, active := uuid.New(), uuid.New()
+	skipped, fired := uuid.New(), uuid.New()
+	rev := newFakeRevStore()
+	rev.agentSt[suspended.String()] = db.AgentSuspended
+	store := &parkClaimStore{fakeClaimDueStore: fakeClaimDueStore{runs: []*db.ScheduledRun{
+		{ScheduledRunID: skipped, OwnerUserID: "alice", Prompt: "p", ActorAgentID: &suspended},
+		{ScheduledRunID: fired, OwnerUserID: "alice", Prompt: "p", ActorAgentID: &active},
+	}}}
+	svc := NewSandboxService(Deps{
+		Logger: zap.NewNop(), Audit: &fakeInvokeAudit{}, GatewaySpiffeID: testGWSpiffeID,
+		GatewayGrantKey: testGrantKey, GatewayGrantTTL: testGrantTTL,
+		Revocation: revocation.New(rev), Scheduled: store,
+	})
+	resp, err := svc.ClaimDueScheduledRuns(
+		auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+		&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID},
+	)
+	if err != nil || len(resp.Runs) != 1 || resp.Runs[0].Id != fired.String() {
+		t.Fatalf("want only the active actor's run fired, got %v %v", resp, err)
+	}
+	if len(store.marked) != 1 || store.marked[0] != fired.String() {
+		t.Fatalf("MarkClaimed = %v, want only %s", store.marked, fired)
 	}
 }
 

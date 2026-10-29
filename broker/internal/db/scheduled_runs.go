@@ -465,8 +465,14 @@ func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) erro
 // extends the delegation (re-consent) and resumes it. A workflow-mode row whose
 // pinned version is gone, unapproved or rewritten is parked as
 // "workflow_changed" (F18): the owner re-confirms by editing it. An unblocked
-// owner resumes the schedule; an actor-revoked one must be recreated. A fired
-// row is stamped claimed_at, which ReportResult consumes (F172).
+// owner resumes the schedule; an actor-revoked one must be recreated.
+//
+// F172: ClaimDue does not stamp the claim ReportResult consumes; the caller
+// stamps MarkClaimed on each run it actually hands out. A row whose last claim
+// is outstanding (handed out, not yet reported) and younger than
+// scheduledRunClaimTTL is not claimed again, so a run that outlasts its cron
+// interval delays the next fire instead of overlapping it, and the two fires
+// cannot consume each other's report.
 func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now time.Time, limit int, requireActor bool) ([]*ScheduledRun, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]*ScheduledRun, error) {
 		tx, err := conn.Begin(ctx)
@@ -479,10 +485,11 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 		SELECT `+scheduledRunCols+`
 		FROM scheduled_runs
 		WHERE state = 'ACTIVE' AND next_fire_at IS NOT NULL AND next_fire_at <= $1
+		  AND (claimed_at IS NULL OR claimed_at < $3)
 		ORDER BY next_fire_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT $2`,
-			now, limit,
+			now, limit, now.Add(-scheduledRunClaimTTL),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("select due: %w", err)
@@ -570,7 +577,7 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 			}
 			if _, err := tx.Exec(ctx, `
 			UPDATE scheduled_runs
-			SET next_fire_at = $1, last_fire_at = $2, run_count = run_count + 1, claimed_at = NOW(), updated_at = NOW()
+			SET next_fire_at = $1, last_fire_at = $2, run_count = run_count + 1, updated_at = NOW()
 			WHERE scheduled_run_id = $3`,
 				next, now, s.ScheduledRunID,
 			); err != nil {
@@ -584,15 +591,43 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 	})
 }
 
+// scheduledRunClaimTTL is how long an outstanding claim holds its schedule
+// back from firing again (see ClaimDue). After it, the claim counts as
+// abandoned (gateway crashed mid-run) and the next fire takes it over.
+// ponytail: fixed at the default gateway-grant TTL, past which a run cannot
+// act anyway. A gateway run timeout (AIKONOS_SCHEDULER_RUN_TIMEOUT_MS) set
+// above it brings the overlap back: the late run's report is then refused.
+// Thread the configured grant TTL through if run timeouts ever go that high.
+const scheduledRunClaimTTL = time.Hour
+
+// MarkClaimed stamps the claim ReportResult consumes (F172) on a run the
+// caller hands to the gateway. A fire skipped after ClaimDue is never
+// stamped, so a gateway cannot report on a run it was not handed.
+func (r *ScheduledRunRepo) MarkClaimed(ctx context.Context, tenantID, id string) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		tag, err := conn.Exec(ctx, `UPDATE scheduled_runs SET claimed_at = NOW() WHERE scheduled_run_id = $1`, id)
+		if err != nil {
+			return fmt.Errorf("mark scheduled_run claimed: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("scheduled_run %s not found", id)
+		}
+		return nil
+	})
+}
+
 // ErrScheduledRunNotClaimed is ReportResult's refusal of a report for a run
 // with no outstanding claim (never fired, or already reported) — F172.
 var ErrScheduledRunNotClaimed = errors.New("scheduled_run has no outstanding claim")
 
 // ReportResult records the outcome of a fired run. A ONCE run reaches a terminal
 // state (COMPLETED/FAILED); a CRON run stays ACTIVE for its next slot and just
-// records last_status/last_summary. Only a run ClaimDue fired (claimed_at set)
-// may be reported, once per claim; anything else is ErrScheduledRunNotClaimed,
-// so a report cannot end a run that was never handed to the gateway.
+// records last_status/last_summary. Only a run handed out (MarkClaimed) may be
+// reported, once per claim; anything else is ErrScheduledRunNotClaimed, so a
+// report cannot end a run that was never handed to the gateway. A run in
+// flight across the upgrade that added claimed_at (migration 062) has no claim:
+// its report is refused, and a one-off then stays ACTIVE with no next fire
+// until its owner edits or deletes it.
 // ponytail: one gateway identity claims everything, so the claim is a
 // timestamp, not a per-claim token; add a token if gateways ever shard.
 func (r *ScheduledRunRepo) ReportResult(ctx context.Context, tenantID, id string, ok bool, summary string) error {

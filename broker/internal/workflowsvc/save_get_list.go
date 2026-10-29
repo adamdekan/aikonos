@@ -220,7 +220,10 @@ func Get(
 		return nil, errWorkflowNotFound
 	}
 	// Drafts (proposed/rejected) stay the owner's: a non-owner never reads one.
-	if current.OwnerUserID != ownerUserID && row.ApprovalState != "approved" {
+	// Nor a version the owner never shared with them: Publish shares only the
+	// version it publishes, so an older row can still say private.
+	if current.OwnerUserID != ownerUserID && (row.ApprovalState != "approved" || !MayAccessWorkflow(ctx, ap, ownerUserID, row)) {
+		emitWorkflowDenied(ctx, emitter, logger, tenantID, ownerUserID, "aikonos.broker.workflow.access_denied", lineageID)
 		return nil, errWorkflowNotFound
 	}
 	if pin != nil && (row.ApprovalState != "approved" || db.WorkflowDefinitionSHA256(row.Definition) != pin.DefinitionSHA256) {
@@ -578,9 +581,10 @@ var errWorkflowNotFound = status.Error(codes.NotFound, "workflow not found")
 // loadAccessible returns the lineage's current approved row when user may
 // access the lineage (MayAccessWorkflow). The current row is authoritative for
 // owner and visibility: Publish rewrites only the version it publishes, so an
-// older version's row can still say private. Every read-side lineage RPC (Get,
-// ListVersions, Rate, Pin) gates through here; a denial is audited and answered
-// exactly like a missing lineage.
+// older version's row can still say private, which is why Get and Pin also
+// check the version row itself for a non-owner. Every read-side lineage RPC
+// (Get, ListVersions, Rate, Pin) gates through here; a denial is audited and
+// answered exactly like a missing lineage.
 func loadAccessible(
 	ctx context.Context,
 	store Store,
