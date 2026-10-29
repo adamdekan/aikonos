@@ -11,6 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aikonos_client::api::files::MAX_UPLOAD_BYTES;
+use aikonos_client::reveal_hidden::is_hidden;
 use gpui_kit::{App, AsyncApp, PathPromptOptions, SharedString};
 
 use crate::prefs::Prefs;
@@ -104,8 +105,10 @@ fn default_save_dir() -> PathBuf {
 }
 
 /// A server-supplied name made fit to suggest as a Windows file name: its
-/// last path segment, without stream colons, control characters, leading
-/// dots or trailing dots and spaces, and never a reserved device name.
+/// last path segment, without stream colons, control, bidi or invisible
+/// characters ("Invoice\u{202E}fdp.exe" reads as "Invoiceexe.pdf"),
+/// leading dots or trailing dots and spaces, and never a reserved device
+/// name.
 pub fn safe_file_name(name: &str) -> String {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
@@ -114,7 +117,13 @@ pub fn safe_file_name(name: &str) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String = last
         .chars()
-        .map(|c| if c == ':' || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if c == ':' || c.is_control() || is_hidden(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_start_matches(['.', ' ']).trim_end_matches(['.', ' ']);
     let stem = cleaned.split('.').next().unwrap_or_default().trim_end();
@@ -208,6 +217,8 @@ mod tests {
         assert_eq!(safe_file_name("..\\..\\x.bat"), "x.bat");
         assert_eq!(safe_file_name("a.txt:evil.exe"), "a.txt_evil.exe");
         assert_eq!(safe_file_name("bad\u{7}name.txt"), "bad_name.txt");
+        assert_eq!(safe_file_name("a\u{202E}fdp.exe"), "a_fdp.exe");
+        assert_eq!(safe_file_name("in\u{200B}voice\u{2066}.pdf"), "in_voice_.pdf");
         assert_eq!(safe_file_name(".bashrc"), "bashrc");
         assert_eq!(safe_file_name("notes. . "), "notes");
         assert_eq!(safe_file_name("con.txt"), "_con.txt");

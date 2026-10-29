@@ -12,7 +12,7 @@ use aikonos_client::api::workflows::{
     RunReply, StepProgress, WorkflowDefinition, WorkflowDetail, WorkflowInput, WorkflowSummary, WorkflowVersion,
 };
 use aikonos_client::transcript::{self as record, AssistantTurn, SessionRecord, ToolCall, TranscriptEntry};
-use aikonos_client::{Connection, StreamItem};
+use aikonos_client::{ApiError, Connection, StreamItem};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -580,6 +580,13 @@ fn input_kind(input: &WorkflowInput) -> &'static str {
     }
 }
 
+/// Whether a streamed run that failed to start may be retried as the
+/// blocking run: only when the server answered with a refusal. A transport
+/// error can come after the server began the run.
+fn may_run_blocking(err: &ApiError) -> bool {
+    err.status().is_some()
+}
+
 fn step_label(kind: Option<&str>, skill: Option<&str>) -> String {
     if kind == Some("reason") {
         "reason".into()
@@ -707,43 +714,60 @@ impl RunDialog {
                 })
                 .await
             };
-            let mut reply: Option<RunReply> = None;
-            if let Ok(mut stream) = streamed {
-                while let Some(item) = stream.next().await {
-                    let StreamItem::Event(event) = item else {
-                        break;
-                    };
-                    match event.event.as_str() {
-                        "step" => {
-                            if let Ok(step) = serde_json::from_str::<StepProgress>(&event.data) {
-                                let _ = this.update(cx, |this, cx| {
-                                    if let Some(live) = this.steps.get_mut(step.index as usize) {
-                                        live.status = if step.ok {
-                                            StepStatus::Done
-                                        } else {
-                                            StepStatus::Failed(step.deny_reason.clone().unwrap_or_default())
-                                        };
-                                        if let Some(skill) = step.skill {
-                                            live.label = skill;
-                                        }
-                                    }
-                                    cx.notify();
-                                });
+            let reply = match streamed {
+                Ok(mut stream) => {
+                    let mut reply: Option<RunReply> = None;
+                    let mut lost = None;
+                    while let Some(item) = stream.next().await {
+                        let event = match item {
+                            StreamItem::Event(event) => event,
+                            StreamItem::Failed(err) => {
+                                lost = Some(err);
+                                break;
                             }
+                            StreamItem::Ended => break,
+                        };
+                        match event.event.as_str() {
+                            "step" => {
+                                if let Ok(step) = serde_json::from_str::<StepProgress>(&event.data) {
+                                    let _ = this.update(cx, |this, cx| {
+                                        if let Some(live) = this.steps.get_mut(step.index as usize) {
+                                            live.status = if step.ok {
+                                                StepStatus::Done
+                                            } else {
+                                                StepStatus::Failed(step.deny_reason.clone().unwrap_or_default())
+                                            };
+                                            if let Some(skill) = step.skill {
+                                                live.label = skill;
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                            "result" => reply = serde_json::from_str(&event.data).ok(),
+                            _ => {}
                         }
-                        "result" => reply = serde_json::from_str(&event.data).ok(),
-                        _ => {}
                     }
+                    // Never run it again: the server carries on with a run it
+                    // began whatever happens to this connection, and a second
+                    // run would repeat its emails and document writes.
+                    reply.ok_or_else(|| {
+                        let cause = lost.map(|err| format!(" ({err})")).unwrap_or_default();
+                        SharedString::from(format!(
+                            "Lost the connection to the run{cause}. It may still finish on the server, so check \
+                             its results before you run it again."
+                        ))
+                    })
                 }
-            }
-            // The stream was refused or produced no result: fall back to the
-            // blocking run, as the web console does.
-            let reply = match reply {
-                Some(reply) => Ok(reply),
-                None => {
+                // Refused before it began: the blocking run, as the web
+                // console does.
+                Err(err) if may_run_blocking(&err) => {
                     runtime::spawn(async move { connection.run_workflow(&lineage, &inputs, Some(&session_id)).await })
                         .await
+                        .map_err(|err| err.to_string().into())
                 }
+                Err(err) => Err(err.to_string().into()),
             };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.running = false;
@@ -756,7 +780,7 @@ impl RunDialog {
                         }
                         this.reply = Some(reply);
                     }
-                    Err(err) => this.error = Some(err.to_string().into()),
+                    Err(err) => this.error = Some(err),
                 }
                 cx.notify();
             });
@@ -1426,5 +1450,25 @@ impl Render for VersionsDialog {
             .when_some(self.error.clone(), |this, error| {
                 this.child(div().text_sm().text_color(theme.danger).child(error))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aikonos_client::ApiError;
+
+    use super::may_run_blocking;
+
+    #[test]
+    fn only_a_refused_stream_falls_back_to_the_blocking_run() {
+        // The gateway refused it, or an older one answered with JSON.
+        assert!(may_run_blocking(&ApiError::Forbidden(None)));
+        assert!(may_run_blocking(&ApiError::Status {
+            status: 502,
+            message: "stream=1 not supported".into(),
+            body: serde_json::Value::Null,
+        }));
+        // The request may have reached the server, which then runs it.
+        assert!(!may_run_blocking(&ApiError::Transport("connection reset".into())));
     }
 }

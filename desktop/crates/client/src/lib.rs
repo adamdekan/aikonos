@@ -17,6 +17,7 @@ pub mod connection;
 pub mod cron;
 pub mod error;
 pub mod money;
+pub mod reveal_hidden;
 pub mod server;
 pub mod sse;
 pub mod tool_labels;
