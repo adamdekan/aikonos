@@ -288,3 +288,32 @@ func TestWriteTaskRelations_LinksTenant(t *testing.T) {
 		t.Fatalf("writes = %s, want the task:t1 tenant tuple", body)
 	}
 }
+
+// M-01: GetTaskState is readable by the owner, an approver of the task, or a
+// tenant admin; any other member is denied, and an FGA error fails closed.
+func TestGetTaskState_Authorization(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateAwaitingApproval)
+	approve := "user:carol@example.com|can_approve|task:" + task.TaskID.String()
+	cases := []struct {
+		name, caller string
+		fga          *fakeFGA
+		want         codes.Code
+	}{
+		{"owner", "alice@example.com", &fakeFGA{checkErr: true}, codes.OK},
+		{"admin", "admin@example.com", &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}, codes.OK},
+		{"approver", "carol@example.com", &fakeFGA{checks: map[string]bool{approve: true}}, codes.OK},
+		{"other member", "eve@example.com", &fakeFGA{checks: map[string]bool{approve: true}}, codes.PermissionDenied},
+		{"fga error", "eve@example.com", &fakeFGA{checkErr: true}, codes.Internal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newCancelSvcWithFGA(t, &fakeCancelTaskStore{task: task}, tc.fga)
+			_, err := svc.GetTaskState(ctxWithIdentity(testTenantUUID, tc.caller), &brokerv1.GetTaskStateRequest{
+				TenantId: testTenantUUID, TaskId: task.TaskID.String(),
+			})
+			if status.Code(err) != tc.want {
+				t.Fatalf("want %v, got %v", tc.want, err)
+			}
+		})
+	}
+}
