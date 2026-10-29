@@ -1,5 +1,5 @@
 // Package approvalsvc holds the broker's approval-gate core: n-of-m
-// threshold + separation-of-duty construction at plan-approval time (Build)
+// threshold + separation-of-duty construction at plan-approval time (Plan, then Create)
 // and the approve/deny resolution + capability-token minting shared by the
 // north (OIDC) ApproveTask and south (SPIFFE) ApproveGatewayTask RPCs
 // (Resolve). Extracted from broker/internal/broker/service_plan.go (the
@@ -14,7 +14,7 @@
 //
 // Old (broker) → new (approvalsvc):
 //
-//	SubmitPlan's inline approval-gate block → Build
+//	SubmitPlan's inline approval-gate block → Plan + Create
 //	resolveApprovalAndMint                  → Resolve
 //	stepScope (mint-scope shape)             → StepScope
 //
@@ -37,7 +37,7 @@ import (
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
 
-// Store is the task/approval persistence surface Build and Resolve need — a
+// Store is the task/approval persistence surface Create and Resolve need — a
 // subset of broker's taskStore interface. *db.TaskRepo satisfies it (asserted
 // in broker/internal/broker/submit_ifaces.go's own taskStore ⊇ this set).
 type Store interface {
@@ -51,7 +51,7 @@ type Store interface {
 
 var _ Store = (*db.TaskRepo)(nil)
 
-// AccessPolicy is the FGA surface Build (ReadTuples for the approver set) and
+// AccessPolicy is the FGA surface Plan (ReadTuples + CheckFGA for the approver set) and
 // Resolve (CheckFGA for can_approve) need. *policy.Engine satisfies it.
 type AccessPolicy interface {
 	FGAEnabled() bool
@@ -59,15 +59,15 @@ type AccessPolicy interface {
 	CheckFGA(ctx context.Context, user, relation, object string) (bool, error)
 }
 
-// ConfigProvider is the tenant-scoped runtime config surface Build needs
+// ConfigProvider is the tenant-scoped runtime config surface Plan needs
 // (approval_expiry_hours, approval_required_n). Satisfied by broker's Config
 // interface (*config.Store / nopConfig) — duck-typed, no import needed. A
-// value that cannot be read is an error, and Build fails closed on it.
+// value that cannot be read is an error, and Plan fails closed on it.
 type ConfigProvider interface {
 	GetInt(ctx context.Context, tenant, key string) (int, error)
 }
 
-// AuditEmitter is the audit seam Build uses for the insufficient_approvers
+// AuditEmitter is the audit seam Plan uses for the insufficient_approvers
 // event. *audit.Emitter satisfies it; tests inject a recording fake.
 type AuditEmitter interface {
 	Emit(ctx context.Context, event *auditv1.AuditEvent) error

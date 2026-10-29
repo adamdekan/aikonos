@@ -11,7 +11,7 @@ import { log } from "../log.js";
 
 export interface ApprovalRoutesCtx {
   approvals: ApprovalRegistry;
-  clients: { north: Pick<NorthClient, "listPendingApprovals" | "approveTask"> };
+  clients: { north: Pick<NorthClient, "listPendingApprovals" | "approveTask" | "cancelTask"> };
   jwksResolver: JwksResolver;
   verifyOpts: VerifyOptions;
 }
@@ -92,4 +92,21 @@ export function registerApprovalRoutes(app: FastifyInstance, ctx: ApprovalRoutes
       }
     },
   );
+
+  // Withdraw the caller's own pending request (the chat card's Withdraw): the
+  // broker closes the gate and cancels its task (CancelTask: owner or admin
+  // only). A run waiting on it wakes through its broker poll.
+  app.post<{ Params: { taskId: string } }>("/pending-approvals/:taskId/withdraw", async (req, reply) => {
+    const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
+    if (!principal) return;
+    try {
+      await ctx.clients.north.cancelTask(
+        { taskId: req.params.taskId, tenantId: principal.tenant, reason: "approval withdrawn by requester" },
+        principal.token,
+      );
+      reply.send({ withdrawn: true });
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}`, body: {} });
+    }
+  });
 }

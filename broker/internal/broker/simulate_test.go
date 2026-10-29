@@ -116,6 +116,9 @@ func (n *noopTaskStore) ResolveApproval(_ context.Context, _, _, _ string, _ boo
 func (n *noopTaskStore) ListPendingApprovalsFor(_ context.Context, _, _ string) ([]db.ApprovalRequest, error) {
 	return nil, nil
 }
+func (n *noopTaskStore) WithdrawApproval(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}
 func (n *noopTaskStore) ListInbox(_ context.Context, _, _ string, _ bool) ([]*db.Envelope, error) {
 	n.t.Fatalf("SimulatePolicy must not touch the task store: ListInbox")
 	return nil, nil

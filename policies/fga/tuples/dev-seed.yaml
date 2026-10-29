@@ -40,6 +40,17 @@
   relation: member
   object: tenant:aikonos-dev
 
+# Approvers for separation-of-duty gates (step-up needs two approvers other
+# than the requester). admin@example.com is one as an admin; with alice and
+# bob too, every demo user's step-up gate has two others who can decide it.
+- user: user:alice@example.com
+  relation: approver
+  object: tenant:aikonos-dev
+
+- user: user:bob@example.com
+  relation: approver
+  object: tenant:aikonos-dev
+
 # ── Groups ──────────────────────────────────────────────────────────────────
 - user: user:alice@example.com
   relation: member

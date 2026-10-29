@@ -20,7 +20,6 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
-	"github.com/adamdekan/aikonos/broker/internal/policy"
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -201,17 +200,10 @@ func (s *BrokerService) northActor(ctx context.Context, tenant, owner, agentID s
 }
 
 // writeTaskRelations records the owner/approver relationships for a new task in
-// OpenFGA so the ReBAC Checks in ApproveTask/CancelTask resolve. Best-effort and
-// a no-op when OpenFGA is disabled. The owner is also seeded as approver to
-// match the default ApproverSet=[owner] (dev self-approval; separation-of-duty
-// approver assignment is a future policy concern).
+// OpenFGA so the ReBAC Checks in ApproveTask resolve. Best-effort and a no-op
+// when OpenFGA is disabled. See writeTaskRelationsFromDeps.
 func (s *BrokerService) writeTaskRelations(ctx context.Context, owner, taskID string) {
-	if err := s.deps.Policy.WriteRelations(ctx,
-		policy.Relation{User: "user:" + owner, Relation: "owner", Object: "task:" + taskID},
-		policy.Relation{User: "user:" + owner, Relation: "approver", Object: "task:" + taskID},
-	); err != nil {
-		s.deps.Logger.Warn("writeTaskRelations failed", zap.String("task_id", taskID), zap.Error(err))
-	}
+	writeTaskRelationsFromDeps(ctx, s.deps, owner, taskID)
 }
 
 // GetTaskState returns the current state and cost counters for a task;
@@ -416,8 +408,9 @@ func (s *BrokerService) ListPendingApprovals(ctx context.Context, req *brokerv1.
 	return &brokerv1.ListPendingApprovalsResponse{Approvals: out}, nil
 }
 
-// CancelTask transitions a task to CANCELLED and tears down its sandbox;
-// returns FailedPrecondition if the task is already in a terminal state.
+// CancelTask transitions a task to CANCELLED (withdrawing a pending approval)
+// and tears down its sandbox; returns FailedPrecondition if the task is
+// already in a terminal state.
 func (s *BrokerService) CancelTask(ctx context.Context, req *brokerv1.CancelTaskRequest) (*brokerv1.CancelTaskResponse, error) {
 	ctx, span := tracer.Start(ctx, "broker.task.cancel")
 	defer span.End()
@@ -449,6 +442,21 @@ func (s *BrokerService) CancelTask(ctx context.Context, req *brokerv1.CancelTask
 				return nil, status.Error(codes.PermissionDenied, "only the task owner or a tenant admin may cancel this task")
 			}
 			return nil, err
+		}
+	}
+
+	// A task waiting on approval: close its gate first, so no approver can
+	// decide a request that is being withdrawn. This is how the requester
+	// withdraws their own pending request (the chat's Withdraw).
+	if t.State == db.TaskStateAwaitingApproval {
+		withdrawn, err := tasks.WithdrawApproval(ctx, tenant, req.TaskId, user)
+		if err != nil {
+			s.deps.Logger.Error("CancelTask: withdraw approval failed", zap.Error(err))
+			return nil, status.Error(codes.Internal, "failed to withdraw the pending approval")
+		}
+		if withdrawn {
+			emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
+				"aikonos.broker.approval.withdrawn", auditv1.PolicyDecision_DENY, t)
 		}
 	}
 

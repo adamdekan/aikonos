@@ -23,10 +23,11 @@ export const SECTIONS = [
     key: "tenant",
     label: "Tenant roles",
     objectType: "tenant",
-    blurb: "Tenant-wide admin / member. Admins can manage assignments here.",
+    blurb: "Tenant-wide admin / member / approver. Admins can manage assignments here. Approvers (admins included) decide gates that need someone other than the requester.",
     relations: [
       { name: "admin", subjects: ["user"] },
       { name: "member", subjects: ["user", "group"] },
+      { name: "approver", subjects: ["user", "group"] },
     ],
   },
   {

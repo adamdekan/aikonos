@@ -42,8 +42,8 @@ func TestListPendingApprovals_TwoApproversOneOutsider(t *testing.T) {
 		ApprovedBy: []string{"bob@example.com"}, Summary: map[string]any{"step_up": true},
 		State: db.ApprovalPending, ExpiresAt: time.Now().Add(time.Hour),
 	}
-	// A legacy row with an empty approver_set is visible to everyone by the SQL
-	// rule; the FGA can_approve check must still hide it from the outsider.
+	// A legacy row with an empty approver_set: the SQL no longer lists it
+	// (M-11), and should a store return it, FGA can_approve still hides it.
 	legacy := gated
 	legacy.ApprovalID, legacy.TaskID, legacy.ApproverSet, legacy.ApprovedBy = uuid.New(), uuid.New(), nil, nil
 	store := &pendingApprovalsStore{

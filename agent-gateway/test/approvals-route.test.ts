@@ -70,6 +70,10 @@ class FakeNorth {
     this.calls.push({ method: "approve", req: { ...req }, token });
     return Promise.resolve({ success: true, newStatus: 4, capabilityTokenIds: { 1: "secret-cap" } } as never);
   }
+  cancelTask(req: object, token?: string) {
+    this.calls.push({ method: "cancel", req: { ...req }, token });
+    return Promise.resolve({ success: true } as never);
+  }
 }
 
 async function buildApp() {
@@ -205,6 +209,31 @@ test("GET /pending-approvals and POST /pending-approvals/:taskId act as the call
   assert.equal(north.calls.find((c) => c.method === "list")!.token, bob);
 
   assert.equal((await app.inject({ method: "GET", url: "/pending-approvals" })).statusCode, 401);
+  await app.close();
+});
+
+// The requester withdraws their own pending request: the broker's CancelTask
+// runs as the caller (it allows only the task owner or an admin), and a
+// refusal reaches the browser as 403.
+test("POST /pending-approvals/:taskId/withdraw cancels the task as the caller", async () => {
+  const { app, north, alice } = await buildApp();
+  const auth = { authorization: `Bearer ${alice}` };
+  const res = await app.inject({ method: "POST", url: "/pending-approvals/task-1/withdraw", headers: auth });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { withdrawn: true });
+  const cancel = north.calls.find((c) => c.method === "cancel")!;
+  assert.equal(cancel.token, alice);
+  assert.equal(cancel.req.taskId, "task-1");
+  assert.equal(cancel.req.tenantId, "aikonos-dev");
+
+  const { status } = await import("@grpc/grpc-js");
+  north.cancelTask = () =>
+    Promise.reject(Object.assign(new Error("7 PERMISSION_DENIED: only the task owner or a tenant admin may cancel this task"), {
+      code: status.PERMISSION_DENIED, details: "only the task owner or a tenant admin may cancel this task",
+    }));
+  const denied = await app.inject({ method: "POST", url: "/pending-approvals/task-1/withdraw", headers: auth });
+  assert.equal(denied.statusCode, 403);
+  assert.equal((await app.inject({ method: "POST", url: "/pending-approvals/task-1/withdraw" })).statusCode, 401);
   await app.close();
 });
 

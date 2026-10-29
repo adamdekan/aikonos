@@ -106,29 +106,56 @@ func TestApprovalExpiry(t *testing.T) {
 	}
 }
 
-// AG-07 slice 2: separation of duty holds on an empty approver set too — the
-// requester of a 2-of-n gate neither sees it in their list nor can vote.
-func TestApproval_EmptySetStillExcludesRequester(t *testing.T) {
-	repo, tenant, _, id := newApprovalFixture(t, []string{}, 2, time.Now().Add(time.Hour))
+// M-11: an empty approver set (a legacy row; Build no longer writes one)
+// admits nobody: no one sees it in their list and no vote counts, the
+// requester included.
+func TestApproval_EmptySetAdmitsNobody(t *testing.T) {
+	repo, tenant, task, id := newApprovalFixture(t, []string{}, 2, time.Now().Add(time.Hour))
 	ctx := context.Background()
 
-	list, err := repo.ListPendingApprovalsFor(ctx, tenant, "alice@example.com")
+	for _, u := range []string{"alice@example.com", "bob@example.com"} {
+		list, err := repo.ListPendingApprovalsFor(ctx, tenant, u)
+		if err != nil {
+			t.Fatalf("ListPendingApprovalsFor: %v", err)
+		}
+		for _, ar := range list {
+			if ar.ApprovalID.String() == id {
+				t.Fatalf("%s listed for an empty-set gate", u)
+			}
+		}
+		if _, _, err := repo.ResolveApproval(ctx, tenant, id, u, true, ""); !errors.Is(err, ErrVoterNotInApproverSet) {
+			t.Fatalf("%s vote: err = %v, want ErrVoterNotInApproverSet", u, err)
+		}
+	}
+	// Withdraw closes it, so no open gate leaks into sibling tests (a
+	// superuser test role sees every tenant's rows).
+	if ok, err := repo.WithdrawApproval(ctx, tenant, task, "alice@example.com"); err != nil || !ok {
+		t.Fatalf("WithdrawApproval: ok=%v err=%v", ok, err)
+	}
+}
+
+// The requester withdraws a pending gate: it is DENIED with them in
+// denied_by, drops off every approver's list, and a second withdraw is a no-op.
+func TestWithdrawApproval(t *testing.T) {
+	repo, tenant, task, id := newApprovalFixture(t, []string{"bob@example.com", "carol@example.com"}, 2, time.Now().Add(time.Hour))
+	ctx := context.Background()
+
+	if ok, err := repo.WithdrawApproval(ctx, tenant, task, "alice@example.com"); err != nil || !ok {
+		t.Fatalf("WithdrawApproval: ok=%v err=%v", ok, err)
+	}
+	if _, err := repo.GetPendingApprovalByTask(ctx, tenant, task); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("still pending after withdraw: %v", err)
+	}
+	list, err := repo.ListPendingApprovalsFor(ctx, tenant, "bob@example.com")
 	if err != nil {
-		t.Fatalf("ListPendingApprovalsFor: %v", err)
+		t.Fatal(err)
 	}
 	for _, ar := range list {
 		if ar.ApprovalID.String() == id {
-			t.Fatal("requester listed for their own 2-of-n gate")
+			t.Fatal("withdrawn gate still listed for an approver")
 		}
 	}
-	if _, _, err := repo.ResolveApproval(ctx, tenant, id, "alice@example.com", true, ""); !errors.Is(err, ErrVoterNotInApproverSet) {
-		t.Fatalf("requester vote: err = %v, want ErrVoterNotInApproverSet", err)
-	}
-	// Two other voters complete it, so no open gate leaks into sibling tests
-	// (a superuser test role sees every tenant's rows).
-	for _, v := range []string{"bob@example.com", "carol@example.com"} {
-		if _, _, err := repo.ResolveApproval(ctx, tenant, id, v, true, ""); err != nil {
-			t.Fatalf("vote by %s: %v", v, err)
-		}
+	if ok, err := repo.WithdrawApproval(ctx, tenant, task, "alice@example.com"); err != nil || ok {
+		t.Fatalf("second WithdrawApproval: ok=%v err=%v, want false", ok, err)
 	}
 }

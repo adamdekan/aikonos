@@ -5,7 +5,10 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -31,6 +34,12 @@ type fakeCancelTaskStore struct {
 	transErr    error
 	getCalled   bool   // records whether Get was ever invoked
 	gotTenant   string // records the tenant Get was called with, if any
+	withdrawnBy string // who WithdrawApproval closed the pending gate for
+}
+
+func (f *fakeCancelTaskStore) WithdrawApproval(_ context.Context, _, _, by string) (bool, error) {
+	f.withdrawnBy = by
+	return true, nil
 }
 
 func (f *fakeCancelTaskStore) Get(_ context.Context, tenantID, _ string) (*db.Task, error) {
@@ -220,5 +229,62 @@ func TestCancelTask_AdminCheckError_FailsClosed(t *testing.T) {
 	})
 	if status.Code(err) != codes.Internal || len(store.transitions) != 0 {
 		t.Fatalf("want Internal and no transition, got %v / %v", err, store.transitions)
+	}
+}
+
+// The requester withdraws their own pending request: CancelTask on a task
+// awaiting approval closes the gate (audited approval.withdrawn) and cancels
+// the task. A task not awaiting approval has no gate to close.
+func TestCancelTask_AwaitingApproval_WithdrawsGate(t *testing.T) {
+	task := newCancelTestTask(db.TaskStateAwaitingApproval)
+	store := &fakeCancelTaskStore{task: task}
+	rec := &recordingEmitter{}
+	svc := &BrokerService{deps: Deps{Logger: zap.NewNop(), Tasks: store, Audit: rec}}
+
+	if _, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: task.TaskID.String(), Reason: "withdrawn",
+	}); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if store.withdrawnBy != "alice@example.com" {
+		t.Errorf("gate withdrawn by %q, want alice", store.withdrawnBy)
+	}
+	if task.State != db.TaskStateCancelled {
+		t.Errorf("state = %s, want CANCELLED", task.State)
+	}
+	var types []string
+	for _, ev := range rec.events {
+		types = append(types, ev.EventType)
+	}
+	if !slices.Contains(types, "aikonos.broker.approval.withdrawn") || !slices.Contains(types, "aikonos.broker.task.cancelled") {
+		t.Errorf("audit events = %v, want approval.withdrawn and task.cancelled", types)
+	}
+
+	other := &fakeCancelTaskStore{task: newCancelTestTask(db.TaskStateExecuting)}
+	svc.deps.Tasks = other
+	if _, err := svc.CancelTask(ctxWithIdentity(testTenantUUID, "alice@example.com"), &brokerv1.CancelTaskRequest{
+		TenantId: testTenantUUID, TaskId: other.task.TaskID.String(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if other.withdrawnBy != "" {
+		t.Error("a task not awaiting approval must not touch approvals")
+	}
+}
+
+// A new task carries its tenant, so the tenant's approvers hold can_approve
+// on it (separation-of-duty gates).
+func TestWriteTaskRelations_LinksTenant(t *testing.T) {
+	fga := &fakeFGA{}
+	srv := fga.server(t)
+	t.Cleanup(srv.Close)
+	eng, err := policy.NewEngine(context.Background(), policy.Config{OPAEndpoint: "http://unused", OpenFGAEndpoint: srv.URL, OpenFGAStoreID: "store-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTaskRelationsFromDeps(context.Background(), Deps{Logger: zap.NewNop(), Policy: eng, TenantID: "aikonos-dev"}, "alice@example.com", "t1")
+	body, _ := json.Marshal(fga.writes)
+	if !strings.Contains(string(body), `{"object":"task:t1","relation":"tenant","user":"tenant:aikonos-dev"}`) {
+		t.Fatalf("writes = %s, want the task:t1 tenant tuple", body)
 	}
 }

@@ -24,12 +24,13 @@ service BrokerService {
   rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
 
   // Pending, unexpired approval requests the caller may decide (AG-07):
-  // caller in approver_set (or the set is empty) and FGA can_approve on the
+  // caller in approver_set (an empty set admits nobody) and FGA can_approve on the
   // task — the same rule ApproveTask enforces. Rows the caller already
   // approved are left out.
   rpc ListPendingApprovals(ListPendingApprovalsRequest) returns (ListPendingApprovalsResponse);
 
-  // Cancel a running or pending task
+  // Cancel a running or pending task. Task owner or tenant admin only. On a
+  // task awaiting approval it withdraws the pending request first.
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 
   // Send a task envelope to another user's agent

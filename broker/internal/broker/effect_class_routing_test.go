@@ -80,6 +80,7 @@ func TestSubmitPlan_FU3_RelaxNoOp(t *testing.T) {
 	cfg.values[testTenantUUID+":effect_class_routing"] = "credential_access:approval"
 
 	svc := newSandboxSvcForPlanWithConfig(taskStore, &opaLikePolicyEngine{}, nil, cfg)
+	withApprovers(t, svc) // a step-up gate needs two approvers other than the requester
 
 	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),

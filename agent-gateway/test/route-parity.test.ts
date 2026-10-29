@@ -198,6 +198,7 @@ const EXPECTED_ROUTES = [
   "POST /memory/deprecate",
   "POST /memory/verify",
   "POST /pending-approvals/:taskId",
+  "POST /pending-approvals/:taskId/withdraw",
   "POST /schedules",
   "POST /skills/:name/share",
   "POST /skills/import",

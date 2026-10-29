@@ -3,6 +3,24 @@ name: aikonos model tests
 model_file: ./model.fga
 tuples:
   - user: user:alice
+    relation: owner
+    object: task:t1
+  - user: user:alice
+    relation: approver
+    object: task:t1
+  - user: tenant:dev
+    relation: tenant
+    object: task:t1
+  - user: user:erin
+    relation: approver
+    object: tenant:dev
+  - user: group:ops#member
+    relation: approver
+    object: tenant:dev
+  - user: user:frank
+    relation: admin
+    object: tenant:dev
+  - user: user:alice
     relation: owner_user
     object: agent:a1
   - user: group:ops#member
@@ -82,3 +100,27 @@ tests:
         object: mcp_connector:c1
         assertions:
           can_access: true
+  # Separation of duty: a task's approvers are its own (the owner) plus the
+  # tenant's approvers, which include its admins and approver groups.
+  - name: task approvers
+    check:
+      - user: user:alice
+        object: task:t1
+        assertions:
+          can_approve: true
+      - user: user:erin
+        object: task:t1
+        assertions:
+          can_approve: true
+      - user: user:bob
+        object: task:t1
+        assertions:
+          can_approve: true
+      - user: user:frank
+        object: task:t1
+        assertions:
+          can_approve: true
+      - user: user:dave
+        object: task:t1
+        assertions:
+          can_approve: false
