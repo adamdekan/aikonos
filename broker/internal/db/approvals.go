@@ -382,7 +382,7 @@ func (r *TaskRepo) ListPendingApprovalsFor(ctx context.Context, tenantID, userID
 		       approver_set, requires_n, approved_by, denied_by, state, expires_at
 		FROM approval_requests
 		WHERE state = 'PENDING' AND expires_at > NOW()
-		  AND (cardinality(approver_set) = 0 OR $1 = ANY(approver_set))
+		  AND $1 = ANY(approver_set)
 		  AND NOT (requires_n >= 2 AND requester_id = $1)
 		  AND NOT ($1 = ANY(COALESCE(approved_by, '{}')))
 		ORDER BY created_at ASC
@@ -453,6 +453,23 @@ func (r *TaskRepo) ExpireApproval(ctx context.Context, tenantID, approvalID stri
 			return false, fmt.Errorf("expire approval: %w", err)
 		}
 		return tag.RowsAffected() == 1, nil
+	})
+}
+
+// WithdrawApproval closes the task's PENDING approval as DENIED, recording
+// by (the requester withdrawing it, or an admin cancelling the task) in
+// denied_by. Reports whether a pending row was closed; false when none was
+// pending (already decided, expired, or never gated).
+func (r *TaskRepo) WithdrawApproval(ctx context.Context, tenantID, taskID, by string) (bool, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (bool, error) {
+		tag, err := conn.Exec(ctx, `
+		UPDATE approval_requests
+		SET state = 'DENIED', denied_by = array_append(COALESCE(denied_by, '{}'), $2), resolved_at = NOW()
+		WHERE task_id = $1 AND state = 'PENDING'`, taskID, by)
+		if err != nil {
+			return false, fmt.Errorf("withdraw approval: %w", err)
+		}
+		return tag.RowsAffected() > 0, nil
 	})
 }
 
@@ -538,22 +555,13 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 	})
 }
 
-// voterAllowed reports whether voter may cast a vote on an approval request.
-// An empty approverSet means legacy / unrestricted — any voter is allowed.
-// A non-empty set enforces explicit membership (SoD boundary).
-// MayVote is the voting rule: a member of approver_set (an empty set admits
-// anyone), and never the requester once n >= 2. Build already drops the
-// requester from the set then, but an empty set would readmit them (AG-07).
+// MayVote is the voting rule: a member of approver_set, and never the
+// requester once n >= 2. An empty set admits nobody (M-11): Build refuses to
+// create a gate it cannot fill, so an empty set is only a legacy row, and it
+// fails closed rather than meaning "anyone may vote".
 func MayVote(approverSet []string, requester string, requiresN int16, voter string) bool {
 	if requiresN >= 2 && voter == requester {
 		return false
-	}
-	return voterAllowed(approverSet, voter)
-}
-
-func voterAllowed(approverSet []string, voter string) bool {
-	if len(approverSet) == 0 {
-		return true
 	}
 	return inSet(approverSet, voter)
 }

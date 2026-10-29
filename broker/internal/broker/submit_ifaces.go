@@ -47,6 +47,7 @@ type taskStore interface {
 	GetPendingApprovalByTask(ctx context.Context, tenantID, taskID string) (*db.ApprovalRequest, error)
 	ResolveApproval(ctx context.Context, tenantID, approvalID, approver string, approved bool, reason string) (db.ApprovalState, bool, error)
 	ListPendingApprovalsFor(ctx context.Context, tenantID, userID string) ([]db.ApprovalRequest, error)
+	WithdrawApproval(ctx context.Context, tenantID, taskID, by string) (bool, error)
 	ListInbox(ctx context.Context, tenantID, userID string, includeResolved bool) ([]*db.Envelope, error)
 	GetEnvelope(ctx context.Context, tenantID, envelopeID string) (*db.Envelope, error)
 	RespondEnvelope(ctx context.Context, tenantID, envelopeID, userID string, accepted bool) (db.EnvelopeState, error)

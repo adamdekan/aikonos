@@ -78,12 +78,15 @@ describe("ApprovalCard.vue", () => {
   });
 
   it("n-of-m: the requester waits for the others and can only withdraw", async () => {
-    mockPost.mockResolvedValue({ resolved: true });
+    mockPost.mockResolvedValue({ withdrawn: true });
     const w = card({ ownerMayApprove: false, requiresN: 3, approvals: 1 });
     expect(w.find("[data-testid='chat-approval-waiting-tc-1']").text()).toContain("Waiting for 2 more approvers");
     expect(w.find("[data-testid='chat-approve-tc-1']").exists()).toBe(false);
+    expect(w.find("[data-testid='chat-deny-tc-1']").text()).toBe("Withdraw");
     await w.find("[data-testid='chat-deny-tc-1']").trigger("click");
     await flushPromises();
+    // The broker closes the request and cancels the task, then the run's wait ends.
+    expect(mockPost.mock.calls[0]).toEqual(["/pending-approvals/task-1/withdraw"]);
     expect(mockPost).toHaveBeenCalledWith("/approve/tc-1", { body: { approved: false, argsDigest: "digest-1" } });
     expect(w.emitted("done")).toBeTruthy();
   });
@@ -98,11 +101,31 @@ describe("ApprovalCard.vue", () => {
     expect(w.emitted("done")).toBeFalsy();
   });
 
-  it("withdraw on a run that is gone says so", async () => {
-    mockPost.mockResolvedValue({ resolved: false });
+  it("withdraw closes the broker request even when the run is gone", async () => {
+    mockPost.mockImplementation((url) =>
+      url.endsWith("/withdraw") ? Promise.resolve({ withdrawn: true }) : Promise.reject(new Error("gone")));
     const w = card({ ownerMayApprove: false, requiresN: 2 });
     await w.find("[data-testid='chat-deny-tc-1']").trigger("click");
     await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith("/pending-approvals/task-1/withdraw");
+    expect(w.emitted("done")).toBeTruthy();
+  });
+
+  it("a refused withdraw keeps the card and shows why", async () => {
+    mockPost.mockRejectedValue(new Error("only the task owner or a tenant admin may cancel this task"));
+    const w = card({ ownerMayApprove: false, requiresN: 2 });
+    await w.find("[data-testid='chat-deny-tc-1']").trigger("click");
+    await flushPromises();
+    expect(w.find("[role='alert']").text()).toContain("task owner");
+    expect(w.emitted("done")).toBeFalsy();
+  });
+
+  it("a request with no broker task is answered in its run only", async () => {
+    mockPost.mockResolvedValue({ resolved: false });
+    const w = card({ taskId: "" });
+    await w.find("[data-testid='chat-deny-tc-1']").trigger("click");
+    await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith("/approve/tc-1", { body: { approved: false, argsDigest: "digest-1" } });
     expect(w.find("[data-testid='chat-approval-gone-tc-1']").exists()).toBe(true);
   });
 

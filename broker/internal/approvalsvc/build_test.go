@@ -63,14 +63,30 @@ var _ Store = (*fakeApprovalStore)(nil)
 type fakeAccessPolicy struct {
 	enabled bool
 	tuples  []policy.Relation
+	deny    map[string]bool // user ids CheckFGA refuses
 }
 
 func (f *fakeAccessPolicy) FGAEnabled() bool { return f.enabled }
-func (f *fakeAccessPolicy) ReadTuples(_ context.Context, _ policy.ReadFilter) ([]policy.Relation, error) {
-	return f.tuples, nil
+func (f *fakeAccessPolicy) ReadTuples(_ context.Context, rf policy.ReadFilter) ([]policy.Relation, error) {
+	var out []policy.Relation
+	for _, r := range f.tuples {
+		if r.Relation == rf.Relation && r.Object == rf.Object {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
-func (f *fakeAccessPolicy) CheckFGA(_ context.Context, _, _, _ string) (bool, error) {
-	return true, nil
+func (f *fakeAccessPolicy) CheckFGA(_ context.Context, user, _, _ string) (bool, error) {
+	return !f.deny[user], nil
+}
+
+// build is SubmitPlan's sequence: Plan, then Create when a gate results.
+func build(ctx context.Context, in BuildInput) (Gate, error) {
+	g, err := Plan(ctx, in)
+	if err != nil {
+		return g, err
+	}
+	return g, Create(ctx, in, g)
 }
 
 type fakeConfig struct {
@@ -113,40 +129,35 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 		policy                AccessPolicy // nil ⇒ FGA disabled, owner-fallback approver set
 		wantRequiresN         int16
 		wantApprovers         []string // exact expected ApproverSet after SoD (order-sensitive: owner-fallback or FGA-tuple order)
-		wantInsufficientAudit bool
+		wantInsufficientAudit bool     // and Plan refuses with InsufficientApproversError: no gate is created
 	}{
 		{
-			// Test 1 mirror: config n=2, FGA disabled → approverSet falls back to
-			// [owner], SoD then excludes owner → empty set, requiresN stays 2.
+			// config n=2, FGA disabled → approverSet falls back to [owner], SoD
+			// excludes owner → nobody eligible: refused, not an empty "anyone" set.
 			name:                  "config_n2_fga_disabled_owner_excluded",
 			outcome:               planv1.ValidationOutcome_NEEDS_HUMAN,
 			cfgN:                  2,
 			policy:                nil,
 			wantRequiresN:         2,
-			wantApprovers:         []string{},
 			wantInsufficientAudit: true,
 		},
 		{
-			// Test 2 mirror: config n=1 below the step-up floor of 2 → floor wins.
-			// Owner-fallback set of 1 is still short of n=2, so the same
-			// insufficient_approvers audit fires as case 1.
+			// config n=1 below the step-up floor of 2 → floor wins; same
+			// refusal as case 1.
 			name:                  "step_up_floor2_overrides_config_n1",
 			outcome:               planv1.ValidationOutcome_NEEDS_STEP_UP,
 			cfgN:                  1,
 			policy:                nil,
 			wantRequiresN:         2,
-			wantApprovers:         []string{},
 			wantInsufficientAudit: true,
 		},
 		{
-			// Test 3 mirror: config n=3 (above floor) is honored as-is. Same
-			// owner-fallback shortfall as case 1/2.
+			// config n=3 (above floor) is honored as-is; same refusal.
 			name:                  "config_n3_applied_above_floor",
 			outcome:               planv1.ValidationOutcome_NEEDS_HUMAN,
 			cfgN:                  3,
 			policy:                nil,
 			wantRequiresN:         3,
-			wantApprovers:         []string{},
 			wantInsufficientAudit: true,
 		},
 		{
@@ -175,6 +186,43 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 			wantRequiresN: 2,
 			wantApprovers: []string{"bob@example.com", "carol@example.com"},
 		},
+		{
+			// Step-up: the task's approvers are only the owner; the tenant's
+			// approvers (a user, a group, an admin) fill the gate.
+			name:    "step_up_tenant_approvers_fill_gate",
+			outcome: planv1.ValidationOutcome_NEEDS_STEP_UP,
+			cfgN:    1,
+			policy: &fakeAccessPolicy{
+				enabled: true,
+				tuples: []policy.Relation{
+					{User: "user:" + owner, Relation: "approver", Object: "task:t1"},
+					{User: "user:bob@example.com", Relation: "approver", Object: "tenant:dev"},
+					{User: "group:ops#member", Relation: "approver", Object: "tenant:dev"},
+					{User: "user:carol@example.com", Relation: "member", Object: "group:ops"},
+					{User: "user:" + owner, Relation: "member", Object: "group:ops"},
+					{User: "user:admin@example.com", Relation: "admin", Object: "tenant:dev"},
+					{User: "user:bob@example.com", Relation: "admin", Object: "tenant:dev"},
+				},
+			},
+			wantRequiresN: 2,
+			wantApprovers: []string{"bob@example.com", "carol@example.com", "admin@example.com"},
+		},
+		{
+			// A candidate FGA can_approve refuses is not eligible: one left of 2.
+			name:    "can_approve_filters_candidates",
+			outcome: planv1.ValidationOutcome_NEEDS_STEP_UP,
+			cfgN:    2,
+			policy: &fakeAccessPolicy{
+				enabled: true,
+				tuples: []policy.Relation{
+					{User: "user:bob@example.com", Relation: "approver", Object: "tenant:dev"},
+					{User: "user:carol@example.com", Relation: "approver", Object: "tenant:dev"},
+				},
+				deny: map[string]bool{"user:carol@example.com": true},
+			},
+			wantRequiresN:         2,
+			wantInsufficientAudit: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -183,9 +231,10 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 			emitter := &recordingEmitter{}
 			cfg := &fakeConfig{requiredN: tc.cfgN, expiryHours: 24}
 
-			_, err := Build(context.Background(), BuildInput{
+			_, err := build(context.Background(), BuildInput{
 				Store:       store,
 				Policy:      tc.policy,
+				FGATenant:   "tenant:dev",
 				Config:      cfg,
 				Audit:       emitter,
 				Logger:      zap.NewNop(),
@@ -199,6 +248,25 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 				PlanID:      "plan-1",
 				NSteps:      1,
 			})
+			gotInsufficientAudit := false
+			for _, ev := range emitter.events {
+				if ev.EventType == "aikonos.broker.approval.insufficient_approvers" {
+					gotInsufficientAudit = ev.Decision == auditv1.PolicyDecision_DENY
+				}
+			}
+			if gotInsufficientAudit != tc.wantInsufficientAudit {
+				t.Errorf("insufficient_approvers DENY audit fired = %v, want %v", gotInsufficientAudit, tc.wantInsufficientAudit)
+			}
+			if tc.wantInsufficientAudit {
+				var short *InsufficientApproversError
+				if !errors.As(err, &short) || short.Need != int(tc.wantRequiresN) {
+					t.Fatalf("want InsufficientApproversError(need %d), got %v", tc.wantRequiresN, err)
+				}
+				if store.created != nil {
+					t.Fatalf("no approval request may be created, got %+v", store.created)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Build: %v", err)
 			}
@@ -229,16 +297,6 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 					}
 				}
 			}
-
-			gotInsufficientAudit := false
-			for _, ev := range emitter.events {
-				if ev.EventType == "aikonos.broker.approval.insufficient_approvers" {
-					gotInsufficientAudit = true
-				}
-			}
-			if gotInsufficientAudit != tc.wantInsufficientAudit {
-				t.Errorf("insufficient_approvers audit fired = %v, want %v", gotInsufficientAudit, tc.wantInsufficientAudit)
-			}
 		})
 	}
 }
@@ -249,7 +307,7 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 // into — Build must guard with `in.Policy != nil` before FGAEnabled/ReadTuples.
 func TestBuild_FGADisabledDoesNotDereferenceNilPolicy(t *testing.T) {
 	store := &fakeApprovalStore{}
-	_, err := Build(context.Background(), BuildInput{
+	_, err := build(context.Background(), BuildInput{
 		Store:       store,
 		Policy:      nil, // must not panic
 		Config:      &fakeConfig{requiredN: 1, expiryHours: 24},
@@ -277,7 +335,7 @@ func TestBuild_FGADisabledDoesNotDereferenceNilPolicy(t *testing.T) {
 // approver, 24 hours), which can only be looser than what the tenant set.
 func TestBuild_UnreadableSettingsFailClosed(t *testing.T) {
 	store := &fakeApprovalStore{}
-	_, err := Build(context.Background(), BuildInput{
+	_, err := build(context.Background(), BuildInput{
 		Store:       store,
 		Config:      &fakeConfig{err: errors.New("db down")},
 		Audit:       &recordingEmitter{},
@@ -296,5 +354,14 @@ func TestBuild_UnreadableSettingsFailClosed(t *testing.T) {
 	}
 	if store.created != nil {
 		t.Fatalf("no approval request may be created, got %+v", store.created)
+	}
+}
+
+// The refusal tells the user what is missing and who can fix it.
+func TestInsufficientApproversError_Message(t *testing.T) {
+	got := (&InsufficientApproversError{Need: 2, Have: 1}).Error()
+	want := "this step needs 2 approvers other than you; only 1 eligible — ask an admin to add approvers"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

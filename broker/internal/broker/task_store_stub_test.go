@@ -89,3 +89,7 @@ func (stubTaskStore) CountEnvelopesByPayloadRef(_ context.Context, _, _ string) 
 }
 
 var _ taskStore = stubTaskStore{}
+
+func (stubTaskStore) WithdrawApproval(_ context.Context, _, _, _ string) (bool, error) {
+	return false, nil
+}

@@ -119,6 +119,9 @@ func writeTaskRelationsFromDeps(ctx context.Context, deps Deps, owner, taskID st
 	if err := deps.Policy.WriteRelations(ctx,
 		policy.Relation{User: "user:" + owner, Relation: "owner", Object: "task:" + taskID},
 		policy.Relation{User: "user:" + owner, Relation: "approver", Object: "task:" + taskID},
+		// The tenant's approvers may approve the task's separation-of-duty
+		// gates (can_approve: approver or approver from tenant).
+		policy.Relation{User: "tenant:" + deps.TenantID, Relation: "tenant", Object: "task:" + taskID},
 	); err != nil {
 		deps.Logger.Warn("writeTaskRelations failed", zap.String("task_id", taskID), zap.Error(err))
 	}

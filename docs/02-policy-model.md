@@ -73,6 +73,7 @@ type tenant
   relations
     define admin: [user]
     define member: [user, group#member]
+    define approver: [user, group#member] or admin
 
 type workspace
   relations
@@ -100,10 +101,11 @@ type mcp_connector
 
 type task
   relations
+    define tenant: [tenant]
     define owner: [user]
     define delegate: [user]
     define approver: [user, group#member]
-    define can_approve: approver
+    define can_approve: approver or approver from tenant
     define can_cancel: owner or approver
 
 type agent
@@ -382,7 +384,8 @@ Output consumed by policies. Risk score updates invalidate cached policy decisio
 Approval workflow is first-class:
 
 - Approval request includes: task summary, plan steps, risk assessment, requester, resource impact
-- Approver set resolved dynamically (via FGA `can_approve` relation)
+- Approver set resolved dynamically (via FGA `can_approve` relation). A gate of n = 1 goes to the task's own approver (the owner). A gate of n ≥ 2 (step-up, or `approval_required_n` ≥ 2) excludes the requester and goes to the task's approvers plus the tenant's (`tenant#approver`, which includes admins), each checked for `can_approve`. When fewer than n are eligible the plan is refused at submit time ("this step needs N approvers other than you; only M eligible — ask an admin to add approvers"), audited `aikonos.broker.approval.insufficient_approvers`, instead of opening a request nobody can decide. An empty approver set admits nobody.
+- The requester can withdraw a pending request (chat card **Withdraw**): `CancelTask` closes it as DENIED and cancels the task, audited `aikonos.broker.approval.withdrawn`. Only the task owner or a tenant admin may cancel a task.
 - Four-eyes required for `destructive` + `infrastructure` classes
 - Approvers see diff if the plan is an amendment of a previously-approved plan
 - Approvals are themselves audited — who approved what, when, with what context

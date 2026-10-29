@@ -7,6 +7,8 @@ package broker
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,28 +100,79 @@ func submitOneStep(t *testing.T, svc *SandboxService, store *fakeTaskStore) *db.
 	return store.lastApproval
 }
 
+// submitRefused calls SubmitPlan for a gate that nobody other than the
+// requester could decide (M-11): the plan comes back DENIED with the reason
+// the user sees, no approval request exists, and the task never waits.
+func submitRefused(t *testing.T, svc *SandboxService, store *fakeTaskStore, need, have int) {
+	t.Helper()
+	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(),
+		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
+	})
+	if err != nil {
+		t.Fatalf("SubmitPlan: %v", err)
+	}
+	if res.Outcome != planv1.ValidationOutcome_DENIED {
+		t.Fatalf("outcome = %s, want DENIED", res.Outcome)
+	}
+	want := fmt.Sprintf("this step needs %d approvers other than you; only %d eligible", need, have)
+	if !strings.Contains(strings.Join(res.Violations, "; "), want) {
+		t.Errorf("violations = %v, want one containing %q", res.Violations, want)
+	}
+	if store.lastApproval != nil {
+		t.Errorf("no approval request may be created, got %+v", store.lastApproval)
+	}
+	if store.task.State == db.TaskStateAwaitingApproval {
+		t.Error("task must not wait for an approval nobody can give")
+	}
+}
+
+// approverFGA serves the tenant's approvers (bob, and admin via the admin
+// relation) with can_approve on the task, for gates that need two approvers
+// other than the requester alice.
+func approverFGA(t *testing.T, taskID string) string {
+	t.Helper()
+	fg := &fakeFGA{
+		reads: map[string][]fgaKey{
+			"task:" + taskID:     {{User: "user:alice@example.com", Relation: "approver", Object: "task:" + taskID}},
+			"tenant:aikonos-dev": {{User: "user:bob@example.com", Relation: "approver", Object: "tenant:aikonos-dev"}, {User: "user:admin@example.com", Relation: "admin", Object: "tenant:aikonos-dev"}},
+		},
+		checks: map[string]bool{
+			"user:bob@example.com|can_approve|task:" + taskID:   true,
+			"user:admin@example.com|can_approve|task:" + taskID: true,
+		},
+	}
+	srv := fg.server(t)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// withApprovers gives svc an FGA engine serving approverFGA, so a step-up
+// gate (requester alice) has the two approvers it needs. The skill gate is
+// left off, as in newSvcWithCfgAndFGA.
+func withApprovers(t *testing.T, svc *SandboxService) {
+	t.Helper()
+	eng, err := policy.NewEngine(context.Background(), policy.Config{
+		OPAEndpoint: "http://unused", OpenFGAEndpoint: approverFGA(t, validTaskUUID()), OpenFGAStoreID: "store-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.deps.Policy, svc.deps.TenantID = eng, "aikonos-dev"
+	svc.skillPolicy = &fakeSkillPolicy{enabled: false}
+}
+
 // ── Test 1: approval_required_n=2, NEEDS_HUMAN → requires_n=2, owner excluded ─
 
 func TestApprovalN_ConfigN2_RequesterExcluded(t *testing.T) {
-	// FGA disabled (no fgaURL) → approverSet falls back to [owner].
-	// SoD then excludes the owner → approverSet is empty but requiresN stays 2.
+	// FGA disabled → approverSet falls back to [owner]; SoD excludes the owner,
+	// leaving nobody. Refused at plan time instead of an empty "anyone" set.
 	store := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	cfg := newFakeConfigStore()
 	cfg.values[testTenantUUID+":approval_required_n"] = "2"
-	// Use newSandboxSvcForPlanWithConfig (Policy=nil → FGA disabled path).
 	svc := newSandboxSvcForPlanWithConfig(store, approvalPol(), nil, cfg)
 
-	ar := submitOneStep(t, svc, store)
-
-	if ar.RequiresN != 2 {
-		t.Errorf("RequiresN = %d, want 2", ar.RequiresN)
-	}
-	// Owner must be excluded from approver set under SoD.
-	for _, a := range ar.ApproverSet {
-		if a == "alice@example.com" {
-			t.Errorf("owner must be excluded from approverSet, but found %q", a)
-		}
-	}
+	submitRefused(t, svc, store, 2, 0)
 }
 
 // ── Test 2: config n=1, NEEDS_STEP_UP → floor=2 overrides config ─────────────
@@ -130,26 +183,39 @@ func TestApprovalN_StepUpFloor2_OverridesConfigN1(t *testing.T) {
 	cfg.values[testTenantUUID+":approval_required_n"] = "1" // below step-up floor
 	svc := newSandboxSvcForPlanWithConfig(store, stepUpPol(), nil, cfg)
 
+	submitRefused(t, svc, store, 2, 0) // the floor of 2 applies
+}
+
+// Step-up still works where enough approvers exist: the tenant's approvers
+// (bob, and admin) fill the four-eyes gate the requester alice cannot vote on.
+func TestApprovalN_StepUp_TenantApproversFillGate(t *testing.T) {
+	store := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	store.task.TaskID = uuid.MustParse(validTaskUUID())
+	svc := newSvcWithCfgAndFGA(t, store, stepUpPol(), newFakeConfigStore(), approverFGA(t, validTaskUUID()))
+	svc.deps.TenantID = "aikonos-dev"
+
 	ar := submitOneStep(t, svc, store)
 
 	if ar.RequiresN != 2 {
-		t.Errorf("NEEDS_STEP_UP floor must clamp requiresN to 2, got %d", ar.RequiresN)
+		t.Errorf("RequiresN = %d, want 2", ar.RequiresN)
+	}
+	if len(ar.ApproverSet) != 2 || ar.ApproverSet[0] != "bob@example.com" || ar.ApproverSet[1] != "admin@example.com" {
+		t.Errorf("ApproverSet = %v, want [bob admin]", ar.ApproverSet)
 	}
 }
 
 // ── Test 3: config n=3, NEEDS_HUMAN → requiresN=3 (config raises above floor) ─
 
 func TestApprovalN_ConfigN3_AppliedAboveFloor(t *testing.T) {
+	// n=3 is honoured: bob and admin are only two, so it is refused.
 	store := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	store.task.TaskID = uuid.MustParse(validTaskUUID())
 	cfg := newFakeConfigStore()
 	cfg.values[testTenantUUID+":approval_required_n"] = "3"
-	svc := newSandboxSvcForPlanWithConfig(store, approvalPol(), nil, cfg)
+	svc := newSvcWithCfgAndFGA(t, store, approvalPol(), cfg, approverFGA(t, validTaskUUID()))
+	svc.deps.TenantID = "aikonos-dev"
 
-	ar := submitOneStep(t, svc, store)
-
-	if ar.RequiresN != 3 {
-		t.Errorf("RequiresN = %d, want 3 (config raises above floor)", ar.RequiresN)
-	}
+	submitRefused(t, svc, store, 3, 2)
 }
 
 // ── Test 4: config n=1, NEEDS_HUMAN → requiresN=1, owner in set (legacy) ─────
@@ -188,6 +254,10 @@ func TestApprovalN_FGAApprovers_SoDExcludesOwner(t *testing.T) {
 				{User: "user:bob@example.com", Relation: "approver", Object: "task:" + taskID},
 				{User: "user:carol@example.com", Relation: "approver", Object: "task:" + taskID},
 			},
+		},
+		checks: map[string]bool{
+			"user:bob@example.com|can_approve|task:" + taskID:   true,
+			"user:carol@example.com|can_approve|task:" + taskID: true,
 		},
 	}
 	srv := fg.server(t)
@@ -242,10 +312,12 @@ func TestApprovalN_FGAApprovers_SoDExcludesOwner(t *testing.T) {
 
 func TestApprovalN_ExpiryAndNBothFromConfig(t *testing.T) {
 	store := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	store.task.TaskID = uuid.MustParse(validTaskUUID())
 	cfg := newFakeConfigStore()
 	cfg.values[testTenantUUID+":approval_required_n"] = "2"
 	cfg.values[testTenantUUID+":approval_expiry_hours"] = "1"
-	svc := newSandboxSvcForPlanWithConfig(store, approvalPol(), nil, cfg)
+	svc := newSvcWithCfgAndFGA(t, store, approvalPol(), cfg, approverFGA(t, validTaskUUID()))
+	svc.deps.TenantID = "aikonos-dev"
 
 	before := time.Now()
 	ar := submitOneStep(t, svc, store)

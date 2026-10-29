@@ -166,6 +166,7 @@ func TestSubmitPlan_AG08_McpFloor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 			svc := newSandboxSvcForPlan(taskStore, &opaLikePolicyEngine{}, nil)
+			withApprovers(t, svc) // a step-up gate needs two approvers other than the requester
 			svc.deps.ToolRegistry = toolregistry.NewRegistry()
 			if tc.confirmed != planv1.EffectClass_EFFECT_CLASS_UNSPECIFIED {
 				svc.deps.ToolRegistry.SetTenantOverlay(testTenantUUID, []toolregistry.OverlayRow{

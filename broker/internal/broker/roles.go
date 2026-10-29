@@ -95,6 +95,8 @@ var manageableRules = []manageRule{
 	{"delegatable", "group", groupOnly, brokerv1.AssignmentSection_GROUP_MEMBERSHIP},
 	{"admin", "tenant", userOnly, brokerv1.AssignmentSection_TENANT_ROLE},
 	{"member", "tenant", userOrGroup, brokerv1.AssignmentSection_TENANT_ROLE},
+	// Approvers for separation-of-duty gates (n >= 2); admins are approvers too.
+	{"approver", "tenant", userOrGroup, brokerv1.AssignmentSection_TENANT_ROLE},
 	{"permitted_group", "skill", groupOnly, brokerv1.AssignmentSection_SKILL_ACCESS},
 	{"can_use", "agentskill", groupOnly, brokerv1.AssignmentSection_SKILL_ACCESS},
 	{"owner_user", "agent", userOnly, brokerv1.AssignmentSection_AGENT_RELATION},

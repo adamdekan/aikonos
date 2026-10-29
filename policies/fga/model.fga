@@ -27,6 +27,9 @@ type tenant
   relations
     define admin: [user]
     define member: [user, group#member]
+    # Approvers for gates that need someone other than the requester
+    # (separation of duty, n >= 2). Admins are approvers.
+    define approver: [user, group#member] or admin
 
 # ── Workspace authorization ───────────────────────────────────────────────────
 
@@ -63,10 +66,11 @@ type mcp_connector
 
 type task
   relations
+    define tenant: [tenant]
     define owner: [user]
     define delegate: [user]
     define approver: [user, group#member]
-    define can_approve: approver
+    define can_approve: approver or approver from tenant
     define can_cancel: owner or approver
     define can_view: owner or delegate or approver
 

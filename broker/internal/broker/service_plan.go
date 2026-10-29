@@ -413,12 +413,57 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	default:
 		outcome = planv1.ValidationOutcome_APPROVED
 	}
+
+	// approvalsvc.Plan owns the n-of-m threshold / separation-of-duty /
+	// approver-set construction (CP4/C6). A gate nobody other than the
+	// requester could decide is refused here, before any state changes, so
+	// the plan is DENIED with a reason the user sees (M-11).
+	// Pass a genuinely nil AccessPolicy when Policy is unset — a typed-nil
+	// *policy.Engine wrapped in the interface would not compare == nil inside
+	// Plan and would panic on FGAEnabled().
+	var gate *approvalsvc.Gate
+	var gateIn approvalsvc.BuildInput
+	if outcome == planv1.ValidationOutcome_NEEDS_HUMAN || outcome == planv1.ValidationOutcome_NEEDS_STEP_UP {
+		var pol approvalsvc.AccessPolicy
+		if s.deps.Policy != nil {
+			pol = s.deps.Policy
+		}
+		gateIn = approvalsvc.BuildInput{
+			Store:         taskStore,
+			Policy:        pol,
+			Config:        s.cfg(),
+			Audit:         oboEmitter{s.deps.Audit},
+			Logger:        s.deps.Logger,
+			TraceID:       traceID,
+			TenantID:      tenantID,
+			TaskID:        req.TaskId,
+			TenantUUID:    tenantUUID,
+			TaskUUID:      taskUUID,
+			OwnerUserID:   task.OwnerUserID,
+			ActorSpiffeID: req.SandboxSpiffeId,
+			FGATenant:     s.fgaTenantObject(),
+			Outcome:       outcome,
+			PlanID:        plan.PlanId,
+			NSteps:        len(plan.Steps),
+		}
+		g, err := approvalsvc.Plan(ctx, gateIn)
+		var short *approvalsvc.InsufficientApproversError
+		switch {
+		case errors.As(err, &short):
+			outcome = planv1.ValidationOutcome_DENIED
+			planDec.Violations = append(planDec.Violations, short.Error())
+		case err != nil:
+			return nil, err
+		default:
+			gate = &g
+		}
+	}
+
 	if s.deps.TaskMetrics != nil {
 		s.deps.TaskMetrics.RecordPlanOutcome(ctx, outcome.String())
 	}
 
 	var capTokens map[int32]string
-	var gate *approvalsvc.Gate
 	var argsDigest string
 	switch outcome {
 	case planv1.ValidationOutcome_APPROVED:
@@ -439,38 +484,11 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			return nil, status.Errorf(codes.Internal, "transition to AWAITING_APPROVAL failed: %v", err)
 		}
 
-		// approvalsvc.Build owns the n-of-m threshold / separation-of-duty /
-		// approver-set construction and the CreateApprovalRequest call (CP4/C6).
-		// Pass a genuinely nil AccessPolicy when Policy is unset — a typed-nil
-		// *policy.Engine wrapped in the interface would not compare == nil inside
-		// Build and would panic on FGAEnabled().
-		var pol approvalsvc.AccessPolicy
-		if s.deps.Policy != nil {
-			pol = s.deps.Policy
-		}
-		g, err := approvalsvc.Build(ctx, approvalsvc.BuildInput{
-			Store:         taskStore,
-			Policy:        pol,
-			Config:        s.cfg(),
-			Audit:         oboEmitter{s.deps.Audit},
-			Logger:        s.deps.Logger,
-			TraceID:       traceID,
-			TenantID:      tenantID,
-			TaskID:        req.TaskId,
-			TenantUUID:    tenantUUID,
-			TaskUUID:      taskUUID,
-			OwnerUserID:   task.OwnerUserID,
-			ActorSpiffeID: req.SandboxSpiffeId,
-			Outcome:       outcome,
-			PlanID:        plan.PlanId,
-			NSteps:        len(plan.Steps),
-		})
-		if err != nil {
+		if err := approvalsvc.Create(ctx, gateIn, *gate); err != nil {
 			return nil, err
 		}
-		gate = &g
 		if s.deps.ApprovalNotify != nil {
-			go s.deps.ApprovalNotify(context.WithoutCancel(ctx), tenantID, req.TaskId, g.ApproverSet, g.RequiredApprovals)
+			go s.deps.ApprovalNotify(context.WithoutCancel(ctx), tenantID, req.TaskId, gate.ApproverSet, gate.RequiredApprovals)
 		}
 
 		// AG-07: the digest the approve call must carry back, computed from the

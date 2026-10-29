@@ -7,7 +7,7 @@
 // MFA sign-in (AG-13) offers a fresh sign-in, then retries.
 import { ref, computed, onMounted } from "vue";
 import { get, post } from "../api/client.js";
-import { decideApproval, isStepUpRequired } from "../api/approvals.js";
+import { decideApproval, isStepUpRequired, withdrawApproval } from "../api/approvals.js";
 import { stepUpSignin } from "../auth/oidc.js";
 import ArgsView from "./ArgsView.vue";
 import Icon from "./Icon.vue";
@@ -34,7 +34,8 @@ const gone = ref("");          // the run that asked no longer exists
 const id = computed(() => props.request.toolCallId);
 const highRisk = computed(() => !!(props.request.stepUp || props.request.risk === "high"));
 // Under separation of duty (n >= 2) the run's own user may not vote: the card
-// waits for the others, who decide from their Inbox, and can only withdraw.
+// waits for the others, who decide from their Inbox, and can only withdraw
+// (the broker then closes the request and cancels its task).
 const waitingFor = computed(() =>
   props.request.ownerMayApprove === false || voted.value
     ? Math.max(1, (props.request.requiresN ?? 1) - (props.request.approvals ?? 0) - (voted.value ? 1 : 0))
@@ -60,9 +61,17 @@ async function respond(approved) {
   stepUpAcr.value = null;
   const { taskId, argsDigest = "" } = props.request;
   try {
-    if (waitingFor.value || !taskId) {
-      // Withdraw: the requester has no broker vote, so only its run's wait can
-      // end it. Also the path for a request that names no broker task.
+    if (waitingFor.value && taskId) {
+      // Withdraw: the requester has no vote, so the broker closes the request
+      // and cancels its task; then the run's own wait is ended (it is gone
+      // after a reload, which is fine: nothing is left waiting).
+      await withdrawApproval(taskId);
+      await post(`/approve/${encodeURIComponent(id.value)}`, { body: { approved: false, argsDigest } }).catch(() => {});
+      emit("done", id.value);
+      return;
+    }
+    if (!taskId) {
+      // A request that names no broker task: only its run's wait can end it.
       const r = await post(`/approve/${encodeURIComponent(id.value)}`, { body: { approved, argsDigest } });
       if (r?.resolved) emit("done", id.value);
       else gone.value = "The run that asked for this is no longer running (the page was reloaded or the gateway restarted). Nothing was decided.";
@@ -156,7 +165,7 @@ async function verifyAndApprove() {
           :aria-busy="busy === 'deny'"
           :data-testid="`chat-deny-${id}`"
           @click="respond(false)"
-        >{{ busy === "deny" ? "Denying…" : waitingFor ? "Withdraw" : "Deny" }}</button>
+        >{{ busy === "deny" ? (waitingFor ? "Withdrawing…" : "Denying…") : waitingFor ? "Withdraw" : "Deny" }}</button>
         <button
           v-if="!waitingFor"
           class="ac-btn ac-approve"

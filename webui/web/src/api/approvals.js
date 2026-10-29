@@ -12,6 +12,12 @@ export function decideApproval(taskId, approved, argsDigest) {
   return post(`/pending-approvals/${encodeURIComponent(taskId)}`, { body: { approved, argsDigest } });
 }
 
+// The requester withdraws their own pending request: the broker closes it and
+// cancels its task (allowed for the task owner or an admin only).
+export function withdrawApproval(taskId) {
+  return post(`/pending-approvals/${encodeURIComponent(taskId)}/withdraw`);
+}
+
 // AG-13: the broker refused a yes on a step-up approval for want of a recent
 // multi-factor sign-in (gateway 401). err.data.acr is the tenant's acr; sign in
 // again with stepUpSignin and retry.
