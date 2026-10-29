@@ -133,7 +133,7 @@ func (s *BrokerService) GetPlatformConfig(ctx context.Context, _ *brokerv1.GetPl
 	}
 
 	s.emitConfigAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"aikonos.broker.config.listed", "", "")
+		"aikonos.broker.config.listed", "", "", nil)
 	return &brokerv1.GetPlatformConfigResponse{Entries: out}, nil
 }
 
@@ -149,6 +149,10 @@ func (s *BrokerService) SetPlatformConfig(ctx context.Context, req *brokerv1.Set
 		return nil, err
 	}
 
+	// The effective value before the change, so the audit event shows a
+	// downgrade as one. Not read atomically with Set: a racing admin write can
+	// make it stale, never wrong about what this call wrote.
+	oldValue, oldErr := s.configFor().GetString(ctx, tenant, req.Key)
 	if err := s.configFor().Set(ctx, tenant, req.Key, req.Value, user); err != nil {
 		if errors.Is(err, config.ErrUnknownKey) {
 			return nil, status.Errorf(codes.InvalidArgument, "unknown config key %q", req.Key)
@@ -164,8 +168,12 @@ func (s *BrokerService) SetPlatformConfig(ctx context.Context, req *brokerv1.Set
 	}
 
 	s.emitConfigChanged(ctx, span.SpanContext().TraceID().String(), tenant, user, req.Key, req.Value)
+	old := &oldValue
+	if oldErr != nil {
+		old = nil // unreadable: the event says so rather than guessing
+	}
 	s.emitConfigAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
-		"aikonos.broker.config.changed", req.Key, req.Value)
+		"aikonos.broker.config.changed", req.Key, req.Value, old)
 	return &brokerv1.SetPlatformConfigResponse{}, nil
 }
 
@@ -191,8 +199,9 @@ func (s *BrokerService) emitConfigChanged(ctx context.Context, _, tenant, actor,
 }
 
 // emitConfigAudit fires an ALLOW audit event for config read/write actions.
-// Nil-guarded on deps.Audit.
-func (s *BrokerService) emitConfigAudit(ctx context.Context, traceID, tenant, actor, eventType, key, value string) {
+// For a write, oldValue is the value it replaced (nil when it could not be
+// read: old_value_unread is then set). Nil-guarded on deps.Audit.
+func (s *BrokerService) emitConfigAudit(ctx context.Context, traceID, tenant, actor, eventType, key, value string, oldValue *string) {
 	if s.deps.Audit == nil {
 		return
 	}
@@ -200,6 +209,11 @@ func (s *BrokerService) emitConfigAudit(ctx context.Context, traceID, tenant, ac
 	if key != "" {
 		fields["key"] = key
 		fields["value"] = value
+		if oldValue != nil {
+			fields["old_value"] = *oldValue
+		} else {
+			fields["old_value_unread"] = true
+		}
 	}
 	ctxStruct, _ := structpb.NewStruct(fields)
 	if err := s.deps.Audit.Emit(ctx, &auditv1.AuditEvent{

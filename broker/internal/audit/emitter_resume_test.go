@@ -39,6 +39,18 @@ func (f *fakeStore) listLevel(_ context.Context, prefix string) ([]string, []obj
 	return dirs, objs, nil
 }
 
+// put stores data unless putErr is set (the chain hash is recomputed on read).
+func (f *fakeStore) put(_ context.Context, key string, data []byte, _ string) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	if f.objects == nil {
+		f.objects = map[string][]byte{}
+	}
+	f.objects[key] = data
+	return nil
+}
+
 // chainHash recomputes what put stores as chain-hash metadata.
 func (f *fakeStore) chainHash(ctx context.Context, key string) (string, error) {
 	data, err := f.get(ctx, key)

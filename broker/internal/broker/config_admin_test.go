@@ -332,6 +332,13 @@ func TestSetPlatformConfig_ValidKeySetCalledAndAuditEmitted(t *testing.T) {
 	if k := ev.Context.Fields["key"].GetStringValue(); k != "approval_expiry_hours" {
 		t.Errorf("audit context.key = %q, want approval_expiry_hours", k)
 	}
+	// G8: the value it replaced is on the event too (here the schema default).
+	if o := ev.Context.Fields["old_value"].GetStringValue(); o != config.Schema["approval_expiry_hours"].Default {
+		t.Errorf("audit context.old_value = %q, want the schema default %q", o, config.Schema["approval_expiry_hours"].Default)
+	}
+	if v := ev.Context.Fields["value"].GetStringValue(); v != "48" {
+		t.Errorf("audit context.value = %q, want 48", v)
+	}
 }
 
 // ── test 3c: admin SetPlatformConfig out-of-range value → InvalidArgument ─────

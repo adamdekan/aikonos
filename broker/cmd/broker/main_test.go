@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
@@ -75,5 +76,15 @@ func TestBuildConnectorCredentials_ReadsPerProviderKeys(t *testing.T) {
 
 	if len(creds) != 2 {
 		t.Fatalf("len(creds) = %d, want 2 (exactly the registered providers)", len(creds))
+	}
+}
+
+// F35: only the host of the alert webhook URL is logged, never its path.
+func TestWebhookHost_LogsHostOnly(t *testing.T) {
+	if got := webhookHost("https://hooks.slack.com/services/T000/B000/XXXX?token=y"); got != "hooks.slack.com" {
+		t.Fatalf("got %q", got)
+	}
+	if got := webhookHost("://bad/XXXX"); strings.Contains(got, "XXXX") {
+		t.Fatalf("unparseable URL leaked: %q", got)
 	}
 }

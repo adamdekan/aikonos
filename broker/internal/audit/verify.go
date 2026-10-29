@@ -28,12 +28,12 @@ type ChainReport struct {
 	TailID            string // event_id of the last (newest) event
 	Breaks            []ChainBreak
 	SignatureFailures []ChainBreak
-	// Truncated is true when the store had more than maxScanObjects objects;
-	// the chain verdict covers only the scanned subset.
+	// Truncated is true when the store had more than maxVerifyObjects objects;
+	// the newest ones were not verified, so OK is false (an "incomplete"
+	// verdict when there are no Breaks or SignatureFailures).
 	Truncated bool
-	// Skipped is the count of objects that failed to fetch/decode and were
-	// silently skipped. ok=true with Skipped>0 means the scanned-and-decoded
-	// subset was verified, not the full chain.
+	// Skipped is the count of objects that failed to fetch/decode. Any skip
+	// leaves the chain unverified there, so OK is false ("incomplete").
 	Skipped int
 }
 
@@ -54,58 +54,133 @@ func VerifyChain(events []*auditv1.AuditEvent, signingKey string) ChainReport {
 // emitter.go exactly: json.Marshal of the event with Signature="" and every
 // other field (including signing_key_version and prior_event_hash) left as
 // stored.
-//
-// Each distinct signing_key_version is resolved from keySource at most once
-// per call — cached in a local map — so a long chain signed under a handful
-// of rotations costs a handful of Vault reads, not one per event.
 func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, keySource SigningKeySource) ChainReport {
-	if len(events) == 0 {
+	v := newChainVerifier(ctx, keySource)
+	for _, e := range events {
+		v.add(e)
+	}
+	return v.report()
+}
+
+// chainLink is what the continuity check keeps of an event: its id, its own
+// chain hash and the hash it names as its predecessor.
+type chainLink struct{ id, hash, prior string }
+
+// chainVerifier checks a chain one event at a time, so a caller can stream a
+// tenant's whole trail through it while holding only the links, never the
+// events. Signatures are checked as events arrive; continuity is decided in
+// report, once every link is known.
+//
+// Each distinct signing_key_version is resolved from keySource at most once —
+// cached in a local map — so a long chain signed under a handful of rotations
+// costs a handful of Vault reads, not one per event.
+type chainVerifier struct {
+	ctx        context.Context
+	keySource  SigningKeySource
+	keys       map[int32]string
+	keyErrs    map[int32]error
+	links      []chainLink
+	sigFails   []ChainBreak
+	downgrades []ChainBreak // unsigned events: failures only if anySigned
+	anySigned  bool
+}
+
+func newChainVerifier(ctx context.Context, keySource SigningKeySource) *chainVerifier {
+	return &chainVerifier{ctx: ctx, keySource: keySource, keys: map[int32]string{}, keyErrs: map[int32]error{}}
+}
+
+func (v *chainVerifier) resolveKey(version int32) (string, error) {
+	if k, ok := v.keys[version]; ok {
+		return k, nil
+	}
+	if err, ok := v.keyErrs[version]; ok {
+		return "", err
+	}
+	k, err := v.keySource.ForVersion(v.ctx, version)
+	if err != nil {
+		v.keyErrs[version] = err
+		return "", err
+	}
+	v.keys[version] = k
+	return k, nil
+}
+
+// add records e's link and checks its signature.
+func (v *chainVerifier) add(e *auditv1.AuditEvent) {
+	canon := canonicalBytes(e)
+	v.links = append(v.links, chainLink{id: e.EventId, hash: eventHash(canon), prior: e.PriorEventHash})
+
+	// An unresolvable version (e.g. a Vault historic read failing) is itself
+	// a signature failure — the chain can't be trusted end-to-end, not
+	// silently skipped.
+	key, err := v.resolveKey(e.SigningKeyVersion)
+	if err != nil {
+		v.sigFails = append(v.sigFails, ChainBreak{
+			EventID: e.EventId,
+			Detail:  fmt.Sprintf("key resolution failed for signing_key_version %d: %v", e.SigningKeyVersion, err),
+		})
+		return
+	}
+	if key == "" {
+		// Judged in report: legitimately unsigned only if no event in the
+		// whole chain resolves to a real key.
+		v.downgrades = append(v.downgrades, ChainBreak{
+			EventID: e.EventId,
+			Detail: fmt.Sprintf("signing_key_version %d resolves to an unsigned key in a chain that has signed events — treating as a signature downgrade",
+				e.SigningKeyVersion),
+		})
+		return
+	}
+	v.anySigned = true
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write(canon)
+	// Constant-time compare on the decoded bytes. The detail names neither
+	// value: the expected MAC is a valid signature for the stored content, so
+	// returning it would let anyone who can write the bucket forge events.
+	if got, derr := hex.DecodeString(e.Signature); derr != nil || !hmac.Equal(got, mac.Sum(nil)) {
+		v.sigFails = append(v.sigFails, ChainBreak{EventID: e.EventId, Detail: "HMAC mismatch"})
+	}
+}
+
+// report decides continuity over every link added and returns the verdict.
+func (v *chainVerifier) report() ChainReport {
+	if len(v.links) == 0 {
 		return ChainReport{OK: true}
 	}
 
-	// Work on a shallow copy of the slice so sorting doesn't affect the caller.
 	// event_id order is only used for deterministic iteration: the chain order
-	// is the prior_event_hash linkage, which the emitter assigns under its lock
-	// AFTER the caller minted the (UUIDv7) event_id — so under concurrency
-	// chain order and id order legitimately differ.
-	sorted := make([]*auditv1.AuditEvent, len(events))
-	copy(sorted, events)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EventId < sorted[j].EventId
-	})
+	// is the prior_event_hash linkage, which older brokers assigned AFTER the
+	// caller minted the (UUIDv7) event_id — so chain order and id order
+	// legitimately differ.
+	sorted := v.links
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].id < sorted[j].id })
 
 	report := ChainReport{Total: len(sorted)}
 
-	// Canonical bytes (for signatures) and chain hash of every event, once.
-	canonBytes := make([][]byte, len(sorted))
-	hashes := make([]string, len(sorted))
 	byHash := make(map[string]int, len(sorted))
 	children := map[string][]int{} // prior_event_hash → successors, event_id order
 	var roots []int                // events whose predecessor is absent
-	for i, e := range sorted {
-		canonBytes[i] = canonicalBytes(e)
-		h := eventHash(canonBytes[i])
-		hashes[i] = h
-		if j, dup := byHash[h]; dup {
+	for i, l := range sorted {
+		if j, dup := byHash[l.hash]; dup {
 			report.Breaks = append(report.Breaks, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("duplicate event: identical to %s", sorted[j].EventId),
+				EventID: l.id,
+				Detail:  fmt.Sprintf("duplicate event: identical to %s", sorted[j].id),
 			})
 			continue // keep duplicates out of the linkage so they don't also read as a fork
 		}
-		byHash[h] = i
+		byHash[l.hash] = i
 	}
-	for i, e := range sorted {
-		if byHash[hashes[i]] != i {
+	for i, l := range sorted {
+		if byHash[l.hash] != i {
 			continue // duplicate, reported above
 		}
-		children[e.PriorEventHash] = append(children[e.PriorEventHash], i)
+		children[l.prior] = append(children[l.prior], i)
 	}
-	for i, e := range sorted {
-		if byHash[hashes[i]] != i {
+	for i, l := range sorted {
+		if byHash[l.hash] != i {
 			continue
 		}
-		if _, ok := byHash[e.PriorEventHash]; !ok {
+		if _, ok := byHash[l.prior]; !ok {
 			roots = append(roots, i)
 		}
 	}
@@ -119,23 +194,23 @@ func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, key
 		head = roots[0]
 	}
 	for _, r := range roots {
-		e := sorted[r]
+		l := sorted[r]
 		switch {
-		case r == head && e.PriorEventHash != "":
+		case r == head && l.prior != "":
 			report.Breaks = append(report.Breaks, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("head event has non-empty prior_event_hash: %s", e.PriorEventHash),
+				EventID: l.id,
+				Detail:  fmt.Sprintf("head event has non-empty prior_event_hash: %s", l.prior),
 			})
 		case r == head:
-		case e.PriorEventHash == "":
+		case l.prior == "":
 			report.Breaks = append(report.Breaks, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("second chain head (empty prior_event_hash) besides %s", sorted[head].EventId),
+				EventID: l.id,
+				Detail:  fmt.Sprintf("second chain head (empty prior_event_hash) besides %s", sorted[head].id),
 			})
 		default:
 			report.Breaks = append(report.Breaks, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("prior_event_hash mismatch: %s matches no event (missing predecessor)", e.PriorEventHash),
+				EventID: l.id,
+				Detail:  fmt.Sprintf("prior_event_hash mismatch: %s matches no event (missing predecessor)", l.prior),
 			})
 		}
 	}
@@ -145,8 +220,8 @@ func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, key
 		}
 		for _, k := range succ[1:] {
 			report.Breaks = append(report.Breaks, ChainBreak{
-				EventID: sorted[k].EventId,
-				Detail:  fmt.Sprintf("fork: shares prior_event_hash %s with %s", prior, sorted[succ[0]].EventId),
+				EventID: sorted[k].id,
+				Detail:  fmt.Sprintf("fork: shares prior_event_hash %s with %s", prior, sorted[succ[0]].id),
 			})
 		}
 	}
@@ -155,89 +230,28 @@ func VerifyChainVersioned(ctx context.Context, events []*auditv1.AuditEvent, key
 
 	tail := head
 	for {
-		next := children[hashes[tail]]
+		next := children[sorted[tail].hash]
 		if len(next) == 0 {
 			break
 		}
 		tail = next[0]
 	}
-	report.HeadID = sorted[head].EventId
-	report.TailID = sorted[tail].EventId
+	report.HeadID = sorted[head].id
+	report.TailID = sorted[tail].id
 
-	keyCache := map[int32]string{}
-	keyErr := map[int32]error{}
-	resolveKey := func(version int32) (string, error) {
-		if k, ok := keyCache[version]; ok {
-			return k, nil
-		}
-		if err, ok := keyErr[version]; ok {
-			return "", err
-		}
-		k, err := keySource.ForVersion(ctx, version)
-		if err != nil {
-			keyErr[version] = err
-			return "", err
-		}
-		keyCache[version] = k
-		return k, nil
+	// An empty resolved key is "legitimately unsigned" only in a
+	// wholly-unsigned legacy chain. In a chain where at least one event
+	// resolves to a real key, an event whose recorded version resolves empty
+	// is indistinguishable from an attacker rewriting signing_key_version to
+	// an unsigned value to dodge the signature check — a signature failure.
+	report.Signed = v.anySigned
+	report.SignatureFailures = v.sigFails
+	if v.anySigned {
+		report.SignatureFailures = append(report.SignatureFailures, v.downgrades...)
 	}
-
-	// Resolve every event's key up front (cached per version above) so we know,
-	// before the per-event pass, whether ANY event in the chain resolves to a
-	// non-empty key. That distinction matters: an empty resolved key is
-	// "legitimately unsigned" only in a wholly-unsigned legacy chain. In a
-	// chain where at least one event carries real signing (some version
-	// resolves non-empty), an event whose recorded version resolves empty is
-	// not a benign legacy event — it's indistinguishable from an attacker
-	// rewriting signing_key_version to an unsigned value to dodge the
-	// signature check, so it must be treated as a signature failure.
-	resolvedKeys := make([]string, len(sorted))
-	resolvedErrs := make([]error, len(sorted))
-	anySigned := false
-	for i, e := range sorted {
-		key, err := resolveKey(e.SigningKeyVersion)
-		resolvedKeys[i], resolvedErrs[i] = key, err
-		if err == nil && key != "" {
-			anySigned = true
-		}
-	}
-	report.Signed = anySigned
-
-	for i, e := range sorted {
-		canon := canonBytes[i]
-		// Signature check. An unresolvable version (e.g. a Vault historic
-		// read failing) is itself a signature failure — the chain can't be
-		// trusted end-to-end, not silently skipped.
-		key, err := resolvedKeys[i], resolvedErrs[i]
-		if err != nil {
-			report.SignatureFailures = append(report.SignatureFailures, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("key resolution failed for signing_key_version %d: %v", e.SigningKeyVersion, err),
-			})
-			continue
-		}
-		if key == "" {
-			if anySigned {
-				// Mixed chain: an event whose version resolves unsigned while
-				// others resolve signed is a downgrade, not a legacy pass.
-				report.SignatureFailures = append(report.SignatureFailures, ChainBreak{
-					EventID: e.EventId,
-					Detail: fmt.Sprintf("signing_key_version %d resolves to an unsigned key in a chain that has signed events — treating as a signature downgrade",
-						e.SigningKeyVersion),
-				})
-			}
-			continue // wholly-unsigned chain: this version is unsigned by design
-		}
-		mac := hmac.New(sha256.New, []byte(key))
-		mac.Write(canon)
-		want := hex.EncodeToString(mac.Sum(nil))
-		if e.Signature != want {
-			report.SignatureFailures = append(report.SignatureFailures, ChainBreak{
-				EventID: e.EventId,
-				Detail:  fmt.Sprintf("HMAC mismatch: got %s want %s", e.Signature, want),
-			})
-		}
-	}
+	sort.SliceStable(report.SignatureFailures, func(i, j int) bool {
+		return report.SignatureFailures[i].EventID < report.SignatureFailures[j].EventID
+	})
 
 	report.OK = len(report.Breaks) == 0 && len(report.SignatureFailures) == 0
 	return report

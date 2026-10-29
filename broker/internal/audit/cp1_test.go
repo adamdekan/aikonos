@@ -60,8 +60,7 @@ func TestReader_Query_Unconfigured_OkFalseNoError(t *testing.T) {
 
 // ── #1: readAll / VerifyChain surfaces truncated + skipped ───────────────────
 
-// buildManyMetas builds a fakeStore with n+1 keys for the tenant; the n+1-th
-// puts the total over maxScanObjects to trigger the truncation cap.
+// buildOverLimitStore builds a fakeStore with n keys for the tenant.
 func buildOverLimitStore(n int) *fakeStore {
 	objects := make(map[string][]byte, n)
 	for i := 0; i < n; i++ {
@@ -76,9 +75,10 @@ func buildOverLimitStore(n int) *fakeStore {
 }
 
 func TestReader_VerifyChain_Truncated(t *testing.T) {
-	// Build maxScanObjects+1 objects so readAll truncates.
-	n := maxScanObjects + 1
-	store := buildOverLimitStore(n)
+	// Lower the walk cap so the store holds one object more than it.
+	defer func(old int) { maxVerifyObjects = old }(maxVerifyObjects)
+	maxVerifyObjects = 10
+	store := buildOverLimitStore(maxVerifyObjects + 1)
 	r := &Reader{store: store, cfg: Config{}, logger: nopLogger()}
 
 	report, ok, err := r.VerifyChain(context.Background(), "tenant1")
@@ -89,7 +89,10 @@ func TestReader_VerifyChain_Truncated(t *testing.T) {
 		t.Error("want ok=true (store configured)")
 	}
 	if !report.Truncated {
-		t.Error("want Truncated=true when store has more than maxScanObjects objects")
+		t.Error("want Truncated=true when store has more than maxVerifyObjects objects")
+	}
+	if report.OK {
+		t.Error("a truncated walk must never verify OK")
 	}
 }
 
@@ -117,6 +120,9 @@ func TestReader_VerifyChain_Skipped(t *testing.T) {
 	}
 	if report.Skipped < 1 {
 		t.Errorf("want Skipped>=1 when a get fails, got %d", report.Skipped)
+	}
+	if report.OK {
+		t.Error("an unreadable object leaves the chain unverified there: OK must be false")
 	}
 }
 

@@ -13,17 +13,19 @@ func TestDevModeGuard(t *testing.T) {
 		oidcEnabled       bool
 		fgaEnabled        bool
 		capabilityDurable bool
+		auditDurable      bool
+		auditSigned       bool
 		wantFatal         bool
 		wantDegraded      []string
 	}{
 		{
-			name:              "devMode true, all unconfigured — no error, all three degraded",
+			name:              "devMode true, all unconfigured — no error, all degraded",
 			devMode:           true,
 			oidcEnabled:       false,
 			fgaEnabled:        false,
 			capabilityDurable: false,
 			wantFatal:         false,
-			wantDegraded:      []string{"OIDC", "OpenFGA", "capability-key"},
+			wantDegraded:      []string{"OIDC", "OpenFGA", "capability-key", "audit-store", "audit-signing"},
 		},
 		{
 			name:              "devMode false, all configured — no error, empty degraded",
@@ -31,6 +33,8 @@ func TestDevModeGuard(t *testing.T) {
 			oidcEnabled:       true,
 			fgaEnabled:        true,
 			capabilityDurable: true,
+			auditDurable:      true,
+			auditSigned:       true,
 			wantFatal:         false,
 			wantDegraded:      nil,
 		},
@@ -40,6 +44,8 @@ func TestDevModeGuard(t *testing.T) {
 			oidcEnabled:       true,
 			fgaEnabled:        false,
 			capabilityDurable: true,
+			auditDurable:      true,
+			auditSigned:       true,
 			wantFatal:         true,
 			wantDegraded:      []string{"OpenFGA"},
 		},
@@ -49,14 +55,38 @@ func TestDevModeGuard(t *testing.T) {
 			oidcEnabled:       false,
 			fgaEnabled:        true,
 			capabilityDurable: false,
+			auditDurable:      true,
+			auditSigned:       true,
 			wantFatal:         true,
 			wantDegraded:      []string{"OIDC", "capability-key"},
+		},
+		{
+			name:              "devMode false, audit logging-only — fatal naming audit-store",
+			devMode:           false,
+			oidcEnabled:       true,
+			fgaEnabled:        true,
+			capabilityDurable: true,
+			auditDurable:      false,
+			auditSigned:       true,
+			wantFatal:         true,
+			wantDegraded:      []string{"audit-store"},
+		},
+		{
+			name:              "devMode false, audit unsigned — fatal naming audit-signing",
+			devMode:           false,
+			oidcEnabled:       true,
+			fgaEnabled:        true,
+			capabilityDurable: true,
+			auditDurable:      true,
+			auditSigned:       false,
+			wantFatal:         true,
+			wantDegraded:      []string{"audit-signing"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			degraded, fatal := devModeGuard(tc.devMode, tc.oidcEnabled, tc.fgaEnabled, tc.capabilityDurable)
+			degraded, fatal := devModeGuard(tc.devMode, tc.oidcEnabled, tc.fgaEnabled, tc.capabilityDurable, tc.auditDurable, tc.auditSigned)
 
 			if tc.wantFatal && fatal == nil {
 				t.Fatalf("expected fatal error, got nil")

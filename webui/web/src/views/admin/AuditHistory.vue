@@ -277,6 +277,11 @@ const TABLE_COLS = [
             Chain intact · {{ verifyResult.total }} events
             <span v-if="verifyResult.signed"> · signatures verified</span>
           </template>
+          <template v-else-if="verifyResult.verdict === 'incomplete'">
+            Verification incomplete · {{ verifyResult.total }} events checked
+            <span v-if="verifyResult.truncated"> · newest events not reached</span>
+            <span v-if="verifyResult.skipped"> · {{ verifyResult.skipped }} unreadable object(s)</span>
+          </template>
           <template v-else>
             Chain NOT intact · {{ verifyResult.total }} events ·
             {{ verifyResult.breaks?.length ?? 0 }} break(s) ·

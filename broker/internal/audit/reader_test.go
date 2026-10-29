@@ -202,6 +202,7 @@ type fakeStore struct {
 	listErr error
 	getErrs map[string]error     // key → forced get error
 	modTime map[string]time.Time // key → LastModified (optional)
+	putErr  error                // forced put error (emitter tests)
 }
 
 func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {

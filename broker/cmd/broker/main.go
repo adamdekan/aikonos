@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -509,8 +510,12 @@ func main() {
 	// ── Internal services (stubs in Phase 0) ─────────────────────────────────
 	// Audit signing key: read-or-create in Vault (durable, versioned, shared by
 	// every replica); falls back to the AIKONOS_AUDIT_SIGNING_KEY env value
-	// (version 0, degraded mode) when Vault is unavailable. See CP1.2.
-	auditKeySource := resolveAuditSigningKey(ctx, viper.GetString("audit.signing_key"), vaultClient, log)
+	// (version 0, degraded mode) when Vault is not configured, or when it is
+	// unreachable and AIKONOS_DEV_MODE=true. See CP1.2.
+	auditKeySource, err := resolveAuditSigningKey(ctx, viper.GetString("audit.signing_key"), vaultClient, viper.GetBool("dev_mode"), log)
+	if err != nil {
+		log.Fatal("startup guard", zap.Error(err))
+	}
 	auditEmitter, err := audit.NewEmitter(ctx, audit.Config{
 		MinioEndpoint:    viper.GetString("audit.minio_endpoint"),
 		Bucket:           viper.GetString("audit.bucket"),
@@ -604,6 +609,8 @@ func main() {
 			oidcValidator.Enabled(),
 			policyEngine.FGAEnabled(),
 			capDurable,
+			auditEmitter.Durable(),
+			auditSigned(auditKeySource),
 		)
 		if guardErr != nil {
 			log.Fatal("startup guard", zap.Error(guardErr))
@@ -688,7 +695,7 @@ func main() {
 				URL:    webhookURL,
 				Client: &http.Client{Timeout: 5 * time.Second},
 			})
-			log.Info("alerting: webhook sink configured", zap.String("url", webhookURL))
+			log.Info("alerting: webhook sink configured", zap.String("host", webhookHost(webhookURL)))
 		}
 		if smtpHost := viper.GetString("alerting.smtp_host"); smtpHost != "" {
 			alertSinks = append(alertSinks, &alerting.SMTPNotifier{
@@ -1560,23 +1567,46 @@ func (s *auditSigningKeySource) ForVersion(ctx context.Context, version int32) (
 
 // resolveAuditSigningKey returns the audit.SigningKeySource used to sign and
 // verify audit events, in precedence order: Vault (read-or-create, versioned)
-// > AIKONOS_AUDIT_SIGNING_KEY env fallback (version 0). Never errors — an
-// empty envKey and no Vault yields an unsigned (chained-only) source, mirroring
-// the emitter's pre-existing degraded behavior.
+// > AIKONOS_AUDIT_SIGNING_KEY env fallback (version 0). An empty envKey and no
+// Vault yields an unsigned (chained-only) source; the startup guard refuses
+// that outside dev mode ("audit-signing").
 //
-// The warning fires whenever the Vault path isn't the one actually in use
-// (Vault disabled, or a read/write error) — grep-stable, mirrors the existing
-// "provider key missing from Vault" convention.
-func resolveAuditSigningKey(ctx context.Context, envKey string, vault *secrets.VaultClient, log *zap.Logger) audit.SigningKeySource {
+// Vault configured but failing is an error unless devMode: silently signing
+// under the env key (or not at all) would downgrade the trail behind the
+// operator's back. The warning fires whenever the Vault path isn't the one
+// actually in use — grep-stable, mirrors the existing "provider key missing
+// from Vault" convention.
+func resolveAuditSigningKey(ctx context.Context, envKey string, vault *secrets.VaultClient, devMode bool, log *zap.Logger) (audit.SigningKeySource, error) {
 	if vault != nil {
-		if key, version, err := auditSigningKeyFromVault(ctx, vault, log); err == nil {
+		key, version, err := auditSigningKeyFromVault(ctx, vault, log)
+		if err == nil {
 			log.Info("audit signing key initialized from Vault", zap.Int32("version", version))
-			return &auditSigningKeySource{vault: vault, envKey: envKey, currentKey: key, currentVersion: version}
+			return &auditSigningKeySource{vault: vault, envKey: envKey, currentKey: key, currentVersion: version}, nil
 		}
+		if !devMode {
+			return nil, fmt.Errorf("refusing to start: audit signing key unavailable from Vault (%w) and AIKONOS_DEV_MODE!=true", err)
+		}
+		log.Error("audit signing key: Vault read failed", zap.Error(err))
 	}
 	log.Warn("audit signing key: Vault unavailable — falling back to static env key",
 		zap.Bool("signed", envKey != ""))
-	return &auditSigningKeySource{vault: vault, envKey: envKey, currentKey: envKey, currentVersion: 0}
+	return &auditSigningKeySource{vault: vault, envKey: envKey, currentKey: envKey, currentVersion: 0}, nil
+}
+
+// webhookHost is what may be logged of an alert webhook URL: its host only.
+// Chat webhooks carry their credential in the path (url.Redacted keeps it).
+func webhookHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(unparseable)"
+	}
+	return u.Host
+}
+
+// auditSigned reports whether new audit events will carry a signature.
+func auditSigned(ks audit.SigningKeySource) bool {
+	key, _ := ks.Current()
+	return key != ""
 }
 
 // auditSigningKeyFromVault reads the shared signing key from Vault, creating

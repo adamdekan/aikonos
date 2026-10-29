@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 )
 
 // TestEnqueueBackpressure verifies the bounded backpressure contract:
@@ -15,7 +17,7 @@ import (
 // We build Emitter struct literals so NewEmitter (which dials MinIO) is never
 // called. Only the fields touched by enqueue need to be set.
 func TestEnqueueBackpressure(t *testing.T) {
-	job := uploadJob{key: "k", data: []byte("{}"), hash: "h"}
+	job := uploadJob{event: &auditv1.AuditEvent{EventId: "evt-1", TenantId: "t1", EventType: "test.event"}, done: make(chan error, 1)}
 
 	t.Run("full queue drops after timeout", func(t *testing.T) {
 		// Unbuffered channel, no reader — always full.
@@ -25,7 +27,7 @@ func TestEnqueueBackpressure(t *testing.T) {
 			logger:      zap.NewNop(),
 		}
 		start := time.Now()
-		ok := e.enqueue(context.Background(), job, "test.event", "t1", "evt-1")
+		ok := e.enqueue(context.Background(), job)
 		elapsed := time.Since(start)
 		if ok {
 			t.Fatal("expected enqueue to return false on full queue")
@@ -42,7 +44,7 @@ func TestEnqueueBackpressure(t *testing.T) {
 			dropTimeout: 10 * time.Millisecond,
 			logger:      zap.NewNop(),
 		}
-		ok := e.enqueue(context.Background(), job, "test.event", "t1", "evt-2")
+		ok := e.enqueue(context.Background(), job)
 		if !ok {
 			t.Fatal("expected enqueue to return true when queue has capacity")
 		}

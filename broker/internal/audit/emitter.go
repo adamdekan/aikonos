@@ -2,8 +2,11 @@
 // Audit emitter — hash-chained, signed AuditEvents written to MinIO (WORM via
 // object lock). Falls back to logging-only when MinIO isn't configured, so the
 // broker still runs (and still publishes to the live observability stream)
-// without object storage. The MinIO write is asynchronous: Emit stays
-// fire-and-forget so it never adds latency to the audited RPC.
+// without object storage. With MinIO, one worker chains, signs and writes the
+// events in queue order and advances a tenant's chain head only once the write
+// has landed, so a dropped or failed event never leaves a hole in the chain.
+// Emit waits for that write and returns its error, except for the per-RPC
+// envelope of an allowed call (RPCEventType), which stays fire-and-forget.
 package audit
 
 import (
@@ -14,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -23,6 +27,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/adamdekan/aikonos/broker/internal/notify"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
@@ -57,10 +62,18 @@ type Config struct {
 // resume the per-tenant chain across restarts.
 const chainHashMeta = "chain-hash"
 
+// RPCEventType is the per-RPC envelope event the auth interceptor emits for
+// every call. Its ALLOW form is the one event Emit does not wait to persist:
+// it is the highest-volume event and records no mutation of its own.
+const RPCEventType = "aikonos.broker.rpc"
+
+// putBackoff is the wait before the first retry of a failed write; it grows
+// linearly per attempt. A var so tests can shorten it.
+var putBackoff = 500 * time.Millisecond
+
 type uploadJob struct {
-	key  string
-	data []byte
-	hash string
+	event *auditv1.AuditEvent // not yet chained: the worker chains and signs it
+	done  chan error          // buffered(1): the persistence outcome
 }
 
 // EmailResolver maps a (tenantID, subject) pair to a human-readable email
@@ -85,7 +98,7 @@ type Emitter struct {
 	dropTimeout time.Duration
 
 	mu       sync.Mutex
-	lastHash map[string]string // tenant → last event hash (chain head, per broker lifetime)
+	lastHash map[string]string // keySegment(tenant) → hash of its last persisted event (chain head)
 
 	queue     chan uploadJob
 	workerCtx context.Context
@@ -134,14 +147,7 @@ func NewEmitter(ctx context.Context, cfg Config) (*Emitter, error) {
 	}
 
 	e.client = client
-	e.store = &minioStore{client: client, bucket: cfg.Bucket}
-	// Resume each tenant's hash chain from the newest persisted event so a
-	// restart continues the chain instead of starting a fresh one.
-	e.loadChainHeads(ctx, logger)
-	e.queue = make(chan uploadJob, 1024)
-	e.workerCtx, e.cancel = context.WithCancel(context.Background())
-	e.wg.Add(1)
-	go e.worker()
+	e.startSink(ctx, &minioStore{client: client, bucket: cfg.Bucket}, 1024)
 
 	currentKey, currentVersion := keySource.Current()
 	logger.Info("Audit emitter initialized (MinIO sink active)",
@@ -152,6 +158,22 @@ func NewEmitter(ctx context.Context, cfg Config) (*Emitter, error) {
 		zap.Int("retention_days", cfg.RetentionDays),
 	)
 	return e, nil
+}
+
+// Durable reports whether events are persisted to the object store (false in
+// logging-only mode).
+func (e *Emitter) Durable() bool { return e.queue != nil }
+
+// startSink attaches the object store, resumes each tenant's hash chain from
+// its newest persisted event (so a restart continues the chain instead of
+// starting a fresh one) and starts the upload worker.
+func (e *Emitter) startSink(ctx context.Context, store chainStore, queueSize int) {
+	e.store = store
+	e.loadChainHeads(ctx, e.logger)
+	e.queue = make(chan uploadJob, queueSize)
+	e.workerCtx, e.cancel = context.WithCancel(context.Background())
+	e.wg.Add(1)
+	go e.worker()
 }
 
 // ensureBucket creates the audit bucket with object locking + the default
@@ -183,8 +205,12 @@ func ensureBucket(ctx context.Context, client *minio.Client, cfg Config, logger 
 	return nil
 }
 
-// Emit chains, signs, logs, publishes, and (async) persists an audit event.
-// Fire-and-forget — never blocks on the MinIO write.
+// Emit chains, signs, logs, publishes and persists an audit event. With an
+// object store the event is handed to the upload worker (see the package
+// comment); a full queue or a failed write is returned as an error so the
+// caller can record or refuse the gap, and the chain head never moves past an
+// event that was not persisted. The caller's event is chained in place only in
+// logging-only mode; with a store the worker chains its own copy.
 func (e *Emitter) Emit(ctx context.Context, event *auditv1.AuditEvent) error {
 	if event == nil {
 		return nil
@@ -194,21 +220,53 @@ func (e *Emitter) Emit(ctx context.Context, event *auditv1.AuditEvent) error {
 			event.EventId, event.TenantId, event.EventType)
 	}
 
-	// Enrich actor_email before the chain/sign critical section so the email is
-	// covered by the signature. Only when currently empty and actor_user_id is set
-	// — never overwrite an email the interceptor already supplied.
+	// Enrich actor_email before chaining so the email is covered by the
+	// signature. Only when currently empty and actor_user_id is set — never
+	// overwrite an email the interceptor already supplied.
 	if event.ActorEmail == "" && event.ActorUserId != "" && e.emailResolver != nil {
 		event.ActorEmail = e.emailResolver.Email(ctx, event.TenantId, event.ActorUserId)
 	}
 
-	// Chain + sign under a lock so the per-tenant hash chain is deterministic
-	// regardless of concurrent callers. The hash covers prior_event_hash, so any
-	// tamper breaks every downstream link.
-	//
-	// canonicalBytes (verify.go) is the single canonical form used by both the
-	// emitter and the verifier — keeping them in sync is the entire point.
-	e.mu.Lock()
-	event.PriorEventHash = e.lastHash[event.TenantId]
+	if e.queue == nil {
+		// Logging-only: nothing to persist, so the head advances at once.
+		e.mu.Lock()
+		hash := e.chainLocked(event)
+		e.lastHash[keySegment(event.TenantId)] = hash
+		e.mu.Unlock()
+		_, err := e.record(ctx, event)
+		return err
+	}
+
+	job := uploadJob{event: proto.Clone(event).(*auditv1.AuditEvent), done: make(chan error, 1)}
+	if !e.enqueue(ctx, job) {
+		return fmt.Errorf("audit: upload queue full, event %s not persisted", event.EventId)
+	}
+	if event.EventType == RPCEventType && event.Decision != auditv1.PolicyDecision_DENY {
+		return nil
+	}
+	select {
+	case err := <-job.done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("audit: event %s not confirmed persisted: %w", event.EventId, ctx.Err())
+	case <-e.workerCtx.Done():
+		select {
+		case err := <-job.done:
+			return err
+		default:
+			return fmt.Errorf("audit: emitter closed, event %s not persisted", event.EventId)
+		}
+	}
+}
+
+// chainLocked links event to its tenant's chain head and signs it, returning
+// its chain hash. The caller holds e.mu and decides when the head advances.
+// The hash covers prior_event_hash, so any tamper breaks every downstream link.
+//
+// canonicalBytes (verify.go) is the single canonical form used by both the
+// emitter and the verifier — keeping them in sync is the entire point.
+func (e *Emitter) chainLocked(event *auditv1.AuditEvent) string {
+	event.PriorEventHash = e.lastHash[keySegment(event.TenantId)]
 	// SigningKeyVersion must be set before canonicalBytes so it's covered by
 	// both the chain hash and the signature — recording it after signing would
 	// let the version field itself go untamper-evident.
@@ -216,22 +274,24 @@ func (e *Emitter) Emit(ctx context.Context, event *auditv1.AuditEvent) error {
 	event.SigningKeyVersion = version
 	canonical := canonicalBytes(event)
 	sum := sha256.Sum256(canonical)
-	thisHash := hex.EncodeToString(sum[:])
-	e.lastHash[event.TenantId] = thisHash
 	if key != "" {
 		mac := hmac.New(sha256.New, []byte(key))
 		mac.Write(canonical)
 		event.Signature = hex.EncodeToString(mac.Sum(nil))
 	}
-	e.mu.Unlock()
+	return hex.EncodeToString(sum[:])
+}
 
+// record serializes a chained event, logs it and publishes it to the live
+// observability stream, returning the stored form.
+func (e *Emitter) record(ctx context.Context, event *auditv1.AuditEvent) ([]byte, error) {
 	// Plain encoding/json is the canonical wire+storage serialization for
 	// AuditEvent (snake_case field names, numeric enums, {seconds,nanos}
 	// timestamps) — pinned by TestGoldenJSON_CanonicalShape. protojson is
 	// accepted defensively on read only (unmarshalAuditEvent); never write it.
 	data, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("audit marshal: %w", err)
+		return nil, fmt.Errorf("audit marshal: %w", err)
 	}
 
 	e.logger.Info("AUDIT",
@@ -249,13 +309,26 @@ func (e *Emitter) Emit(ctx context.Context, event *auditv1.AuditEvent) error {
 			e.logger.Debug("audit NATS publish failed", zap.Error(perr))
 		}
 	}
+	return data, nil
+}
 
-	// Durable WORM write — handed to the async worker. Blocks up to dropTimeout
-	// on a full queue (bounded backpressure) before dropping.
-	if e.client != nil {
-		e.enqueue(ctx, uploadJob{key: objectKey(event), data: data, hash: thisHash},
-			event.EventType, event.TenantId, event.EventId)
+// persist is the worker's half of Emit: chain, sign, record and write one
+// event, advancing the tenant's chain head only once the write has landed.
+// The single worker makes chain order the write order.
+func (e *Emitter) persist(event *auditv1.AuditEvent) error {
+	e.mu.Lock()
+	hash := e.chainLocked(event)
+	e.mu.Unlock()
+	data, err := e.record(e.workerCtx, event)
+	if err != nil {
+		return err
 	}
+	if err := e.put(objectKey(event), data, hash); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.lastHash[keySegment(event.TenantId)] = hash
+	e.mu.Unlock()
 	return nil
 }
 
@@ -266,7 +339,20 @@ func objectKey(event *auditv1.AuditEvent) string {
 		ts = event.OccurredAt.AsTime().UTC()
 	}
 	return fmt.Sprintf("%s/%04d/%02d/%02d/%s.json",
-		event.TenantId, ts.Year(), int(ts.Month()), ts.Day(), event.EventId)
+		keySegment(event.TenantId), ts.Year(), int(ts.Month()), ts.Day(), keySegment(event.EventId))
+}
+
+// keySegment makes s safe as one segment of an object key and as a chain-head
+// key: '/' cannot reach into another tenant's prefix, a leading '_' cannot
+// reach the reserved _policy/ space and a leading '.' cannot form "." or "..".
+// The escaping is injective ('%' itself is escaped) and leaves UUIDs as they
+// are.
+func keySegment(s string) string {
+	s = url.PathEscape(s)
+	if s != "" && (s[0] == '_' || s[0] == '.') {
+		s = fmt.Sprintf("%%%02X", s[0]) + s[1:]
+	}
+	return s
 }
 
 // loadChainHeads seeds lastHash for every tenant with existing history, reading
@@ -305,16 +391,15 @@ func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 	}
 }
 
-// Chain-resume candidate bounds. Emit chains under e.mu but enqueues after
-// releasing it, so two racing Emits can reach the (single, FIFO) upload worker
-// in the reverse of their chain order. The tail can therefore trail the newest
-// object by LastModified, but only by roughly how long a racing Emit waited to
-// enqueue (≤ DropTimeout, default 100ms, plus scheduling). A minute is orders
-// of magnitude above that; the count cap keeps startup to a bounded number of
-// GETs per tenant even after a heavy burst.
+// Chain-resume candidate bounds. The worker writes in chain order, but a trail
+// written by an older broker (which chained before enqueueing) can have its
+// tail trail the newest object by LastModified, by roughly how long a racing
+// Emit waited to enqueue (≤ DropTimeout, default 100ms, plus scheduling). A
+// minute is orders of magnitude above that; the count cap keeps startup to a
+// bounded number of GETs per tenant even after a heavy burst.
 // ponytail: if a single restart ever sees >resumeMaxCandidates events inside
 // the window AND a misorder deeper than that, the pick can be wrong; raise the
-// cap or enqueue under e.mu if that ever shows up.
+// cap if that ever shows up.
 const (
 	resumeWindow        = time.Minute
 	resumeMaxCandidates = 256
@@ -431,6 +516,8 @@ type chainStore interface {
 	listLevel(ctx context.Context, prefix string) (dirs []string, objs []objMeta, err error)
 	// chainHash reads the chain-hash metadata put wrote on key.
 	chainHash(ctx context.Context, key string) (string, error)
+	// put writes data under key with hash as its chain-hash metadata.
+	put(ctx context.Context, key string, data []byte, hash string) error
 }
 
 func (m *minioStore) listLevel(ctx context.Context, prefix string) ([]string, []objMeta, error) {
@@ -449,6 +536,15 @@ func (m *minioStore) listLevel(ctx context.Context, prefix string) ([]string, []
 	return dirs, objs, nil
 }
 
+func (m *minioStore) put(ctx context.Context, key string, data []byte, hash string) error {
+	_, err := m.client.PutObject(ctx, m.bucket, key, bytes.NewReader(data), int64(len(data)),
+		minio.PutObjectOptions{
+			ContentType:  "application/json",
+			UserMetadata: map[string]string{chainHashMeta: hash},
+		})
+	return err
+}
+
 func (m *minioStore) chainHash(ctx context.Context, key string) (string, error) {
 	info, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
@@ -459,7 +555,7 @@ func (m *minioStore) chainHash(ctx context.Context, key string) (string, error) 
 
 // enqueue tries to hand the job to the worker, blocking up to dropTimeout
 // before dropping (queue-full backpressure). Returns true if queued.
-func (e *Emitter) enqueue(ctx context.Context, job uploadJob, eventType, tenant, eventID string) bool {
+func (e *Emitter) enqueue(ctx context.Context, job uploadJob) bool {
 	// NewTimer + Stop (not time.After) so the happy path — queue has space —
 	// reclaims the timer immediately instead of leaking it for dropTimeout.
 	t := time.NewTimer(e.dropTimeout)
@@ -468,7 +564,7 @@ func (e *Emitter) enqueue(ctx context.Context, job uploadJob, eventType, tenant,
 	case e.queue <- job:
 		return true
 	case <-t.C:
-		RecordEventDropped(ctx, e.logger, eventType, tenant, eventID)
+		RecordEventDropped(ctx, e.logger, job.event.EventType, job.event.TenantId, job.event.EventId)
 		return false
 	}
 }
@@ -480,55 +576,61 @@ func (e *Emitter) worker() {
 		case <-e.workerCtx.Done():
 			return
 		case job := <-e.queue:
-			e.put(job)
+			job.done <- e.persist(job.event)
 		}
 	}
 }
 
-func (e *Emitter) put(job uploadJob) {
+// put writes one event, retrying twice. It returns the last error once every
+// attempt failed or the emitter is closing.
+func (e *Emitter) put(key string, data []byte, hash string) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		ctx, cancel := context.WithTimeout(e.workerCtx, 10*time.Second)
-		_, err := e.client.PutObject(ctx, e.cfg.Bucket, job.key,
-			bytes.NewReader(job.data), int64(len(job.data)),
-			minio.PutObjectOptions{
-				ContentType:  "application/json",
-				UserMetadata: map[string]string{chainHashMeta: job.hash},
-			})
+		err := e.store.put(ctx, key, data, hash)
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
 		lastErr = err
+		if e.workerCtx.Err() != nil {
+			break
+		}
 		select {
 		case <-e.workerCtx.Done():
-			return
-		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		case <-time.After(time.Duration(attempt+1) * putBackoff):
 		}
 	}
 	e.logger.Error("audit: failed to persist event to MinIO after retries",
-		zap.String("key", job.key), zap.Error(lastErr))
+		zap.String("key", key), zap.Error(lastErr))
+	return fmt.Errorf("audit: persist %s: %w", key, lastErr)
 }
 
 // Close drains the upload queue (best-effort, bounded) and stops the worker.
+// Events still queued at the deadline are reported dropped and their waiting
+// Emit calls get an error; none of them was chained, so the chain has no hole.
 func (e *Emitter) Close() {
-	if e.client == nil {
+	if e.queue == nil {
 		return
 	}
 	deadline := time.After(5 * time.Second)
-	for {
+drain:
+	for len(e.queue) > 0 {
 		select {
 		case <-deadline:
-			e.cancel()
-			e.wg.Wait()
-			return
+			break drain
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	e.cancel()
+	e.wg.Wait()
+	for {
+		select {
+		case job := <-e.queue:
+			RecordEventDropped(context.Background(), e.logger, job.event.EventType, job.event.TenantId, job.event.EventId)
+			job.done <- fmt.Errorf("audit: emitter closed, event %s not persisted", job.event.EventId)
 		default:
-			if len(e.queue) == 0 {
-				e.cancel()
-				e.wg.Wait()
-				return
-			}
-			time.Sleep(50 * time.Millisecond)
+			return
 		}
 	}
 }
