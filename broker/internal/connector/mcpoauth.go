@@ -222,13 +222,23 @@ func DiscoverMcpAuth(ctx context.Context, hc *http.Client, serverURL string, req
 		ScopesSupported      []string `json:"scopes_supported"`
 	}
 	var prm resourceMeta
-	found := false
+	found, reached := false, false
 	for _, c := range candidates {
 		prm = resourceMeta{}
-		if fetchJSON(ctx, hc, c, &prm) == nil && len(prm.AuthorizationServers) > 0 {
+		err := fetchJSON(ctx, hc, c, &prm)
+		// A *url.Error is a transport failure (DNS, connect, TLS, timeout);
+		// anything else means the server answered.
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			reached = true
+		}
+		if err == nil && len(prm.AuthorizationServers) > 0 {
 			found = true
 			break
 		}
+	}
+	if !found && !reached {
+		return nil, fmt.Errorf("could not reach %s (check the URL and that the server is up)", su.Host)
 	}
 	if !found {
 		return nil, errors.New("no protected-resource metadata (RFC 9728) with an authorization server")

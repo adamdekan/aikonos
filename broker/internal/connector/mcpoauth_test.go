@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +106,25 @@ func TestMcpOAuth_ExchangeAndRefreshCarryResource(t *testing.T) {
 	if _, err := reg.FreshMcpAccessToken(ctx, http.DefaultClient, store, m, "t1", "bob"); err == nil ||
 		!strings.Contains(err.Error(), "not connected") {
 		t.Errorf("bob: err = %v", err)
+	}
+}
+
+// An unreachable host says so, instead of the "no metadata" message a
+// reachable non-OAuth server gets.
+func TestDiscoverMcpAuth_UnreachableHostIsNamed(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	base := srv.URL
+	srv.Close() // nothing listens there now
+
+	_, err := DiscoverMcpAuth(context.Background(), http.DefaultClient, base+"/mcp", false)
+	if err == nil || !strings.Contains(err.Error(), "could not reach") {
+		t.Errorf("unreachable host: err = %v", err)
+	}
+
+	up := httptest.NewServer(http.NotFoundHandler())
+	defer up.Close()
+	_, err = DiscoverMcpAuth(context.Background(), http.DefaultClient, up.URL+"/mcp", false)
+	if err == nil || !strings.Contains(err.Error(), "no protected-resource metadata") {
+		t.Errorf("reachable non-OAuth server: err = %v", err)
 	}
 }
