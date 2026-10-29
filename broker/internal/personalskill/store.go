@@ -158,7 +158,8 @@ func isScannable(rel string) bool {
 // land at the same relative paths under stagingSeg — not re-nested under
 // another "Skills/<name>/" level). stagingSeg is used exactly like a
 // workspacefs "user" segment; the caller is responsible for handing in an
-// already-clean value (e.g. "xfer-<uuid>").
+// already-clean value — workspacefs.StagingSeg(fromUser), which charges the
+// copy to fromUser's quota (F33).
 //
 // Enforces MaxFolderFiles/MaxFolderBytes before writing anything, so a cap
 // violation never leaves a partial copy in staging. scan is called once per

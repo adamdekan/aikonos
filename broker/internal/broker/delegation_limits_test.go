@@ -50,11 +50,11 @@ func TestRespondToEnvelope_Accept_CarriesLimits(t *testing.T) {
 	checkDelegatedTask(t, store.created, envelopeID)
 }
 
-// AG-11: a chat started from an accepted envelope carries the same limits
-// (F139: only an accepted one — see TestCreateTask_EnvelopeID_NotAccepted).
+// AG-11: the inbox "Send to agent" path (the envelope is dismissed before
+// the chat runs) carries the same limits.
 func TestCreateTask_EnvelopeID_CarriesLimits(t *testing.T) {
 	env := scopedEnvelope(testEnvelopeID, "bob@example.com")
-	env.State = db.EnvelopeAccepted
+	env.State = db.EnvelopeDismissed
 	store := &envelopeCreateStore{envelope: env}
 	svc := newBrokerSvcForCreateTaskTest(t, store)
 	if _, err := svc.CreateTask(ctxWithIdentity(testTenantUUID, "bob@example.com"), &brokerv1.CreateTaskRequest{

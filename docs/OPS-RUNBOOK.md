@@ -82,10 +82,23 @@ settings (0.7.5)".
   servers such as docs-mcp already need.
 - **Agent sessions.** Sessions saved before 0.7.5 have no path-bound integrity
   sidecar and are refused. Set `AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS=true`
-  until users have re-saved them, then remove it.
+  and start the broker once. While the switch is on, each start re-signs every
+  session whose old sidecar still verifies. It logs `workspace session
+  re-sign` with the number re-signed and the number left `unverified` (no
+  sidecar, or a sidecar that does not match). Review the unverified records,
+  because they are refused once the switch is off. Then remove the switch.
 - **Workspace quota.** Each user's workspace is capped at 2 GiB and 20000 files
   and folders; a write past the cap fails. Change it with
   `AIKONOS_WORKSPACE_QUOTA_BYTES` and `AIKONOS_WORKSPACE_QUOTA_ENTRIES` (`0` = off).
+  Skill transfers that recipients have not yet accepted or dismissed count
+  against the sender's quota. The broker deletes them hourly once they are past
+  the 72-hour transfer expiry.
+- **gRPC limits.** Each broker gRPC server accepts at most 64 connections from
+  one IP address and closes any more. Each connection carries up to 1000
+  concurrent calls. A gateway replica sends all its traffic over one connection
+  per server. Change these with `AIKONOS_BROKER_GRPC_MAX_CONNS_PER_IP` and
+  `AIKONOS_BROKER_GRPC_MAX_STREAMS` (`0` connections = no cap). Compose does
+  not pass either one through, so add them to the broker's `environment` block.
 - **External API.** `:8090` is now rate limited per client IP and per agent
   (`AIKONOS_EXTERNAL_RATE_LIMIT`, 60 a minute). `AIKONOS_EXTERNAL_TRUST_PROXY`
   is the number of proxies in front of it: compose sets `0` for local and `1`

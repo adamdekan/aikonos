@@ -75,3 +75,28 @@ func TestTaskRepo_CountEnvelopesByPayloadRef_OnlyCountsActiveStates(t *testing.T
 		t.Fatalf("count after dismissing one and accepting another: got %d, want 1 (the still-pending one)", n)
 	}
 }
+
+// TestTaskRepo_CountEnvelopeTasks: the F139 per-envelope cap counts only the
+// owner's tasks on that envelope.
+func TestTaskRepo_CountEnvelopeTasks(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID, envID, otherEnv := uuid.New(), uuid.New(), uuid.New()
+
+	for _, tc := range []struct {
+		owner string
+		env   *uuid.UUID
+	}{
+		{"bob@example.com", &envID}, {"bob@example.com", &envID},
+		{"bob@example.com", &otherEnv}, {"bob@example.com", nil}, {"carol@example.com", &envID},
+	} {
+		task := &Task{TaskID: uuid.New(), TenantID: tenantID, OwnerUserID: tc.owner, Prompt: "p", CostBudget: 10, EnvelopeID: tc.env}
+		if err := repo.Create(ctx, task); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+	if n, err := repo.CountEnvelopeTasks(ctx, tenantID.String(), "bob@example.com", envID.String()); err != nil || n != 2 {
+		t.Fatalf("CountEnvelopeTasks = %d, %v; want 2", n, err)
+	}
+}

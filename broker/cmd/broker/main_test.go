@@ -2,12 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
@@ -123,5 +131,120 @@ func TestRequestSizeInterceptor(t *testing.T) {
 	}
 	if _, err := ic(context.Background(), big, &grpc.UnaryServerInfo{FullMethod: "/exempt"}, handler); err != nil || !called {
 		t.Fatalf("exempt: err=%v called=%v", err, called)
+	}
+}
+
+// healthServer serves the gRPC health service (whose Watch stream stays open
+// until the client or server ends it) with serverLimits(maxStreams), and
+// returns a client connection to it.
+func healthServer(t *testing.T, maxStreams uint32) (*grpc.Server, healthpb.HealthClient) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer(serverLimits(maxStreams)...)
+	healthpb.RegisterHealthServer(srv, health.NewServer())
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	conn, err := grpc.NewClient("passthrough:///"+lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return srv, healthpb.NewHealthClient(conn)
+}
+
+// The gateway sends every user's RPCs to a server over one connection, so the
+// default stream cap must carry well over 100 concurrent long-lived calls on
+// a single connection (the old hard-coded cap of 100 starved every tenant).
+func TestServerLimits_DefaultStreamsFitSharedChannel(t *testing.T) {
+	_, client := healthServer(t, defaultGRPCMaxStreams)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make(chan error, 150)
+	for i := 0; i < 150; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+			if err == nil {
+				_, err = stream.Recv()
+			}
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("stream %v: want every open stream served on one connection", err)
+	}
+}
+
+// F200: a stream that never ends cannot hold shutdown past the grace period.
+func TestStopGRPC_BoundedByGrace(t *testing.T) {
+	srv, client := healthServer(t, defaultGRPCMaxStreams)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	stopGRPC(srv, 100*time.Millisecond)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("stopGRPC took %v with an open stream, want about the 100ms grace", d)
+	}
+}
+
+// F200: past maxConns open connections from one IP, the next one from that
+// IP is closed at once; closing one gives its slot back.
+func TestListenLimited(t *testing.T) {
+	lis, err := listenLimited("127.0.0.1:0", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close()
+	accepted := make(chan net.Conn, 4)
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	dial := func() net.Conn {
+		c, err := net.Dial("tcp", lis.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	dial()
+	first := <-accepted
+	over := dial()
+	_ = over.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := over.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("second connection from the same IP: read err=%v, want it closed by the server", err)
+	}
+	select {
+	case <-accepted:
+		t.Fatal("second connection handed to the server past the cap of 1")
+	default:
+	}
+	first.Close()
+	dial()
+	select {
+	case c := <-accepted:
+		c.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("a new connection was not accepted after the first closed")
 	}
 }

@@ -28,6 +28,10 @@ func TestValidSkillName(t *testing.T) {
 		{"..\n", false},
 		{" demo", false},
 		{"a b", true},
+		// Install's hidden staging namespace; Scan skips dot-dirs.
+		{".foo.old", false},
+		{".hidden", false},
+		{"v1.2", true},
 	}
 	for _, c := range cases {
 		if got := ValidSkillName(c.name); got != c.want {

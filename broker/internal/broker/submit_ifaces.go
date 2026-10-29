@@ -58,6 +58,9 @@ type taskStore interface {
 	// check (personal_skills.go): how many PENDING/DELIVERED envelopes still
 	// point at a shared xfer-<uuid> staging segment.
 	CountEnvelopesByPayloadRef(ctx context.Context, tenantID, payloadRef string) (int, error)
+	// CountEnvelopeTasks backs CreateTask's per-envelope delegated-task cap
+	// (F139, service_tasks.go envelopeDelegator).
+	CountEnvelopeTasks(ctx context.Context, tenantID, ownerUserID, envelopeID string) (int, error)
 }
 
 // planPolicyEngine is the minimal policy.Engine surface SubmitPlan needs.

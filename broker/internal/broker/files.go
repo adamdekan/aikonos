@@ -95,8 +95,14 @@ func agentDirGuard(rel string) error {
 // missing file → NotFound, a remote-backend 403 → PermissionDenied, a full
 // quota → ResourceExhausted, everything else → Internal. The Internal message
 // is generic (F41): the underlying error carries absolute volume paths and
-// remote backend bodies, so it is logged here and never returned.
+// remote backend bodies, so it is logged here and never returned. The three
+// remote-backend sentinels likewise return only their own text: onedrivefs
+// wraps token errors and Graph URLs (drive and item ids) around them.
 func fileError(verb string, err error) error {
+	backend := func(code codes.Code, sentinel error) error {
+		slog.Default().Warn("workspace file operation failed", "op", verb, "error", err)
+		return status.Error(code, sentinel.Error())
+	}
 	switch {
 	case errors.Is(err, workspacefs.ErrQuota):
 		return status.Errorf(codes.ResourceExhausted, "%v", err)
@@ -109,11 +115,11 @@ func fileError(verb string, err error) error {
 	case errors.Is(err, workspacefs.ErrIntegrityMismatch):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	case errors.Is(err, workspacefs.ErrUnavailable):
-		return status.Errorf(codes.Unavailable, "%v", err)
+		return backend(codes.Unavailable, workspacefs.ErrUnavailable)
 	case errors.Is(err, workspacefs.ErrReconnectRequired):
-		return status.Errorf(codes.FailedPrecondition, "%v", err)
+		return backend(codes.FailedPrecondition, workspacefs.ErrReconnectRequired)
 	case errors.Is(err, workspacefs.ErrForbidden):
-		return status.Errorf(codes.PermissionDenied, "%v", err)
+		return backend(codes.PermissionDenied, workspacefs.ErrForbidden)
 	case errors.Is(err, fs.ErrNotExist):
 		return status.Error(codes.NotFound, "file not found")
 	default:

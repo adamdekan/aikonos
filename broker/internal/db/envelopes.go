@@ -219,6 +219,24 @@ func (r *TaskRepo) CountEnvelopesByPayloadRef(ctx context.Context, tenantID, pay
 	})
 }
 
+// CountEnvelopeTasks returns how many tasks owner has created on envelopeID
+// (tasks.envelope_id): CreateTask's per-envelope cap before it stamps another
+// task as delegated by the envelope's sender (F139). The owner filter keeps
+// it on idx_tasks_tenant_owner.
+func (r *TaskRepo) CountEnvelopeTasks(ctx context.Context, tenantID, ownerUserID, envelopeID string) (int, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (int, error) {
+		var n int
+		err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE tenant_id = $1 AND owner_user_id = $2 AND envelope_id = $3`, tenantID, ownerUserID, envelopeID,
+		).Scan(&n)
+		if err != nil {
+			return 0, fmt.Errorf("count envelope tasks: %w", err)
+		}
+		return n, nil
+	})
+}
+
 func scanEnvelopes(rows pgx.Rows) ([]*Envelope, error) {
 	var out []*Envelope
 	for rows.Next() {

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"strings"
 	"testing"
 )
@@ -132,15 +133,37 @@ func TestSecretsGuard(t *testing.T) {
 		"local example":  "dev-audit-hmac-key-change-me-padded-to-length",
 		"changeme":       strings.Repeat("x", 40) + "changeme",
 	} {
-		weak, fatal := secretsGuard(false, map[string]string{"audit signing key": value, "api key pepper": strong})
+		weak, fatal := secretsGuard(false, map[string]string{"audit signing key": value, "api key pepper": strong}, nil)
 		if fatal == nil || len(weak) != 1 {
 			t.Errorf("%s: weak=%v fatal=%v, want one finding and a fatal error", name, weak, fatal)
 		}
-		if weak, fatal := secretsGuard(true, map[string]string{"audit signing key": value}); fatal != nil || len(weak) != 1 {
+		if weak, fatal := secretsGuard(true, map[string]string{"audit signing key": value}, nil); fatal != nil || len(weak) != 1 {
 			t.Errorf("%s in dev mode: weak=%v fatal=%v, want a finding and no fatal error", name, weak, fatal)
 		}
 	}
-	if weak, fatal := secretsGuard(false, map[string]string{"audit signing key": strong}); fatal != nil || weak != nil {
+	if weak, fatal := secretsGuard(false, map[string]string{"audit signing key": strong}, nil); fatal != nil || weak != nil {
 		t.Errorf("strong key: weak=%v fatal=%v", weak, fatal)
+	}
+}
+
+// A random binary key (Vault-generated, or decoded from base64) that happens
+// to start with '<' (0x3C, one key in 256) is not a placeholder; a short one,
+// or one that decodes to a shipped "...-change-me" text, still is.
+func TestSecretsGuard_BinaryKeys(t *testing.T) {
+	lt := make([]byte, minSecretBytes)
+	if _, err := rand.Read(lt); err != nil {
+		t.Fatal(err)
+	}
+	lt[0] = '<'
+	if weak, fatal := secretsGuard(false, nil, map[string][]byte{"gateway grant key": lt}); fatal != nil || weak != nil {
+		t.Errorf("random key starting with '<': weak=%v fatal=%v, want none", weak, fatal)
+	}
+	for name, key := range map[string][]byte{
+		"31 bytes":      lt[:minSecretBytes-1],
+		"local example": []byte("dev-workspace-session-hmac-key-change-me"),
+	} {
+		if weak, fatal := secretsGuard(false, nil, map[string][]byte{"workspace session signing key": key}); fatal == nil || len(weak) != 1 {
+			t.Errorf("%s: weak=%v fatal=%v, want one finding and a fatal error", name, weak, fatal)
+		}
 	}
 }
