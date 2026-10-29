@@ -5,6 +5,7 @@
 use serde::Deserialize;
 use url::Url;
 
+use crate::connection::{AUTH_TIMEOUT, read_text};
 use crate::error::{ApiError, ApiResult};
 
 /// The client id a server is assumed to have registered for this app when it
@@ -12,6 +13,8 @@ use crate::error::{ApiError, ApiResult};
 pub const DEFAULT_DESKTOP_CLIENT_ID: &str = "aikonos-desktop";
 const DEFAULT_AUTHORITY: &str = "http://localhost:18080/realms/aikonos";
 const DEFAULT_SCOPE: &str = "openid profile";
+/// desktop.json and runtime-config.js are a few hundred bytes.
+const CONFIG_BODY_LIMIT: usize = 256 * 1024;
 
 /// Which token the gateway accepts as the bearer. Mirrors the web console's
 /// `AIKONOS_WEBUI_OIDC_TOKEN`: `access` for Keycloak and Entra apps that
@@ -70,7 +73,26 @@ impl ServerConfig {
     }
 }
 
-fn is_loopback(url: &Url) -> bool {
+/// Set to `1` on a PC that must reach a plain-HTTP server on its network.
+/// Bearer tokens then travel unencrypted; the sign-in screen says so.
+pub const ALLOW_HTTP_ENV: &str = "AIKONOS_DESKTOP_ALLOW_HTTP";
+
+fn allow_http() -> bool {
+    std::env::var_os(ALLOW_HTTP_ENV).is_some_and(|value| value == "1")
+}
+
+/// Whether the client may send sign-in secrets or bearers to `url` when the
+/// server is `origin`: HTTPS always, plain HTTP only from the local machine
+/// to the local machine (the development stack), or with [`ALLOW_HTTP_ENV`].
+pub(crate) fn transport_allowed(url: &Url, origin: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => (is_loopback(url) && is_loopback(origin)) || allow_http(),
+        _ => false,
+    }
+}
+
+pub(crate) fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -81,23 +103,40 @@ fn is_loopback(url: &Url) -> bool {
 
 /// Turn what a person types ("aikonos.example.org", "localhost:4200",
 /// "https://ai.example.org/chat") into the server origin. A bare host gets
-/// HTTPS unless it is the local machine.
+/// HTTPS unless it is the local machine; plain HTTP to anywhere else is
+/// refused, and so is a username or password in the address.
 pub fn normalize_server_url(input: &str) -> ApiResult<Url> {
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err(ApiError::SignIn("Enter the address of your aikonOS server.".into()));
     }
-    let with_scheme = if trimmed.contains("://") {
+    let has_scheme = trimmed.contains("://");
+    let with_scheme = if has_scheme {
         trimmed.to_owned()
     } else {
-        let host = trimmed.split(['/', ':']).next().unwrap_or_default();
-        let local = host.eq_ignore_ascii_case("localhost") || host.starts_with("127.");
-        format!("{}://{trimmed}", if local { "http" } else { "https" })
+        format!("https://{trimmed}")
     };
     let mut url =
         Url::parse(&with_scheme).map_err(|_| ApiError::SignIn(format!("“{trimmed}” is not a server address.")))?;
     if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
         return Err(ApiError::SignIn(format!("“{trimmed}” is not a server address.")));
+    }
+    // It would be kept in desktop.json, and sent as a Basic header.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ApiError::SignIn(
+            "Don't put a username or password in the server address.".into(),
+        ));
+    }
+    // Decided on the parsed host, so "127.evil.example" is not local.
+    if !has_scheme && is_loopback(&url) {
+        url.set_scheme("http").expect("https and http are both special schemes");
+    }
+    if !transport_allowed(&url, &url) {
+        return Err(ApiError::SignIn(format!(
+            "{} does not use HTTPS, so your sign-in would travel unencrypted. Use its https:// address, \
+             or ask your administrator to enable HTTPS.",
+            url.host_str().unwrap_or_default()
+        )));
     }
     url.set_path("/");
     url.set_query(None);
@@ -155,10 +194,21 @@ impl ConfigDocument {
                 )));
             }
         };
+        let authority = authority.trim_end_matches('/').to_owned();
+        match Url::parse(&authority) {
+            Ok(url) if transport_allowed(&url, &origin) && url.host().is_some() => {}
+            _ => {
+                return Err(ApiError::SignIn(format!(
+                    "{} names a sign-in service that does not use HTTPS ({authority}). Ask your administrator \
+                     to set an https:// AIKONOS_WEBUI_OIDC_AUTHORITY.",
+                    origin.host_str().unwrap_or_default()
+                )));
+            }
+        }
         Ok(ServerConfig {
             origin,
             oidc: OidcSettings {
-                authority: authority.trim_end_matches('/').to_owned(),
+                authority,
                 client_id: client_id.unwrap_or_else(|| DEFAULT_DESKTOP_CLIENT_ID.into()),
                 scope: pick(&[oidc.scope.as_ref()]).unwrap_or_else(|| DEFAULT_SCOPE.into()),
                 token_kind: TokenKind::parse(oidc.token.as_deref()),
@@ -197,20 +247,26 @@ pub async fn discover(http: &reqwest::Client, origin: &Url) -> ApiResult<ServerC
     let response = http
         .get(desktop)
         .header("accept", "application/json")
+        .timeout(AUTH_TIMEOUT)
         .send()
         .await
         .map_err(ApiError::transport)?;
     if response.status().is_success() && is_json(&response) {
-        let text = response.text().await.map_err(ApiError::transport)?;
+        let text = read_text(response, CONFIG_BODY_LIMIT).await?;
         let document: ConfigDocument =
             serde_json::from_str(&text).map_err(|err| ApiError::Decode(format!("desktop.json: {err}")))?;
         return document.into_config(origin.clone(), true);
     }
 
     let runtime = origin.join("runtime-config.js").expect("static path joins");
-    let response = http.get(runtime).send().await.map_err(ApiError::transport)?;
+    let response = http
+        .get(runtime)
+        .timeout(AUTH_TIMEOUT)
+        .send()
+        .await
+        .map_err(ApiError::transport)?;
     if response.status().is_success() {
-        let text = response.text().await.map_err(ApiError::transport)?;
+        let text = read_text(response, CONFIG_BODY_LIMIT).await?;
         if let Some(document) = parse_runtime_config_js(&text) {
             return document.into_config(origin.clone(), false);
         }
@@ -238,8 +294,65 @@ mod tests {
             normalize_server_url("localhost:4200/chat?x=1").unwrap().as_str(),
             "http://localhost:4200/"
         );
+        assert_eq!(
+            normalize_server_url("127.0.0.1:4300").unwrap().as_str(),
+            "http://127.0.0.1:4300/"
+        );
         assert!(normalize_server_url("  ").is_err());
         assert!(normalize_server_url("ftp://files.example.org").is_err());
+    }
+
+    #[test]
+    fn only_the_local_machine_gets_plain_http() {
+        // A host that merely starts with "127." is a domain, so it gets HTTPS.
+        assert_eq!(
+            normalize_server_url("127.evil.example").unwrap().as_str(),
+            "https://127.evil.example/"
+        );
+        assert_eq!(
+            normalize_server_url("127.0.0.1.evil.example").unwrap().as_str(),
+            "https://127.0.0.1.evil.example/"
+        );
+        assert_eq!(
+            normalize_server_url("http://localhost:4200").unwrap().as_str(),
+            "http://localhost:4200/"
+        );
+        assert_eq!(
+            normalize_server_url("https://ai.example.org").unwrap().as_str(),
+            "https://ai.example.org/"
+        );
+        assert!(matches!(
+            normalize_server_url("http://ai.example.org"),
+            Err(ApiError::SignIn(message)) if message.contains("does not use HTTPS")
+        ));
+    }
+
+    #[test]
+    fn credentials_in_the_address_are_refused() {
+        for input in [
+            "https://alice:S3cret@ai.example.org",
+            "alice@ai.example.org",
+            "localhost:80@evil.example",
+        ] {
+            assert!(
+                matches!(normalize_server_url(input), Err(ApiError::SignIn(message)) if message.contains("password")),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sign_in_service_must_use_https() {
+        let config = |origin: &str, authority: &str| {
+            serde_json::from_value::<ConfigDocument>(serde_json::json!({"oidc": {"authority": authority}}))
+                .unwrap()
+                .into_config(Url::parse(origin).unwrap(), true)
+        };
+        assert!(config("https://ai.example.org/", "http://id.example.org/realms/a").is_err());
+        assert!(config("https://ai.example.org/", "http://localhost:18080/realms/a").is_err());
+        assert!(config("https://ai.example.org/", "javascript:alert(1)").is_err());
+        assert!(config("http://localhost:4300/", "http://localhost:4300/realms/a").is_ok());
+        assert!(config("http://localhost:4300/", "https://id.example.org/realms/a").is_ok());
     }
 
     #[test]

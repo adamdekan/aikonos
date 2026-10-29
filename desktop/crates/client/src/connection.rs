@@ -27,13 +27,45 @@ const RENEW_MARGIN: Duration = Duration::from_secs(60);
 /// (agent-gateway agui.ts), so a stream starts with at least this much left.
 const STREAM_MARGIN: Duration = Duration::from_secs(10 * 60);
 const PASSTHROUGH: [&str; 2] = ["/agui", "/audit/stream"];
+/// A stalled server fails a call after this long without a byte. The
+/// gateway's event streams send a ping every 15 s, so they stay open.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Discovery, token and sign-out calls to the server or identity provider
+/// end after this long in total, so a stalled one cannot hang sign-in,
+/// renewal or sign-out.
+pub(crate) const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// The largest response body read into memory. A 10 MB workspace file is
+/// about 14 MB as base64 JSON.
+const BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// A refused stream carries only a JSON error.
+const REJECTION_LIMIT: usize = 64 * 1024;
+/// Events read ahead of the UI before the reader waits.
+const STREAM_BUFFER: usize = 1024;
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(concat!("aikonos-desktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
+        .read_timeout(READ_TIMEOUT)
         .build()
         .expect("TLS backend initializes")
+}
+
+/// Read a response body as text, refusing one larger than `limit` bytes so
+/// a hostile or broken server cannot exhaust the PC's memory.
+pub(crate) async fn read_text(mut response: reqwest::Response, limit: usize) -> ApiResult<String> {
+    let too_large = || ApiError::Decode(format!("the response is larger than {} KB", limit / 1024));
+    if response.content_length().is_some_and(|length| length > limit as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ApiError::transport)? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 /// The first half of sign-in: a server located and its identity provider
@@ -90,7 +122,10 @@ pub struct Connection {
     server: ServerConfig,
     provider: ProviderMetadata,
     profile: Profile,
+    /// Held only to read or swap the tokens, never across a network call.
     tokens: Mutex<Option<TokenSet>>,
+    /// Held across a renewal so concurrent callers renew once.
+    renewing: Mutex<()>,
 }
 
 impl Connection {
@@ -102,6 +137,7 @@ impl Connection {
             provider,
             profile,
             tokens: Mutex::new(Some(tokens)),
+            renewing: Mutex::new(()),
         })
     }
 
@@ -118,27 +154,35 @@ impl Connection {
     }
 
     /// The bearer for the next call, renewed first when it is about to
-    /// expire. Holding the lock across the renewal makes it single-flight.
+    /// expire. The renewal gate makes it single-flight.
     pub async fn bearer(&self) -> ApiResult<String> {
         self.bearer_valid_for(RENEW_MARGIN).await
     }
 
+    /// The current tokens, if still signed in.
+    async fn current(&self) -> ApiResult<TokenSet> {
+        self.tokens.lock().await.clone().ok_or(ApiError::Unauthorized)
+    }
+
     /// The bearer, renewed first unless it stays valid for `margin`.
     async fn bearer_valid_for(&self, margin: Duration) -> ApiResult<String> {
-        let mut guard = self.tokens.lock().await;
-        let tokens = guard.as_mut().ok_or(ApiError::Unauthorized)?;
+        let mut tokens = self.current().await?;
         if tokens.expires_within(margin) {
-            // A token that cannot be renewed (no refresh token) is still
-            // used while it lasts.
-            match self.renew_locked(&mut guard).await {
-                Ok(()) => {}
-                Err(ApiError::Unauthorized) if margin > RENEW_MARGIN => {
-                    return Err(ApiError::Unauthorized);
+            let _gate = self.renewing.lock().await;
+            // Another caller may have renewed while this one waited.
+            tokens = self.current().await?;
+            if tokens.expires_within(margin) {
+                // A token that cannot be renewed (no refresh token) is still
+                // used while it lasts.
+                match self.renew(&tokens).await {
+                    Ok(renewed) => tokens = renewed,
+                    Err(ApiError::Unauthorized) if margin > RENEW_MARGIN => {
+                        return Err(ApiError::Unauthorized);
+                    }
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
             }
         }
-        let tokens = guard.as_ref().ok_or(ApiError::Unauthorized)?;
         tokens
             .bearer(self.server.oidc.token_kind)
             .map(str::to_owned)
@@ -153,19 +197,26 @@ impl Connection {
     }
 
     async fn force_renew(&self) -> ApiResult<()> {
-        let mut guard = self.tokens.lock().await;
-        self.renew_locked(&mut guard).await
+        let _gate = self.renewing.lock().await;
+        let tokens = self.current().await?;
+        self.renew(&tokens).await.map(|_| ())
     }
 
-    async fn renew_locked(&self, guard: &mut Option<TokenSet>) -> ApiResult<()> {
-        let refresh_token = guard
-            .as_ref()
-            .and_then(|tokens| tokens.refresh_token.clone())
-            .ok_or(ApiError::Unauthorized)?;
-        match auth::refresh(&self.http, &self.provider, &self.server.oidc, &refresh_token).await {
+    /// Trade `tokens`' refresh token for new ones. The caller holds the
+    /// renewal gate; the token lock is taken only to store the result, so a
+    /// slow identity provider never blocks sign-out.
+    async fn renew(&self, tokens: &TokenSet) -> ApiResult<TokenSet> {
+        let refresh_token = tokens.refresh_token.as_deref().ok_or(ApiError::Unauthorized)?;
+        let renewed = auth::refresh(&self.http, &self.provider, &self.server.oidc, refresh_token).await;
+        let mut guard = self.tokens.lock().await;
+        // Signed out meanwhile: keep it that way.
+        if guard.is_none() {
+            return Err(ApiError::Unauthorized);
+        }
+        match renewed {
             Ok(tokens) => {
-                *guard = Some(tokens);
-                Ok(())
+                *guard = Some(tokens.clone());
+                Ok(tokens)
             }
             Err(ApiError::Unauthorized) => {
                 *guard = None;
@@ -230,7 +281,7 @@ impl Connection {
 
     async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> ApiResult<T> {
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(ApiError::transport)?;
+        let text = read_text(response, BODY_LIMIT).await?;
         if !(200..300).contains(&status) {
             return Err(ApiError::from_response(status, &text));
         }
@@ -291,7 +342,7 @@ impl Connection {
     pub async fn download_text(&self, path: &str) -> ApiResult<String> {
         let response = self.send(Method::GET, path, None, None).await?;
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(ApiError::transport)?;
+        let text = read_text(response, BODY_LIMIT).await?;
         if !(200..300).contains(&status) {
             return Err(ApiError::from_response(status, &text));
         }
@@ -328,7 +379,7 @@ impl Connection {
             let status = response.status().as_u16();
             let mut stream = response.bytes_stream();
             let mut head = Vec::new();
-            while !head.iter().any(|b: &u8| !b.is_ascii_whitespace()) {
+            while !head.iter().any(|b: &u8| !b.is_ascii_whitespace()) && head.len() < REJECTION_LIMIT {
                 match stream.next().await {
                     Some(Ok(chunk)) => head.extend_from_slice(&chunk),
                     Some(Err(err)) => return Err(ApiError::transport(err)),
@@ -337,7 +388,10 @@ impl Connection {
             }
             let first = head.iter().copied().find(|b| !b.is_ascii_whitespace());
             if !(200..300).contains(&status) || first == Some(b'{') {
-                while let Some(chunk) = stream.next().await {
+                // Enough to read the error; the rest is not worth holding.
+                while head.len() < REJECTION_LIMIT
+                    && let Some(chunk) = stream.next().await
+                {
                     head.extend_from_slice(&chunk.map_err(ApiError::transport)?);
                 }
                 let err = stream_rejection(status, &String::from_utf8_lossy(&head));
@@ -348,30 +402,31 @@ impl Connection {
                 }
                 return Err(err);
             }
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::channel(STREAM_BUFFER);
             let task = tokio::spawn(async move {
                 let mut parser = SseParser::new();
-                for event in parser.push(&head) {
-                    if tx.send(StreamItem::Event(event)).is_err() {
-                        return;
-                    }
-                }
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(bytes) => {
-                            for event in parser.push(&bytes) {
-                                if tx.send(StreamItem::Event(event)).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            let _ = tx.send(StreamItem::Failed(ApiError::transport(err)));
+                let mut bytes = head;
+                loop {
+                    for event in parser.push(&bytes) {
+                        if tx.send(StreamItem::Event(event)).await.is_err() {
                             return;
                         }
                     }
+                    if parser.is_oversized() {
+                        let err = ApiError::Decode("the server sent an event that is too large".into());
+                        let _ = tx.send(StreamItem::Failed(err)).await;
+                        return;
+                    }
+                    bytes = match stream.next().await {
+                        Some(Ok(chunk)) => chunk.to_vec(),
+                        Some(Err(err)) => {
+                            let _ = tx.send(StreamItem::Failed(ApiError::transport(err))).await;
+                            return;
+                        }
+                        None => break,
+                    };
                 }
-                let _ = tx.send(StreamItem::Ended);
+                let _ = tx.send(StreamItem::Ended).await;
             });
             return Ok(EventStream { rx, task });
         }
@@ -425,7 +480,7 @@ pub enum StreamItem {
 
 /// A live server-sent-event response. Dropping it aborts the read.
 pub struct EventStream {
-    rx: mpsc::UnboundedReceiver<StreamItem>,
+    rx: mpsc::Receiver<StreamItem>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -450,6 +505,85 @@ impl Drop for EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Answers one request on 127.0.0.1 with `reply`, then holds the
+    /// connection open.
+    async fn serve_once(reply: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = stream.read(&mut [0u8; 4096]).await;
+            let _ = stream.write_all(&reply).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_stalled_renewal_does_not_block_sign_out() {
+        // A token endpoint that accepts the connection and never answers.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let token_endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _held = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let origin = Url::parse("http://localhost:4300/").unwrap();
+        let server = ServerConfig {
+            origin,
+            oidc: crate::server::OidcSettings {
+                authority: "http://127.0.0.1".into(),
+                client_id: "aikonos-desktop".into(),
+                scope: "openid".into(),
+                token_kind: crate::server::TokenKind::Access,
+            },
+            release: None,
+        };
+        let provider = ProviderMetadata {
+            issuer: "http://127.0.0.1".into(),
+            authorization_endpoint: "http://127.0.0.1/auth".into(),
+            token_endpoint,
+            end_session_endpoint: None,
+            revocation_endpoint: None,
+        };
+        let tokens = TokenSet {
+            access_token: "old".into(),
+            id_token: None,
+            refresh_token: Some("refresh".into()),
+            expires_at: std::time::SystemTime::now(),
+        };
+        let connection = Connection::new(http_client(), server, provider, tokens);
+        let renewing = tokio::spawn({
+            let connection = connection.clone();
+            async move { connection.bearer().await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(2), connection.sign_out())
+            .await
+            .expect("sign-out waits for no renewal");
+        renewing.abort();
+        assert!(connection.current().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bodies_over_the_limit_are_refused() {
+        let body = "x".repeat(2048);
+        let reply = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+        let response = reqwest::get(serve_once(reply.into_bytes()).await).await.unwrap();
+        assert!(matches!(read_text(response, 1024).await, Err(ApiError::Decode(_))));
+
+        // No length announced: the cap applies while reading.
+        let reply = format!("HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n{body}");
+        let response = reqwest::get(serve_once(reply.into_bytes()).await).await.unwrap();
+        assert!(matches!(read_text(response, 1024).await, Err(ApiError::Decode(_))));
+
+        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".to_vec();
+        let response = reqwest::get(serve_once(reply).await).await.unwrap();
+        assert_eq!(read_text(response, 1024).await.unwrap(), "ok");
+    }
 
     #[test]
     fn stream_rejections_keep_the_gateway_reason() {

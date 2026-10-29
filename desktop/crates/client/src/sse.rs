@@ -14,6 +14,10 @@ pub struct SseEvent {
     pub data: String,
 }
 
+/// The most one event (its unfinished line plus its joined data) may hold
+/// before the stream is dropped as hostile.
+const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Feeds bytes in, takes complete events out. Bytes are buffered until a
 /// line ends, so a multi-byte character split across reads is reassembled
 /// before it is decoded.
@@ -66,6 +70,12 @@ impl SseParser {
         }
         self.pending.drain(..start);
         out
+    }
+
+    /// Whether the event being read has outgrown [`MAX_EVENT_BYTES`], for
+    /// example a server that never ends a line.
+    pub fn is_oversized(&self) -> bool {
+        self.pending.len() + self.data.len() > MAX_EVENT_BYTES
     }
 
     fn line(&mut self, line: &str) -> Option<SseEvent> {
@@ -144,6 +154,18 @@ mod tests {
                 data: "one\ntwo".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_line_that_never_ends_is_oversized() {
+        let mut parser = SseParser::new();
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..16 {
+            assert!(parser.push(&chunk).is_empty());
+            assert!(!parser.is_oversized());
+        }
+        parser.push(b"x");
+        assert!(parser.is_oversized());
     }
 
     #[test]

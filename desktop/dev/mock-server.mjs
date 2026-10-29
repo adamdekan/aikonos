@@ -19,10 +19,13 @@
 // MOCK_AUTO_SIGNIN=1 skips the sign-in page, for a debug build started with
 // AIKONOS_DEV_HEADLESS_SIGNIN=1. MOCK_DESKTOP_VERSION,
 // MOCK_DESKTOP_MINIMUM_VERSION and MOCK_DESKTOP_NOTES advertise a release.
+// It listens on 127.0.0.1 only; MOCK_HOST=0.0.0.0 exposes it to the network,
+// where anyone could read and plant files in it.
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 
 const PORT = Number(process.env.PORT ?? 4300);
+const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
 const ORIGIN = `http://localhost:${PORT}`;
 const ISSUER = `${ORIGIN}/realms/aikonos`;
 const USER = {
@@ -39,13 +42,16 @@ const DESKTOP_NOTES = process.env.MOCK_DESKTOP_NOTES ?? "";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
-function token(kind, ttl) {
+function token(kind, ttl, nonce) {
   const now = Math.floor(Date.now() / 1000);
   return `${b64url({ alg: "none", typ: "JWT" })}.${b64url({
     ...USER, iss: ISSUER, aud: kind === "id" ? "aikonos-desktop" : "aikonos-broker",
-    azp: "aikonos-desktop", iat: now, exp: now + ttl, typ: kind,
+    azp: "aikonos-desktop", iat: now, exp: now + ttl, typ: kind, ...(nonce ? { nonce } : {}),
   })}.mock`;
 }
+// The authorize request's nonce per code, echoed in the ID token as a real
+// provider does (the client checks it).
+const nonces = new Map();
 function json(res, code, body) {
   res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -448,7 +454,9 @@ function oidc(req, res, url, raw) {
   });
   if (path === "/protocol/openid-connect/auth") {
     const target = new URL(url.searchParams.get("redirect_uri"));
-    target.searchParams.set("code", randomUUID());
+    const code = randomUUID();
+    nonces.set(code, url.searchParams.get("nonce") ?? "");
+    target.searchParams.set("code", code);
     target.searchParams.set("state", url.searchParams.get("state") ?? "");
     if (process.env.MOCK_AUTO_SIGNIN === "1") {
       res.writeHead(302, { location: target.toString() });
@@ -464,8 +472,10 @@ ${[...target.searchParams].map(([k, v]) => `<input type="hidden" name="${attr(k)
   if (path === "/protocol/openid-connect/token") {
     const form = new URLSearchParams(raw.toString("utf8"));
     if (!["authorization_code", "refresh_token"].includes(form.get("grant_type"))) return json(res, 400, { error: "unsupported_grant_type" });
+    const nonce = nonces.get(form.get("code"));
+    nonces.delete(form.get("code"));
     return json(res, 200, {
-      access_token: token("access", 120), id_token: token("id", 120),
+      access_token: token("access", 120), id_token: token("id", 120, nonce),
       refresh_token: `refresh-${randomUUID()}`, expires_in: 120, token_type: "Bearer",
     });
   }
@@ -515,4 +525,4 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => console.log(`aikonOS mock server on ${ORIGIN} (dev only)`));
+server.listen(PORT, HOST, () => console.log(`aikonOS mock server on ${ORIGIN} (dev only, listening on ${HOST})`));

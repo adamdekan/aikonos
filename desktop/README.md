@@ -38,3 +38,11 @@ cargo run -- --server http://localhost:4300
 Words in a prompt pick the mock's script: `approve` (with `stepup` for a
 high-risk approval), `tool`, `skill`, `memory`, `fanout`, `fail`, `error`; see
 the top of `dev/mock-server.mjs`.
+
+The mock listens on 127.0.0.1 only. `MOCK_HOST=0.0.0.0` exposes it to the
+network, where anyone could read and plant files in it.
+
+The app refuses plain `http://` to anything but the local machine. A PC that
+must reach a plain-HTTP server on its network can set
+`AIKONOS_DESKTOP_ALLOW_HTTP=1`; tokens then travel unencrypted and the sign-in
+screen says so.

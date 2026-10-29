@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use aikonos_client::version::{self, ReleaseStatus};
 use aikonos_client::{ApiError, Connection, SignInStart};
+use futures::channel::oneshot;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex, v_flex};
@@ -26,10 +27,15 @@ enum Phase {
     Idle,
     /// Reading the server's settings and its identity provider.
     Locating,
+    /// Located: the user sees where they are about to sign in before the
+    /// browser opens there.
+    Confirm {
+        idp_host: SharedString,
+        insecure: bool,
+    },
     /// The browser is open on the identity provider.
     InBrowser {
         authorize_url: SharedString,
-        insecure: bool,
     },
     /// The server needs a newer build of this app.
     UpdateRequired {
@@ -45,6 +51,8 @@ pub struct SignIn {
     error: Option<SharedString>,
     notice: Option<SharedString>,
     task: Option<Task<()>>,
+    /// Continues a sign-in waiting in [`Phase::Confirm`].
+    proceed: Option<oneshot::Sender<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -73,6 +81,7 @@ impl SignIn {
             error: None,
             notice,
             task: None,
+            proceed: None,
             _subscriptions: vec![subscription],
         };
         if preset.is_some() {
@@ -114,12 +123,24 @@ impl SignIn {
                 return;
             }
             let authorize_url: SharedString = start.authorize_url().to_string().into();
-            let insecure = start.server().is_insecure();
             let origin = start.server().origin.to_string();
+            if !headless_sign_in() {
+                let idp_host: SharedString = start.authorize_url().host_str().unwrap_or_default().to_owned().into();
+                let insecure = start.server().is_insecure();
+                let (proceed, proceeded) = oneshot::channel();
+                let shown = this.update(cx, |this, cx| {
+                    this.phase = Phase::Confirm { idp_host, insecure };
+                    this.proceed = Some(proceed);
+                    cx.notify();
+                });
+                // Cancel drops the sender.
+                if shown.is_err() || proceeded.await.is_err() {
+                    return;
+                }
+            }
             let opened = this.update_in(cx, |this, window, cx| {
                 this.phase = Phase::InBrowser {
                     authorize_url: authorize_url.clone(),
-                    insecure,
                 };
                 open_sign_in_page(&authorize_url, window, cx);
                 cx.notify();
@@ -152,6 +173,7 @@ impl SignIn {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         // Dropping the task aborts the request and closes the listener.
         self.task = None;
+        self.proceed = None;
         self.phase = Phase::Idle;
         cx.notify();
     }
@@ -183,20 +205,20 @@ impl SignIn {
             )
     }
 
-    fn render_in_browser(
-        &self,
-        authorize_url: &SharedString,
-        insecure: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let url = authorize_url.clone();
+    fn render_confirm(&self, idp_host: &SharedString, insecure: bool, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
             .child(
                 div()
                     .text_sm()
                     .text_color(cx.theme().foreground)
-                    .child("Finish signing in in your browser. This window continues on its own."),
+                    .child(format!("Your browser opens the sign-in page at {idp_host}.")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Continue only if that is your organisation's sign-in service."),
             )
             .when(insecure, |this| {
                 this.child(
@@ -206,6 +228,38 @@ impl SignIn {
                         .child("This server does not use HTTPS, so your sign-in travels unencrypted. Ask your administrator to enable HTTPS."),
                 )
             })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("continue")
+                            .primary()
+                            .label("Continue in the browser")
+                            .on_click(cx.listener(|this, _, _, _| {
+                                if let Some(proceed) = this.proceed.take() {
+                                    let _ = proceed.send(());
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("cancel")
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                    ),
+            )
+    }
+
+    fn render_in_browser(&self, authorize_url: &SharedString, cx: &mut Context<Self>) -> impl IntoElement {
+        let url = authorize_url.clone();
+        v_flex()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child("Finish signing in in your browser. This window continues on its own."),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -265,12 +319,13 @@ impl Render for SignIn {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.phase {
             Phase::Idle | Phase::Locating => self.render_form(cx).into_any_element(),
-            Phase::InBrowser {
-                authorize_url,
-                insecure,
-            } => {
-                let (url, insecure) = (authorize_url.clone(), *insecure);
-                self.render_in_browser(&url, insecure, cx).into_any_element()
+            Phase::Confirm { idp_host, insecure } => {
+                let (idp_host, insecure) = (idp_host.clone(), *insecure);
+                self.render_confirm(&idp_host, insecure, cx).into_any_element()
+            }
+            Phase::InBrowser { authorize_url } => {
+                let url = authorize_url.clone();
+                self.render_in_browser(&url, cx).into_any_element()
             }
             Phase::UpdateRequired { minimum, url, notes } => {
                 let (minimum, url, notes) = (minimum.clone(), url.clone(), notes.clone());
@@ -342,7 +397,7 @@ impl Render for SignIn {
 /// without a browser window. Release builds never do.
 fn open_sign_in_page(url: &str, window: &mut Window, cx: &mut App) {
     #[cfg(debug_assertions)]
-    if std::env::var_os("AIKONOS_DEV_HEADLESS_SIGNIN").is_some() {
+    if headless_sign_in() {
         let url = url.to_owned();
         runtime::detach(async move {
             let _ = aikonos_client::connection::http_client().get(url).send().await;
@@ -350,6 +405,12 @@ fn open_sign_in_page(url: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     app::open_link(url, window, cx);
+}
+
+/// A debug build signing in to the mock without a browser, and so without
+/// the confirmation step.
+fn headless_sign_in() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("AIKONOS_DEV_HEADLESS_SIGNIN").is_some()
 }
 
 /// The address given as `--server <address>` or `--server=<address>`.
