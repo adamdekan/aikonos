@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/connector"
 	"github.com/adamdekan/aikonos/broker/internal/connectorstore"
 	"github.com/adamdekan/aikonos/broker/internal/db"
@@ -180,6 +181,12 @@ func (s *BrokerService) beginMcpAuth(ctx context.Context, traceID, tenant, user,
 	if err != nil {
 		return nil, err
 	}
+	// F140: only a user who may use the connection links an account to it
+	// (the same can_access every tool call checks). An FGA error fails closed.
+	if !s.mayUseMcpConnection(ctx, user, m.ConnectionID) {
+		s.emitMcpAudit(ctx, traceID, tenant, user, "aikonos.broker.mcp.oauth.begin", m.ConnectionID, auditv1.PolicyDecision_DENY)
+		return nil, status.Errorf(codes.PermissionDenied, "no access to mcp connection %q", connID)
+	}
 	state, err := connector.GenerateState()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "state generation failed")
@@ -218,6 +225,7 @@ func (s *BrokerService) completeMcpAuth(ctx context.Context, traceID, tenant, us
 		RefreshToken: tok.RefreshToken,
 		ExpiresAt:    tok.Expiry,
 		Scopes:       pending.Scopes,
+		TokenURL:     m.TokenURL,
 	}); err != nil {
 		s.deps.Logger.Error("mcp oauth complete: vault write failed", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to store connector token")
@@ -242,8 +250,15 @@ func (s *BrokerService) completeMcpAuth(ctx context.Context, traceID, tenant, us
 	}, nil
 }
 
-// mcpConnectorProviders lists the tenant's oauth MCP connections as connect
-// targets (key "mcp:<id>"). Best-effort: a listing error hides them.
+// mayUseMcpConnection is the caller's can_access on the connection; an FGA
+// error counts as no.
+func (s *BrokerService) mayUseMcpConnection(ctx context.Context, user, connID string) bool {
+	ok, err := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_access", "mcp_connector:"+connID)
+	return err == nil && ok
+}
+
+// mcpConnectorProviders lists the oauth MCP connections the caller may use as
+// connect targets (key "mcp:<id>"). Best-effort: a listing error hides them.
 func (s *BrokerService) mcpConnectorProviders(ctx context.Context, tenant string) []*brokerv1.ConnectorProviderInfo {
 	if tenant == "" || s.deps.Mcp.Connections == nil {
 		return nil
@@ -253,12 +268,16 @@ func (s *BrokerService) mcpConnectorProviders(ctx context.Context, tenant string
 		s.deps.Logger.Warn("ListConnectorProviders: list mcp connections failed", zap.Error(err))
 		return nil
 	}
+	user := ""
+	if id, ok := auth.IdentityFromContext(ctx); ok {
+		user = id.PrincipalID()
+	}
 	var out []*brokerv1.ConnectorProviderInfo
 	for _, r := range rows {
-		if r.AuthType != "oauth" {
+		id := r.ID.String()
+		if r.AuthType != "oauth" || !s.mayUseMcpConnection(ctx, user, id) {
 			continue
 		}
-		id := r.ID.String()
 		out = append(out, &brokerv1.ConnectorProviderInfo{
 			Key:         string(connector.McpProvider(id)),
 			DisplayName: r.Name,

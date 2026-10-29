@@ -109,6 +109,7 @@ func (r *Registry) refresh(ctx context.Context, store secrets.Provider, cfg *oau
 			RefreshToken: refresh,
 			ExpiresAt:    tok.Expiry,
 			Scopes:       stored.Scopes,
+			TokenURL:     stored.TokenURL,
 		}); werr != nil && r.Logger != nil {
 			r.Logger.Warn("connector token write-back failed; connection may need re-link",
 				zap.String("provider", provider),

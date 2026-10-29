@@ -22,6 +22,9 @@ type ConnectorToken struct {
 	RefreshToken string    `json:"refresh_token"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	Scopes       []string  `json:"scopes"`
+	// TokenURL is the token endpoint the refresh token was issued for (MCP
+	// OAuth connections, F140): a refresh never sends it anywhere else.
+	TokenURL string `json:"token_url,omitempty"`
 }
 
 // Provider is the connector-secret store the broker depends on. A nil Provider
