@@ -37,11 +37,12 @@ describe("store/user.js", () => {
     expect(store.user).toBe("admin@example.com");
   });
 
-  it("setFromProfile does NOT write to localStorage", () => {
+  // The only write is the chat history's owner (L-26): no token, no profile.
+  it("setFromProfile writes nothing to localStorage but the chat history's owner", () => {
     const setSpy = vi.spyOn(Storage.prototype, "setItem");
     const store = useUserStore();
     store.setFromProfile({ email: "alice@example.com", sub: "alice@example.com" });
-    expect(setSpy).not.toHaveBeenCalled();
+    expect(setSpy.mock.calls).toEqual([["aikonos.chatSessions.owner", "alice@example.com"]]);
   });
 
   it("initial user is empty string (no static USERS default)", () => {

@@ -5,6 +5,9 @@ import { useToast } from "../components/ui/useToast.js";
 import { usePrefsStore } from "./prefs.js";
 
 export const CHAT_STORAGE_KEY = "aikonos.chatSessions";
+// L-26: the OIDC subject the stored buffers belong to. Another subject, or
+// buffers nobody owns (older builds), are wiped instead of shown.
+export const CHAT_OWNER_KEY = "aikonos.chatSessions.owner";
 
 // Persisted buffers keep a bounded slice of history — full transcripts (incl. tool
 // results) live only in the in-memory reactive buffer and in the durable session file.
@@ -162,6 +165,25 @@ export const useChatStore = defineStore("chat", () => {
     }
     activeSessionId.value = null;
     localStorage.removeItem(CHAT_STORAGE_KEY);
+    localStorage.removeItem(CHAT_OWNER_KEY);
+  }
+
+  // Binds the buffers to the signed-in subject (user store, on sign-in and on
+  // a reload). Runs before any view shows them.
+  function bindOwner(sub) {
+    let owner = null;
+    try {
+      owner = localStorage.getItem(CHAT_OWNER_KEY);
+    } catch {
+      /* storage unavailable: treat as unowned */
+    }
+    if (owner === sub) return;
+    if (owner !== null || Object.keys(buffers).length) clearAll();
+    try {
+      if (sub) localStorage.setItem(CHAT_OWNER_KEY, sub);
+    } catch {
+      /* storage unavailable: nothing is persisted either */
+    }
   }
 
   return {
@@ -174,5 +196,6 @@ export const useChatStore = defineStore("chat", () => {
     hydrateBuffer,
     promoteDraft,
     clearAll,
+    bindOwner,
   };
 });

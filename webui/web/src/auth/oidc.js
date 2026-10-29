@@ -75,8 +75,32 @@ const mgr = new UserManager({
 // before exp) still drives automaticSilentRenew first; these only fire once that
 // has given up.
 const here = () => window.location.pathname + window.location.search;
-mgr.events.addAccessTokenExpired(() => login(here()));
-mgr.events.addSilentRenewError(() => login(here()));
+mgr.events.addAccessTokenExpired(() => endSession(here()));
+mgr.events.addSilentRenewError(() => endSession(here()));
+
+// L-26: whatever ends the session also wipes what this browser kept of it
+// (the chat history). main.js registers that; the sign-out path removes the
+// user, which fires userUnloaded.
+const sessionEndHandlers = [];
+export function onSessionEnd(fn) {
+  sessionEndHandlers.push(fn);
+}
+function runSessionEnd() {
+  for (const fn of sessionEndHandlers) {
+    try {
+      fn();
+    } catch (e) {
+      console.warn("[oidc] session-end handler failed", e);
+    }
+  }
+}
+mgr.events.addUserUnloaded(runSessionEnd);
+
+/** The session is over (expired, revoked): wipe local state, then sign in again. */
+export async function endSession(returnTo) {
+  runSessionEnd();
+  await login(returnTo);
+}
 
 /**
  * Redirect the browser to the IdP login page. returnTo (an in-app path) rides
@@ -157,9 +181,25 @@ export async function stepUpSignin(acr) {
 /**
  * End the OIDC session (clears local state; optionally triggers Keycloak logout).
  * post_logout_redirect_uri defaults to the app origin.
+ *
+ * M-27: the tokens are revoked at the IdP first when its discovery document
+ * names a revocation endpoint (Keycloak does, Entra does not), so a copied
+ * token stops working at sign-out, not at expiry. A failed revocation never
+ * blocks sign-out. Then this tab's sessionStorage is wiped.
  */
 export async function logout() {
-  await mgr.signoutRedirect({ post_logout_redirect_uri: window.location.origin });
+  const user = await mgr.getUser();
+  try {
+    if (user && (await mgr.metadataService.getRevocationEndpoint())) await mgr.revokeTokens();
+  } catch (e) {
+    console.warn("[oidc] token revocation failed", e);
+  }
+  try {
+    window.sessionStorage.clear();
+  } catch {
+    /* storage unavailable: nothing kept there */
+  }
+  await mgr.signoutRedirect({ id_token_hint: user?.id_token, post_logout_redirect_uri: window.location.origin });
 }
 
 /** Returns the current oidc User (with profile + access_token) or null. */

@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("oidc-client-ts", () => ({
   UserManager: class {
     constructor() {}
-    events = { addAccessTokenExpired() {}, addSilentRenewError() {} };
+    events = { addAccessTokenExpired() {}, addSilentRenewError() {}, addUserUnloaded() {} };
   },
   WebStorageStateStore: class {
     constructor() {}

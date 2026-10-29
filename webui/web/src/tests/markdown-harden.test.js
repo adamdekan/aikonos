@@ -29,5 +29,5 @@ describe("MarkdownMessage hardening (M-26)", () => {
     expect(w.find("iframe").exists()).toBe(false);
     expect(w.html()).not.toContain("evil.example/p.png");
     w.unmount();
-  });
+  }, 30_000); // the real renderer loads its node components on first use
 });

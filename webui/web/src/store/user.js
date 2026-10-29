@@ -18,6 +18,8 @@ export const useUserStore = defineStore("user", () => {
     user.value = profile.email ?? profile.sub ?? "";
     sub.value  = profile.sub   ?? "";
     name.value = profile.name  ?? "";
+    // L-26: another subject's chat history never reaches this one.
+    useChatStore().bindOwner(sub.value);
     // localStorage is intentionally NOT written — oidc-client-ts restores the
     // session via silent sign-in on the next page load.
   }
