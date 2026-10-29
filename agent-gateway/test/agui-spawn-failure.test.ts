@@ -20,12 +20,13 @@ import { registerAgUiRoutes } from "../src/routes/agui.js";
 import { BrokerClients } from "../src/broker/clients.js";
 import { SouthClient } from "../src/broker/south.js";
 import { ApprovalRegistry } from "../src/agui/hitl.js";
-import { ChildSupervisor } from "../src/ipc/supervisor.js";
+import { BranchQuotaError, ChildSupervisor } from "../src/ipc/supervisor.js";
 import type { SpawnChildFn, SupervisorDeps, ProviderCredentialResolver } from "../src/ipc/supervisor.js";
 import type { EgressProxy, RegisterResult, RegisterOptions } from "../src/llm/egress-proxy.js";
 import type { Config } from "../src/config.js";
 import type { JwksResolver } from "../src/auth/verify.js";
 import { failedPreconditionError } from "../src/http-errors.js";
+import type { AgentSpec } from "../src/pi/session.js";
 
 // ── Auth fixtures (mirrors agui-close-teardown.test.ts) ────────────────────
 
@@ -252,7 +253,11 @@ test("POST /agui: getOrSpawn rejection (spawn failure) settles the request with 
 // ── F129 / F64: who the run is for ────────────────────────────────────────────
 
 // postAgui runs one POST /agui against the given south fake and config.
-async function postAgui(southFns: Record<string, unknown>, cfg: Config): Promise<{ status: number; body: string }> {
+async function postAgui(
+  southFns: Record<string, unknown>,
+  cfg: Config,
+  credentials: ProviderCredentialResolver = makeRejectingCredentials(),
+): Promise<{ status: number; body: string }> {
   const { privateKey, jwk } = await makeKey();
   const jwksResolver = await localResolver(jwk);
   const token = await mintToken(privateKey);
@@ -264,7 +269,7 @@ async function postAgui(southFns: Record<string, unknown>, cfg: Config): Promise
   clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
   const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => {
     throw new Error("no bridge expected");
-  }, makeCountingSpawn().spawnFn, makeRejectingCredentials());
+  }, makeCountingSpawn().spawnFn, credentials);
   const app = Fastify({ logger: false });
   try {
     registerAgUiRoutes(app, {
@@ -309,4 +314,53 @@ test("F64: the run's south reads use the token's tenant, never the config defaul
 
   assert.ok(seen.length >= 2, "the turn must have reached its south reads");
   assert.deepEqual([...new Set(seen)], [TENANT_ID]);
+});
+
+// ── F203: the named agent's provider pin reaches the child ──────────────────
+
+const NAMED_AGENT = "00000000-0000-4000-8000-0000000000aa";
+
+test("F203: /agui spawns a named agent's child with its spec — the allowedProviders pin reaches credential resolution", async () => {
+  // WHY: getOrSpawn was called without the spec, so a pinned agent's chat ran
+  // on the tenant default provider. Reverting `}, spec);` must fail this test.
+  const seen: (AgentSpec | undefined)[] = [];
+  await postAgui({
+    listUserAgentSkills: async () => ({ bundles: [] }),
+    resolveRunAgent: async () => ({ agentId: NAMED_AGENT, isDefault: false }),
+    getAgentSpec: async () => ({ found: true, approvalMode: "needs_approval", skills: [], allowedProviders: ["onprem"], preferredProvider: "onprem", llmModel: "m" }),
+  }, fakeConfig(), async (_identity, spec) => {
+    seen.push(spec);
+    throw failedPreconditionError("stop after resolution");
+  });
+
+  assert.equal(seen.length, 1, "the child spawn must reach credential resolution once");
+  assert.deepEqual(seen[0]?.allowedProviders, ["onprem"]);
+  assert.equal(seen[0]?.preferredProvider, "onprem");
+});
+
+test("F203: a getAgentSpec failure for a named agent refuses the run — no unpinned fall-back spawn", async () => {
+  let resolved = 0;
+  const result = await postAgui({
+    listUserAgentSkills: async () => ({ bundles: [] }),
+    resolveRunAgent: async () => ({ agentId: NAMED_AGENT, isDefault: false }),
+    getAgentSpec: async () => { throw Object.assign(new Error("14 UNAVAILABLE: broker down"), { code: 14, details: "broker down" }); },
+  }, fakeConfig(), async () => {
+    resolved++;
+    throw failedPreconditionError("must not be reached");
+  });
+
+  assert.equal(result.status, 502);
+  assert.doesNotMatch(result.body, /RUN_STARTED/, "no stream is opened");
+  assert.equal(resolved, 0, "no child is spawned without the agent's spec");
+});
+
+test("F58: a per-user share refusal (BranchQuotaError) reaches the caller as 429, not the pool-wide 503", async () => {
+  const result = await postAgui({
+    listUserAgentSkills: async () => ({ bundles: [] }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }),
+    getAgentSpec: async () => ({ found: false }),
+  }, fakeConfig(), async () => { throw new BranchQuotaError(4, "chats and subtasks"); });
+
+  assert.equal(result.status, 429);
+  assert.match(result.body, /too many concurrent chats and subtasks/);
 });

@@ -475,10 +475,15 @@ class BranchTimeoutError extends Error {
 // approvalTimeoutMs waiting for a card no one was ever shown. There is
 // deliberately no second approver type and no HITL fallback — human-in-the-loop
 // inside a branch is a spec non-goal.
-function branchApprover(allowlist: string[], deniedTools: string[], log?: Logger): Approver {
+function branchApprover(
+  allowlist: string[],
+  deniedTools: string[],
+  log?: Logger,
+  stillPreApproved?: () => Promise<boolean>,
+): Approver {
   const preAuth = preAuthApprover(allowlist, log);
   return async (info) => {
-    const ok = await preAuth(info);
+    const ok = (await preAuth(info)) && (stillPreApproved ? await stillPreApproved() : true);
     if (!ok) deniedTools.push(info.toolId);
     return ok;
   };
@@ -541,7 +546,7 @@ async function runBranch(
         handle.setRunContext(
           deps.runId,
           deps.identity,
-          branchApprover(approverAllowlist, deniedTools, deps.log),
+          branchApprover(approverAllowlist, deniedTools, deps.log, deps.identity.stillPreApproved),
         );
 
         let text = "";

@@ -119,11 +119,15 @@ export function isStepUpRequired(err: unknown): boolean {
 }
 
 // F129 / AG-06: the broker refuses a blocked user with PERMISSION_DENIED "…user
-// is blocked" and a revoked session with UNAUTHENTICATED. Either means the run's
-// user may no longer act, so the run ends rather than carrying on.
+// is blocked", an owner grant cut by a revoke-all epoch with PERMISSION_DENIED
+// "owner grant revoked" (gateway_tasks.go), and a revoked session with
+// UNAUTHENTICATED. Each means the run's user may no longer act, so the run ends
+// rather than carrying on.
 export function isAccessRevoked(err: unknown): boolean {
   const code = grpcCode(err);
-  return code === status.UNAUTHENTICATED || (code === status.PERMISSION_DENIED && callerDetail(err).endsWith("user is blocked"));
+  if (code === status.UNAUTHENTICATED) return true;
+  const detail = code === status.PERMISSION_DENIED ? callerDetail(err) : "";
+  return detail.endsWith("user is blocked") || detail === "owner grant revoked";
 }
 
 export function stepUpAcr(err: unknown): string {

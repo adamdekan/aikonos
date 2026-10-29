@@ -215,14 +215,15 @@ export class GatewayOverloadError extends Error {
   }
 }
 
-// F58: one user already holds maxEphemeralPerUser live subagent branch children.
+// F58: one user already holds maxEphemeralPerUser live subagent branch children,
+// or their per-user share of the pool (pooled and branch children together).
 // A GatewayOverloadError so the fan-out rejects whole (reject-don't-queue), with
 // RESOURCE_EXHAUSTED so an HTTP surface maps it to 429, not the pool-wide 503.
 export class BranchQuotaError extends GatewayOverloadError {
   readonly code = status.RESOURCE_EXHAUSTED;
-  constructor(limit: number) {
+  constructor(limit: number, what = "subagent branches") {
     super();
-    this.message = `too many concurrent subagent branches for this user (limit ${limit}) — wait for running subtasks to finish`;
+    this.message = `too many concurrent ${what} for this user (limit ${limit}) — wait for running ones to finish`;
     this.name = "BranchQuotaError";
   }
 }
@@ -249,6 +250,12 @@ export function ephemeralKey(runId: string, index: number): string {
   return `${branchKeyPrefix(runId)}${index}`;
 }
 
+// F58: the per-user quota key — the identity, never the pool key, which says
+// nothing about who is asking under "single" keying.
+function ownerOf(who: { tenantId: string; userId: string }): string {
+  return `${who.tenantId} ${who.userId}`;
+}
+
 // ── Circuit-breaker state ──────────────────────────────────────────────────────
 
 interface CrashRecord {
@@ -271,6 +278,10 @@ export interface SupervisorConfig {
   // F58: live subagent branch children one (tenant, user) may hold at once, so
   // one member's fan-outs cannot take the whole shared pool.
   maxEphemeralPerUser: number;
+  // F58: live children of any kind (pooled per agent, branch, spawns in flight)
+  // one (tenant, user) may hold at once. Absent = half of maxChildren (min 1),
+  // so one member with many agents never takes the slots everyone else needs.
+  maxChildrenPerUser?: number;
 }
 
 // maxChildren/childTtlMs are no longer read from process.env here (F26) — they
@@ -330,10 +341,11 @@ export interface SupervisorDeps {
 export class ChildSupervisor {
   private readonly children = new Map<string, ChildHandle>();
   // Keys granted a cap slot by enforceCapBefore whose spawn has not yet landed in
-  // children. Deliberately NOT a placeholder entry in children: every iterator
+  // children, each mapped to its owner (ownerOf) for the F58 per-user count.
+  // Deliberately NOT a placeholder entry in children: every iterator
   // over that map (LRU pass, TTL reaper, evictIdleForAgent, dispose) would then
   // have to defend against a handle-less member.
-  private readonly reserved = new Set<string>();
+  private readonly reserved = new Map<string, string>();
   private readonly crashes = new Map<string, CrashRecord>();
   // F58: live branch children per `${tenantId} ${userId}`.
   private readonly ephemeralPerUser = new Map<string, number>();
@@ -415,10 +427,18 @@ export class ChildSupervisor {
             // first would never be released and the pool would be permanently
             // one slot smaller.
             this.evict(key, reason);
-            this.reserved.add(key);
+            this.reserved.set(key, ownerOf(identity));
             return this.spawn(key, identity, agentSpec);
           }
         } catch (err) {
+          // F203: FAILED_PRECONDITION is the resolver's answer, not a blip — e.g.
+          // the agent's allowedProviders no longer admit any provider. The child
+          // still holds the old provider, so it goes now; only a transport error
+          // keeps the last-known-good child.
+          if ((err as { code?: unknown })?.code === status.FAILED_PRECONDITION) {
+            this.evict(key, "plan re-resolve refused — provider or plan no longer allowed");
+            throw err;
+          }
           log.warn({ key, err: String(err) }, "plan re-resolve failed — keeping existing child");
         }
       }
@@ -426,7 +446,7 @@ export class ChildSupervisor {
     }
 
     this.checkCircuitBreaker(key);
-    await this.enforceCapBefore(key);
+    await this.enforceCapBefore(key, identity);
 
     return this.spawn(key, identity, agentSpec);
   }
@@ -475,7 +495,7 @@ export class ChildSupervisor {
     // pool key says nothing about who is asking. Taken before the cap check and
     // released in the finally on every outcome, so a refused or failed spawn
     // never leaks a count.
-    const owner = `${identity.tenantId} ${identity.userId}`;
+    const owner = ownerOf(identity);
     const live = this.ephemeralPerUser.get(owner) ?? 0;
     if (live >= this.config.maxEphemeralPerUser) {
       log.warn({ tenantId: identity.tenantId, userId: identity.userId, live }, "subagent branch refused: per-user branch limit reached");
@@ -487,7 +507,7 @@ export class ChildSupervisor {
       // it could never trip on a second attempt. For the same reason the crash
       // record onChildExit writes for this key is unreadable dead weight — dropped
       // below, or this.crashes would grow by one entry per branch ever spawned.
-      await this.enforceCapBefore(key);
+      await this.enforceCapBefore(key, identity);
       onAdmitted?.();
 
       // isSubagentBranch:true unconditionally — withEphemeralChild is the sole
@@ -968,9 +988,30 @@ export class ChildSupervisor {
   // for one. Counting reservations closes that window. A reservation has no
   // handle, so the LRU pass below cannot free one: only a real idle child is
   // evictable, and each admission evicts at most one.
-  private async enforceCapBefore(newKey: string): Promise<void> {
+  //
+  // F58: first the caller's own share. A (tenant, user) holding
+  // maxChildrenPerUser live children (pooled and branch, reservations included)
+  // frees one of its OWN idle children, never another user's; with none idle it
+  // is refused with BranchQuotaError (429). Counted from children + reserved
+  // rather than a counter, so no spawn, evict or crash path can drift it.
+  private async enforceCapBefore(newKey: string, identity: Identity): Promise<void> {
+    const owner = ownerOf(identity);
+    const perUser = this.config.maxChildrenPerUser ?? Math.max(1, Math.floor(this.config.maxChildren / 2));
+    const mine = [...this.children.values()].filter((h) => ownerOf(h) === owner);
+    const live = mine.length + [...this.reserved.values()].filter((o) => o === owner).length;
+    if (live >= perUser) {
+      const ownIdle = mine.filter((h) => !h.busy).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+      if (!ownIdle) {
+        log.warn({ tenantId: identity.tenantId, userId: identity.userId, live }, "child refused: per-user pool share reached");
+        throw new BranchQuotaError(perUser, "chats and subtasks");
+      }
+      this.evict(ownIdle.key, "per-user cap eviction");
+      this.reserved.set(newKey, owner);
+      return;
+    }
+
     if (this.children.size + this.reserved.size < this.config.maxChildren) {
-      this.reserved.add(newKey);
+      this.reserved.set(newKey, owner);
       return;
     }
 
@@ -982,7 +1023,7 @@ export class ChildSupervisor {
     const victim = idleByAge[0];
     if (victim) {
       this.evict(victim[0], "LRU cap eviction");
-      this.reserved.add(newKey);
+      this.reserved.set(newKey, owner);
       return;
     }
 

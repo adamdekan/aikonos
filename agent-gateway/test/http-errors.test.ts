@@ -165,3 +165,11 @@ test("isAccessRevoked (F129): a blocked user or a revoked session — not any ot
   assert.equal(isAccessRevoked(grpcErr(status.PERMISSION_DENIED, "tool not permitted")), false);
   assert.equal(isAccessRevoked(new Error("boom")), false);
 });
+
+test("isAccessRevoked (F129): an owner grant cut by a revoke-all epoch ends the run too", () => {
+  // WHY: the south owner-grant path refuses an epoch revoke-all with
+  // "owner grant revoked", which the blocked-user match missed, so a scheduled
+  // run kept its LLM loop going until the run timeout.
+  assert.equal(isAccessRevoked(grpcErr(status.PERMISSION_DENIED, "owner grant revoked")), true);
+  assert.equal(isAccessRevoked(grpcErr(status.FAILED_PRECONDITION, "owner grant revoked")), false);
+});

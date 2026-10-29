@@ -22,7 +22,7 @@ import type { RateLimitChecker } from "../llm/egress-proxy.js";
 import { type AgentSpec } from "../pi/session.js";
 import { preAuthApprover, unattendedAllowed } from "../scheduler/ticker.js";
 import { resolveAutoApproveAllowlist, type AllowlistSouth } from "../broker/auto-approve.js";
-import { ChildSupervisor, GatewayOverloadError, type ChildHandle } from "../ipc/supervisor.js";
+import { BranchQuotaError, ChildSupervisor, GatewayOverloadError, type ChildHandle } from "../ipc/supervisor.js";
 import type { RunIdentity } from "../ipc/bridge-server.js";
 import type { BrokerClients } from "../broker/clients.js";
 import type { Config } from "../config.js";
@@ -352,7 +352,6 @@ interface RunBody {
   prompt?: string;
   messages?: { role: string; content: string }[];
   threadId?: string;
-  runId?: string;
   agentId?: string;
   // Prior conversation turns sent by the client on resume. The child uses these
   // to seed a fresh SessionManager only when the in-memory thread was evicted.
@@ -499,7 +498,10 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       [...(body.messages ?? [])].reverse().find((m) => m.role === "user")?.content ||
       "";
     const threadId = body.threadId || randomUUID();
-    const runId = body.runId || randomUUID();
+    // F62: always minted here. A client-chosen runId keys approval draining,
+    // branch eviction, the run budget and (under "single" keying) a shared
+    // child's run context — a borrowed one would reach another user's run.
+    const runId = randomUUID();
     const sessionId = sessionIdOrEmpty(body.session_id);
 
     // Validate user instructions BEFORE the SSE hijack so overflow is a clean
@@ -724,7 +726,9 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
         ownerGrant,
       }, spec);
     } catch (err) {
-      if (err instanceof GatewayOverloadError) {
+      // F58: a per-user share refusal (BranchQuotaError) is the caller's 429
+      // via sendError, not the pool-wide 503.
+      if (err instanceof GatewayOverloadError && !(err instanceof BranchQuotaError)) {
         reply.code(503).send({ error: "gateway_overloaded" });
         return null;
       }

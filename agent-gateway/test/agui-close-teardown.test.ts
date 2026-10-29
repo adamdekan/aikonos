@@ -151,8 +151,10 @@ function makeFakeBridge() {
 // reached `stream.runStarted()`, which runs strictly after the close listener is
 // registered. The caller then destroys the returned request to simulate a
 // genuine client disconnect.
-async function postAndWaitForRunStarted(port: number, token: string, body: unknown): Promise<ClientRequest> {
-  return new Promise<ClientRequest>((resolve, reject) => {
+// Resolves with the request and the runId the SERVER put in RUN_STARTED (F62:
+// the server mints it; a client-sent runId is ignored).
+async function postAndWaitForRunStarted(port: number, token: string, body: unknown): Promise<{ req: ClientRequest; runId: string }> {
+  return new Promise<{ req: ClientRequest; runId: string }>((resolve, reject) => {
     const payload = JSON.stringify(body);
     const req = httpRequest(
       {
@@ -171,7 +173,8 @@ async function postAndWaitForRunStarted(port: number, token: string, body: unkno
         let buf = "";
         res.on("data", (d: Buffer) => {
           buf += d.toString();
-          if (buf.includes("RUN_STARTED")) resolve(req);
+          const m = /"type":"RUN_STARTED"[^\n]*"runId":"([^"]+)"/.exec(buf);
+          if (m) resolve({ req, runId: m[1] });
         });
       },
     );
@@ -218,7 +221,7 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
     makeFakeCredentials(),
   );
 
-  const runId = "run-close-teardown";
+  const clientRunId = "run-close-teardown";
   const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: DEFAULT_AGENT };
   const childKey = supervisor.keyFor(identity);
   // Pre-spawn on the same key the route will derive, so the handle instance
@@ -272,11 +275,13 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
       throw new Error("expected a bound TCP address");
     }
 
-    const clientReq = await postAndWaitForRunStarted(address.port, token, {
+    const { req: clientReq, runId } = await postAndWaitForRunStarted(address.port, token, {
       prompt: "hello",
       threadId: "thread-close-teardown",
-      runId,
+      runId: clientRunId,
     });
+    // F62: a client-chosen runId keyed teardown of whoever else used it.
+    assert.notEqual(runId, clientRunId, "the server must mint the runId, never take the client's");
 
     // The real close listener is now attached (RUN_STARTED is emitted after
     // it). Simulate a genuine mid-run client disconnect: aborting the client
@@ -341,7 +346,6 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
     makeFakeCredentials(),
   );
 
-  const runId = "run-close-teardown-branches";
   const identity = { tenantId: TENANT_ID, userId: USER_SUB, agentId: DEFAULT_AGENT };
   await supervisor.getOrSpawn(supervisor.keyFor(identity), identity);
 
@@ -369,10 +373,9 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
       throw new Error("expected a bound TCP address");
     }
 
-    const clientReq = await postAndWaitForRunStarted(address.port, token, {
+    const { req: clientReq, runId } = await postAndWaitForRunStarted(address.port, token, {
       prompt: "hello",
       threadId: "thread-close-teardown-branches",
-      runId,
     });
 
     clientReq.destroy();

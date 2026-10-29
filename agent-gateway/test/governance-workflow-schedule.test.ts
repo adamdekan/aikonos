@@ -293,3 +293,18 @@ test("F52: an approval is single-use — a second create with the same arguments
   assert.equal(again.ok, false);
   assert.equal(north.createScheduledRunCalls.length, 1);
 });
+
+test("workflow_schedule: a failed workflow read never puts the raw gRPC error (addresses, infra detail) in the gate reason", async () => {
+  // WHY: the gate reason reaches the child, the model and the chat, and the
+  // bridge only trims result `error` fields, not gate reasons (F66 class).
+  const north = makeNorth(WRITE_WORKFLOW);
+  north.getWorkflow = () =>
+    Promise.reject(Object.assign(new Error("14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090"), { code: 14, details: "connect ECONNREFUSED 10.0.0.5:9090" }));
+  const bridge = makeBridge(north);
+
+  const decision = await bridge.gate("tc-1", "workflow_schedule", { lineageId: "lin-1", kind: "cron", cronExpr: "0 8 * * 1" });
+
+  assert.equal(decision.allow, false);
+  assert.match(decision.reason ?? "", /could not read the workflow to approve: upstream unavailable/);
+  assert.doesNotMatch(decision.reason ?? "", /10\.0\.0\.5|ECONNREFUSED|UNAVAILABLE/);
+});

@@ -32,7 +32,7 @@ import { chatCandidates, visionCandidates, shouldFailover } from "../llm/provide
 import { decisionOnlyGatedTools, gateSkippedTools } from "../pi/gating-manifest.js";
 import { PERSONAL_SKILL_PREFIX } from "../pi/load-skill.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
-import { isAccessRevoked, isStepUpRequired } from "../http-errors.js";
+import { isAccessRevoked, isStepUpRequired, trimmedErrorMessage } from "../http-errors.js";
 import type { AgentSpec } from "../pi/session.js";
 // CP5: a runtime import of runSubagents plus a
 // type-only import of BranchSupervisor/SubagentBranch/BranchResult. There is no
@@ -86,6 +86,10 @@ export interface Identity {
   // exactly this; absent means [] — a branch never pre-approves more than the
   // run that spawned it.
   preApproved?: string[];
+  // F51: when set, re-read at every branch gate before preApproved is honoured —
+  // the external surface's per-gate approvalMode check, so an admin flip to
+  // needs_approval mid-run stops branches pre-approving just as it stops the run.
+  stillPreApproved?: () => Promise<boolean>;
   // F203: the bound agent's spec, so parent-side LLM calls (reason steps, the
   // subagent aggregator) and role-less branches honour its provider pin.
   agentSpec?: AgentSpec;
@@ -415,7 +419,10 @@ export class GovernanceBridge {
       return { args: { ...input, workflowVersion: version, toolSteps }, version };
     } catch (err) {
       this.noteRevoked(err);
-      return { reason: `workflow_schedule: could not read the workflow to approve: ${String(err)}` };
+      // The gate reason reaches the child, the model and the chat: trimmed like
+      // every bridge result error (F66), the raw error stays in the log.
+      this.log.warn({ err: String(err) }, "workflow_schedule: getWorkflow failed");
+      return { reason: `workflow_schedule: could not read the workflow to approve: ${trimmedErrorMessage(err)}` };
     }
   }
 
