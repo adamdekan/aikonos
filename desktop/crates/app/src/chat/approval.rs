@@ -110,8 +110,7 @@ impl ApprovalPanel {
         cx.spawn(async move |this, cx| {
             // Detached: a decision must reach the server even if the dialog
             // is torn down while it is in flight.
-            let result =
-                runtime::spawn(async move { connection.decide_approval(&id, approved, &digest).await }).await;
+            let result = runtime::spawn(async move { connection.decide_approval(&id, approved, &digest).await }).await;
             let _ = this.update(cx, |this, cx| {
                 this.pending = None;
                 match result {

@@ -38,6 +38,22 @@ TMPL_ONPREM="deploy/compose/.env.onprem.example"
 # direction: missing = compose references it, template has no entry for it
 #            extra   = template documents it, compose never substitutes it
 ALLOWLIST=(
+  # Optional, empty by default. AIKONOS_HOST_UID/GID only let the local
+  # dev-ca-mint container write host-owned certs; the AG-09 OAuth client
+  # metadata vars are opt-in and documented in docs/release-notes-agent-identity.md.
+  "local:missing:AIKONOS_HOST_UID"
+  "local:missing:AIKONOS_HOST_GID"
+  "local:missing:AIKONOS_EXTERNAL_BASE_URL"
+  "local:missing:AIKONOS_CONNECTORS_MCP_CLIENT_METADATA_URL"
+  "azure:missing:AIKONOS_HOST_UID"
+  "azure:missing:AIKONOS_HOST_GID"
+  "azure:missing:AIKONOS_EXTERNAL_BASE_URL"
+  "azure:missing:AIKONOS_CONNECTORS_MCP_CLIENT_METADATA_URL"
+  "onprem:missing:AIKONOS_HOST_UID"
+  "onprem:missing:AIKONOS_HOST_GID"
+  "onprem:missing:AIKONOS_EXTERNAL_BASE_URL"
+  "onprem:missing:AIKONOS_CONNECTORS_MCP_CLIENT_METADATA_URL"
+
   # Vestigial ROPC-era / mTLS-path vars: compose.yaml hardcodes a literal
   # container-internal value for these (e.g. AIKONOS_BROKER_TLS_CERT_FILE:
   # /tls/broker.crt) or never forwards them into any service's environment
