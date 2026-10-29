@@ -3,6 +3,8 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import Sidebar from "./components/Sidebar.vue";
 import Toast from "./components/ui/Toast.vue";
+import ErrorBanner from "./components/ui/ErrorBanner.vue";
+import { accountBlocked } from "./api/client.js";
 import { useUserStore } from "./store/user";
 
 const userStore = useUserStore();
@@ -23,6 +25,9 @@ const isPublic = computed(() => route.meta.public === true);
   <div v-if="authed" class="app-shell">
     <Sidebar />
     <main class="main-pane scroll-min" v-autoscroll>
+      <div v-if="accountBlocked" class="account-blocked" data-testid="account-blocked-banner">
+        <ErrorBanner message="Your account is blocked. Contact an admin to restore access." />
+      </div>
       <router-view :key="userStore.user" />
     </main>
   </div>
@@ -51,6 +56,10 @@ const isPublic = computed(() => route.meta.public === true);
      (Chat, Files) and inner-scroll views (Audit, Access Control) doesn't
      shift content horizontally as the scrollbar appears/disappears. */
   scrollbar-gutter: stable;
+}
+
+.account-blocked {
+  padding: 12px 16px 0;
 }
 
 .auth-splash {

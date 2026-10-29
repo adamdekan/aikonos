@@ -166,6 +166,17 @@ export async function buildApp({
     pump();
   }
 
+  // An upstream refusal (401 session revoked, 403 agent suspended / no access,
+  // 409 ...) is plain JSON, not a stream. Pass its status and body through
+  // instead of piping it as a 200 event stream, so the client's !resp.ok path
+  // shows the reason. Returns true when it replied.
+  async function sendUpstreamError(upstream, reply) {
+    if (upstream.status >= 200 && upstream.status < 300) return false;
+    const contentType = upstream.headers.get("content-type") ?? "application/json";
+    reply.code(upstream.status).header("content-type", contentType).send(await upstream.text());
+    return true;
+  }
+
   // /agui — forward POST to gateway, stream SSE response back.
   // The Authorization header from the browser is forwarded verbatim.
   app.post("/agui", async (req, reply) => {
@@ -173,12 +184,14 @@ export async function buildApp({
     if (req.headers["authorization"]) headers["authorization"] = req.headers["authorization"];
     // Copy accept header if present (AG-UI protocol).
     if (req.headers["accept"]) headers["accept"] = req.headers["accept"];
+    if (req.headers["x-aikonos-agent"]) headers["x-aikonos-agent"] = req.headers["x-aikonos-agent"];
     try {
       const upstream = await fetch(`${GATEWAY_URL}/agui`, {
         method: "POST",
         headers,
         body: JSON.stringify(req.body),
       });
+      if (await sendUpstreamError(upstream, reply)) return;
       reply.hijack();
       pipeSSE(upstream, reply.raw);
     } catch (err) {
@@ -203,6 +216,7 @@ export async function buildApp({
         method: "GET",
         headers,
       });
+      if (await sendUpstreamError(upstream, reply)) return;
       reply.hijack();
       pipeSSE(upstream, reply.raw);
     } catch (err) {
@@ -227,6 +241,7 @@ export async function buildApp({
         body: JSON.stringify(req.body ?? {}),
       });
       if (streaming) {
+        if (await sendUpstreamError(upstream, reply)) return;
         reply.hijack();
         pipeSSE(upstream, reply.raw);
         return;
@@ -268,7 +283,13 @@ export async function buildApp({
       // Forward the upstream content-type verbatim (e.g. text/csv exports) — only
       // hardcode application/json when upstream didn't send one.
       const contentType = res.headers.get("content-type") ?? "application/json";
-      reply.code(res.status).header("content-type", contentType).send(text);
+      reply.code(res.status).header("content-type", contentType);
+      // Keep an export's filename and its no-store intent (AG-14).
+      for (const h of ["content-disposition", "cache-control"]) {
+        const v = res.headers.get(h);
+        if (v) reply.header(h, v);
+      }
+      reply.send(text);
     } catch (err) {
       reply.code(502).send({ error: `gateway unreachable: ${String(err)}` });
     }

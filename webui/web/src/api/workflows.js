@@ -1,4 +1,4 @@
-import { get, post, del } from "./client.js";
+import { get, post, del, noteAuthFailure } from "./client.js";
 import { getAccessToken } from "../auth/oidc.js";
 
 // Returns the whole response body: { workflows, nextCursor, sharedUnavailable }.
@@ -94,7 +94,16 @@ export async function runWorkflowStream(
     },
     body: JSON.stringify({ inputs, ...(opts.sessionId ? { session_id: opts.sessionId } : {}) }),
   });
-  if (!resp.ok || !resp.body) throw new Error(`request failed (${resp.status})`);
+  if (!resp.ok || !resp.body) {
+    let reason = "";
+    try {
+      reason = (await resp.json()).error ?? "";
+    } catch {
+      // empty or non-JSON body
+    }
+    noteAuthFailure(resp.status, reason);
+    throw new Error(reason ? `request failed (${resp.status}): ${reason}` : `request failed (${resp.status})`);
+  }
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();

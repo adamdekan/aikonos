@@ -11,6 +11,7 @@ import EmptyState from "../components/ui/EmptyState.vue";
 import ShareSkillModal from "../components/ShareSkillModal.vue";
 import { useToast } from "../components/ui/useToast.js";
 import { listSkills, importSkill, deleteSkill } from "../api/skills.js";
+import { accountBlocked } from "../api/client.js";
 
 const { push: toast } = useToast();
 
@@ -182,8 +183,10 @@ defineExpose({ deleteTarget, importFile });
 
     <ErrorBanner v-if="error" :message="error" />
 
+    <!-- A blocked account gets the global banner (App.vue), not a grant hint. -->
+    <template v-if="accountBlocked" />
     <EmptyState
-      v-if="forbidden"
+      v-else-if="forbidden"
       data-testid="forbidden"
       icon="admin"
       message="You do not have access to personal skills. Ask an admin to grant skill:personal-skills."

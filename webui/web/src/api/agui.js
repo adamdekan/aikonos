@@ -7,6 +7,7 @@
 
 import { uuid } from "../lib/uuid.js";
 import { getAccessToken } from "../auth/oidc.js";
+import { noteAuthFailure } from "./client.js";
 
 export async function runAgui(
   { prompt, threadId, agentId, history, signal, skillName, userInstructions, sessionId, envelopeId },
@@ -54,6 +55,15 @@ export async function runAgui(
     } catch {
       // Body already consumed or unreadable — fall back to the bare status.
     }
+    // A JSON refusal ({error: "agent is suspended (agent_suspended)"}) shows
+    // just its reason; a revoked session (401) goes back to sign-in.
+    try {
+      const reason = JSON.parse(detail).error;
+      if (typeof reason === "string" && reason) detail = reason;
+    } catch {
+      // not JSON — keep the raw text
+    }
+    noteAuthFailure(resp.status, detail);
     handlers.onError?.(detail ? `request failed (${resp.status}): ${detail}` : `request failed (${resp.status})`);
     return usedThreadId;
   }

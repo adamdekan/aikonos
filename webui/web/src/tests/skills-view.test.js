@@ -14,6 +14,7 @@ vi.mock("../api/skills.js", () => ({
 import Skills from "../views/Skills.vue";
 import ShareSkillModal from "../components/ShareSkillModal.vue";
 import * as skillsApi from "../api/skills.js";
+import { accountBlocked } from "../api/client.js";
 
 const VALID_SKILL = {
   name: "release-notes",
@@ -220,6 +221,15 @@ describe("Skills.vue", () => {
     expect(w.find("[data-testid='forbidden']").exists()).toBe(true);
     expect(w.find("[data-testid='skill-row']").exists()).toBe(false);
     expect(w.find("[data-testid='error-banner']").exists()).toBe(false);
+  });
+
+  it("a blocked account shows no misleading 'ask for skill:personal-skills' hint (AG-06)", async () => {
+    accountBlocked.value = true;
+    skillsApi.listSkills.mockResolvedValue({ forbidden: true, error: "user is blocked" });
+    const w = mountSkills();
+    await flushPromises();
+    expect(w.find("[data-testid='forbidden']").exists()).toBe(false);
+    accountBlocked.value = false;
   });
 
   it("filters My skills and Granted skills by name, case-insensitively", async () => {

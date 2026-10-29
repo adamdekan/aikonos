@@ -12,7 +12,7 @@ vi.mock("oidc-client-ts", () => ({
   },
 }));
 
-import { resolveOidcConfig } from "../auth/oidc.js";
+import { resolveOidcConfig, safeReturnTo, isPopupCallback } from "../auth/oidc.js";
 
 const ORIGIN = "https://aikonos.example.com";
 
@@ -75,5 +75,39 @@ describe("resolveOidcConfig", () => {
   it("ignores a runtime config that is not an object", () => {
     expect(resolveOidcConfig(null, BUILD, ORIGIN).clientId).toBe("build-client");
     expect(resolveOidcConfig("bogus", BUILD, ORIGIN).clientId).toBe("build-client");
+  });
+});
+
+describe("safeReturnTo", () => {
+  it("keeps an in-app path with its query", () => {
+    expect(safeReturnTo("/admin/settings?tab=identity")).toBe("/admin/settings?tab=identity");
+  });
+  it("refuses off-site and protocol-relative targets", () => {
+    for (const bad of ["https://evil.example", "//evil.example", "/\\evil.example", "javascript:alert(1)", undefined, 42]) {
+      expect(safeReturnTo(bad)).toBe("/");
+    }
+  });
+  it("never returns to the callback itself", () => {
+    expect(safeReturnTo("/auth/callback?code=x")).toBe("/");
+  });
+});
+
+describe("isPopupCallback (AG-13 step-up)", () => {
+  const win = (search, stored) => {
+    const w = { location: { search } };
+    w.opener = stored === undefined ? null : { sessionStorage: { getItem: (k) => stored[k] ?? null } };
+    return w;
+  };
+  it("is true when the opener holds this state as a popup request", () => {
+    expect(isPopupCallback(win("?code=c&state=s1", { "oidc.s1": JSON.stringify({ request_type: "si:p" }) }))).toBe(true);
+  });
+  it("is false for a normal redirect, an unknown state, or no opener", () => {
+    expect(isPopupCallback(win("?code=c&state=s1", { "oidc.s1": JSON.stringify({ request_type: "si:r" }) }))).toBe(false);
+    expect(isPopupCallback(win("?code=c&state=s2", { "oidc.s1": JSON.stringify({ request_type: "si:p" }) }))).toBe(false);
+    expect(isPopupCallback(win("?code=c&state=s1"))).toBe(false);
+  });
+  it("is false when the opener is cross-origin (storage access throws)", () => {
+    const w = { location: { search: "?state=s1" }, opener: { get sessionStorage() { throw new Error("SecurityError"); } } };
+    expect(isPopupCallback(w)).toBe(false);
   });
 });

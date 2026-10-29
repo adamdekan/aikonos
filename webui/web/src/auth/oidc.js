@@ -74,21 +74,57 @@ const mgr = new UserManager({
 // IdP cookie this is a fast, promptless redirect. addAccessTokenExpiring (~60s
 // before exp) still drives automaticSilentRenew first; these only fire once that
 // has given up.
-mgr.events.addAccessTokenExpired(() => login());
-mgr.events.addSilentRenewError(() => login());
+const here = () => window.location.pathname + window.location.search;
+mgr.events.addAccessTokenExpired(() => login(here()));
+mgr.events.addSilentRenewError(() => login(here()));
 
-/** Redirect the browser to the Keycloak login page. */
-export async function login() {
-  await mgr.signinRedirect();
+/**
+ * Redirect the browser to the IdP login page. returnTo (an in-app path) rides
+ * in the signin state, so the callback lands on the page the user asked for.
+ */
+export async function login(returnTo) {
+  await mgr.signinRedirect(returnTo ? { state: { returnTo } } : undefined);
+}
+
+/**
+ * Returns returnTo when it is a same-origin in-app path, else "/". Guards the
+ * callback against an open redirect via a crafted state. Pure; exported for tests.
+ */
+export function safeReturnTo(returnTo) {
+  return typeof returnTo === "string" && /^\/(?![/\\])/.test(returnTo) && !returnTo.startsWith("/auth/callback")
+    ? returnTo
+    : "/";
+}
+
+/**
+ * True when this callback answers a step-up popup (AG-13). The signin state
+ * lives in the opener's sessionStorage, written after window.open copied the
+ * opener's storage, so the popup cannot read it; the opener (same origin)
+ * still has it, marked as a popup request ("si:p"). Exported for tests.
+ */
+export function isPopupCallback(win = window) {
+  try {
+    const state = new URLSearchParams(win.location.search).get("state");
+    const raw = state && win.opener && win.opener !== win && win.opener.sessionStorage.getItem(`oidc.${state}`);
+    return !!raw && JSON.parse(raw).request_type === "si:p";
+  } catch {
+    // cross-origin opener or no storage: not our popup
+    return false;
+  }
 }
 
 /**
  * Complete the auth-code exchange on the /auth/callback page.
- * Returns the oidc User on success.
+ * Returns the oidc User on success, or undefined for a step-up popup.
  */
 export async function handleCallback() {
-  // signinCallback also completes a step-up popup (AG-13): it hands the new
-  // user to the opener and closes the popup, returning undefined.
+  // Step-up popup: hand the response URL to the opener, which holds the state
+  // and finishes the exchange; the popup then closes. The state never leaves
+  // the opener's sessionStorage.
+  if (isPopupCallback()) {
+    await mgr.signinPopupCallback();
+    return undefined;
+  }
   return mgr.signinCallback();
 }
 
