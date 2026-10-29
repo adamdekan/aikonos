@@ -53,15 +53,8 @@ func (s *BrokerService) callerIdentity(ctx context.Context, reqTenant, reqUser s
 	if user == "" {
 		return "", "", status.Error(codes.InvalidArgument, "user_id required")
 	}
-	// svc- principals are service accounts for external agent access; they must
-	// never appear as human callers on the north-bound surface.
-	if strings.HasPrefix(user, "svc-") {
-		return "", "", status.Error(codes.PermissionDenied, "svc- user_id not permitted on the north-bound API")
-	}
-	// group-<gid> is the group memory bundle's workspace segment: a subject of
-	// that shape would read and write that group's files as its own (F175).
-	if strings.HasPrefix(user, memoryGroupSegPrefix) {
-		return "", "", status.Error(codes.PermissionDenied, "group- user_id not permitted on the north-bound API")
+	if p := reservedPrincipalPrefix(user); p != "" {
+		return "", "", status.Error(codes.PermissionDenied, p+" user_id not permitted on the north-bound API")
 	}
 
 	// Passive directory upsert — best-effort, never blocks the RPC.
@@ -80,6 +73,20 @@ func (s *BrokerService) callerIdentity(ctx context.Context, reqTenant, reqUser s
 	}
 
 	return tenant, user, nil
+}
+
+// reservedPrincipalPrefix returns the reserved prefix user starts with, or "".
+// svc- principals are service accounts for external agent access, never human
+// callers. group-<gid> is the group memory bundle's workspace segment: a
+// subject of that shape would read and write that group's files as its own
+// (F175). Shared by callerIdentity (north) and verifyUserAssertion (south).
+func reservedPrincipalPrefix(user string) string {
+	for _, p := range []string{"svc-", memoryGroupSegPrefix} {
+		if strings.HasPrefix(user, p) {
+			return p
+		}
+	}
+	return ""
 }
 
 // requireTenantAdmin gates every admin RPC: the caller must hold the `admin`

@@ -13,6 +13,7 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/notify"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -188,6 +189,57 @@ func TestStreamTaskEvents_NonReader_RejectedBeforeSubscribe(t *testing.T) {
 	defer bus.mu.Unlock()
 	if bus.subscribed {
 		t.Fatalf("bus was subscribed (subjects=%v) for a caller who may not read the task", bus.subscribeArgs)
+	}
+}
+
+// chanBus hands every subscriber one test-owned, unbuffered channel, so the
+// test knows exactly when the stream has taken an event.
+type chanBus chan []byte
+
+func (chanBus) Enabled() bool                                   { return true }
+func (chanBus) Publish(context.Context, string, []byte) error   { return nil }
+func (b chanBus) Subscribe(string) (notify.Subscription, error) { return b, nil }
+func (chanBus) Close() error                                    { return nil }
+func (b chanBus) Events() <-chan []byte                         { return b }
+func (chanBus) Unsubscribe()                                    {}
+
+// TestStreamTaskEvents_BlockEndsStream: a block after subscribe ends the open
+// stream at the next event, like the caller's next unary call; the
+// subscription and the cut are both audited.
+func TestStreamTaskEvents_BlockEndsStream(t *testing.T) {
+	bus := make(chanBus)
+	aud := &fakeInvokeAudit{}
+	rc := revocation.New(newFakeRevStore())
+	svc := NewBrokerService(Deps{Logger: zap.NewNop(), Notify: bus, TenantID: testTenantUUID, Tasks: aliceTask(), Revocation: rc, Audit: aud})
+
+	ctx, cancel := context.WithTimeout(ctxWithIdentity(testTenantUUID, "alice@example.com"), 2*time.Second)
+	defer cancel()
+	stream := &fakeStream{ctx: ctx}
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StreamTaskEvents(&brokerv1.StreamTaskEventsRequest{TaskId: "t1", TenantId: testTenantUUID}, stream)
+	}()
+	ev := []byte(`{"task_id":"t1","type":"STATUS_CHANGED"}`)
+	bus <- ev
+	waitFor(t, func() bool { return len(stream.received()) == 1 })
+
+	if _, err := rc.BlockUser(context.Background(), testTenantUUID, "alice@example.com", "incident", "admin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	bus <- ev
+	if err := <-done; status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("want PermissionDenied after block, got %v", err)
+	}
+	if n := len(stream.received()); n != 1 {
+		t.Fatalf("%d events delivered, want only the one before the block", n)
+	}
+	var got []string
+	for _, e := range aud.events {
+		got = append(got, e.EventType+"/"+e.Decision.String())
+	}
+	want := []string{"aikonos.broker.task.stream_subscribed/ALLOW", "aikonos.broker.task.stream_revoked/DENY"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("audit = %v, want %v", got, want)
 	}
 }
 

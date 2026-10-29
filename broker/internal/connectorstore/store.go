@@ -78,7 +78,9 @@ func (s *Store) legacyConfigDir(tenant, user string) (string, bool) {
 		return "", false
 	}
 	u, ok := legacySanitizeSeg(user)
-	if !ok {
+	// A verbatim "<lossy>.<16 hex>" is another user's current directory
+	// (F175): a subject spelled that way must not read that user's file.
+	if !ok || workspacepath.Hashed(u) {
 		return "", false
 	}
 	return filepath.Join(s.root, t, u, "config"), true

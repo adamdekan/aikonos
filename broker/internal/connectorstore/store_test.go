@@ -146,6 +146,20 @@ func TestLegacyFallbackFoundAndForwarded(t *testing.T) {
 	}
 }
 
+// TestLegacyFallbackNeverReadsAnotherUsersDir pins G32/F175: a subject spelled
+// like another user's collision-free segment ("<lossy>.<16 hex>") must not
+// reach that user's file through the verbatim F42r fallback.
+func TestLegacyFallbackNeverReadsAnotherUsersDir(t *testing.T) {
+	s := New(t.TempDir())
+	if err := s.Upsert("t", "alice@corp.com", Entry{ConnectorID: "gdrive", Provider: "google_drive"}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List("t", workspacepath.SanitizeSeg("alice@corp.com"))
+	if err != nil || len(list) != 0 {
+		t.Fatalf("a look-alike subject read alice's connections: %+v %v", list, err)
+	}
+}
+
 // Miss at both the new and legacy path is a normal not-found (empty list),
 // not an error.
 func TestMissAtBothPathsIsNormalNotFound(t *testing.T) {

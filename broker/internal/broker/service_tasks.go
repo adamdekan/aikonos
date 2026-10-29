@@ -16,6 +16,7 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
@@ -548,9 +549,15 @@ func (s *BrokerService) StreamTaskEvents(req *brokerv1.StreamTaskEventsRequest, 
 		return err
 	}
 	// The events are the task's: same readers as GetTaskState (F136).
-	if _, err := s.readableTask(ctx, span.SpanContext().TraceID().String(), tenant, user, req.TaskId); err != nil {
+	traceID := span.SpanContext().TraceID().String()
+	task, err := s.readableTask(ctx, traceID, tenant, user, req.TaskId)
+	if err != nil {
 		return err
 	}
+	// Streams skip AuditInterceptor: record the subscription itself.
+	emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
+		"aikonos.broker.task.stream_subscribed", auditv1.PolicyDecision_ALLOW, task)
+	id, _ := auth.IdentityFromContext(ctx)
 
 	sub, err := s.deps.Notify.Subscribe(notify.TaskSubject(tenant, req.TaskId))
 	if err != nil {
@@ -571,6 +578,20 @@ func (s *BrokerService) StreamTaskEvents(req *brokerv1.StreamTaskEventsRequest, 
 		case raw, ok := <-sub.Events():
 			if !ok {
 				return nil
+			}
+			// A block or revoke-all after subscribe ends the stream, as it
+			// refuses the caller's next unary call (same cached view).
+			if id != nil {
+				st, err := s.deps.Revocation.User(ctx, tenant, user)
+				if err != nil {
+					s.deps.Logger.Error("StreamTaskEvents: revocation state read failed", zap.Error(err))
+					return status.Error(codes.Unavailable, "access state could not be read; retry")
+				}
+				if st.Revoked(id.IssuedAt) {
+					emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
+						"aikonos.broker.task.stream_revoked", auditv1.PolicyDecision_DENY, task)
+					return status.Error(codes.PermissionDenied, "access revoked")
+				}
 			}
 			var ev notify.Event
 			if err := json.Unmarshal(raw, &ev); err != nil {

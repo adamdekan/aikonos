@@ -125,8 +125,9 @@ func (m *memStore) DeleteGroup(_ context.Context, _ string, id uuid.UUID) error 
 }
 
 type memTuples struct {
-	set  map[policy.Relation]bool
-	fail bool
+	set      map[policy.Relation]bool
+	fail     bool
+	readFail bool
 }
 
 func (t *memTuples) WriteRelations(_ context.Context, rels ...policy.Relation) error {
@@ -148,6 +149,9 @@ func (t *memTuples) DeleteRelations(_ context.Context, rels ...policy.Relation) 
 // ReadTuples matches like OpenFGA's Read: exact user and relation when set,
 // and an object that is either exact or a bare "type:" prefix.
 func (t *memTuples) ReadTuples(_ context.Context, f policy.ReadFilter) ([]policy.Relation, error) {
+	if t.readFail {
+		return nil, fmt.Errorf("fga down")
+	}
 	var out []policy.Relation
 	for r := range t.set {
 		if f.User != "" && r.User != f.User || f.Relation != "" && r.Relation != f.Relation {
@@ -463,6 +467,19 @@ func TestGroupCreateRefusesManagedGroup(t *testing.T) {
 	}
 }
 
+// TestGroupCreateAuditsUnreadableState: a groupInUse read failure refuses the
+// claim (fail closed) and audits the refusal like an in-use group.
+func TestGroupCreateAuditsUnreadableState(t *testing.T) {
+	f := newFixture()
+	f.tuples.readFail = true
+	if code, _ := f.call(t, "POST", "/Groups", `{"displayName":"Approvers"}`); code != 500 {
+		t.Fatalf("want 500, got %d", code)
+	}
+	if !strings.Contains(strings.Join(f.audit.events, "\n"), "aikonos.broker.scim.group.claim_refused group:approvers") {
+		t.Fatalf("refusal not audited: %v", f.audit.events)
+	}
+}
+
 // TestGroupSubjectTypesMatchModel keeps groupSubjectTypes in step with the
 // FGA model: every type with a relation that accepts group#member.
 func TestGroupSubjectTypesMatchModel(t *testing.T) {
@@ -502,6 +519,38 @@ func TestUserExternalIDCanonical(t *testing.T) {
 	// Non-GUID subjects may be case-sensitive and are kept as sent.
 	if _, body = f.call(t, "POST", "/Users", `{"userName":"h@contoso.com","externalId":"Oid-H"}`); body["externalId"] != "Oid-H" {
 		t.Fatalf("non-GUID subject changed: %v", body)
+	}
+}
+
+// TestLegacyUpperCaseRowActsOnTokenSubject pins F133 for a row stored before
+// canonicalisation: it keeps its upper-case GUID, and deactivation, group
+// membership and deletion act on the lower-case form tokens carry as well.
+func TestLegacyUpperCaseRowActsOnTokenSubject(t *testing.T) {
+	f := newFixture()
+	const upper, lower = "0F3A0000-BBBB-CCCC-DDDD-EEEEEEEEEEEE", "0f3a0000-bbbb-cccc-dddd-eeeeeeeeeeee"
+	id := uuid.New()
+	f.h.Store.(*memStore).users = []db.ScimUser{{ID: id, UserName: "l@contoso.com", ExternalID: upper, Active: true}}
+
+	f.call(t, "PATCH", "/Users/"+id.String(), `{"Operations":[{"op":"Replace","path":"active","value":false}]}`)
+	if _, ok := f.blocks.blocks[lower]; !ok {
+		t.Fatalf("deactivation missed the token subject: %v", f.blocks.blocks)
+	}
+	f.call(t, "PATCH", "/Users/"+id.String(), `{"Operations":[{"op":"Replace","path":"active","value":true}]}`)
+	if len(f.blocks.blocks) != 0 {
+		t.Fatalf("reactivation left a SCIM block: %v", f.blocks.blocks)
+	}
+
+	if code, _ := f.call(t, "POST", "/Groups", `{"displayName":"Ops","members":[{"value":"`+id.String()+`"}]}`); code != 201 || !f.member(lower, "ops") {
+		t.Fatalf("membership missed the token subject: %d %v", code, f.tuples.set)
+	}
+	if code, _ := f.call(t, "DELETE", "/Users/"+id.String(), ""); code != 204 {
+		t.Fatalf("delete: %d", code)
+	}
+	if f.member(lower, "ops") || f.member(upper, "ops") {
+		t.Fatalf("delete left a member tuple: %v", f.tuples.set)
+	}
+	if _, ok := f.blocks.blocks[lower]; !ok {
+		t.Fatalf("delete did not block the token subject: %v", f.blocks.blocks)
 	}
 }
 

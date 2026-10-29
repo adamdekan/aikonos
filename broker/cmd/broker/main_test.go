@@ -10,7 +10,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -123,5 +126,75 @@ func TestRequestSizeInterceptor(t *testing.T) {
 	}
 	if _, err := ic(context.Background(), big, &grpc.UnaryServerInfo{FullMethod: "/exempt"}, handler); err != nil || !called {
 		t.Fatalf("exempt: err=%v called=%v", err, called)
+	}
+}
+
+// blockedSubjects is a revocation view that blocks the listed subjects.
+type blockedSubjects map[string]bool
+
+func (b blockedSubjects) User(_ context.Context, _, subject string) (revocation.State, error) {
+	return revocation.State{Blocked: b[subject]}, nil
+}
+
+type identityStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s identityStream) Context() context.Context { return s.ctx }
+
+// TestNorthInterceptors runs the chain main.go registers (F173/G47, F136): a
+// blocked caller or one naming another tenant is refused before the
+// provisioner runs, and the stream chain refuses a blocked caller too.
+func TestNorthInterceptors(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	v, err := auth.NewValidator(auth.OIDCConfig{}) // disabled: the context identity stands in for a verified token
+	if err != nil {
+		t.Fatal(err)
+	}
+	em, err := audit.NewEmitter(context.Background(), audit.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioned := 0
+	prov := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+		provisioned++
+		return h(ctx, req)
+	}
+	unary, stream := northInterceptors(v, em, "aikonos-dev", tenant, blockedSubjects{"mallory": true}, prov, zap.NewNop())
+
+	info := &grpc.UnaryServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/CreateTask"}
+	call := func(id *auth.Identity) error {
+		h := grpc.UnaryHandler(func(context.Context, any) (any, error) { return "ok", nil })
+		for i := len(unary) - 1; i >= 0; i-- {
+			ic, next := unary[i], h
+			h = func(ctx context.Context, req any) (any, error) { return ic(ctx, req, info, next) }
+		}
+		_, err := h(auth.WithIdentity(context.Background(), id), &brokerv1.CreateTaskRequest{})
+		return err
+	}
+	if err := call(&auth.Identity{Subject: "mallory", TenantID: tenant}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("blocked caller: %v", err)
+	}
+	if err := call(&auth.Identity{Subject: "alice", TenantID: "22222222-2222-2222-2222-222222222222"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("foreign tenant: %v", err)
+	}
+	if provisioned != 0 {
+		t.Fatal("the provisioner ran for a refused caller")
+	}
+	if err := call(&auth.Identity{Subject: "alice", TenantID: tenant}); err != nil || provisioned != 1 {
+		t.Fatalf("allowed caller: err=%v provisioned=%d", err, provisioned)
+	}
+
+	handled := false
+	sh := grpc.StreamHandler(func(any, grpc.ServerStream) error { handled = true; return nil })
+	sinfo := &grpc.StreamServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/StreamTaskEvents"}
+	for i := len(stream) - 1; i >= 0; i-- {
+		ic, next := stream[i], sh
+		sh = func(srv any, ss grpc.ServerStream) error { return ic(srv, ss, sinfo, next) }
+	}
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "mallory", TenantID: tenant})
+	if err := sh(nil, identityStream{ctx: ctx}); status.Code(err) != codes.PermissionDenied || handled {
+		t.Fatalf("blocked stream caller: err=%v handled=%v", err, handled)
 	}
 }
