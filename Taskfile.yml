@@ -54,14 +54,20 @@ tasks:
     cmds:
       - npm --prefix docs-mcp test
 
+  office-worker:test:
+    desc: Run office-worker unit tests (needs npm ci'd office-worker/node_modules and `uv sync` in office-worker; the soffice tests skip without LibreOffice)
+    cmds:
+      - npm --prefix office-worker test
+
   test:all:
-    desc: Run every test suite CI runs (broker, policy, gateway, webui, docs-mcp)
+    desc: Run every test suite CI runs (broker, policy, gateway, webui, docs-mcp, office-worker)
     deps:
       - broker:test
       - policy:test
       - gateway:test
       - webui:test
       - docs-mcp:test
+      - office-worker:test
 
   policy:lint:
     desc: Lint Rego policies

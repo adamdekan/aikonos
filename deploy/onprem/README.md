@@ -117,8 +117,10 @@ Edit `.env` — fill every `<...>` placeholder. Generate secrets:
 
 ```bash
 # For POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD, VAULT_DEV_ROOT_TOKEN_ID,
-# AIKONOS_AUDIT_SIGNING_KEY, AIKONOS_CAPABILITY_ROOT_KEY, AIKONOS_API_KEY_PEPPER:
+# AIKONOS_AUDIT_SIGNING_KEY, AIKONOS_API_KEY_PEPPER:
 openssl rand -hex 32
+# Leave AIKONOS_CAPABILITY_ROOT_KEY empty: the broker creates it in Vault. A
+# pinned value must be a base64 64-byte ed25519 private key, not hex.
 ```
 
 Key values to fill from the Entra registration:

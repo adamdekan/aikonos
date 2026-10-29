@@ -1021,7 +1021,8 @@ func main() {
 	revocationChecker := revocation.New(db.NewRevocationRepo(pool, log))
 
 	northUnary, northStream := northInterceptors(oidcValidator, auditEmitter,
-		viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), revocationChecker, provisioner.Interceptor(), log)
+		viper.GetString("broker.tenant_id"), viper.GetString("tenant_id"), revocationChecker,
+		provisioner.Interceptor(), provisioner.StreamInterceptor(), log)
 	maxStreams := uint32(viper.GetInt("broker.grpc_max_streams"))
 	northServer := grpc.NewServer(append(serverLimits(maxStreams),
 		grpc.Creds(northCreds),
@@ -1332,10 +1333,12 @@ func serverLimits(maxStreams uint32) []grpc.ServerOption {
 // northInterceptors is the north chain in order. The OIDC, tenant and
 // revocation gates run before the provisioner, so a blocked, revoked or
 // tenant-less caller is never JIT-provisioned into groups (F173/G47), and
-// StreamTaskEvents passes the same gates as unary calls (F136).
-// TestNorthInterceptors pins both.
+// StreamTaskEvents passes the same gates as unary calls (F136). Audit runs
+// last on both chains, so it records the handler's outcome and turns a
+// handler panic into codes.Internal. TestNorthInterceptors pins the outcomes,
+// TestNorthInterceptorOrder the order.
 func northInterceptors(v *auth.Validator, em *audit.Emitter, label, tenantUUID string, rc auth.UserRevocations,
-	prov grpc.UnaryServerInterceptor, log *zap.Logger) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
+	prov grpc.UnaryServerInterceptor, provStream grpc.StreamServerInterceptor, log *zap.Logger) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
 	return []grpc.UnaryServerInterceptor{
 		requestSizeInterceptor(maxRequestBytes, largeRequestMethods),
 		auth.OIDCInterceptor(v, em, label, log),
@@ -1347,6 +1350,8 @@ func northInterceptors(v *auth.Validator, em *audit.Emitter, label, tenantUUID s
 		auth.OIDCStreamInterceptor(v, em, label, log),
 		auth.TenantStreamInterceptor(em, label, tenantUUID, log),
 		auth.RevocationStreamInterceptor(rc, em, log),
+		provStream,
+		auth.AuditStreamInterceptor(em, label, log),
 	}
 }
 

@@ -39,7 +39,7 @@ APP_READONLY=(broker agent-gateway webui)
 # Infra/obs services that deliberately keep read_only=false.
 # postgres  — writes data to rootfs paths (/var/lib/postgresql); volume-backed + backend-isolated → low marginal value
 # minio     — writes data to /data (volume) but also rootfs tmp paths; already backend-isolated
-# vault     — dev-mode; writes inmem but image touches rootfs; backend-isolated
+# vault     — writes its keyring + storage to /vault/file (volume) and may touch /tmp; backend-isolated
 # nats      — writes JetStream store to /data/jetstream (rootfs by default); mesh but low marginal value
 # keycloak  — writes H2 DB + runtime state to rootfs; mesh but low marginal value
 # otel-collector — writes to obs-archive volume but image is distroless+root; obs-isolated

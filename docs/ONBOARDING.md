@@ -291,7 +291,7 @@ task compose:verify                      # smoke-test enforcement / audit / UI
 | Gateway image build fails at `COPY gen` | Generate stubs first: `(cd agent-gateway && npm ci)` then `task proto:gen` (TS stubs are skipped without the toolchain) |
 | Roles page shows "OpenFGA disabled — dev allow-all" | `task compose:seed` (seeds the store + recreates the broker) |
 | broker mTLS handshake fails | `bash scripts/compose-dev-ca.sh` — the leaf cert DNS-SAN must equal the service name |
-| Connector "not connected" after a Vault restart | Vault dev-mode is inmem; re-link via the Connections popover (tokens are lost on restart) |
+| Connector "not connected" after `docker compose down -v` | The `vault-data` volume (connector tokens) was wiped; re-link via the Connections popover |
 
 ### Build & test
 ```bash

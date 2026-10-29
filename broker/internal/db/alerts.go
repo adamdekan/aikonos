@@ -93,7 +93,7 @@ func (r *AlertRepo) List(ctx context.Context, tenantID string, limit int) ([]ale
 // PruneBefore deletes every alert created strictly before cutoff and returns
 // the number removed — the retention sweep main.go's daily ticker drives
 // (F34). Cross-tenant like UsageEventRepo.PruneBefore, so it goes through the
-// SECURITY DEFINER function alerts_prune (migration 066).
+// SECURITY DEFINER function alerts_prune (migration 065).
 func (r *AlertRepo) PruneBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return withConnUnscoped(ctx, r.pool, func(conn *pgxpool.Conn) (int64, error) {
 		var removed int64

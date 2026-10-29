@@ -570,7 +570,8 @@ func (s *BrokerService) StreamTaskEvents(req *brokerv1.StreamTaskEventsRequest, 
 	if err != nil {
 		return err
 	}
-	// Streams skip AuditInterceptor: record the subscription itself.
+	// AuditStreamInterceptor records the stream only when it ends: record
+	// the subscription itself as it starts.
 	emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
 		"aikonos.broker.task.stream_subscribed", auditv1.PolicyDecision_ALLOW, task)
 	id, _ := auth.IdentityFromContext(ctx)

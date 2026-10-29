@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +26,10 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/notify"
 	"github.com/adamdekan/aikonos/broker/internal/revocation"
 	"github.com/adamdekan/aikonos/broker/internal/secrets"
+	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -185,9 +189,44 @@ type identityStream struct {
 
 func (s identityStream) Context() context.Context { return s.ctx }
 
+// auditLog is a notify.Bus that keeps each audit event the emitter publishes
+// as "<event_type> <decision>".
+type auditLog struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (a *auditLog) Enabled() bool { return true }
+func (a *auditLog) Publish(_ context.Context, _ string, payload []byte) error {
+	var ev struct {
+		EventType string                 `json:"event_type"`
+		Decision  auditv1.PolicyDecision `json:"decision"`
+	}
+	if err := json.Unmarshal(payload, &ev); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.got = append(a.got, ev.EventType+" "+ev.Decision.String())
+	return nil
+}
+func (a *auditLog) Subscribe(string) (notify.Subscription, error) { return nil, nil }
+func (a *auditLog) Close() error                                  { return nil }
+
+// take returns the events recorded since the last take.
+func (a *auditLog) take() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	got := a.got
+	a.got = nil
+	return got
+}
+
 // TestNorthInterceptors runs the chain main.go registers (F173/G47, F136): a
 // blocked caller or one naming another tenant is refused before the
-// provisioner runs, and the stream chain refuses a blocked caller too.
+// provisioner runs, and the stream chain refuses a blocked caller too. The
+// stream chain also audits the handler's outcome and recovers a handler panic
+// as codes.Internal, as the unary chain does; a client-closed stream is ALLOW.
 func TestNorthInterceptors(t *testing.T) {
 	const tenant = "11111111-1111-1111-1111-111111111111"
 	v, err := auth.NewValidator(auth.OIDCConfig{}) // disabled: the context identity stands in for a verified token
@@ -198,12 +237,18 @@ func TestNorthInterceptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := &auditLog{}
+	em.AttachBus(events)
 	provisioned := 0
 	prov := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 		provisioned++
 		return h(ctx, req)
 	}
-	unary, stream := northInterceptors(v, em, "aikonos-dev", tenant, blockedSubjects{"mallory": true}, prov, zap.NewNop())
+	provStream := func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
+		provisioned++
+		return h(srv, ss)
+	}
+	unary, stream := northInterceptors(v, em, "aikonos-dev", tenant, blockedSubjects{"mallory": true}, prov, provStream, zap.NewNop())
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/CreateTask"}
 	call := func(id *auth.Identity) error {
@@ -228,16 +273,148 @@ func TestNorthInterceptors(t *testing.T) {
 		t.Fatalf("allowed caller: err=%v provisioned=%d", err, provisioned)
 	}
 
-	handled := false
-	sh := grpc.StreamHandler(func(any, grpc.ServerStream) error { handled = true; return nil })
 	sinfo := &grpc.StreamServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/StreamTaskEvents"}
-	for i := len(stream) - 1; i >= 0; i-- {
-		ic, next := stream[i], sh
-		sh = func(srv any, ss grpc.ServerStream) error { return ic(srv, ss, sinfo, next) }
+	runStream := func(ctx context.Context, sh grpc.StreamHandler) error {
+		for i := len(stream) - 1; i >= 0; i-- {
+			ic, next := stream[i], sh
+			sh = func(srv any, ss grpc.ServerStream) error { return ic(srv, ss, sinfo, next) }
+		}
+		return sh(nil, identityStream{ctx: ctx})
 	}
-	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "mallory", TenantID: tenant})
-	if err := sh(nil, identityStream{ctx: ctx}); status.Code(err) != codes.PermissionDenied || handled {
+	handled := false
+	if err := runStream(auth.WithIdentity(context.Background(), &auth.Identity{Subject: "mallory", TenantID: tenant}), func(any, grpc.ServerStream) error { handled = true; return nil }); status.Code(err) != codes.PermissionDenied || handled {
 		t.Fatalf("blocked stream caller: err=%v handled=%v", err, handled)
+	}
+	if provisioned != 1 {
+		t.Fatal("the provisioner ran for a refused stream caller")
+	}
+	alice := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: tenant})
+	events.take()
+	if err := runStream(alice, func(any, grpc.ServerStream) error { return status.Error(codes.PermissionDenied, "not your task") }); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("handler denial: %v", err)
+	}
+	if got := events.take(); !slices.Equal(got, []string{audit.RPCEventType + " DENY"}) {
+		t.Fatalf("handler denial audit = %v, want one %s DENY", got, audit.RPCEventType)
+	}
+	if err := runStream(alice, func(any, grpc.ServerStream) error { panic("boom") }); status.Code(err) != codes.Internal {
+		t.Fatalf("panicking stream handler: %v, want Internal", err)
+	}
+	if got := events.take(); !slices.Equal(got, []string{audit.RPCEventType + " DENY"}) {
+		t.Fatalf("panic audit = %v, want one %s DENY", got, audit.RPCEventType)
+	}
+	// A client closing the stream is its normal end, not a denial.
+	closed, cancel := context.WithCancel(alice)
+	cancel()
+	if err := runStream(closed, func(_ any, ss grpc.ServerStream) error { return status.FromContextError(ss.Context().Err()).Err() }); status.Code(err) != codes.Canceled {
+		t.Fatalf("client-closed stream: %v", err)
+	}
+	if got := events.take(); !slices.Equal(got, []string{audit.RPCEventType + " ALLOW"}) {
+		t.Fatalf("client-closed stream audit = %v, want one %s ALLOW", got, audit.RPCEventType)
+	}
+	if provisioned != 4 {
+		t.Fatalf("provisioned=%d, want the allowed stream caller provisioned on each stream", provisioned)
+	}
+}
+
+// TestNorthInterceptorOrder pins the order of both north chains: each slot is
+// called on its own and named by the one probe it reacts to, so a reorder
+// fails here even where TestNorthInterceptors' outcomes would still hold.
+func TestNorthInterceptorOrder(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+	v, err := auth.NewValidator(auth.OIDCConfig{Issuer: "https://idp.invalid", Audience: "aikonos"}) // enabled: no bearer is refused
+	if err != nil {
+		t.Fatal(err)
+	}
+	em, err := audit.NewEmitter(context.Background(), audit.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioned := 0
+	prov := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+		provisioned++
+		return h(ctx, req)
+	}
+	provStream := func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
+		provisioned++
+		return h(srv, ss)
+	}
+	unary, stream := northInterceptors(v, em, "aikonos-dev", tenant, blockedSubjects{"mallory": true}, prov, provStream, zap.NewNop())
+
+	ctxFor := func(id *auth.Identity) context.Context {
+		if id == nil {
+			return context.Background()
+		}
+		return auth.WithIdentity(context.Background(), id)
+	}
+	alice := &auth.Identity{Subject: "alice", TenantID: tenant}
+	foreign := &auth.Identity{Subject: "alice", TenantID: "22222222-2222-2222-2222-222222222222"}
+	mallory := &auth.Identity{Subject: "mallory", TenantID: tenant}
+	// name runs the probes in turn: oversized request, no bearer, foreign
+	// tenant, blocked user, provisioner count, panicking handler.
+	name := func(call func(id *auth.Identity, big, panics bool) codes.Code, sized bool) string {
+		before := provisioned
+		switch {
+		case sized && call(alice, true, false) == codes.ResourceExhausted:
+			return "size"
+		case call(nil, false, false) == codes.Unauthenticated:
+			return "oidc"
+		case call(foreign, false, false) == codes.PermissionDenied:
+			return "tenant"
+		case call(mallory, false, false) == codes.PermissionDenied:
+			return "revocation"
+		case provisioned > before:
+			return "provisioner"
+		case call(alice, false, true) == codes.Internal:
+			return "audit"
+		}
+		return "?"
+	}
+
+	info := &grpc.UnaryServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/CreateTask"}
+	var got []string
+	for _, ic := range unary {
+		got = append(got, name(func(id *auth.Identity, big, panics bool) (code codes.Code) {
+			defer func() {
+				if recover() != nil {
+					code = codes.Unknown
+				}
+			}()
+			req := &brokerv1.CreateTaskRequest{}
+			if big {
+				req.Prompt = strings.Repeat("a", maxRequestBytes+1)
+			}
+			_, err := ic(ctxFor(id), req, info, func(context.Context, any) (any, error) {
+				if panics {
+					panic("boom")
+				}
+				return nil, nil
+			})
+			return status.Code(err)
+		}, true))
+	}
+	if want := []string{"size", "oidc", "tenant", "revocation", "provisioner", "audit"}; !slices.Equal(got, want) {
+		t.Fatalf("unary chain = %v, want %v", got, want)
+	}
+
+	sinfo := &grpc.StreamServerInfo{FullMethod: "/aikonos.broker.v1.BrokerService/StreamTaskEvents"}
+	got = nil
+	for _, ic := range stream {
+		got = append(got, name(func(id *auth.Identity, _, panics bool) (code codes.Code) {
+			defer func() {
+				if recover() != nil {
+					code = codes.Unknown
+				}
+			}()
+			return status.Code(ic(nil, identityStream{ctx: ctxFor(id)}, sinfo, func(any, grpc.ServerStream) error {
+				if panics {
+					panic("boom")
+				}
+				return nil
+			}))
+		}, false))
+	}
+	if want := []string{"oidc", "tenant", "revocation", "provisioner", "audit"}; !slices.Equal(got, want) {
+		t.Fatalf("stream chain = %v, want %v", got, want)
 	}
 }
 

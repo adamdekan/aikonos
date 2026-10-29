@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["**"]
 
+# Least privilege: every job only reads the repo; a job that needs more gets
+# it at job level (scorecard below). Actions are pinned by commit SHA.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,9 +22,11 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.27"
           cache: true
@@ -62,7 +69,9 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Same OPA version as compose.yaml's opa image: tests should pass on the
       # engine that decides.
@@ -100,9 +109,11 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -130,9 +141,11 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -160,9 +173,11 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -174,6 +189,46 @@ jobs:
 
       - name: Run docs-mcp tests
         working-directory: docs-mcp
+        run: npm test
+
+  office-worker-test:
+    name: Office worker tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: office-worker/package-lock.json
+
+      # The tools office-worker/Dockerfile installs, minus LibreOffice: the
+      # soffice tests skip without it (test-support/helpers.js hasSoffice).
+      - name: Install document tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q pandoc poppler-utils qpdf tesseract-ocr tesseract-ocr-eng
+
+      # uv at office-worker/Dockerfile's version; `uv sync --locked` builds
+      # office-worker/.venv (Python 3.12 + the uv.lock'd script deps, hash
+      # checked) and fails if uv.lock is stale.
+      - name: Install the Python script runtime
+        working-directory: office-worker
+        run: |
+          pipx install uv==0.12.23
+          uv sync --locked
+
+      - name: Install office-worker dependencies
+        working-directory: office-worker
+        run: npm ci --ignore-scripts
+
+      - name: Run office-worker tests
+        working-directory: office-worker
         run: npm test
 
   migrations:
@@ -207,7 +262,9 @@ jobs:
       # ...and the SELECT-only Grafana analytics role aikonos_grafana.
       AIKONOS_GRAFANA_DB_PASSWORD: aikonos-grafana-ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install postgresql-client
         run: |
@@ -259,7 +316,9 @@ jobs:
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # compose.onprem.yaml uses the `!reset` merge tag (floor: Compose v2.24.0,
       # see deploy/onprem/README.md prerequisites). Ensure the runner's docker
@@ -353,10 +412,22 @@ jobs:
     # allowlist may block. Non-blocking — a low score or a check that needs an
     # elevated token (e.g. Branch-Protection) must not red-X the workflow.
     continue-on-error: true
+    # Read-only API scopes the Scorecard checks query (CI-Tests, Code-Review,
+    # Maintained, Token-Permissions). No SARIF upload or result publishing, so
+    # no security-events or id-token write.
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      issues: read
+      pull-requests: read
+      statuses: read
     strategy:
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Scorecard CLI
         run: |
@@ -380,7 +451,7 @@ jobs:
 
       - name: Upload Scorecard results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: scorecard-results.json

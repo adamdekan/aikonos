@@ -1,6 +1,6 @@
 // broker/internal/provisioning/interceptor.go
-// gRPC unary server interceptor that fires Seen for every authenticated north
-// caller. Never blocks or fails the RPC.
+// gRPC unary and stream server interceptors that fire Seen for every
+// authenticated north caller. Never block or fail the RPC.
 package provisioning
 
 import (
@@ -19,13 +19,25 @@ import (
 // tenant-less caller is never provisioned into groups.
 func (p *Provisioner) Interceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if id, ok := auth.IdentityFromContext(ctx); ok && id.TenantID != "" {
-			tenantID := id.TenantID
-			// Seen detaches from ctx intentionally: it spawns a goroutine with a
-			// fresh background context so the RPC cancellation cannot abort the
-			// provisioning flow mid-write.
-			p.Seen(ctx, tenantID, id)
-		}
+		p.seen(ctx)
 		return handler(ctx, req)
+	}
+}
+
+// StreamInterceptor is Interceptor for streaming RPCs, with the same ordering
+// requirement.
+func (p *Provisioner) StreamInterceptor() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		p.seen(ss.Context())
+		return handler(srv, ss)
+	}
+}
+
+func (p *Provisioner) seen(ctx context.Context) {
+	if id, ok := auth.IdentityFromContext(ctx); ok && id.TenantID != "" {
+		// Seen detaches from ctx intentionally: it spawns a goroutine with a
+		// fresh background context so the RPC cancellation cannot abort the
+		// provisioning flow mid-write.
+		p.Seen(ctx, id.TenantID, id)
 	}
 }
