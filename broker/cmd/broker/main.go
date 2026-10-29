@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -688,6 +689,8 @@ func main() {
 		} else if raw := viper.GetString("workspace.session_signing_key"); raw != "" {
 			secrets["workspace session signing key"] = raw // set but undecodable, e.g. a "<...>" placeholder
 		}
+		maps.Copy(secrets, transportSecrets(viper.GetString("office.worker_url"),
+			os.Getenv("AIKONOS_OFFICE_WORKER_TOKEN"), viper.GetString("nats.url")))
 		weak, guardErr := secretsGuard(viper.GetBool("dev_mode"), secrets)
 		if guardErr != nil {
 			log.Fatal("startup guard", zap.Error(guardErr))

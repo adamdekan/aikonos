@@ -134,10 +134,18 @@ chmod 0644 "${TLS_DIR}/broker.key" "${TLS_DIR}/agent-gateway.key" 2>/dev/null ||
 # Each service mounts only its own directory (compose.yaml: tls/<name>:/tls),
 # so ca.key, ca.srl and the other service's key never enter a runtime
 # container. Refreshed on every run, so --force and certs dropped in by hand
-# at the top level both reach the services.
+# at the top level both reach the services; an identical copy is left alone,
+# so a re-run needs no write access to a dir another user populated.
 for name in broker agent-gateway; do
   mkdir -p "${TLS_DIR}/${name}"
-  cp "${TLS_DIR}/${name}.crt" "${TLS_DIR}/${name}.key" "${TLS_DIR}/ca.crt" "${TLS_DIR}/${name}/"
+  for f in "${name}.crt" "${name}.key" ca.crt; do
+    cmp -s "${TLS_DIR}/${f}" "${TLS_DIR}/${name}/${f}" && continue
+    cp "${TLS_DIR}/${f}" "${TLS_DIR}/${name}/" || {
+      echo "[compose-dev-ca] cannot write ${TLS_DIR}/${name}/${f}: set AIKONOS_HOST_UID/AIKONOS_HOST_GID" \
+        "to the checkout owner (id -u / id -g), or run bash scripts/compose-dev-ca.sh on the host as that user" >&2
+      exit 1
+    }
+  done
 done
 
 echo "[compose-dev-ca] done. Files in ${TLS_DIR}:"

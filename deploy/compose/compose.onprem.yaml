@@ -50,10 +50,10 @@ services:
 
   # ── NATS: no host publish ────────────────────────────────────────────────────
   # Base compose.yaml publishes 4222 (client) + 8222 (monitoring) for local dev.
-  # NATS runs unauthenticated and carries the audit event stream, so a host
-  # publish means anyone reachable can subscribe to `aikonos.audit.>` and read
-  # every audit event, or publish forged events into the subject the gateway's
-  # audit consumer trusts. Nothing off-host needs either port: broker→NATS and
+  # NATS carries the audit event stream and its monitoring port is
+  # unauthenticated; a host publish would put both, and password guessing
+  # against the client port, in reach of every host on the network. Nothing
+  # off-host needs either port: broker→NATS and
   # gateway→NATS both ride the `mesh` network.
   nats:
     ports: !reset []

@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -85,4 +86,24 @@ func secretsGuard(devMode bool, secrets map[string]string) (weak []string, fatal
 		)
 	}
 	return weak, fatal
+}
+
+// transportSecrets returns, for secretsGuard, the shared secrets the broker
+// presents to other services: the office-worker token when a worker is
+// configured, and the credential compose puts in the NATS URL
+// (nats://user:password@… or nats://token@…). An unparseable URL adds nothing:
+// notify.New then fails closed on it.
+func transportSecrets(officeWorkerURL, officeToken, natsURL string) map[string]string {
+	out := map[string]string{}
+	if officeWorkerURL != "" {
+		out["office worker token"] = officeToken
+	}
+	if u, err := url.Parse(natsURL); err == nil && u.User != nil {
+		if pw, ok := u.User.Password(); ok {
+			out["nats password"] = pw
+		} else {
+			out["nats token"] = u.User.Username()
+		}
+	}
+	return out
 }

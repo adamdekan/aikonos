@@ -19,7 +19,8 @@ set -euo pipefail
 #   - broker and gateway serve the same AIKONOS_TENANT_ID and AIKONOS_DEV_MODE
 #   - broker and gateway mount only their own TLS dir (never ca.key)
 #   - dev-ca-mint is digest-pinned with no network; office-worker has an init
-#   - NATS requires a token; an unset/blank AIKONOS_DEV_MODE renders false on
+#   - NATS loads nats/nats.conf and broker/gateway log in as their own users
+#     (only the broker may publish); an unset/blank AIKONOS_DEV_MODE renders false on
 #     broker and gateway, and so do the broker's fail-open migration switches
 #
 # Needs jq and the docker compose CLI (config rendering only, no daemon calls).
@@ -82,7 +83,12 @@ violations() {
       ( if ($s["dev-ca-mint"].image | contains("@sha256:")) then empty else "dev-ca-mint image is not digest-pinned" end ),
       ( if $s["dev-ca-mint"].network_mode == "none" then empty else "dev-ca-mint has network access" end ),
       ( if $s["office-worker"].init == true then empty else "office-worker runs without init (zombie reaping)" end ),
-      ( if ($s.nats.command | map(select(startswith("--auth="))) | length) == 1 then empty else "nats runs without --auth" end )
+      ( if any($s.nats.command[]; . == "--config=/etc/nats/aikonos.conf")
+           and any(($s.nats.volumes // [])[]; .target == "/etc/nats/aikonos.conf" and (.source | endswith("/deploy/compose/nats/nats.conf")))
+        then empty else "nats does not load deploy/compose/nats/nats.conf (per-user subject permissions)" end ),
+      ( if ($s.broker.environment.AIKONOS_NATS_URL | startswith("nats://broker:"))
+           and ($s["agent-gateway"].environment.AIKONOS_NATS_URL | startswith("nats://gateway:"))
+        then empty else "broker and agent-gateway do not log in to NATS as their own users (gateway must not hold the publishing credential)" end )
   '
 }
 

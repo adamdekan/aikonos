@@ -144,3 +144,31 @@ func TestSecretsGuard(t *testing.T) {
 		t.Errorf("strong key: weak=%v fatal=%v", weak, fatal)
 	}
 }
+
+// The office-worker token and the NATS credential are shared secrets too: the
+// shipped example values must be fatal outside dev mode, like the HMAC keys.
+func TestTransportSecrets(t *testing.T) {
+	strong := strings.Repeat("k", minSecretBytes)
+	got := transportSecrets("http://office-worker:8081", "<OFFICE_WORKER_TOKEN-CHANGE-ME>",
+		"nats://broker:dev-nats-broker-change-me@nats:4222")
+	if got["office worker token"] != "<OFFICE_WORKER_TOKEN-CHANGE-ME>" || got["nats password"] != "dev-nats-broker-change-me" {
+		t.Fatalf("transportSecrets = %v", got)
+	}
+	if weak, fatal := secretsGuard(false, got); fatal == nil || len(weak) != 2 {
+		t.Errorf("shipped placeholders: weak=%v fatal=%v, want two findings and a fatal error", weak, fatal)
+	}
+	// A bare token rides as the URL username.
+	if got := transportSecrets("", "", "nats://"+strong+"@nats:4222"); got["nats token"] != strong || len(got) != 1 {
+		t.Errorf("token URL: %v", got)
+	}
+	// No worker, no credential in the URL (or no URL): nothing to check.
+	for _, u := range []string{"nats://nats:4222", ""} {
+		if got := transportSecrets("", "", u); len(got) != 0 {
+			t.Errorf("transportSecrets(%q) = %v, want none", u, got)
+		}
+	}
+	// A configured worker without a token is checked (and so fatal), not skipped.
+	if got := transportSecrets("http://office-worker:8081", "", ""); len(got) != 1 {
+		t.Errorf("worker without token: %v", got)
+	}
+}

@@ -284,16 +284,25 @@ services:
     # by default in dev); mesh-isolated, low marginal value.
     image: nats:2.10-alpine
     networks: [mesh]
-    # Clients authenticate with AIKONOS_NATS_TOKEN (nats://<token>@nats:4222):
     # NATS carries the audit stream, and mesh also holds the webui, keycloak and
-    # any attached MCP container. The monitoring port (8222) stays unauthenticated.
+    # any attached MCP container, so clients log in as their own user with
+    # per-subject permissions (deploy/compose/nats/nats.conf): the broker
+    # publishes, the gateway may only read aikonos.audit.>. The monitoring port
+    # (8222) stays unauthenticated.
+    # The values are quoted for nats.conf's env lookup (see there); the URLs
+    # below carry them bare, so keep them hex.
+    environment:
+      AIKONOS_NATS_BROKER_PASSWORD:  '"${AIKONOS_NATS_BROKER_PASSWORD:?set AIKONOS_NATS_BROKER_PASSWORD (openssl rand -hex 32)}"'
+      AIKONOS_NATS_GATEWAY_PASSWORD: '"${AIKONOS_NATS_GATEWAY_PASSWORD:?set AIKONOS_NATS_GATEWAY_PASSWORD (openssl rand -hex 32)}"'
+    volumes:
+      - ./deploy/compose/nats/nats.conf:/etc/nats/aikonos.conf:ro
     command:
+      - --config=/etc/nats/aikonos.conf
       - --port=4222
       - --http_port=8222
       - --server_name=nats-0
       - --js
       - --store_dir=/data/jetstream
-      - --auth=${AIKONOS_NATS_TOKEN:?set AIKONOS_NATS_TOKEN (openssl rand -hex 32)}
     ports:
       - "4222:4222"   # NATS client
       - "8222:8222"   # NATS monitoring
@@ -496,7 +505,7 @@ services:
       # broker refuses to start without OIDC, OpenFGA and a capability key. Local
       # dev sets AIKONOS_DEV_MODE=true explicitly (.env.local.example).
       AIKONOS_DEV_MODE:                     ${AIKONOS_DEV_MODE:-false}
-      AIKONOS_NATS_URL:                     nats://${AIKONOS_NATS_TOKEN}@nats:4222
+      AIKONOS_NATS_URL:                     nats://broker:${AIKONOS_NATS_BROKER_PASSWORD}@nats:4222
       AIKONOS_AUDIT_MINIO_ENDPOINT:         ${AIKONOS_AUDIT_MINIO_ENDPOINT}
       AIKONOS_AUDIT_BUCKET:                 ${AIKONOS_AUDIT_BUCKET}
       AIKONOS_AUDIT_ACCESS_KEY:             ${AIKONOS_AUDIT_ACCESS_KEY}
@@ -690,7 +699,7 @@ services:
       AIKONOS_SCHEDULER_TICK_MS:  ${AIKONOS_SCHEDULER_TICK_MS}
       # NATS for the in-gateway audit SSE bridge (absorbed from the removed
       # observability console). webui /audit/stream → gateway /api/audit/stream.
-      AIKONOS_NATS_URL:           nats://${AIKONOS_NATS_TOKEN}@nats:4222
+      AIKONOS_NATS_URL:           nats://gateway:${AIKONOS_NATS_GATEWAY_PASSWORD}@nats:4222
       PORT:                      "8080"
       AIKONOS_API_KEY_PEPPER:     ${AIKONOS_API_KEY_PEPPER:-}
       AIKONOS_EXTERNAL_PORT:      "8090"
