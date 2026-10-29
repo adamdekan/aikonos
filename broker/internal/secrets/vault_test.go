@@ -706,3 +706,80 @@ func mustRawMessage(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+// TestVault_RedirectNotFollowed pins F176/G31: a 307 from the Vault address is
+// an error, and the redirect target never sees the client token.
+func TestVault_RedirectNotFollowed(t *testing.T) {
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Vault-Token") != "" {
+			leaked.Store(true)
+		}
+	}))
+	defer other.Close()
+	fake := newFakeVault(3600)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/auth/", fake.handler(t))
+	mux.HandleFunc("/v1/secret/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := newTestClient(t, srv)
+
+	if err := c.WriteConnector(context.Background(), "t", "u", "gdrive", &ConnectorToken{AccessToken: "a", RefreshToken: "r"}); err == nil {
+		t.Fatal("a redirected write must fail")
+	}
+	if leaked.Load() {
+		t.Fatal("X-Vault-Token was forwarded to the redirect target")
+	}
+}
+
+// TestVault_ReloginOnceOn403: a revoked client token is dropped and the call
+// retried once with a fresh login.
+func TestVault_ReloginOnceOn403(t *testing.T) {
+	fake := newFakeVault(3600)
+	var denied atomic.Int32
+	inner := fake.handler(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/secret/") && denied.Add(1) == 2 {
+			w.WriteHeader(http.StatusForbidden) // token revoked between calls
+			return
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	ctx := context.Background()
+
+	if err := c.WriteConnector(ctx, "t", "u", "gdrive", &ConnectorToken{AccessToken: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReadConnector(ctx, "t", "u", "gdrive"); err != nil {
+		t.Fatalf("read after a 403: %v", err)
+	}
+	if n := atomic.LoadInt32(&fake.logins); n != 2 {
+		t.Fatalf("want one re-login (2 logins), got %d", n)
+	}
+}
+
+func TestCheckVaultAddr(t *testing.T) {
+	for addr, ok := range map[string]bool{
+		"https://vault.corp.example:8200": true,
+		"http://vault:8200":               true, // compose service name
+		"http://127.0.0.1:8200":           true,
+		"http://localhost:8200":           true,
+		"http://[::1]:8200":               true,
+		"http://vault.corp.example:8200":  false,
+		"http://10.0.0.5:8200":            false,
+		"ftp://vault:8200":                false,
+		"vault:8200":                      false,
+	} {
+		if err := checkVaultAddr(addr, false); (err == nil) != ok {
+			t.Errorf("%s: err=%v, want ok=%v", addr, err, ok)
+		}
+	}
+	if err := checkVaultAddr("http://vault.corp.example:8200", true); err != nil {
+		t.Errorf("explicit opt-in refused: %v", err)
+	}
+}

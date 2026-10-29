@@ -181,6 +181,7 @@ func main() {
 	viper.SetDefault("vault.role_id", "")
 	viper.SetDefault("vault.secret_id", "")
 	viper.SetDefault("vault.kv_mount", "secret")
+	viper.SetDefault("vault.allow_insecure_http", false)
 	// Connector OAuth apps (platform secrets). Empty client_id → that provider
 	// is unconfigured: its connector RPCs/tools are unavailable.
 	viper.SetDefault("connectors.redirect_uri", "")
@@ -498,6 +499,8 @@ func main() {
 		RoleID:     viper.GetString("vault.role_id"),
 		SecretID:   viper.GetString("vault.secret_id"),
 		KVMount:    viper.GetString("vault.kv_mount"),
+		// http:// on a routable host needs this explicit opt-in (F176).
+		AllowInsecureHTTP: viper.GetBool("vault.allow_insecure_http"),
 	})
 	if err != nil {
 		log.Fatal("Failed to init Vault secrets provider", zap.Error(err))
