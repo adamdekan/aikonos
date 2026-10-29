@@ -76,13 +76,18 @@ const fence = "---"
 var dotsOnlyRe = regexp.MustCompile(`^\.+$`)
 
 // ValidSkillName reports whether name is safe to use as a single Skills/
-// subdirectory segment: non-empty, no path separator, not dots-only, and
-// unchanged by filepath.Clean (catches ".." components, trailing slashes,
-// and other traversal-shaped input). Every mutating entry point (Install,
-// DeleteSkill, FreeName) rejects a name that fails this before it ever
-// touches a Backend call.
+// subdirectory segment: non-empty, no surrounding whitespace, no path
+// separator, not dots-only, and unchanged by filepath.Clean (catches ".."
+// components, trailing slashes, and other traversal-shaped input). Every
+// mutating entry point (Install, DeleteSkill, FreeName) rejects a name that
+// fails this before it ever touches a Backend call.
+//
+// G12: workspacefs.CleanRel trims surrounding whitespace before cleaning, so
+// ".. " passed every check here yet resolved "Skills/.. " to the workspace
+// root. The whitespace check closes that case; deleteSubtree re-checks the
+// resolved form for any other disagreement between the two.
 func ValidSkillName(name string) bool {
-	if name == "" {
+	if name == "" || strings.TrimSpace(name) != name {
 		return false
 	}
 	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') {

@@ -22,6 +22,12 @@ func TestValidSkillName(t *testing.T) {
 		{"a\\b", false},
 		{"./demo", false},
 		{"demo/", false},
+		// G12: CleanRel trims these to "..", i.e. the workspace root.
+		{".. ", false},
+		{"..\t", false},
+		{"..\n", false},
+		{" demo", false},
+		{"a b", true},
 	}
 	for _, c := range cases {
 		if got := ValidSkillName(c.name); got != c.want {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -42,6 +43,9 @@ func Scan(ctx context.Context, be workspacefs.Backend, tenant, user string) ([]S
 		if name == "" || strings.Contains(name, "/") {
 			continue // defensive: a shallow ListDir should never emit a nested path
 		}
+		if strings.HasPrefix(name, ".") {
+			continue // Install's staged/old dirs, never a skill
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -57,8 +61,20 @@ func Scan(ctx context.Context, be workspacefs.Backend, tenant, user string) ([]S
 }
 
 // scanOne reads and validates one skill's SKILL.md, never returning an error
-// — a missing/oversize/unparseable file becomes an invalid entry.
+// — a missing/oversize/unparseable file becomes an invalid entry. The size cap
+// is checked from the skill dir's listing before the read (G17), so an
+// oversize SKILL.md is never buffered; the post-read check stays because the
+// file can grow in between.
 func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name string) SkillEntry {
+	infos, err := be.ListDir(ctx, tenant, user, SkillDir(name), false)
+	if err != nil {
+		return SkillEntry{Name: name, Warning: "missing SKILL.md"}
+	}
+	for _, fi := range infos {
+		if fi.Path == SkillMdPath(name) && fi.Size > MaxSkillMdBytes {
+			return SkillEntry{Name: name, Warning: fmt.Sprintf("SKILL.md is %d bytes, exceeds the %d byte cap", fi.Size, MaxSkillMdBytes)}
+		}
+	}
 	data, _, err := be.Read(ctx, tenant, user, SkillMdPath(name))
 	if err != nil {
 		return SkillEntry{Name: name, Warning: "missing SKILL.md"}
@@ -224,33 +240,36 @@ func Snapshot(ctx context.Context, be workspacefs.Backend, tenant, fromUser, nam
 }
 
 // Install copies stagingSeg's contents into toUser's Skills/<targetName>/.
-// When replace is true, an existing target subtree is deleted first; when
-// false, an existing target is rejected with ErrExists and nothing is
-// written.
+// When replace is true, an existing target is replaced; when false, an
+// existing target is rejected with ErrExists and nothing is written.
+//
+// G16: the files are first copied into a hidden Skills/.<name>.staged dir, so
+// a failed copy leaves any existing skill untouched; only then is the old dir
+// renamed aside, the staged one renamed into place, and the old one deleted.
+// A failed swap renames the old dir back.
 func Install(ctx context.Context, be workspacefs.Backend, tenant, stagingSeg, toUser, targetName string, replace bool) error {
 	if !ValidSkillName(targetName) {
 		return fmt.Errorf("personalskill: invalid skill name %q", targetName)
 	}
 	targetDir := SkillDir(targetName)
+	staged, old := Dir+"/."+targetName+".staged", Dir+"/."+targetName+".old"
 
-	_, _, err := be.Read(ctx, tenant, toUser, targetDir+"/"+SkillMdName)
-	switch {
-	case err == nil:
-		if !replace {
-			return ErrExists
-		}
-		if derr := deleteSubtree(ctx, be, tenant, toUser, targetDir); derr != nil {
-			return derr
-		}
-	case errors.Is(err, fs.ErrNotExist):
-		// nothing to replace — proceed to install
-	default:
-		return fmt.Errorf("personalskill: check existing %s: %w", targetDir, err)
+	exists, err := skillExists(ctx, be, tenant, toUser, targetName)
+	if err != nil {
+		return err
+	}
+	if exists && !replace {
+		return ErrExists
 	}
 
 	infos, err := be.ListDir(ctx, tenant, stagingSeg, "", true)
 	if err != nil {
 		return fmt.Errorf("personalskill: list staging: %w", err)
+	}
+	// A leftover from an interrupted install is never the only copy of
+	// anything: the swap below runs only after staged is complete.
+	if err := deleteSubtree(ctx, be, tenant, toUser, staged); err != nil {
+		return err
 	}
 	for _, fi := range infos {
 		if fi.IsDir {
@@ -258,14 +277,46 @@ func Install(ctx context.Context, be workspacefs.Backend, tenant, stagingSeg, to
 		}
 		data, _, rerr := be.Read(ctx, tenant, stagingSeg, fi.Path)
 		if rerr != nil {
+			_ = deleteSubtree(ctx, be, tenant, toUser, staged)
 			return fmt.Errorf("personalskill: read staging %s: %w", fi.Path, rerr)
 		}
-		dest := targetDir + "/" + fi.Path
+		dest := staged + "/" + fi.Path
 		if _, werr := be.Write(ctx, tenant, toUser, dest, data); werr != nil {
+			_ = deleteSubtree(ctx, be, tenant, toUser, staged)
 			return fmt.Errorf("personalskill: write %s: %w", dest, werr)
 		}
 	}
+
+	if exists {
+		if err := deleteSubtree(ctx, be, tenant, toUser, old); err != nil {
+			return err
+		}
+		if _, err := be.Move(ctx, tenant, toUser, targetDir, old); err != nil {
+			_ = deleteSubtree(ctx, be, tenant, toUser, staged)
+			return fmt.Errorf("personalskill: move %s aside: %w", targetDir, err)
+		}
+	}
+	if _, err := be.Move(ctx, tenant, toUser, staged, targetDir); err != nil {
+		if exists {
+			_, _ = be.Move(ctx, tenant, toUser, old, targetDir)
+		}
+		_ = deleteSubtree(ctx, be, tenant, toUser, staged)
+		return fmt.Errorf("personalskill: move %s into place: %w", staged, err)
+	}
+	if exists {
+		return deleteSubtree(ctx, be, tenant, toUser, old)
+	}
 	return nil
+}
+
+// skillExists reports whether Skills/<name>/ holds anything — not just a
+// SKILL.md, so Install never merges files over a dir that lacks one (G16).
+func skillExists(ctx context.Context, be workspacefs.Backend, tenant, user, name string) (bool, error) {
+	infos, err := be.ListDir(ctx, tenant, user, SkillDir(name), false)
+	if err != nil {
+		return false, fmt.Errorf("personalskill: check existing %s: %w", SkillDir(name), err)
+	}
+	return len(infos) > 0, nil
 }
 
 // DeleteSkill recursively deletes Skills/<name>/ for one user, bounded to
@@ -285,6 +336,11 @@ func DeleteSkill(ctx context.Context, be workspacefs.Backend, tenant, user, name
 // comes from dir's own ListDir walk, so a caller-validated dir (SkillDir(name)
 // with a ValidSkillName-checked name) can never reach outside Skills/<name>/.
 func deleteSubtree(ctx context.Context, be workspacefs.Backend, tenant, user, dir string) error {
+	// G12 defence in depth: dir must still name something strictly inside
+	// Skills/ once the backend's own resolver has cleaned it.
+	if clean, err := workspacefs.CleanRel(dir); err != nil || !strings.HasPrefix(filepath.ToSlash(clean), Dir+"/") {
+		return fmt.Errorf("personalskill: refusing to delete %q: not inside %s/", dir, Dir)
+	}
 	infos, err := be.ListDir(ctx, tenant, user, dir, true)
 	if err != nil {
 		return fmt.Errorf("personalskill: list %s: %w", dir, err)
@@ -314,20 +370,20 @@ func deleteSubtree(ctx context.Context, be workspacefs.Backend, tenant, user, di
 }
 
 // FreeName returns the first of base, base-2, base-3, … whose Skills/<name>/
-// does not yet exist for (tenant, user) — probed via SKILL.md presence, the
-// same existence check Install uses.
+// does not yet exist for (tenant, user) — the same existence check Install
+// uses (skillExists).
 func FreeName(ctx context.Context, be workspacefs.Backend, tenant, user, base string) (string, error) {
 	if !ValidSkillName(base) {
 		return "", fmt.Errorf("personalskill: invalid skill name %q", base)
 	}
 	name := base
 	for n := 2; ; n++ {
-		_, _, err := be.Read(ctx, tenant, user, SkillMdPath(name))
-		if errors.Is(err, fs.ErrNotExist) {
-			return name, nil
-		}
+		exists, err := skillExists(ctx, be, tenant, user, name)
 		if err != nil {
-			return "", fmt.Errorf("personalskill: check %s: %w", name, err)
+			return "", err
+		}
+		if !exists {
+			return name, nil
 		}
 		name = fmt.Sprintf("%s-%d", base, n)
 	}

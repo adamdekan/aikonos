@@ -543,3 +543,122 @@ func TestSnapshotByteCapCatchesUnderreportedListDirSize(t *testing.T) {
 		t.Fatalf("writes = %v, want none — a byte-cap rejection must never reach the staging write loop", be.writes)
 	}
 }
+
+// G12: a whitespace-padded ".." never reaches the workspace root, and
+// deleteSubtree refuses anything that does not clean to inside Skills/.
+func TestDeleteSkillDotDotSpaceKeepsWorkspace(t *testing.T) {
+	ctx := context.Background()
+	be := storeEnv(t)
+	if _, err := be.Write(ctx, "t1", "u1", "notes.txt", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteSkill(ctx, be, "t1", "u1", ".. "); err == nil {
+		t.Fatalf("DeleteSkill(\".. \") = nil error, want error")
+	}
+	if err := deleteSubtree(ctx, be, "t1", "u1", "Skills/.. "); err == nil {
+		t.Fatalf("deleteSubtree(\"Skills/.. \") = nil error, want error")
+	}
+	if _, _, err := be.Read(ctx, "t1", "u1", "notes.txt"); err != nil {
+		t.Fatalf("workspace file deleted: %v", err)
+	}
+}
+
+// failingWriteBackend fails the Nth Write.
+type failingWriteBackend struct {
+	workspacefs.Backend
+	failOn, writes int
+}
+
+func (b *failingWriteBackend) Write(ctx context.Context, tenant, user, rel string, data []byte) (workspacefs.FileInfo, error) {
+	b.writes++
+	if b.writes == b.failOn {
+		return workspacefs.FileInfo{}, errors.New("disk full (injected)")
+	}
+	return b.Backend.Write(ctx, tenant, user, rel, data)
+}
+
+// G16: a replace install that fails mid-copy leaves the existing skill intact
+// and no staged leftovers in the listing.
+func TestInstallReplaceFailureKeepsOldSkill(t *testing.T) {
+	ctx := context.Background()
+	store := storeEnv(t)
+	writeSkill(t, store, "t1", "sender", "demo", "new", map[string]string{"a.md": "a", "b.md": "b", "c.md": "c"})
+	if _, err := Snapshot(ctx, store, "t1", "sender", "demo", "xfer-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, store, "t1", "rcpt", "demo", "old", map[string]string{"mine.md": "mine"})
+
+	be := &failingWriteBackend{Backend: store, failOn: 3}
+	if err := Install(ctx, be, "t1", "xfer-1", "rcpt", "demo", true); err == nil {
+		t.Fatalf("Install with a failing write = nil error")
+	}
+	data, _, err := store.Read(ctx, "t1", "rcpt", SkillMdPath("demo"))
+	if err != nil || !strings.Contains(string(data), "old") {
+		t.Fatalf("old SKILL.md lost: %q, %v", data, err)
+	}
+	if _, _, err := store.Read(ctx, "t1", "rcpt", SkillDir("demo")+"/mine.md"); err != nil {
+		t.Fatalf("old skill file lost: %v", err)
+	}
+	entries, err := Scan(ctx, store, "t1", "rcpt")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("Scan after failed install = %+v, %v; want only demo", entries, err)
+	}
+
+	// And a successful replace swaps the whole folder.
+	if err := Install(ctx, store, "t1", "xfer-1", "rcpt", "demo", true); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, _, err := store.Read(ctx, "t1", "rcpt", SkillDir("demo")+"/mine.md"); err == nil {
+		t.Fatalf("replace kept a file from the old skill")
+	}
+}
+
+// G16: a target dir without SKILL.md still counts as existing, so its files
+// are never merged into.
+func TestInstallTreatsDirWithoutSkillMdAsExisting(t *testing.T) {
+	ctx := context.Background()
+	be := storeEnv(t)
+	writeSkill(t, be, "t1", "sender", "demo", "d", nil)
+	if _, err := Snapshot(ctx, be, "t1", "sender", "demo", "xfer-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.Write(ctx, "t1", "rcpt", SkillDir("demo")+"/stray.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(ctx, be, "t1", "xfer-1", "rcpt", "demo", false); !errors.Is(err, ErrExists) {
+		t.Fatalf("Install over a dir without SKILL.md = %v, want ErrExists", err)
+	}
+	if name, err := FreeName(ctx, be, "t1", "rcpt", "demo"); err != nil || name != "demo-2" {
+		t.Fatalf("FreeName = %q, %v; want demo-2", name, err)
+	}
+}
+
+// countingReadBackend counts Reads of SKILL.md files.
+type countingReadBackend struct {
+	workspacefs.Backend
+	skillMdReads int
+}
+
+func (b *countingReadBackend) Read(ctx context.Context, tenant, user, rel string) ([]byte, time.Time, error) {
+	if strings.HasSuffix(rel, "/"+SkillMdName) {
+		b.skillMdReads++
+	}
+	return b.Backend.Read(ctx, tenant, user, rel)
+}
+
+// G17: an oversize SKILL.md is reported invalid without being read.
+func TestScanOversizeSkillMdNotRead(t *testing.T) {
+	ctx := context.Background()
+	store := storeEnv(t)
+	if _, err := store.Write(ctx, "t1", "u1", SkillMdPath("big"), make([]byte, MaxSkillMdBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	be := &countingReadBackend{Backend: store}
+	entries, err := Scan(ctx, be, "t1", "u1")
+	if err != nil || len(entries) != 1 || entries[0].Warning == "" {
+		t.Fatalf("Scan = %+v, %v; want one invalid entry", entries, err)
+	}
+	if be.skillMdReads != 0 {
+		t.Fatalf("oversize SKILL.md was read %d times", be.skillMdReads)
+	}
+}
