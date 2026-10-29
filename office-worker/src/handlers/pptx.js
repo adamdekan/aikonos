@@ -9,6 +9,7 @@ import {
   HandlerInputError,
   ScriptError,
   VENV_BIN_DIR,
+  limited,
   readJobFile,
   runCommand,
   runNodeScript,
@@ -55,7 +56,7 @@ registerHandler('pptx/extract', async ({ jobDir, files, params, spawn }) => {
   }
 
   const outputPath = join(jobDir, 'output.md');
-  await runCommand({ spawn, cmd: MARKITDOWN, args: [inputPath, '-o', outputPath], cwd: jobDir });
+  await runCommand({ spawn, ...limited(MARKITDOWN, [inputPath, '-o', outputPath]), cwd: jobDir });
 
   const content = await readJobFile(jobDir, 'output.md', 'markitdown did not produce markdown output');
   return { outputs: [], result: { content: content.toString('utf8') } };

@@ -6,6 +6,11 @@ import { join } from 'node:path';
 import { HandlerInputError, readJobJson, runFixedPythonScript, writeJobFile } from './run-script.js';
 import { MAX_REGEX_LENGTH } from './zip-edit.js';
 
+// The helper copies context_chars around every match and returns up to
+// echo_cap chars; unbounded, one small upload makes it copy tens of MiB per
+// match and write a result the broker refuses anyway.
+const MAX_QUERY_PARAMS = { context_chars: 2000, echo_cap: 200000 };
+
 export async function runXmlQuery({ jobDir, spawn, inputPath, params }) {
   if (typeof params.member !== 'string' || !params.member) {
     throw new HandlerInputError('params.member (archive member name) is required for format:"xml"');
@@ -13,9 +18,10 @@ export async function runXmlQuery({ jobDir, spawn, inputPath, params }) {
   if (params.pattern != null && (typeof params.pattern !== 'string' || params.pattern.length > MAX_REGEX_LENGTH)) {
     throw new HandlerInputError(`params.pattern must be a regex string of at most ${MAX_REGEX_LENGTH} characters`);
   }
-  for (const key of ['context_chars', 'echo_cap']) {
-    if (params[key] != null && !(Number.isInteger(params[key]) && params[key] >= 0)) {
-      throw new HandlerInputError(`params.${key} must be a non-negative integer`);
+  for (const [key, max] of Object.entries(MAX_QUERY_PARAMS)) {
+    const value = params[key];
+    if (value != null && !(Number.isInteger(value) && value >= 0 && value <= max)) {
+      throw new HandlerInputError(`params.${key} must be an integer in [0, ${max}]`);
     }
   }
 

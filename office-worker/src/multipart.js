@@ -33,9 +33,8 @@ export const DEFAULT_MAX_UPLOAD_BYTES = (10 << 20) + (1 << 20);
 // Every pdf.transform op (merge/rotate/decrypt/fill-forms/split) sends one
 // file part per caller-supplied `paths` entry with no bound of its own
 // (office_pdf.go) — merge is merely the one with a reason to send several.
-// 16 covers any real call while keeping worst-case buffered ingress (files are
-// read whole into memory) far under the container's 2g mem_limit even at full
-// concurrency.
+// 16 covers any real call. Files are read whole into memory, so server.js
+// also caps the bytes buffered across all requests (MAX_BUFFERED_BYTES).
 export const DEFAULT_MAX_UPLOAD_FILES = 16;
 
 // Only "params" is ever read, but it carries a model-authored script for the

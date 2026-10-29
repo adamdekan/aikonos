@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +150,32 @@ test('F83: a full wait queue answers 503 instead of queueing without bound', asy
   );
 });
 
+test('F83: request bodies past the buffered-bytes budget get 503 before they are read', async () => {
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const big = [{ name: 'file', filename: 'a.pdf', buffer: Buffer.alloc(600 << 10) }];
+  await withStub(
+    async () => {
+      await gate;
+      return { outputs: [], result: {} };
+    },
+    { maxConcurrency: 1, maxBufferedBytes: 1 << 20 },
+    async (baseUrl) => {
+      const { contentType, body } = buildMultipartRequest(big, {});
+      const first = post(baseUrl, '/v1/pdf/create', contentType, body);
+      await new Promise((r) => setTimeout(r, 100));
+      // The first body is still held (its job is running); a second would
+      // take the total past the budget, so it is refused, not queued.
+      const second = await post(baseUrl, '/v1/pdf/create', contentType, body);
+      assert.equal(second.status, 503, second.body.toString());
+      release();
+      assert.equal((await first).status, 200);
+      // The budget is given back when a job ends.
+      assert.equal((await post(baseUrl, '/v1/pdf/create', contentType, body)).status, 200);
+    }
+  );
+});
+
 // ---------------------------------------------------------------- F79 (M-30)
 
 function isGone(pid) {
@@ -180,7 +207,10 @@ test('F79: a setsid-escaped background process does not outlive its job', async 
   assert.ok(await isGone(pid), `escaped process ${pid} is still running after the job`);
 });
 
-test('F79: a job subprocess gets a minimal env tagged with the job id, not the worker secret', async () => {
+// The script still runs as the worker's uid, so it can read the server's own
+// /proc/<pid>/environ: this pins only what spawn hands it (residual in
+// API.md "Job isolation").
+test('F79: a job subprocess gets a minimal env tagged with the job id, without the worker secret', async () => {
   const before = process.env.AIKONOS_OFFICE_WORKER_TOKEN;
   process.env.AIKONOS_OFFICE_WORKER_TOKEN = 'must-not-leak';
   try {
@@ -191,6 +221,56 @@ test('F79: a job subprocess gets a minimal env tagged with the job id, not the w
   } finally {
     if (before === undefined) delete process.env.AIKONOS_OFFICE_WORKER_TOKEN;
     else process.env.AIKONOS_OFFICE_WORKER_TOKEN = before;
+  }
+});
+
+// Pinned residual (API.md "Job isolation"): the sweep finds leftovers by the
+// job id in their environment, and a process that execs with an empty one
+// escapes it. Closing it needs a per-job PID namespace.
+test(
+  'F79: a process that clears its environment does not outlive its job',
+  { todo: 'shared uid: needs a per-job PID namespace sandbox' },
+  async () => {
+    const runner = createJobRunner({ timeoutMs: 10000 });
+    const { stdout } = await runner.run(({ spawn }) =>
+      runCommand({
+        spawn,
+        cmd: 'python3',
+        args: [
+          '-c',
+          "import subprocess,time;p=subprocess.Popen(['env','-i','sleep','30'],start_new_session=True);time.sleep(0.2);print(p.pid)",
+        ],
+        cwd: tmpdir(),
+      })
+    );
+    const pid = Number(stdout.trim());
+    try {
+      await new Promise((r) => setTimeout(r, 100));
+      assert.ok(await isGone(pid), `env -i process ${pid} is still running after the job`);
+    } finally {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }
+  }
+);
+
+test('F79: the post-job sweep holds one environ at a time, not every process environ at once', async () => {
+  // Untagged leftovers with ~1.8 MiB environments, as a script could leave
+  // behind: a parallel scan held all of them (as Buffer and string) at once.
+  const env = { PATH: process.env.PATH };
+  for (let i = 0; i < 15; i++) env[`PAD${i}`] = 'x'.repeat(120 << 10);
+  const leftovers = Array.from({ length: 60 }, () => nodeSpawn('sleep', ['30'], { env, stdio: 'ignore' }));
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    const before = process.resourceUsage().maxRSS;
+    await createJobRunner({ timeoutMs: 10000 }).run(async () => {});
+    const grownMb = (process.resourceUsage().maxRSS - before) / 1024;
+    assert.ok(grownMb < 120, `the sweep raised peak RSS by ${grownMb.toFixed(0)} MB`);
+  } finally {
+    for (const p of leftovers) p.kill('SIGKILL');
   }
 });
 

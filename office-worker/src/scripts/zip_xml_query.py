@@ -15,11 +15,10 @@ import re
 import sys
 import zipfile
 
+from zip_edit import read_member
+
 DEFAULT_CONTEXT_CHARS = 200
 DEFAULT_ECHO_CAP = 20000
-# Decompressed-size cap on the queried member, checked before it is read (see
-# zip_edit.py: the upload cap bounds only the compressed bytes).
-MAX_MEMBER_BYTES = 50 << 20
 
 
 def main():
@@ -35,10 +34,8 @@ def main():
     with zipfile.ZipFile(input_path, "r") as z:
         if member not in z.namelist():
             raise SystemExit(f"member not found in archive: {member}")
-        size = z.getinfo(member).file_size
-        if size > MAX_MEMBER_BYTES:
-            raise SystemExit(f"member {member} is {size} bytes uncompressed, over the {MAX_MEMBER_BYTES}-byte cap")
-        text = z.read(member).decode("utf-8")
+        # Never decompresses past the member cap, whatever the header says.
+        text = read_member(z, z.getinfo(member)).decode("utf-8")
 
     result = {"member": member, "member_length": len(text)}
 

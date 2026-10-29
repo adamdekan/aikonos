@@ -306,6 +306,25 @@ test('POST /mcp with a foreign Host header is refused 403 (DNS rebinding)', asyn
   assert.ok(!res.text.includes('# '), 'no document content may leak');
 });
 
+test('a refused Host header is written to stderr (audited like an Origin denial)', async () => {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    lines.push(String(chunk));
+    return write.call(process.stderr, chunk, ...rest);
+  };
+  try {
+    const res = await rawPost({ Host: 'rebind.example:8060' }, rpc('tools/list', {}));
+    assert.equal(res.status, 403);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.ok(
+    lines.some((l) => l.includes('denied') && l.includes('rebind.example')),
+    `no denial logged: ${JSON.stringify(lines)}`,
+  );
+});
+
 test('POST /mcp with the mesh service Host is accepted', async () => {
   const res = await rawPost({ Host: 'aikonos-docs-mcp:8060' }, rpc('tools/list', {}));
   assert.equal(res.status, 200);

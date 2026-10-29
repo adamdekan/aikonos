@@ -3,7 +3,14 @@ import { registerHandler } from '../ops.js';
 import { DOCX_MIME } from './mime.js';
 import { createZipEditHandler } from './zip-edit.js';
 import { runXmlQuery } from './xml-query.js';
-import { HandlerInputError, readJobFile, runCommand, runNodeScript, writeJobFile } from './run-script.js';
+import {
+  HandlerInputError,
+  SCRIPT_MAX_AS_MB,
+  readJobFile,
+  runCommand,
+  runNodeScript,
+  writeJobFile,
+} from './run-script.js';
 
 const DEFAULT_OUTPUT = 'output.docx';
 // pandoc's --track-changes values; anything else would ride into its argv.
@@ -35,7 +42,9 @@ registerHandler('docx/extract', async ({ jobDir, files, params, spawn }) => {
   }
 
   const outputPath = join(jobDir, 'output.md');
-  const args = ['-f', 'docx', '-t', 'markdown'];
+  // A heap cap, not prlimit: pandoc's GHC runtime reserves nearly all of an
+  // RLIMIT_AS for its heap up front and then cannot start its threads.
+  const args = ['+RTS', `-M${SCRIPT_MAX_AS_MB}m`, '-RTS', '-f', 'docx', '-t', 'markdown'];
   if (params.track_changes) {
     if (!TRACK_CHANGES.has(params.track_changes)) {
       throw new HandlerInputError('params.track_changes must be one of "accept", "reject", "all"');
