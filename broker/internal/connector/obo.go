@@ -276,6 +276,7 @@ func (b *OBOBroker) FreshAccessToken(ctx context.Context, tenant, user string) (
 		return "", fmt.Errorf("connector: obo: no secrets provider configured")
 	}
 	connectorID := ProviderOneDrive.ConnectorID()
+	defer LockToken(tenant, user, connectorID)() // G22: see tokenLocks
 	stored, err := b.Secrets.ReadConnector(ctx, tenant, user, connectorID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrNotFound) {

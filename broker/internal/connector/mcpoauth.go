@@ -127,6 +127,7 @@ func (r *Registry) McpExchange(ctx context.Context, hc *http.Client, m McpOAuth,
 // the connection reconnect_needed.
 func (r *Registry) FreshMcpAccessToken(ctx context.Context, hc *http.Client, store secrets.Provider, m McpOAuth, tenant, user string) (string, error) {
 	connectorID := McpConnectorID(m.ConnectionID)
+	defer LockToken(tenant, user, connectorID)()
 	stored, err := readStored(ctx, store, tenant, user, connectorID, m.Name)
 	if err != nil {
 		return "", err

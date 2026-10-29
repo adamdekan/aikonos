@@ -354,6 +354,9 @@ func (s *BrokerService) RevokeConnector(ctx context.Context, req *brokerv1.Revok
 	// without a refresh token revokes its access token instead (G23). A failed
 	// revoke does not stop the local delete, but is audited: the provider may
 	// still honour the grant until it expires.
+	// Held to the end: a refresh that read the token before the delete must
+	// not write it back after (G22).
+	defer connector.LockToken(tenant, user, req.ConnectorId)()
 	upstreamFailed := false
 	if prov, ok := providerFromConnectorID(req.ConnectorId); ok {
 		if tok, rerr := s.deps.Secrets.ReadConnector(ctx, tenant, user, req.ConnectorId); rerr == nil {
