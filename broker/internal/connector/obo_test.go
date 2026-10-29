@@ -366,3 +366,26 @@ func TestExchangeOBO_EndpointURLEncodesTenant(t *testing.T) {
 		t.Fatalf("ExchangeOBO: %v", err)
 	}
 }
+
+// TestValidM365ID pins G7: only ids that cannot leave the token endpoint's
+// path segment are accepted, and the exchange refuses a stored bad one.
+func TestValidM365ID(t *testing.T) {
+	for id, ok := range map[string]bool{
+		"6f2b1c3d-0000-4a5b-9c8d-123456789abc": true,
+		"contoso.onmicrosoft.com":              true,
+		"organizations":                        true,
+		"":                                     false,
+		"../common":                            false,
+		"contoso.com/x":                        false,
+		"tid?x=1":                              false,
+		"tid#f":                                false,
+		"tid%2f":                               false,
+	} {
+		if ValidM365ID(id) != ok {
+			t.Errorf("ValidM365ID(%q) = %v, want %v", id, !ok, ok)
+		}
+	}
+	if _, err := ExchangeOBO(context.Background(), nil, M365App{TenantID: "../evil", ClientID: "c"}, "assertion"); err == nil {
+		t.Fatal("ExchangeOBO must refuse a malformed tenant id before any request")
+	}
+}

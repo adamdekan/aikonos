@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
@@ -210,6 +211,10 @@ func GenerateState() (string, error) {
 // challenge derivation stays consistent).
 func GenerateVerifier() string { return oauth2.GenerateVerifier() }
 
+// revokeTimeout bounds a provider revoke, so an unresponsive endpoint cannot
+// hold a Disconnect open until the caller's deadline.
+var revokeTimeout = 10 * time.Second
+
 // Revoke best-effort revokes a token at the provider. Google has a revoke
 // endpoint; Microsoft has no simple per-token revoke (relies on expiry), so
 // this is a no-op there. Errors are advisory — the caller still deletes the
@@ -222,6 +227,8 @@ func (r *Registry) Revoke(ctx context.Context, p Provider, token string) error {
 	if revokeURL == "" || token == "" {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, revokeTimeout)
+	defer cancel()
 	form := url.Values{"token": {token}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, revokeURL, strings.NewReader(form.Encode()))
 	if err != nil {

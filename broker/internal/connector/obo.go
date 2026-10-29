@@ -34,6 +34,32 @@ type M365App struct {
 	ClientSecret string
 }
 
+// ValidM365ID reports whether an Entra tenant id (GUID, verified domain or
+// common/organizations) or client id is safe to put in the token endpoint
+// path: alphanumerics, '.' and '-' only, no "..". Anything else could
+// re-target the request (with the client secret and the user's assertion) to
+// another path or query on the login host.
+func ValidM365ID(s string) bool {
+	if s == "" || len(s) > 253 || strings.Contains(s, "..") || s[0] == '.' || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// tokenEndpoint is app's Entra token endpoint; it refuses an id that is not
+// ValidM365ID, which also covers values stored before validation existed.
+func tokenEndpoint(app M365App) (string, error) {
+	if !ValidM365ID(app.TenantID) || !ValidM365ID(app.ClientID) {
+		return "", errors.New("connector: m365 tenant or client id is malformed")
+	}
+	return fmt.Sprintf("%s/%s/oauth2/v2.0/token", strings.TrimRight(microsoftLoginBase, "/"), url.PathEscape(app.TenantID)), nil
+}
+
 // TenantAppSource resolves the configured M365App for a tenant. ok=false
 // means the tenant has no M365 connection configured.
 type TenantAppSource interface {
@@ -80,7 +106,10 @@ func ExchangeOBO(ctx context.Context, httpc *http.Client, app M365App, assertion
 		"client_secret":       {app.ClientSecret},
 		"scope":               {oboScope},
 	}
-	endpoint := fmt.Sprintf("%s/%s/oauth2/v2.0/token", strings.TrimRight(microsoftLoginBase, "/"), app.TenantID)
+	endpoint, err := tokenEndpoint(app)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("connector: build obo request: %w", err)
@@ -332,7 +361,10 @@ func refreshOBOToken(ctx context.Context, httpc *http.Client, app M365App, refre
 		"client_secret": {app.ClientSecret},
 		"scope":         {oboScope},
 	}
-	endpoint := fmt.Sprintf("%s/%s/oauth2/v2.0/token", strings.TrimRight(microsoftLoginBase, "/"), app.TenantID)
+	endpoint, err := tokenEndpoint(app)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("connector: build obo refresh request: %w", err)
