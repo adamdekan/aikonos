@@ -125,11 +125,11 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 		client = toolproxy.NewMCPClientPublic(conn.URL, bearer)
 	}
 	if cerr := client.Connect(ctx); cerr != nil {
-		return nil, status.Errorf(codes.Unavailable, "mcp: connect %q: %v", conn.URL, cerr)
+		return nil, mcpDialErr("connect", conn.URL, cerr)
 	}
 	tools, lerr := client.ListTools(ctx)
 	if lerr != nil {
-		return nil, status.Errorf(codes.Unavailable, "mcp: list tools %q: %v", conn.URL, lerr)
+		return nil, mcpDialErr("list tools", conn.URL, lerr)
 	}
 
 	out := make([]*brokerv1.McpToolSchema, 0, len(tools))

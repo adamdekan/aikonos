@@ -714,3 +714,22 @@ func TestListAccessibleMcpServersForAgent_PseudoAgentRefused(t *testing.T) {
 		t.Fatalf("prefixed agent: want 1 connection, got %v %v", resp, err)
 	}
 }
+
+// A loopback MCP server refused by the SSRF guard names the host and the
+// switch that allows it, as a caller-class error the web UI shows.
+func TestListMcpServerTools_PrivateTargetNamesReason(t *testing.T) {
+	mcpSrv := fakeMCPSrvSimple(t)
+	connID := uuid.New().String()
+	svc := buildMcpBrokerSvc(t, mcpSrv.URL, connID)
+	svc.deps.Mcp.AllowPrivate = false
+
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+	_, err := svc.ListMcpServerTools(ctx, &brokerv1.ListMcpServerToolsRequest{ConnectorId: connID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("want FailedPrecondition, got %v", err)
+	}
+	msg := status.Convert(err).Message()
+	if !strings.Contains(msg, "127.0.0.1 is private/loopback") || !strings.Contains(msg, "AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE") || strings.Contains(msg, "http://") {
+		t.Errorf("message = %q", msg)
+	}
+}

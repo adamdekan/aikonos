@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -338,6 +339,22 @@ func (s *BrokerService) ListAccessibleMcpServers(ctx context.Context, req *broke
 	return &brokerv1.ListAccessibleMcpServersResponse{Connections: out}, nil
 }
 
+// mcpDialErr maps an MCP connect/list failure to a status. A target the SSRF
+// guard refused is the admin's to fix, so it names the host and the switch as
+// FailedPrecondition, which the gateway passes through to the web UI (an
+// Unavailable collapses to "upstream unavailable" there).
+func mcpDialErr(op, rawURL string, err error) error {
+	if toolproxy.IsBlockedTarget(err) {
+		host := rawURL
+		if u, perr := url.Parse(rawURL); perr == nil {
+			host = u.Hostname()
+		}
+		return status.Errorf(codes.FailedPrecondition,
+			"the MCP server address %s is private/loopback; private targets are disabled (AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE)", host)
+	}
+	return status.Errorf(codes.Unavailable, "mcp: %s %q: %v", op, rawURL, err)
+}
+
 // ListMcpServerTools connects to the named MCP server, performs the initialize
 // handshake, and returns the tool schemas the server advertises.
 //
@@ -385,11 +402,11 @@ func (s *BrokerService) ListMcpServerTools(ctx context.Context, req *brokerv1.Li
 		client = toolproxy.NewMCPClientPublic(conn.URL, bearer)
 	}
 	if cerr := client.Connect(ctx); cerr != nil {
-		return nil, status.Errorf(codes.Unavailable, "mcp: connect %q: %v", conn.URL, cerr)
+		return nil, mcpDialErr("connect", conn.URL, cerr)
 	}
 	tools, lerr := client.ListTools(ctx)
 	if lerr != nil {
-		return nil, status.Errorf(codes.Unavailable, "mcp: list tools %q: %v", conn.URL, lerr)
+		return nil, mcpDialErr("list tools", conn.URL, lerr)
 	}
 
 	// AG-08: annotate each discovered tool with the class the broker routes it
