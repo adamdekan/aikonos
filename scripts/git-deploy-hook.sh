@@ -126,14 +126,20 @@ verify_signed_ref() {
 
 # verify_fast_forward <git-dir> <old-sha> <new-sha>
 # Returns 0 when <new-sha> descends from the last deployed commit, 1 to refuse.
-# The baseline is DEPLOYED_SHA_FILE, else the ref's previous value <old-sha>
-# (a hook installed before the file existed), else nothing (first deploy).
+# The baseline is DEPLOYED_SHA_FILE, else the bare repo's detached HEAD (every
+# deploy's `git checkout -f <sha>`, older hooks' included, leaves HEAD there;
+# a push cannot move it), else the ref's previous value <old-sha>, else nothing
+# (first deploy). Without the HEAD step, an upgraded host with no file yet
+# would let a branch delete plus re-push (old = zeros) replay an older commit.
 # Self-contained and callable standalone, like verify_signed_ref.
 verify_fast_forward() {
   local git_dir="$1" old="$2" new="$3" base=""
 
   if [ -s "$DEPLOYED_SHA_FILE" ]; then
     base="$(head -n1 "$DEPLOYED_SHA_FILE")"
+  elif ! git --git-dir="$git_dir" symbolic-ref -q HEAD >/dev/null \
+    && base="$(git --git-dir="$git_dir" rev-parse --verify -q HEAD)"; then
+    :
   elif [ -n "$old" ] && [[ ! "$old" =~ ^0+$ ]]; then
     base="$old"
   fi

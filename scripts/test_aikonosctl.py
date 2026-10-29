@@ -196,6 +196,12 @@ class TestPsqlBinding:
             _run_main(["kill-switch", "user", "--tenant",
                        "6c3b1e4a-0d2f-4a8e-9b7c-1f2e3d4c5b6a", "x'); DELETE FROM kill_switches;--"])
 
+    def test_kill_switch_user_subject_trailing_newline_refused(self):
+        # A row for "alice\n" matches no user, so it must not report success.
+        with pytest.raises(SystemExit):
+            _run_main(["kill-switch", "user", "--tenant",
+                       "6c3b1e4a-0d2f-4a8e-9b7c-1f2e3d4c5b6a", "alice\n"])
+
     def test_kill_switch_tenant_requires_uuid(self):
         with pytest.raises(SystemExit):
             _run_main(["kill-switch", "tenant", "aikonos-dev"])

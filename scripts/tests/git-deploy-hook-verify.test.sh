@@ -230,6 +230,23 @@ run_case "same-as-deployed=pass" 0 "$(printf '%s %s refs/heads/main\n' "$ZERO" "
   AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
 rm -f "$DEPLOYED"
 
+# Upgraded host: no deployed record yet, but the older hook's checkout left the
+# bare HEAD detached at the deployed commit (OTHER_SIGNED_SHA).
+git -C "$REPO" checkout -q --detach "$OTHER_SIGNED_SHA"
+
+echo "=== (k) no record, delete + re-push of an older signed commit -> REFUSED vs detached HEAD ==="
+run_case "rollback-vs-detached-head=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$ZERO" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+assert_contains "(k): refused against the detached HEAD" "is not a fast-forward of the deployed commit $OTHER_SIGNED_SHA"
+
+echo "=== (l) no record, fast-forward of the ref but not of the deployed HEAD -> REFUSED ==="
+# SIGNED_SHA descends from the ref's old value UNSIGNED_SHA, not from the deployed commit.
+run_case "ff-of-ref-not-of-head=refuse" nonzero "$(printf '%s %s refs/heads/main\n' "$UNSIGNED_SHA" "$SIGNED_SHA")" \
+  AIKONOS_DEPLOY_ALLOWED_SIGNERS="$ALLOWED_SIGNERS"
+assert_contains "(l): refused against the detached HEAD" "is not a fast-forward of the deployed commit $OTHER_SIGNED_SHA"
+
+git -C "$REPO" checkout -q main
+
 echo "=== (e) unhealthy_services: which services count as a failed deploy ==="
 # WHY: a real deploy aborted mid-recreate and left the broker container in
 # "created" — never running. `up -d` had already returned, so nothing noticed

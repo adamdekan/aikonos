@@ -131,10 +131,16 @@ dc() {
 
 cmd_backup() {
   local out_dir="${1:-${REPO_ROOT}/backups/$(date +%Y%m%dT%H%M%S)}"
-  mkdir -p "${out_dir}"
-  # 0700 even for an existing OUTPUT_DIR: the containers below write the
-  # archives as root, ignoring this umask, so the directory is the guard.
-  chmod 700 "${out_dir}"
+  # The containers below write the archives as root, ignoring this umask, so a
+  # 0700 directory is the guard. A new one is created 0700 (umask 077); an
+  # existing one is never re-moded (a shared mount, another reader): it must
+  # already be 0700 and ours.
+  if [[ -e "${out_dir}" ]]; then
+    [[ -d "${out_dir}" && -O "${out_dir}" && -n "$(find "${out_dir}" -maxdepth 0 -perm 700)" ]] \
+      || die "OUTPUT_DIR '${out_dir}' exists but is not a 0700 directory you own: chmod 700 it, or pass a new path."
+  else
+    mkdir -p "${out_dir}"
+  fi
   out_dir="$(cd "${out_dir}" && pwd)"
 
   log "Backup destination: ${out_dir}"
@@ -142,9 +148,10 @@ cmd_backup() {
   # -- 1. Postgres: pg_dumpall for a consistent cross-DB dump ---------------
   log "Dumping Postgres (aikonos + openfga)..."
   # pg_dumpall captures all databases, roles, tablespaces in one file.
-  # PGPASSWORD is consumed by psql/pg_dumpall inside the container.
-  dc exec -T \
-    -e PGPASSWORD="${PG_PASSWORD}" \
+  # PGPASSWORD is consumed by psql/pg_dumpall inside the container. Passed by
+  # name (compose reads the value from this environment), never on the argv (ps).
+  PGPASSWORD="${PG_PASSWORD}" dc exec -T \
+    -e PGPASSWORD \
     postgres \
     pg_dumpall -U "${PG_USER}" \
     > "${out_dir}/postgres-all.sql"
@@ -260,8 +267,8 @@ cmd_restore() {
   log "Restoring Postgres from ${pg_dump}..."
   # pg_dumpall output is loaded via psql against the postgres (superuser) DB.
   # ON_ERROR_STOP=1 aborts on first error so partial restores are visible.
-  dc exec -T \
-    -e PGPASSWORD="${PG_PASSWORD}" \
+  PGPASSWORD="${PG_PASSWORD}" dc exec -T \
+    -e PGPASSWORD \
     postgres \
     psql -U "${PG_USER}" -d postgres -v ON_ERROR_STOP=1 \
     < "${pg_dump}"

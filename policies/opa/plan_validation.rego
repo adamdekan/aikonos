@@ -32,6 +32,14 @@ violations contains "Task effect class ceiling is missing or malformed." if {
     not is_string(object.get(input, ["task", "effect_class_ceiling"], null))
 }
 
+# A non-object step makes every per-step rule undefined and drops out of the
+# cost sum, so it must be a violation of its own.
+violations contains msg if {
+    some i, step in input.plan.steps
+    not is_object(step)
+    msg := sprintf("Step %d is malformed.", [i + 1])
+}
+
 violations contains msg if {
     some i, step in input.plan.steps
     not is_number(object.get(step, "estimated_cost", null))

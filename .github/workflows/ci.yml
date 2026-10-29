@@ -247,8 +247,11 @@ jobs:
       - name: Assert aikonos_grafana column grants
         run: |
           has() { psql -tAc "SELECT has_column_privilege('aikonos_grafana', '$1', '$2', 'SELECT')"; }
-          [ "$(has agents name)" = t ] && [ "$(has user_directory name)" = t ]
-          [ "$(has agents soul)" = f ] && [ "$(has user_directory email)" = f ]
+          # One check per line: under bash -e, a failure before && never aborts.
+          test "$(has agents name)" = t
+          test "$(has user_directory name)" = t
+          test "$(has agents soul)" = f
+          test "$(has user_directory email)" = f
 
   compose-config:
     name: Compose config drift (local/azure/onprem)
@@ -325,6 +328,16 @@ jobs:
       # Signed, fast-forward-only push-to-deploy gate (scripts/git-deploy-hook.sh).
       - name: Deploy hook verification
         run: bash scripts/tests/git-deploy-hook-verify.test.sh
+
+      # Backup secrets stay off the docker argv, the output dir is 0700 and
+      # never re-moded, credentials are required (scripts/compose-backup.sh).
+      - name: Backup script guards
+        run: bash scripts/tests/compose-backup.test.sh
+
+      # aikonosctl binds its psql values and requires an explicit --tenant.
+      # pipx ships on the hosted runners; pytest pinned by version.
+      - name: aikonosctl unit tests
+        run: pipx run --spec pytest==9.2.0 pytest -q -p no:cacheprovider scripts/test_aikonosctl.py
 
   scorecard:
     name: OpenSSF Scorecard
