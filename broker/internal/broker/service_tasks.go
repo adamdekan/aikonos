@@ -346,6 +346,26 @@ func emitStepUpRefused(ctx context.Context, d Deps, traceID, tenant, taskID, app
 	}
 }
 
+// emitTaskAudit records a task-scoped decision stamped with the task's
+// on-behalf-of chain. Fire-and-forget; nil-guards deps.Audit.
+func emitTaskAudit(ctx context.Context, d Deps, traceID, tenant, taskID, actor, eventType string, decision auditv1.PolicyDecision, task *db.Task) {
+	if d.Audit == nil {
+		return
+	}
+	if err := d.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
+		EventId:     ids.EventID(),
+		TraceId:     traceID,
+		TenantId:    tenant,
+		OccurredAt:  timestampNow(),
+		ActorUserId: actor,
+		EventType:   eventType,
+		ResourceRef: "aikonos:task:" + taskID,
+		Decision:    decision,
+	}, task)); err != nil {
+		audit.RecordEmitFailure(ctx, d.Logger, err, eventType)
+	}
+}
+
 // ListPendingApprovals returns the pending, unexpired approval requests the
 // caller may decide (AG-07): the same approver_set and FGA can_approve rule
 // ApproveTask applies, so every row listed can be approved by this caller with
@@ -402,10 +422,11 @@ func (s *BrokerService) CancelTask(ctx context.Context, req *brokerv1.CancelTask
 	ctx, span := tracer.Start(ctx, "broker.task.cancel")
 	defer span.End()
 
-	tenant, _, err := s.callerIdentity(ctx, req.TenantId, "")
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, "")
 	if err != nil {
 		return nil, err
 	}
+	traceID := span.SpanContext().TraceID().String()
 
 	tasks := s.deps.Tasks
 
@@ -418,10 +439,25 @@ func (s *BrokerService) CancelTask(ctx context.Context, req *brokerv1.CancelTask
 		return nil, status.Errorf(codes.Internal, "failed to get task")
 	}
 
+	// Only the task owner (the subject, also for a delegated task) or a tenant
+	// admin may cancel. A delegator has no standing over the recipient's task.
+	if t.OwnerUserID != user {
+		if err := s.requireTenantAdmin(ctx, user); err != nil {
+			emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
+				"aikonos.broker.task.cancel_denied", auditv1.PolicyDecision_DENY, t)
+			if status.Code(err) == codes.PermissionDenied {
+				return nil, status.Error(codes.PermissionDenied, "only the task owner or a tenant admin may cancel this task")
+			}
+			return nil, err
+		}
+	}
+
 	if err := tasks.Transition(ctx, tenant, req.TaskId, t.State, db.TaskStateCancelled); err != nil {
 		s.deps.Logger.Error("CancelTask: transition failed", zap.Error(err))
 		return nil, status.Errorf(codes.FailedPrecondition, "cannot cancel task in state %s: %v", t.State, err)
 	}
+	emitTaskAudit(ctx, s.deps, traceID, tenant, req.TaskId, user,
+		"aikonos.broker.task.cancelled", auditv1.PolicyDecision_ALLOW, t)
 
 	s.deps.Logger.Info("CancelTask", zap.String("task_id", req.TaskId), zap.String("reason", req.Reason))
 	publishTaskEvent(ctx, s.deps, tenant, req.TaskId, "STATUS_CHANGED", map[string]any{
