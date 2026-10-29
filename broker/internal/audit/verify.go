@@ -112,12 +112,14 @@ func (v *chainVerifier) add(e *auditv1.AuditEvent) {
 
 	// An unresolvable version (e.g. a Vault historic read failing) is itself
 	// a signature failure — the chain can't be trusted end-to-end, not
-	// silently skipped.
+	// silently skipped. The detail reaches the tenant admin, so it names
+	// no error: a Vault client error carries the internal Vault URL and KV
+	// path. The error stays in keyErrs for the caller to log.
 	key, err := v.resolveKey(e.SigningKeyVersion)
 	if err != nil {
 		v.sigFails = append(v.sigFails, ChainBreak{
 			EventID: e.EventId,
-			Detail:  fmt.Sprintf("key resolution failed for signing_key_version %d: %v", e.SigningKeyVersion, err),
+			Detail:  fmt.Sprintf("signing key for version %d unavailable", e.SigningKeyVersion),
 		})
 		return
 	}

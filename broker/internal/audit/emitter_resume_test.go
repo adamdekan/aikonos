@@ -15,9 +15,12 @@ import (
 )
 
 // fakeStore satisfies chainStore so loadChainHeads runs against it.
-func (f *fakeStore) listLevel(_ context.Context, prefix string) ([]string, []objMeta, error) {
+func (f *fakeStore) listLevel(ctx context.Context, prefix string) ([]string, []objMeta, error) {
 	if f.listErr != nil {
 		return nil, nil, f.listErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err // as a MinIO listing does
 	}
 	seen := map[string]bool{}
 	var dirs []string
@@ -48,7 +51,7 @@ func (f *fakeStore) put(_ context.Context, key string, data []byte, _ string) er
 		f.objects = map[string][]byte{}
 	}
 	f.objects[key] = data
-	return nil
+	return f.putLandsErr
 }
 
 // chainHash recomputes what put stores as chain-hash metadata.

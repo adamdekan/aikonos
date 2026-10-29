@@ -203,6 +203,10 @@ type fakeStore struct {
 	getErrs map[string]error     // key → forced get error
 	modTime map[string]time.Time // key → LastModified (optional)
 	putErr  error                // forced put error (emitter tests)
+	// putLandsErr: put stores the object, then fails anyway (a client timeout
+	// after the write landed).
+	putLandsErr error
+	getDelay    time.Duration // each get takes this long, or until ctx ends
 }
 
 func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {
@@ -219,7 +223,14 @@ func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {
 	return out, nil
 }
 
-func (f *fakeStore) get(_ context.Context, key string) ([]byte, error) {
+func (f *fakeStore) get(ctx context.Context, key string) ([]byte, error) {
+	if f.getDelay > 0 {
+		select {
+		case <-time.After(f.getDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if err, ok := f.getErrs[key]; ok {
 		return nil, err
 	}

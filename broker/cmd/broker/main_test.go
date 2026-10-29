@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/connector"
+	"github.com/adamdekan/aikonos/broker/internal/secrets"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -123,5 +128,35 @@ func TestRequestSizeInterceptor(t *testing.T) {
 	}
 	if _, err := ic(context.Background(), big, &grpc.UnaryServerInfo{FullMethod: "/exempt"}, handler); err != nil || !called {
 		t.Fatalf("exempt: err=%v called=%v", err, called)
+	}
+}
+
+// F29: Vault configured but failing stops a non-dev broker instead of signing
+// under the env key behind the operator's back; dev mode falls back to the env
+// key at version 0.
+func TestResolveAuditSigningKey_VaultFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	jwt := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(jwt, []byte("fake-sa-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := secrets.NewVaultClient(secrets.Config{Addr: srv.URL, Role: "aikonos-broker", JWTPath: jwt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if _, err := resolveAuditSigningKey(ctx, "env-key", vault, false, zap.NewNop()); err == nil {
+		t.Fatal("non-dev: want an error, got a key source") // never print it: it holds the key
+	}
+	ks, err := resolveAuditSigningKey(ctx, "env-key", vault, true, zap.NewNop())
+	if err != nil {
+		t.Fatalf("dev: want the env-key fallback, got %v", err)
+	}
+	if key, version := ks.Current(); key != "env-key" || version != 0 {
+		t.Fatalf("dev fallback: got version %d, env key used=%v", version, key == "env-key")
 	}
 }

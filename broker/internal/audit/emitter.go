@@ -564,9 +564,17 @@ func (e *Emitter) enqueue(ctx context.Context, job uploadJob) bool {
 	case e.queue <- job:
 		return true
 	case <-t.C:
-		RecordEventDropped(ctx, e.logger, job.event.EventType, job.event.TenantId, job.event.EventId)
+		e.drop(ctx, job.event)
 		return false
 	}
+}
+
+// drop reports an event that will never be persisted. Its unchained copy still
+// goes to the AUDIT log and the live stream, so a stalled store cannot hide it
+// (a denial, say) from logs and alerting as well.
+func (e *Emitter) drop(ctx context.Context, event *auditv1.AuditEvent) {
+	RecordEventDropped(ctx, e.logger, event.EventType, event.TenantId, event.EventId)
+	_, _ = e.record(ctx, event)
 }
 
 func (e *Emitter) worker() {
@@ -582,7 +590,9 @@ func (e *Emitter) worker() {
 }
 
 // put writes one event, retrying twice. It returns the last error once every
-// attempt failed or the emitter is closing.
+// attempt failed or the emitter is closing, unless the object is in the store
+// with this chain hash after all: a write can land while the client sees a
+// timeout, and treating it as lost would fork the chain at the next event.
 func (e *Emitter) put(key string, data []byte, hash string) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -600,6 +610,12 @@ func (e *Emitter) put(key string, data []byte, hash string) error {
 		case <-e.workerCtx.Done():
 		case <-time.After(time.Duration(attempt+1) * putBackoff):
 		}
+	}
+	ctx, cancel := context.WithTimeout(e.workerCtx, 10*time.Second)
+	got, err := e.store.chainHash(ctx, key)
+	cancel()
+	if err == nil && got == hash {
+		return nil
 	}
 	e.logger.Error("audit: failed to persist event to MinIO after retries",
 		zap.String("key", key), zap.Error(lastErr))
@@ -627,7 +643,7 @@ drain:
 	for {
 		select {
 		case job := <-e.queue:
-			RecordEventDropped(context.Background(), e.logger, job.event.EventType, job.event.TenantId, job.event.EventId)
+			e.drop(context.Background(), job.event)
 			job.done <- fmt.Errorf("audit: emitter closed, event %s not persisted", job.event.EventId)
 		default:
 			return
