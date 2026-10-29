@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +57,21 @@ func TestWebhookNotifier_Non2xx(t *testing.T) {
 	err := n.Notify(context.Background(), Alert{Rule: "denial"})
 	if err == nil {
 		t.Fatal("want error for 500 response, got nil")
+	}
+}
+
+// F35: the webhook URL carries the sink's credential, so a delivery error must
+// not repeat it.
+func TestWebhookNotifier_ErrorOmitsURL(t *testing.T) {
+	const secret = "/services/T000/B000/XXXXSECRET"
+	for _, raw := range []string{"http://127.0.0.1:1" + secret, "http://[bad" + secret} {
+		n := &WebhookNotifier{URL: raw, Client: &http.Client{Timeout: time.Second}}
+		err := n.Notify(context.Background(), Alert{})
+		if err == nil {
+			t.Fatalf("%s: want an error", raw)
+		}
+		if strings.Contains(err.Error(), "XXXXSECRET") {
+			t.Fatalf("error leaks the webhook URL: %v", err)
+		}
 	}
 }

@@ -5,7 +5,7 @@ package main
 
 import "fmt"
 
-// devModeGuard checks whether any of the three security-critical subsystems
+// devModeGuard checks whether any of the security-critical subsystems
 // are degraded (not enabled/durable). Returns the list of degraded dimension
 // names and, when devMode is false and any are degraded, a fatal error.
 //
@@ -13,11 +13,13 @@ import "fmt"
 //   - "OIDC"          — oidcEnabled is false (no issuer configured)
 //   - "OpenFGA"       — fgaEnabled is false (no store id configured)
 //   - "capability-key" — capabilityDurable is false (ephemeral key in use)
+//   - "audit-store"   — auditDurable is false (no MinIO sink: logging-only audit)
+//   - "audit-signing" — auditSigned is false (events chained but unsigned)
 //
 // When devMode is true the caller should log a WARN with the degraded list but
 // proceed; when devMode is false and any dimension is degraded the returned
 // error is non-nil and the caller should log.Fatal.
-func devModeGuard(devMode, oidcEnabled, fgaEnabled, capabilityDurable bool) (degraded []string, fatal error) {
+func devModeGuard(devMode, oidcEnabled, fgaEnabled, capabilityDurable, auditDurable, auditSigned bool) (degraded []string, fatal error) {
 	if !oidcEnabled {
 		degraded = append(degraded, "OIDC")
 	}
@@ -26,6 +28,12 @@ func devModeGuard(devMode, oidcEnabled, fgaEnabled, capabilityDurable bool) (deg
 	}
 	if !capabilityDurable {
 		degraded = append(degraded, "capability-key")
+	}
+	if !auditDurable {
+		degraded = append(degraded, "audit-store")
+	}
+	if !auditSigned {
+		degraded = append(degraded, "audit-signing")
 	}
 
 	if !devMode && len(degraded) > 0 {

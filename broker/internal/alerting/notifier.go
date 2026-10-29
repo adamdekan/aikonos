@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strings"
 	"time"
 
@@ -61,6 +63,17 @@ type WebhookNotifier struct {
 	Client *http.Client
 }
 
+// withoutURL drops the request URL a *url.Error carries in its message: chat
+// webhooks (Slack, Teams, Mattermost) put their credential in the URL path,
+// and the error ends up in the logs.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
 func (n *WebhookNotifier) Notify(ctx context.Context, a Alert) error {
 	body, err := json.Marshal(a)
 	if err != nil {
@@ -69,13 +82,13 @@ func (n *WebhookNotifier) Notify(ctx context.Context, a Alert) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.URL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("alerting: build request: %w", err)
+		return fmt.Errorf("alerting: build request: %w", withoutURL(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := n.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("alerting: webhook POST: %w", err)
+		return fmt.Errorf("alerting: webhook POST: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 

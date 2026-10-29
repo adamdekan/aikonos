@@ -160,6 +160,10 @@ func NewEmitter(ctx context.Context, cfg Config) (*Emitter, error) {
 	return e, nil
 }
 
+// Durable reports whether events are persisted to the object store (false in
+// logging-only mode).
+func (e *Emitter) Durable() bool { return e.queue != nil }
+
 // startSink attaches the object store, resumes each tenant's hash chain from
 // its newest persisted event (so a restart continues the chain instead of
 // starting a fresh one) and starts the upload worker.
