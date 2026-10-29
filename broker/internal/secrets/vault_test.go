@@ -1,10 +1,12 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +30,9 @@ type fakeVault struct {
 	// noUpdate answers a cas=0 write to an existing path with 403, as Vault
 	// does when the policy grants create but not update (F115).
 	noUpdate bool
+	// noCreate answers every data write with 403, as Vault does when the
+	// policy lacks create on the path.
+	noCreate bool
 }
 
 func newFakeVault(leaseSeconds int) *fakeVault {
@@ -99,6 +104,10 @@ func (f *fakeVault) handler(t *testing.T) http.Handler {
 			}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode write: %v", err)
+			}
+			if f.noCreate {
+				w.WriteHeader(http.StatusForbidden)
+				return
 			}
 			// Honor check-and-set: cas=0 means "create only if absent".
 			if payload.Options != nil && payload.Options.CAS != nil && *payload.Options.CAS == 0 {
@@ -815,6 +824,40 @@ func TestVault_KeyCreateRaceUnderCreateOnlyPolicy(t *testing.T) {
 		}
 		if err := write(ctx, "bG9zZXI="); !errors.Is(err, ErrCASConflict) {
 			t.Fatalf("%s: losing create under a create-only policy: want ErrCASConflict, got %v", name, err)
+		}
+	}
+}
+
+// A policy that lacks create also answers 403 on a key create. It still maps
+// to ErrCASConflict (the caller re-reads and, finding no key, fails closed),
+// but the 403 is logged with the path and the policy file, so an operator is
+// not sent looking for a race.
+func TestVault_KeyCreateDeniedByPolicyIsLogged(t *testing.T) {
+	fake := newFakeVault(3600)
+	fake.noCreate = true
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	ctx := context.Background()
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prev)
+
+	for name, write := range map[string]func(context.Context, string) error{
+		"capability":            c.WriteCapabilityKey,
+		"gateway-grant":         c.WriteGatewayGrantKey,
+		"audit-signing-key":     c.WriteAuditSigningKey,
+		"workspace-session-key": c.WriteWorkspaceSessionKey,
+	} {
+		logBuf.Reset()
+		if err := write(ctx, "a2V5"); !errors.Is(err, ErrCASConflict) {
+			t.Fatalf("%s: want ErrCASConflict, got %v", name, err)
+		}
+		out := logBuf.String()
+		if !strings.Contains(out, "403") || !strings.Contains(out, "vault-broker-policy.hcl") || !strings.Contains(out, "/broker/"+name) {
+			t.Fatalf("%s: 403 not logged with path and policy file: %q", name, out)
 		}
 	}
 }

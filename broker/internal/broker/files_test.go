@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,24 @@ func TestFileError_BackendSentinels(t *testing.T) {
 				t.Fatalf("fileError(%v) code = %v, want %v", tc.err, status.Code(err), tc.want)
 			}
 		})
+	}
+}
+
+// F41: the remote-backend sentinels wrap infrastructure detail (a DB connect
+// error, an OBO exchange error, a Graph URL). The caller gets a fixed message;
+// reconnect keeps the sentinel's grep-stable "reconnect_needed" text.
+func TestFileError_BackendSentinelsDoNotLeakDetail(t *testing.T) {
+	const detail = "failed to connect to user=aikonos database=aikonos host=postgres.internal https://graph.microsoft.com/v1.0/drives/x"
+	for _, sentinel := range []error{workspacefs.ErrUnavailable, workspacefs.ErrReconnectRequired, workspacefs.ErrForbidden} {
+		err := fileError("op", fmt.Errorf("%w: %s", sentinel, detail))
+		for _, leak := range []string{"postgres.internal", "database=", "graph.microsoft.com"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Fatalf("fileError(%v) leaks %q: %v", sentinel, leak, err)
+			}
+		}
+	}
+	if err := fileError("op", fmt.Errorf("%w: %s", workspacefs.ErrReconnectRequired, detail)); !strings.Contains(err.Error(), "reconnect_needed") {
+		t.Fatalf("reconnect message lost its grep-stable text: %v", err)
 	}
 }
 

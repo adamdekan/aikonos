@@ -15,7 +15,8 @@
 # broker never overwrites a key, so a stolen broker token cannot swap one for a
 # value it knows; rotation is an operator action with the root token
 # (docs/OPS-RUNBOOK.md). A replica that loses the first-boot create race gets a
-# 403 instead of a cas 400 and exits; its restart reads the winner's key.
+# 403 instead of a cas 400; the broker treats it as a cas conflict and re-reads
+# the winner's key (broker/internal/secrets/vault.go).
 # No delete: keys must never be removable at runtime. No metadata/broker/*
 # grant: nothing under this family is ever version-deleted (unlike
 # workspaces/mcp/providers/m365/websearch below).

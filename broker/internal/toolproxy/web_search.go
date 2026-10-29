@@ -127,6 +127,10 @@ const (
 	braveSearchURL       = "https://api.search.brave.com/res/v1/web/search"
 	exaSearchURL         = "https://api.exa.ai/search"
 	tavilySearchURL      = "https://api.tavily.com/search"
+
+	// MaxSearchResults bounds max_results: the admin upsert rejects a larger
+	// value and the handler clamps one stored before that check existed (G6).
+	MaxSearchResults = 50
 )
 
 // webSearchPlugin self-registers web.search, available whenever the proxy
@@ -184,6 +188,7 @@ func newWebSearchHandler(cfg WebSearchConfig, keys webSearchKeyReader) Handler {
 		if maxResults <= 0 {
 			maxResults = defaultMaxResults
 		}
+		maxResults = min(maxResults, MaxSearchResults)
 
 		if keys == nil {
 			return nil, 0, errWebSearchNotConfigured

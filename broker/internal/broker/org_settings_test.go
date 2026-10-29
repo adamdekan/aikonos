@@ -8,6 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -101,6 +106,25 @@ func TestWorkflowSharingDefault(t *testing.T) {
 	// nil repo → no restriction, no panic.
 	if err := requireWorkflowSharingAllowed(context.Background(), nil, "t1"); err != nil {
 		t.Fatalf("nil repo must be a no-op, got %v", err)
+	}
+}
+
+// F41: a settings read failure on publish fails closed without handing the
+// DB connect error (host, user, database) to a non-admin member.
+func TestRequireWorkflowSharingAllowed_ReadErrorIsGeneric(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), "postgres://leakuser@127.0.0.1:1/leakdb?connect_timeout=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	err = requireWorkflowSharingAllowed(context.Background(), db.NewOrgSettingsRepo(pool, zap.NewNop()), "t1")
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("want Internal (fail closed), got %v", err)
+	}
+	for _, leak := range []string{"leakuser", "leakdb", "127.0.0.1"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error leaks %q: %v", leak, err)
+		}
 	}
 }
 
