@@ -470,12 +470,21 @@ services:
     networks: [backend, mesh, office]
     environment:
       AIKONOS_BROKER_TENANT_ID:             ${AIKONOS_BROKER_TENANT_ID}
+      # The one tenant this deployment serves: the broker refuses every north
+      # call whose token tenant claim (Entra tid) is another one. Same value the
+      # gateway gets below.
+      AIKONOS_TENANT_ID:                    ${AIKONOS_TENANT_ID:?set AIKONOS_TENANT_ID (the IdP tenant claim, e.g. the Entra tid)}
       AIKONOS_OTEL_ENDPOINT:                ${AIKONOS_OTEL_ENDPOINT:-}
       AIKONOS_POLICY_OPENFGA_ENDPOINT:      http://openfga:8080
       AIKONOS_POLICY_OPENFGA_STORE_ID:      ${AIKONOS_POLICY_OPENFGA_STORE_ID:-}
       AIKONOS_POLICY_OPA_ENDPOINT:          http://opa:8181
       # The broker serves OPA this policy, archiving each revision first.
       AIKONOS_POLICY_BUNDLE_DIR:            /policies
+      # OPA runs in its own container and fetches the bundle from
+      # http://broker:9092 (opa.yaml). Unset, the broker binds 127.0.0.1:9092
+      # outside dev mode and OPA gets no policy (every decision fails closed).
+      # The port stays unpublished: only `backend` reaches it.
+      AIKONOS_POLICY_BUNDLE_HTTP_ADDR:      ":9092"
       AIKONOS_OIDC_ISSUER:                  ${AIKONOS_OIDC_ISSUER:?set AIKONOS_OIDC_ISSUER}
       AIKONOS_OIDC_JWKS_URL:                ${AIKONOS_OIDC_JWKS_URL:-}
       AIKONOS_OIDC_AUDIENCE:                ${AIKONOS_OIDC_AUDIENCE}
@@ -495,6 +504,12 @@ services:
       AIKONOS_AUDIT_SIGNING_KEY:            ${AIKONOS_AUDIT_SIGNING_KEY}
       AIKONOS_AUDIT_RETENTION_DAYS:         ${AIKONOS_AUDIT_RETENTION_DAYS}
       AIKONOS_WORKSPACE_SESSION_SIGNING_KEY: ${AIKONOS_WORKSPACE_SESSION_SIGNING_KEY:-}
+      # One-time migration switch: read session records whose sidecar predates
+      # the path-bound MAC. Keep false; true only until old sessions are re-saved.
+      AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS: ${AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS:-false}
+      # Per-user workspace quota (bytes, entries); 0 turns a dimension off.
+      AIKONOS_WORKSPACE_QUOTA_BYTES:        ${AIKONOS_WORKSPACE_QUOTA_BYTES:-2147483648}
+      AIKONOS_WORKSPACE_QUOTA_ENTRIES:      ${AIKONOS_WORKSPACE_QUOTA_ENTRIES:-20000}
       AIKONOS_DB_HOST:                      postgres
       AIKONOS_DB_PORT:                      "5432"
       AIKONOS_DB_NAME:                      ${POSTGRES_DB}
@@ -519,6 +534,9 @@ services:
       AIKONOS_VAULT_ROLE:                   ${AIKONOS_VAULT_ROLE}
       AIKONOS_VAULT_ROLE_ID:                ${AIKONOS_VAULT_ROLE_ID:-}
       AIKONOS_VAULT_SECRET_ID:              ${AIKONOS_VAULT_SECRET_ID:-}
+      # Plain http:// Vault on a routable host is refused unless this is true;
+      # loopback and single-label hosts (http://vault:8200) are always allowed.
+      AIKONOS_VAULT_ALLOW_INSECURE_HTTP:    ${AIKONOS_VAULT_ALLOW_INSECURE_HTTP:-false}
       AIKONOS_CONNECTORS_REDIRECT_URI:      ${AIKONOS_CONNECTORS_REDIRECT_URI}
       # AG-09: <AIKONOS_EXTERNAL_BASE_URL>/oauth/client-metadata.json; empty →
       # oauth MCP connections use a client id or dynamic registration only.
@@ -665,6 +683,9 @@ services:
       # and verifyBearer 401s every real Entra token.
       AIKONOS_OIDC_SUBJECT_CLAIM: ${AIKONOS_OIDC_SUBJECT_CLAIM:-sub}
       AIKONOS_OIDC_TENANT_CLAIM:  ${AIKONOS_OIDC_TENANT_CLAIM:-tenant_id}
+      # Same fail-closed default as the broker: the gateway refuses to start
+      # without AIKONOS_OIDC_ISSUER and AIKONOS_OIDC_JWKS_URL unless true.
+      AIKONOS_DEV_MODE:           ${AIKONOS_DEV_MODE:-false}
       AIKONOS_SCHEDULER_ENABLED:  ${AIKONOS_SCHEDULER_ENABLED}
       AIKONOS_SCHEDULER_TICK_MS:  ${AIKONOS_SCHEDULER_TICK_MS}
       # NATS for the in-gateway audit SSE bridge (absorbed from the removed
@@ -675,6 +696,11 @@ services:
       AIKONOS_EXTERNAL_PORT:      "8090"
       AIKONOS_EXTERNAL_CORS_ORIGINS: ${AIKONOS_EXTERNAL_CORS_ORIGINS:-}
       AIKONOS_EXTERNAL_RATE_LIMIT:   ${AIKONOS_EXTERNAL_RATE_LIMIT:-60}
+      # Proxy hops whose X-Forwarded-For :8090 trusts for the per-client rate
+      # limit. 0 here: this file publishes 8090 directly, so any client could
+      # pick its own bucket. The azure/onprem overlays front it with Traefik
+      # and default to 1. Never "true" (the gateway refuses it).
+      AIKONOS_EXTERNAL_TRUST_PROXY:  ${AIKONOS_EXTERNAL_TRUST_PROXY:-0}
       # AG-09: with both set, the external surface serves the OAuth client
       # metadata document (/oauth/client-metadata.json) for MCP servers.
       AIKONOS_EXTERNAL_BASE_URL:     ${AIKONOS_EXTERNAL_BASE_URL:-}
@@ -797,6 +823,11 @@ services:
     environment:
       CORPUS_ROOT: /corpus
       PORT: "8060"
+      # Container bind, not the host publish: the server defaults to loopback,
+      # which neither mesh peers nor the port publish below can reach. Its
+      # Host allowlist (default: aikonos-docs-mcp, localhost, 127.0.0.1) and
+      # Origin check are the control; set ALLOWED_HOSTS only for another name.
+      HOST: "0.0.0.0"
     # Port published on host loopback only, for local-test convenience (the
     # server has no authentication). In production, dials aikonos-docs-mcp:8060
     # by container DNS over the mesh.

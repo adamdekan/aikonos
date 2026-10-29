@@ -98,8 +98,15 @@ docker compose --profile docs-mcp up -d --build
 ```
 
 Register it in the webui (Admin → MCP connections): URL `http://aikonos-docs-mcp:8060/mcp`,
-transport `streamable_http`, auth `none`. See `docs-mcp/README.md` for corpus mount details
-and on-prem attach instructions.
+transport `streamable_http`, auth `none`. The broker dials a plain-http, private mesh address
+only with `AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true`. See `docs-mcp/README.md` for corpus mount
+details and on-prem attach instructions.
+
+Compose sets `HOST=0.0.0.0` on the service: the server binds loopback by default, which
+neither the mesh nor the `127.0.0.1:8060` host publish can reach. It has no authentication,
+so its Host allowlist (`aikonos-docs-mcp`, `localhost`, `127.0.0.1`, `[::1]`) and Origin check
+are what refuse DNS-rebinding and browser requests. Set `ALLOWED_HOSTS` (comma-separated) only
+when a client reaches it under another name, and `ALLOWED_ORIGINS` only for a browser client.
 
 To enable broker tracing, set `AIKONOS_OTEL_ENDPOINT=otel-collector:4317` in `.env` (value is
 `host:port` with **no scheme** — `otlptracegrpc` dials bare gRPC; a `http://` prefix causes the
@@ -204,6 +211,8 @@ service is attached only to internal networks. The `backend` datastores (`postgr
 `tempo` 3200 — `obs` is a non-internal bridge) keep their host ports in the local variant.
 `docs-mcp` 8060 is bound to `127.0.0.1` only (it has no authentication), and the broker's policy
 bundle port 9092 is never published (OPA fetches it over `backend`; it has no authentication).
+Compose sets `AIKONOS_POLICY_BUNDLE_HTTP_ADDR=:9092` on the broker so OPA's container can reach
+it; without it the broker binds loopback outside dev mode and every policy decision fails closed.
 The azure and onprem overlays reset every one of these with `ports: !reset []` (Traefik reaches the
 webui and gateway over `mesh`) and keep only Grafana on `127.0.0.1:3030` for the SSH tunnel;
 `scripts/check-compose-posture.sh` fails CI if a rendered azure/onprem config publishes anything
@@ -224,6 +233,36 @@ postgres/vault/minio/opa/openfga directly. Never assign both `backend` and `mesh
 that role belongs to the broker alone.
 
 **Verification**: `scripts/compose-verify-netseg.sh` proves the segmentation from the live stack.
+
+---
+
+## Security settings (0.7.5)
+
+Settings added or changed by the 0.7.5 security fixes. The `.env.*.example` templates
+document the compose-wired ones next to their lines; `docs/OPS-RUNBOOK.md`
+"Upgrading to 0.7.5" lists what an existing deployment must change.
+
+| Variable | Read by | Default | Compose | Meaning |
+|---|---|---|---|---|
+| `AIKONOS_POLICY_BUNDLE_HTTP_ADDR` | broker | unset: `:9092` in dev mode, `127.0.0.1:9092` otherwise | `:9092`, fixed | Listener for OPA's bundle downloads. Never published on the host. |
+| `AIKONOS_TENANT_ID` | broker, gateway | broker: `11111111-…` | required (`:?`) | The one tenant served. The broker refuses every north call whose tenant claim (Entra `tid`) differs. |
+| `AIKONOS_DEV_MODE` | broker, gateway, office-worker | `false` | `${…:-false}` on broker and gateway | `true` lets the broker run degraded, the gateway start without an OIDC issuer and JWKS URL, and office-worker start without its token. Dev machines only. Compose does not pass it to office-worker, whose token is required. |
+| `AIKONOS_NATS_TOKEN` | nats, broker, gateway | none | required (`:?`) | NATS client token; compose builds `nats://<token>@nats:4222`. Hex, `openssl rand -hex 32`. |
+| `AIKONOS_OFFICE_WORKER_TOKEN` | broker, office-worker | none | required (`:?`) | Bearer the broker sends on every office job. `openssl rand -hex 32`. |
+| `AIKONOS_VAULT_ALLOW_INSECURE_HTTP` | broker | `false` | `${…:-false}` | `true` admits an `http://` Vault on a routable host. Loopback and single-label hosts (`http://vault:8200`) are always allowed. Use https instead where possible. |
+| `AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS` | broker | `false` | `${…:-false}` | One-time migration switch: accepts session records without a path-bound sidecar (saved before 0.7.5) and lets sessions be written unsigned. Remove once old sessions are re-saved. |
+| `AIKONOS_WORKSPACE_QUOTA_BYTES` | broker | `2147483648` (2 GiB) | `${…:-2147483648}` | Per-user workspace size; a write past it fails with `ResourceExhausted`. `0` turns it off. |
+| `AIKONOS_WORKSPACE_QUOTA_ENTRIES` | broker | `20000` | `${…:-20000}` | Per-user count of files and folders. `0` turns it off. |
+| `AIKONOS_ALERTING_DENIAL_COOLDOWN_SECONDS` | broker | `60` | not passed | At most one denial alert per (tenant, actor) per window, carrying the suppressed count. `0` alerts on every DENY. Alerting runs only once an overlay gives the broker `AIKONOS_ALERTING_WEBHOOK_URL` or `AIKONOS_ALERTING_SMTP_HOST`. |
+| `AIKONOS_ALERTING_RETENTION_DAYS` | broker | `90` | not passed | Stored alerts older than this are pruned daily. `0` keeps them. |
+| `AIKONOS_EXTERNAL_TRUST_PROXY` | gateway | `1` | base `0`, azure/onprem overlays `1` | Proxy hops (or proxy addresses/CIDRs) whose `X-Forwarded-For` the `:8090` API trusts for the client IP its rate limit keys on. `0` when 8090 is published directly (local), `1` behind Traefik; raise it only for another proxy in front of Traefik. `true` is refused. |
+| `AIKONOS_WEBUI_OIDC_AUTHORITY` | webui | `http://localhost:18080/realms/aikonos` | passed to the build arg and the runtime | Also sets the webui's Content-Security-Policy: sign-in may reach only this origin, so it must equal the authority baked into the bundle. |
+| `OFFICE_SCRIPT_MAX_AS_MB` | office-worker | `1024` | not passed | Address-space limit (MiB) for each model-authored script (node: on top of its heap). |
+| `HOST`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` | docs-mcp | `127.0.0.1`; `aikonos-docs-mcp,localhost,127.0.0.1,[::1]`; none | `HOST=0.0.0.0` | Container bind, Host allowlist, Origin allowlist (see Profiles above). |
+| `AIKONOS_DEPLOY_REQUIRE_SIGNED`, `AIKONOS_DEPLOY_ALLOW_ROLLBACK` | on-prem git deploy hook | `true`; unset | hook environment | Signed commits required; a non-fast-forward deploy is refused unless `AIKONOS_DEPLOY_ALLOW_ROLLBACK=1`. See `deploy/onprem/README.md`. |
+| `AIKONOS_DESKTOP_ALLOW_HTTP` | aikonOS for Windows (user's PC) | unset | n/a | `1` lets the app sign in to a plain-http server that is not on the PC. See `docs/16-desktop-client.md`. |
+
+To change a setting compose does not pass, add it to that service's `environment:` in an overlay.
 
 ---
 

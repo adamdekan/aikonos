@@ -229,6 +229,10 @@ services:
   # reaches it in-mesh.
   agent-gateway:
     ports: !reset []
+    # Traefik is the one hop in front of :8090, so its X-Forwarded-For names
+    # the client the per-IP rate limit keys on (base file: 0, direct publish).
+    environment:
+      AIKONOS_EXTERNAL_TRUST_PROXY: ${AIKONOS_EXTERNAL_TRUST_PROXY:-1}
     labels:
       - traefik.enable=true
       - traefik.http.routers.aikonos-ext.rule=Host(`${AIKONOS_API_FQDN}`)
