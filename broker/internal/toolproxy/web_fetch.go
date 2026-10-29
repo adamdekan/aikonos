@@ -8,6 +8,7 @@ package toolproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -190,6 +191,10 @@ func validateFetchURL(raw string, allowPrivate bool) error {
 }
 
 var errBlockedTarget = fmt.Errorf("web.fetch: loopback/private targets are not permitted")
+
+// IsBlockedTarget reports whether err is the SSRF guard refusing a
+// loopback/private target (also when wrapped by a dial or MCP error).
+func IsBlockedTarget(err error) bool { return errors.Is(err, errBlockedTarget) }
 
 // hostOf extracts the hostname from a URL for the access-list check (best-effort;
 // validateFetchURL already confirmed it parses with a host).
