@@ -136,7 +136,8 @@ def require_uuid(value: str, what: str) -> str:
 
 
 # Principal ids (OIDC sub, email-style dev ids): no quotes, spaces or SQL.
-_SUBJECT_RE = re.compile(r"^[A-Za-z0-9._@:-]+$")
+# fullmatch, not match: "$" also matches before a trailing newline.
+_SUBJECT_RE = re.compile(r"[A-Za-z0-9._@:-]+")
 
 
 def opa(*args: str) -> str:
@@ -339,7 +340,7 @@ def cmd_kill_switch(args: argparse.Namespace) -> None:
         tenant = subject = require_uuid(subject, "tenant id")
     else:
         tenant = require_uuid(args.tenant, "--tenant")
-        if not _SUBJECT_RE.match(subject):
+        if not _SUBJECT_RE.fullmatch(subject):
             fail(f"user id has unexpected characters: {subject!r}")
             sys.exit(1)
     warn(f"Activating kill switch: scope={args.scope} subject={subject} tenant={tenant}")

@@ -102,7 +102,25 @@ settings (0.7.5)".
   deploy that does not fast-forward the last one.
   `AIKONOS_DEPLOY_REQUIRE_SIGNED=false` (first-time setup) and
   `AIKONOS_DEPLOY_ALLOW_ROLLBACK=1` (a deliberate rollback) are the logged
-  opt-outs ([deploy/onprem/README.md](../deploy/onprem/README.md)).
+  opt-outs ([deploy/onprem/README.md](../deploy/onprem/README.md)). After the
+  push that deploys 0.7.5, install the new hook on the host, refuse force-pushes
+  and branch deletes, and record the deployed commit (the old hook's checkout
+  left the bare repo's `HEAD` on it):
+
+  ```bash
+  cp ~/apps/aikonos/scripts/git-deploy-hook.sh ~/repos/aikonos.git/hooks/post-receive
+  git -C ~/repos/aikonos.git config receive.denyNonFastForwards true
+  git -C ~/repos/aikonos.git config receive.denyDeletes true
+  git -C ~/repos/aikonos.git rev-parse HEAD > ~/repos/aikonos.git/aikonos-deployed
+  ```
+- **Broker Vault policy.** The broker's AppRole may no longer update its signing
+  keys, so a stolen broker token cannot overwrite them. Vault keeps the old
+  policy until the seed script writes it again, and the seed runs only on first
+  boot. Run it once: `bash scripts/compose-vault-seed.sh` on local dev (it reads
+  the root token itself), `VAULT_TOKEN=<root_token> bash scripts/compose-vault-seed.sh`
+  on azure/onprem. It mints a new AppRole secret, so then run
+  `docker compose up -d --force-recreate broker`. `vault policy read aikonos-broker`,
+  run with the root token, must show only `create` and `read` on `secret/data/broker/*`.
 - **Owner grants are v3.** v2 grants minted before the upgrade stay valid until
   they expire, but a revoke-all in their last 24 hours also voids them. A broker
   still on 0.7.4 refuses v3 grants, so upgrade every broker replica together.

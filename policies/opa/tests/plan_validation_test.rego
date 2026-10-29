@@ -175,6 +175,13 @@ test_missing_effect_class_ceiling_denied if {
     "Task effect class ceiling is missing or malformed." in violations
 }
 
+test_non_object_step_denied if {
+    not plan_validation.allow with input as {"plan": {"steps": ["x"]}, "task": base_task, "actor": base_actor}
+    violations := plan_validation.violations with input as {"plan": {"steps": [null, 5]}, "task": base_task, "actor": base_actor}
+    "Step 1 is malformed." in violations
+    "Step 2 is malformed." in violations
+}
+
 test_missing_step_cost_denied if {
     bad_plan := json.patch(clean_plan, [{"op": "remove", "path": "/steps/1/estimated_cost"}])
     violations := plan_validation.violations with input as {"plan": bad_plan, "task": base_task, "actor": base_actor}
