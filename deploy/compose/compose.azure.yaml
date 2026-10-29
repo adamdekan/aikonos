@@ -71,6 +71,46 @@ services:
   minio:
     ports: !reset []
 
+  # ── No host publish for anything Traefik or the mesh already reaches ────────
+  # The base file publishes these on every interface for local dev. The NSG
+  # limits the internet to 80/443 but allows VNet traffic, and a VNet peer
+  # hitting webui:4200 or agent-gateway:8080/8090 directly skips the
+  # oauth2-proxy gate; NATS carries the audit stream; the broker's 9092 policy
+  # bundle, OTLP, Loki, Tempo and Prometheus have no authentication. Traefik
+  # dials webui/gateway over `aikonos_mesh` (their resets sit with their
+  # labels below), the broker and collector are reached in-network, so nothing
+  # off-host needs these. `!reset` is required: a plain `ports:` list merges
+  # with the base file's.
+  nats:
+    ports: !reset []
+
+  keycloak:
+    ports: !reset []
+
+  broker:
+    ports: !reset []
+
+  aikonos-docs-mcp:
+    ports: !reset []
+
+  otel-collector:
+    ports: !reset []
+
+  loki:
+    ports: !reset []
+
+  tempo:
+    ports: !reset []
+
+  prometheus:
+    ports: !reset []
+
+  # Grafana is operator-only: host loopback, reached over an SSH tunnel
+  # (`ssh -L 3030:localhost:3030 <vm>`), never from the VNet.
+  grafana:
+    ports: !override
+      - "127.0.0.1:3030:3000"
+
   # ── Edge reverse proxy: TLS termination + routing + ACME ─────────────────────
   traefik:
     image: traefik:v3.3
@@ -173,6 +213,7 @@ services:
 
   # ── Route the SPA through the gate ───────────────────────────────────────────
   webui:
+    ports: !reset []
     labels:
       - traefik.enable=true
       - traefik.http.routers.webui.rule=Host(`${AIKONOS_FQDN}`)
@@ -187,6 +228,7 @@ services:
   # The north port (:8080) is intentionally NOT routed publicly — the webui server
   # reaches it in-mesh.
   agent-gateway:
+    ports: !reset []
     labels:
       - traefik.enable=true
       - traefik.http.routers.aikonos-ext.rule=Host(`${AIKONOS_API_FQDN}`)

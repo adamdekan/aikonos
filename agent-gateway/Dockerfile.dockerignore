@@ -7,5 +7,9 @@
 agent-gateway/node_modules
 agent-gateway/gen
 agent-gateway/.svid
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
 **/__pycache__
 *.log

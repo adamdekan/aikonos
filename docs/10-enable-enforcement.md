@@ -19,7 +19,7 @@
 | OIDC | `AIKONOS_OIDC_ISSUER=""` → interceptor passes through | issuer set (`.env`) → bearer token required + validated against JWKS |
 | ReBAC | `AIKONOS_POLICY_OPENFGA_STORE_ID=""` → `CheckFGA` allow-all stub | store id set → real OpenFGA Check, fails closed |
 | Capability | always on — broker always builds a minter | set a persistent root key (else read-or-created in Vault, ephemeral on Vault restart) |
-| NATS | `AIKONOS_NATS_URL=""` → bus disabled, `StreamTaskEvents` Unimplemented | url set → events published, streaming works |
+| NATS | `AIKONOS_NATS_URL=""` → bus disabled, `StreamTaskEvents` Unimplemented | url set → events published, streaming works (compose builds it as `nats://${AIKONOS_NATS_TOKEN}@nats:4222`; NATS runs with `--auth`) |
 | On-behalf-of (AG-17) | tenant setting `identity.obo=audit` (default) → mismatches logged/audited, allowed | `identity.obo=enforce` per tenant → token subject/actor mismatch or missing facts, v1 owner grants, non-service api keys without a user assertion and actorless schedules are denied; default flips after AG-01/AG-02 |
 | User bound (AG-02) | tenant setting `identity.enforce_user_bound=audit` (default) → a human whose agent uses a skill or MCP connector the human may not use is recorded as `aikonos.broker.user_bound.would_deny`, allowed | `identity.enforce_user_bound=enforce` per tenant → the plan step is denied, an MCP call is denied with `mcp_user_access_denied`; `svc-` runs and service agents are exempt (flagged `user_bound_exempt` in the audit) |
 
@@ -32,7 +32,10 @@ connector its users cannot reach. Then switch *Bound agents by their user* to
 enforce on the same page.
 
 The compose `.env.local.example` ships OIDC (`http://keycloak:8080/realms/aikonos`) and NATS
-(`nats://nats:4222`) **on**. The one knob you must flip yourself is OpenFGA: the store
+(`AIKONOS_NATS_TOKEN`, from which compose builds `nats://<token>@nats:4222`) **on**, and sets
+`AIKONOS_DEV_MODE=true` explicitly: `compose.yaml` defaults it to `false`, so a `.env` that omits or
+blanks it gets the production guard (the broker refuses to start without OIDC, OpenFGA and a
+capability key). The one knob you must flip yourself is OpenFGA: the store
 id is empty until `scripts/compose-seed-openfga.sh` writes it back to `.env`.
 
 Capability enforcement is **always active**: `InvokeTool` requires a valid Biscuit and
@@ -134,7 +137,7 @@ flow. It prints `✓`/`✗` per check and exits non-zero on any failure.
 | `claims invalid: aud` | The `aud=aikonos-broker` mapper didn't apply — re-check `deploy/compose/keycloak-realm.json`; the audience must equal `AIKONOS_OIDC_AUDIENCE`. |
 | ReBAC always denies | Store/model/tuples not seeded, or store id stale in `.env` — re-run `task compose:seed`. |
 | ReBAC always allows (stub) | `AIKONOS_POLICY_OPENFGA_STORE_ID` empty — `task compose:seed` writes it and recreates the broker. |
-| `StreamTaskEvents` returns `Unimplemented` | `AIKONOS_NATS_URL` unset in `.env` — the bus is disabled. |
+| `StreamTaskEvents` returns `Unimplemented` | `AIKONOS_NATS_URL` unset — the bus is disabled. Under compose it is built from `AIKONOS_NATS_TOKEN`; an `Authorization Violation` in the nats logs means the token in `.env` changed without recreating broker and gateway. |
 | password grant returns `invalid_grant: "Account is not fully set up"` | Keycloak 24's *Verify Profile* required action — the realm import sets `firstName`/`lastName` + `requiredActions: []` to avoid it. |
 | broker mTLS handshake fails | dev-CA certs missing or service renamed — re-run `bash scripts/compose-dev-ca.sh`; the cert DNS-SAN must equal the compose service name (`broker`/`agent-gateway`). |
 

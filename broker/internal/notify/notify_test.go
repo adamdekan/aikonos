@@ -26,6 +26,21 @@ func TestSubjectHelpers(t *testing.T) {
 	}
 }
 
+// The NATS client token rides in the URL userinfo; it must never reach a log.
+func TestRedactURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"nats://s3cr3t@nats:4222":         "nats://REDACTED@nats:4222",
+		"nats://user:pass@nats:4222":      "nats://REDACTED@nats:4222",
+		"nats://nats:4222":                "nats://nats:4222",
+		"nats://t@a:4222,nats://t@b:4222": "nats://REDACTED@a:4222,nats://REDACTED@b:4222",
+		"":                                "",
+	} {
+		if got := RedactURL(in); got != want {
+			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNew_DisabledByDefault(t *testing.T) {
 	b, err := New("", zap.NewNop())
 	if err != nil {

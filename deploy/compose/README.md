@@ -180,7 +180,7 @@ Three least-privilege Docker networks:
 
 | Network | Type | Members |
 |---------|------|---------|
-| `mesh` | bridge (internet egress) | broker, agent-gateway, webui, nats, keycloak, dev-ca-mint |
+| `mesh` | bridge (internet egress) | broker, agent-gateway, webui, nats, keycloak |
 | `backend` | `internal: true` | postgres, vault, minio, opa, openfga, openfga-migrate, migrate, grafana |
 | `obs` | `internal: true` | otel-collector, grafana, loki, tempo, prometheus |
 
@@ -200,7 +200,23 @@ service is attached only to internal networks. The `backend` datastores (`postgr
 — dev Vault is HTTP, so `VAULT_ADDR` must be set or the CLI defaults to HTTPS and errors). Services with a `mesh` leg
 (`broker` 9090/9091, `agent-gateway` 8080, `webui` 4200, `keycloak` 18080, `nats` 4222,
 `otel-collector` 4317) and the `obs` dashboards (`grafana` 3030, `prometheus` 9095, `loki` 3100,
-`tempo` 3200 — `obs` is a non-internal bridge) keep their host ports.
+`tempo` 3200 — `obs` is a non-internal bridge) keep their host ports in the local variant.
+`docs-mcp` 8060 is bound to `127.0.0.1` only (it has no authentication), and the broker's policy
+bundle port 9092 is never published (OPA fetches it over `backend`; it has no authentication).
+The azure and onprem overlays reset every one of these with `ports: !reset []` (Traefik reaches the
+webui and gateway over `mesh`) and keep only Grafana on `127.0.0.1:3030` for the SSH tunnel;
+`scripts/check-compose-posture.sh` fails CI if a rendered azure/onprem config publishes anything
+else beyond Traefik 80/443 or loopback.
+
+`dev-ca-mint` runs with `network_mode: none` and a digest-pinned image: it generates the CA key and
+needs no network. `ca.key` stays in `deploy/compose/tls/`; the broker and gateway mount only
+`tls/broker/` and `tls/agent-gateway/` (their own leaf plus `ca.crt`), which the script refreshes on
+every run.
+
+NATS requires a client token (`--auth`): set `AIKONOS_NATS_TOKEN` in `.env` (`openssl rand -hex 32`);
+compose builds the broker's and gateway's `nats://<token>@nats:4222` URL from it.
+`office-worker` requires `AIKONOS_OFFICE_WORKER_TOKEN` as a bearer on every job, which the broker
+sends; both are required (`:?`), so `up` stops with a message when either is missing.
 
 **Adding a new service**: assign to `[mesh]` by default; add `backend` only if it genuinely dials
 postgres/vault/minio/opa/openfga directly. Never assign both `backend` and `mesh` without review —

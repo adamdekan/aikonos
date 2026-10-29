@@ -374,26 +374,27 @@ ssh -L 3030:localhost:3030 -N <user>@example.com
 Do not add a Traefik route or `oauth2-proxy` rule for Grafana to "make it easier" — tunnel-only
 access is the security posture, not an oversight.
 
-### Reaching OpenFGA — loopback only
+### Reaching OpenFGA — inside the compose network only
 
-OpenFGA's host port is published on `127.0.0.1:8082`, not on every interface. Its HTTP API is
-**unauthenticated** (no `OPENFGA_AUTHN_METHOD` is set), and its write endpoint is what grants group
-membership and skill access — so anyone who can reach that port can rewrite the tuples `SubmitPlan`
-and `InvokeTool` gate on, bypassing the ReBAC check without touching the broker, OIDC, or Biscuit.
-Loopback keeps the admin `curl`s working from the deploy host while removing the remote path.
-`scripts/compose-seed-openfga.sh` doesn't use the port at all: it runs the `fga` CLI inside the
-compose network (the `fga-cli` one-off).
+OpenFGA has no host port and is on the internal `backend` network only, as in the base file and
+Azure. Its API is **unauthenticated** (no `OPENFGA_AUTHN_METHOD` is set), and its write endpoint is
+what grants group membership and skill access — so anything that can reach it can rewrite the tuples
+`SubmitPlan` and `InvokeTool` gate on, bypassing the ReBAC check without touching the broker, OIDC,
+or Biscuit. On `mesh` it sat beside the gateway, webui, Keycloak, NATS and every attached MCP
+container; now the broker is the only application service that can reach it.
 
-Every documented workflow already targets loopback, so this changes nothing you run over SSH on the
-host. From a workstation, tunnel it the same way as Grafana:
+Admin reads and writes run the `fga` CLI in the `fga-cli` one-off, which is on `backend`
+(`scripts/compose-seed-openfga.sh` does the same):
 
 ```bash
-ssh -L 8082:localhost:8082 -N <user>@example.com
+docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fga-cli store list
+docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fga-cli \
+  tuple read --store-id <STORE_ID>
 ```
 
-NATS is not published at all on-prem. It runs unauthenticated and carries the audit event stream, so
-a host publish would let any reachable host subscribe to `aikonos.audit.>` and read every audit
-event, or publish forged events into the subject the gateway's audit consumer trusts. Broker→NATS
+NATS is not published at all on-prem. It carries the audit event stream, so a host publish would let
+any reachable host try to subscribe to `aikonos.audit.>` or publish forged events into the subject the
+gateway's audit consumer trusts. Clients also need `AIKONOS_NATS_TOKEN` (NATS runs with `--auth`). Broker→NATS
 and gateway→NATS both ride the `mesh` network and need no host port.
 
 Both `ports:` blocks live in `deploy/compose/compose.onprem.yaml`. A plain `ports:` list there
@@ -402,8 +403,12 @@ place — hence `!override` / `!reset`. Verify against the rendered config, neve
 
 ```bash
 docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml config --format json \
-  | jq '.services.openfga.ports, .services.nats.ports'
+  | jq '.services.openfga | {networks, ports}, .services.nats.ports'
 ```
+
+`scripts/check-compose-posture.sh` (CI) renders every variant and fails if any of this regresses:
+no host port outside Traefik 80/443 and loopback-bound operator ports on azure/onprem, and OpenFGA
+on `backend` only.
 
 ### Shipping to a SIEM
 
@@ -719,7 +724,7 @@ so no external-network declaration is needed.
 | Traefik returns 404 for `aikonos.example.com` | `traefik_net` network not joined / Traefik not seeing container labels | Confirm `docker network ls \| grep traefik_net`; check `docker compose logs` for network errors |
 | TLS warning / cert mismatch | Cert SANs don't cover the subdomain | Run `openssl x509 -in /path/to/server.crt -noout -ext subjectAltName` |
 | "OpenFGA is disabled — dev allow-all mode" | OpenFGA not seeded | `bash scripts/compose-seed-openfga.sh && docker compose up -d --force-recreate broker` |
-| `/admin/roles` Users tab shows `alice@aikonos.com`, `bob@aikonos.com`, `admin@aikonos.com` | `compose-seed-openfga.sh` was run with `AIKONOS_SEED_DEMO_TUPLES=1` — it seeds Keycloak demo accounts into OpenFGA (demo/local-dev only) | Delete the stale tuples via the FGA API: `curl -X POST http://localhost:8082/stores/$STORE_ID/write -H 'Content-Type: application/json' -d '{"deletes":{"tuple_keys":[{"user":"user:alice@aikonos.com","relation":"member","object":"tenant:aikonos-dev"},{"user":"user:bob@aikonos.com","relation":"member","object":"tenant:aikonos-dev"},{"user":"user:admin@aikonos.com","relation":"admin","object":"tenant:aikonos-dev"}]}}'`. The script skips demo tuples by default (fail closed) — on on-prem/production, leave `AIKONOS_SEED_DEMO_TUPLES` unset. |
+| `/admin/roles` Users tab shows `alice@aikonos.com`, `bob@aikonos.com`, `admin@aikonos.com` | `compose-seed-openfga.sh` was run with `AIKONOS_SEED_DEMO_TUPLES=1` — it seeds Keycloak demo accounts into OpenFGA (demo/local-dev only) | Delete the stale tuples with the fga CLI, once per tuple: `docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fga-cli tuple delete --store-id $STORE_ID user:alice@aikonos.com member tenant:aikonos-dev` (likewise `user:bob@aikonos.com member` and `user:admin@aikonos.com admin`). The script skips demo tuples by default (fail closed) — on on-prem/production, leave `AIKONOS_SEED_DEMO_TUPLES` unset. |
 | `Vault key resolution failed — falling back to EPHEMERAL key` | Vault restarted (in-memory) | `bash scripts/compose-vault-seed.sh && docker compose up -d broker` |
 | `claims invalid: iss` | AIKONOS_OIDC_ISSUER has literal `<ENTRA_TENANT_ID>` | Replace placeholder with actual tenant GUID in `.env` |
 | **401 on every API call; gateway logs `no applicable key found in the JSON Web Key Set`** | **Entra signs ID tokens with an app-specific key only published when `?appid=<client_id>` is on the JWKS URL** | **Append `?appid=<WEBUI_APP_CLIENT_ID>` to `AIKONOS_OIDC_JWKS_URL`, then `docker compose up -d --force-recreate broker agent-gateway`** |
@@ -747,11 +752,8 @@ deny-by-default access. To grant the first user full admin:
    ```
 3. Write the admin tuple to OpenFGA (replace the OID and store ID):
    ```bash
-   curl -s -X POST http://localhost:8082/stores/<STORE_ID>/write \
-     -H 'Content-Type: application/json' \
-     -d '{"writes":{"tuple_keys":[
-       {"user":"user:<OID>","relation":"admin","object":"tenant:<AIKONOS_BROKER_TENANT_ID>"}
-     ]}}'
+   docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fga-cli \
+     tuple write --store-id <STORE_ID> user:<OID> admin tenant:<AIKONOS_BROKER_TENANT_ID>
    ```
-   An empty `{}` response means success. The user refreshes the page and now has
+   A `successful` entry in the output means success. The user refreshes the page and now has
    full admin access.

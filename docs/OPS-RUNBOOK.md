@@ -34,6 +34,16 @@ OpenFGA, MinIO, Vault and OPA have no host port: they sit only on the internal
 `backend` network, for which current Docker releases publish none. Reach them with
 `docker compose exec` (below) or `docker compose run --rm fga-cli` for OpenFGA.
 
+These URLs are the local variant only. The azure and onprem overlays publish no
+host port beyond Traefik 80/443 and Grafana on `127.0.0.1:3030` (SSH tunnel);
+OpenFGA is `backend`-only in every variant.
+
+`up` stops with a `required variable` message until `.env` sets
+`AIKONOS_NATS_TOKEN` and `AIKONOS_OFFICE_WORKER_TOKEN` (`openssl rand -hex 32`
+each; copy them from `deploy/compose/.env.local.example` into an older `.env`).
+`AIKONOS_DEV_MODE` defaults to `false`: an unset or blank value gives the
+production guard, so local dev keeps `AIKONOS_DEV_MODE=true` in `.env`.
+
 ---
 
 ## Daily dev startup

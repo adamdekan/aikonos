@@ -167,6 +167,25 @@ export interface AuditConsumerOptions {
   subject?: string;
 }
 
+// nats.js ignores credentials in a server URL (nats.go reads them), so a
+// compose-style nats://<token>@nats:4222 is split here: the token goes to
+// connect() and only the bare URL is ever logged. user:pass@ maps to user/pass.
+export function natsConnectOptions(natsUrl: string): { servers: string; token?: string; user?: string; pass?: string } {
+  let u: URL;
+  try {
+    u = new URL(natsUrl);
+  } catch {
+    return { servers: natsUrl };
+  }
+  if (!u.username) return { servers: natsUrl };
+  const user = decodeURIComponent(u.username);
+  const pass = decodeURIComponent(u.password);
+  u.username = "";
+  u.password = "";
+  const servers = u.toString();
+  return pass ? { servers, user, pass } : { servers, token: user };
+}
+
 export function startAuditConsumer(log: Logger, opts: AuditConsumerOptions = {}): AuditConsumerHandle {
   const natsUrl = opts.natsUrl;
   const subject = opts.subject ?? "aikonos.audit.>";
@@ -192,11 +211,12 @@ export function startAuditConsumer(log: Logger, opts: AuditConsumerOptions = {})
   void (async () => {
     while (!stopped) {
       try {
-        const nc = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
+        const conn = natsConnectOptions(natsUrl);
+        const nc = await connect({ ...conn, reconnect: true, maxReconnectAttempts: -1 });
         currentConn = nc;
         connected = true;
         lastError = undefined;
-        log.info({ natsUrl, subject }, "audit consumer connected to NATS");
+        log.info({ natsUrl: conn.servers, subject }, "audit consumer connected to NATS");
         const sub = nc.subscribe(subject);
         for await (const m of sub) {
           if (stopped) break;

@@ -50,11 +50,13 @@ cp deploy/compose/.env.onprem.example "${WORKDIR}/onprem.env"
 
 # service_name<TAB>image_ref for every non-build service, across all three
 # variants (dedup happens naturally: same service+image collapses via sort -u).
+# A digest already pinned in compose.yaml (dev-ca-mint) is stripped so the tag
+# is re-resolved; copy the new digest back into compose.yaml by hand.
 collect_service_images() {
   local env_file="$1"
   shift
   docker compose --env-file "${env_file}" "$@" "${ALL_PROFILES[@]}" config --format json \
-    | jq -r '.services | to_entries[] | select(.value.build == null) | select(.value.image != null) | [.key, .value.image] | @tsv'
+    | jq -r '.services | to_entries[] | select(.value.build == null) | select(.value.image != null) | [.key, (.value.image | sub("@sha256:[0-9a-f]+$"; ""))] | @tsv'
 }
 
 log "Enumerating services (local + azure + onprem variants, all profiles)..."

@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import pino from "pino";
-import { buffer, record, fanOutClients, startAuditConsumer } from "../src/audit/stream";
+import { buffer, record, fanOutClients, natsConnectOptions, startAuditConsumer } from "../src/audit/stream";
 
 // Reset shared state between tests so cases are independent.
 beforeEach(() => { buffer.length = 0; fanOutClients().clear(); });
@@ -151,4 +151,12 @@ test("ping write does not throw on a destroyed client socket", () => {
       if (!client.destroyed) client.write(": ping\n\n");
     }
   });
+});
+
+// nats.js ignores URL credentials, so compose's nats://<token>@nats:4222 must be
+// split into an explicit token, and the logged server URL must not carry it.
+test("natsConnectOptions: URL token becomes connect token and leaves the server URL", () => {
+  assert.deepEqual(natsConnectOptions("nats://s3cr3t@nats:4222"), { servers: "nats://nats:4222", token: "s3cr3t" });
+  assert.deepEqual(natsConnectOptions("nats://u:p%40ss@nats:4222"), { servers: "nats://nats:4222", user: "u", pass: "p@ss" });
+  assert.deepEqual(natsConnectOptions("nats://nats:4222"), { servers: "nats://nats:4222" });
 });
