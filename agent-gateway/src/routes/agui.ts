@@ -35,7 +35,7 @@ import { semanticRecall } from "../pi/memory-semantic.js";
 import { USER_INSTRUCTIONS_MAX_CHARS } from "../pi/system-prompt.js";
 import { validateHistory } from "../history-validation.js";
 import { log } from "../log.js";
-import { sendError, trimmedErrorMessage } from "../http-errors.js";
+import { isAccessRevoked, sendError, trimmedErrorMessage } from "../http-errors.js";
 
 export const CREDENTIAL_PATTERNS: [RegExp, string][] = [
   [/AKIA[0-9A-Z]{16}/g, "[AWS-KEY-REDACTED]"],
@@ -76,7 +76,8 @@ interface ApproverDeps {
   // The one named seam, shared with resolveAutoApproveAllowlist itself — this
   // used to be a third independent restatement of the same two methods.
   south: AllowlistSouth;
-  cfg: Pick<Config, "defaultTenantId">;
+  // The run's tenant: the verified principal's (F64), never a config default.
+  tenantId: string;
   log: Logger;
   // The run's subject, sent with the MCP tool listing (AG-08).
   userId: string;
@@ -87,6 +88,8 @@ interface ApproverDeps {
 // it returns a preAuthApprover when approvalMode === "auto", otherwise the
 // injected HITL approver. The sessionAgentId must be the same value the Pi
 // session/child uses for MCP resolution (agent:-prefixed for named agents).
+// preApproved is the allowlist that approver grants ([] for HITL) — F51: the
+// run's subagent branches inherit exactly it, never a wider list.
 export async function selectRunApprover(
   deps: ApproverDeps,
   spec: AgentSpec | undefined,
@@ -96,23 +99,23 @@ export async function selectRunApprover(
   // forced to human-in-the-loop regardless of the agent's approval_mode.
   // Defaults to true (allowed) so existing callers/tests are unaffected.
   unattendedAllowed = true,
-): Promise<Approver> {
-  if (spec?.approvalMode !== "auto") return hitl;
+): Promise<{ approver: Approver; preApproved: string[] }> {
+  if (spec?.approvalMode !== "auto") return { approver: hitl, preApproved: [] };
   if (!unattendedAllowed) {
     deps.log.info(
       { sessionAgentId },
       "auto-approve requested but disabled org-wide (A8) — downgrading to human-in-the-loop",
     );
-    return hitl;
+    return { approver: hitl, preApproved: [] };
   }
   const allowlist = await resolveAutoApproveAllowlist(
     deps.south,
-    deps.cfg.defaultTenantId,
+    deps.tenantId,
     sessionAgentId,
     spec.skills,
     deps.userId,
   );
-  return preAuthApprover(allowlist, deps.log);
+  return { approver: preAuthApprover(allowlist, deps.log), preApproved: allowlist };
 }
 
 // CommandSkillResult is the discriminated union returned by resolveCommandSkill.
@@ -303,6 +306,8 @@ export async function resolveCommandSkill(deps: CommandSkillDeps): Promise<Comma
     const resp = await south.listUserAgentSkills({ tenantId, userId });
     bundles = resp.bundles ?? [];
   } catch (err) {
+    // F129: a blocked/revoked user is refused, not shown a chat error.
+    if (isAccessRevoked(err)) throw err;
     return { kind: "error", message: `skill resolution failed: ${String(err)}` };
   }
 
@@ -390,6 +395,7 @@ export function sessionIdOrEmpty(raw: unknown): string {
 //: no behavior change, just where the code
 // lives.
 interface ChatTurnPlan {
+  tenantId: string;
   threadId: string;
   runId: string;
   sessionId: string;
@@ -426,7 +432,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     if (!principal) return;
     try {
       const resp = await clients.south.listUserAgentSkills({
-        tenantId: cfg.defaultTenantId,
+        tenantId: principal.tenant,
         userId: principal.sub,
       });
       reply.send({ bundles: resp.bundles ?? [] });
@@ -447,7 +453,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     if (!principal) return;
     try {
       const resp = await clients.south.listUserSkills({
-        tenantId: cfg.defaultTenantId,
+        tenantId: principal.tenant,
         userId: principal.sub,
       });
       reply.send({ skills: (resp.skills ?? []).map((s) => s.toolId) });
@@ -475,6 +481,9 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     if (!principal) return null;
     const body = req.body ?? {};
     const user = principal.sub;
+    // F64 (L-20): every south read below runs in the token's own tenant, never
+    // a config default the token was not issued for.
+    const tenantId = principal.tenant;
     const displayName = principal.email;
     const prompt =
       body.prompt ||
@@ -521,12 +530,17 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // text deltas after hijack so the UI displays them inline in the chat thread.
     let commandSkillResult: CommandSkillResult | undefined;
     if (body.skillName) {
-      commandSkillResult = await resolveCommandSkill({
-        south: clients.south,
-        tenantId: cfg.defaultTenantId,
-        userId: user,
-        skillName: body.skillName,
-      });
+      try {
+        commandSkillResult = await resolveCommandSkill({
+          south: clients.south,
+          tenantId,
+          userId: user,
+          skillName: body.skillName,
+        });
+      } catch (err) {
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+        return null;
+      }
     }
 
     // auto-skill-loading: keyword-match the user's FGA-granted bundles against
@@ -537,14 +551,19 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     let skillMatch: SkillMatchResult<SkillBundleEntry> | undefined;
     if (!body.skillName && prompt) {
       try {
-        const resp = await clients.south.listUserAgentSkills({ tenantId: cfg.defaultTenantId, userId: user });
+        const resp = await clients.south.listUserAgentSkills({ tenantId, userId: user });
         // Personal skills: union the
         // caller's own Skills/<name>/ catalog into the auto-load candidate
         // set — same catalog resolveSessionPlan builds for the chat system
         // prompt (CP4). Fail-open, never throws.
-        const personalEntries = await personalSkillBundleEntries(clients.south, cfg.defaultTenantId, user);
+        const personalEntries = await personalSkillBundleEntries(clients.south, tenantId, user);
         skillMatch = matchSkillBundles(prompt, [...(resp.bundles ?? []), ...personalEntries]);
       } catch (err) {
+        // F129: a blocked/revoked user ends here with 401/403, not a skipped match.
+        if (isAccessRevoked(err)) {
+          sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+          return null;
+        }
         log.warn({ err: String(err), userId: user }, "listUserAgentSkills RPC failed — skipping auto skill-load matching");
       }
     }
@@ -560,7 +579,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     let runAgent: { agentId: string; isDefault: boolean };
     try {
       const r = await clients.south.resolveRunAgent({
-        tenantId: cfg.defaultTenantId,
+        tenantId,
         userId: user,
         agentId: requestedAgentId,
       });
@@ -593,7 +612,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     if (!body.skillName && prompt) {
       try {
         const resp = await clients.south.listMemoryConceptsSouth({
-          tenantId: cfg.defaultTenantId,
+          tenantId,
           userId: user,
           scope: "",
           groupId: "",
@@ -610,7 +629,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
           prompt,
           concepts,
           keywordMatchCount: recalled.length,
-          tenantId: cfg.defaultTenantId,
+          tenantId,
           userId: user,
           agentId: namedAgentId ?? "",
           runId,
@@ -625,6 +644,11 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
           memoryVia = merged.via;
         }
       } catch (err) {
+        // F129: except a blocked/revoked user, who gets 401/403 and no chat.
+        if (isAccessRevoked(err)) {
+          sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+          return null;
+        }
         // A broken memory surface must never break chat — recall is an
         // enhancement, so skip it entirely and run the turn without it.
         log.warn({ err: String(err), userId: user }, "listMemoryConceptsSouth RPC failed — skipping memory auto-recall");
@@ -636,10 +660,15 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // caller explicitly requested this agent.
     let spec: AgentSpec | undefined;
     if (namedAgentId) {
-      const agentSpec = await clients.south.getAgentSpec({
-        tenantId: cfg.defaultTenantId,
-        agentId: namedAgentId,
-      });
+      let agentSpec;
+      try {
+        agentSpec = await clients.south.getAgentSpec({ tenantId, agentId: namedAgentId });
+      } catch (err) {
+        // F203: no spec, no run — never a silent fall-back to the tenant default
+        // provider for an agent that may be pinned elsewhere.
+        sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+        return null;
+      }
       if (!agentSpec.found) {
         reply.code(400).send({ error: `unknown agent: ${namedAgentId}` });
         return null;
@@ -658,18 +687,20 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
 
     // Resolve the child handle BEFORE SSE hijack so we can still send 503/500.
     const childKey = supervisor.keyFor({
-      tenantId: cfg.defaultTenantId,
+      tenantId,
       userId: user,
       agentId: sessionAgentId,
     });
     let handle;
     try {
+      // F203: the named agent's spec shapes the child — its skills and its
+      // provider pin (preferredProvider/model, allowedProviders).
       handle = await supervisor.getOrSpawn(childKey, {
-        tenantId: cfg.defaultTenantId,
+        tenantId,
         userId: user,
         agentId: sessionAgentId,
         token: principal.token,
-      });
+      }, spec);
     } catch (err) {
       if (err instanceof GatewayOverloadError) {
         reply.code(503).send({ error: "gateway_overloaded" });
@@ -680,6 +711,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     }
 
     return {
+      tenantId,
       threadId,
       runId,
       sessionId,
@@ -705,7 +737,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
   // status code.
   async function streamTurn(reply: FastifyReply, plan: ChatTurnPlan): Promise<void> {
     const {
-      threadId, runId, sessionId, user, displayName, token, prompt, history,
+      tenantId, threadId, runId, sessionId, user, displayName, token, prompt, history,
       userInstructions, envelopeId, sessionAgentId, spec, handle, commandSkillResult, skillMatch,
       memoryRecall, memoryVia,
     } = plan;
@@ -756,13 +788,27 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // OPA DENY or capability-scope failures; it only flips NEEDS_HUMAN → allow.
     // A8 / H-06: the org unattended-mode master. Fails closed: an unreadable
     // setting only means this run asks its user, it never breaks the run.
-    const approver: Approver = await selectRunApprover(
-      { south: clients.south, cfg, log, userId: user },
+    const { approver, preApproved } = await selectRunApprover(
+      { south: clients.south, tenantId, log, userId: user },
       spec,
       sessionAgentId,
       hitl,
-      await unattendedAllowed(clients.south, cfg.defaultTenantId, log),
+      await unattendedAllowed(clients.south, tenantId, log),
     );
+
+    // F129: the broker refused this run's user as blocked or revoked mid-run.
+    // Stop the child and end the stream with that error instead of letting the
+    // model carry on without tools on the org's LLM credentials.
+    let onRevoked: (err: unknown) => void = () => {};
+    const revoked = new Promise<never>((_, reject) => {
+      onRevoked = (err) => {
+        handle.abortRun(runId);
+        reject(err);
+      };
+    });
+    // A revocation after the race settled (or on the /command early return)
+    // must not surface as an unhandled rejection.
+    revoked.catch(() => {});
 
     // Bind the per-run context: verified identity + approval surface for THIS
     // request's SSE socket. The child's gate/execute/delegate IPC requests carry
@@ -777,11 +823,14 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // per user) is the OS-level boundary. Identity is NEVER taken from the child
     // message body.
     const runIdentity: RunIdentity = {
-      tenantId: cfg.defaultTenantId,
+      tenantId,
       userId: user,
       agentId: sessionAgentId,
       token,
       ...(envelopeId ? { envelopeId } : {}),
+      preApproved,
+      ...(spec ? { agentSpec: spec } : {}),
+      onAccessRevoked: (err) => onRevoked(err),
     };
     // CP7: one SSE CUSTOM frame per branch
     // spawn/resolution. Fields are RAW branch-supplied data rendered by a UI,
@@ -818,7 +867,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       if (torndown) return;
       torndown = true;
       stream.stopHeartbeat();
-      approvals.drainForRun(runId, false);
+      approvals.drainForRun(runId, user, false);
       handle.abortRun(runId);
       handle.clearRunContext(runId);
       // CP6: a spawn_subagents fan-out reuses
@@ -826,8 +875,9 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       // derived from runId (ephemeralKey) — separate ChildSupervisor handles
       // the parent handle above never reaches. Evicts every in-flight branch
       // of THIS run only; a sibling run's branches are untouched by
-      // construction of the key match.
-      supervisor.evictBranchesForRun(runId, "run teardown");
+      // construction of the key match, and another user's run that reuses
+      // this client-chosen runId is untouched by the owner match (F62).
+      supervisor.evictBranchesForRun(runId, "run teardown", { tenantId, userId: user });
     });
 
     try {
@@ -875,7 +925,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       // child sees one prompt string, so no IPC shape change is needed.
       const text = memoryRecall ? `${buildMemoryPreamble(memoryRecall)}\n\n${prompt}` : prompt;
 
-      await supervisor.run(handle, { runId, threadId, sessionId, text, history, activateSkillName, activateSkillNames, userInstructions }, (evt) => {
+      await Promise.race([revoked, supervisor.run(handle, { runId, threadId, sessionId, text, history, activateSkillName, activateSkillNames, userInstructions }, (evt) => {
         if (evt.kind === "text_delta") {
           stream.textDelta(redactCredentials(evt.delta));
         } else if (evt.kind === "tool_start") {
@@ -891,7 +941,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
         }
         // usage and done are handled by run() settling the promise; no AG-UI
         // frame needed for them here.
-      });
+      })]);
 
       finish();
     } catch (err) {

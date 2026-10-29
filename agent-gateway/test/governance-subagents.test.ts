@@ -60,12 +60,16 @@ function makeFakeSupervisor(opts: { textFor?: (task: string) => string; hang?: b
   spawnCount: number;
   /** Every prompt handed to run() — lets a test assert what CP8's sessionId threading actually sent. */
   prompts: BranchPrompt[];
+  /** The identity each branch child was spawned under (F51: carries preApproved). */
+  identities: { preApproved?: string[] }[];
 } {
   let spawnCount = 0;
   const prompts: BranchPrompt[] = [];
+  const identities: { preApproved?: string[] }[] = [];
   const supervisor: BranchSupervisor = {
-    async withEphemeralChild(_key, _identity, fn) {
+    async withEphemeralChild(_key, identity, fn) {
       spawnCount++;
+      identities.push(identity);
       return fn(fakeHandle());
     },
     async run(_handle, prompt, onEvent: (evt: BranchEvent) => void) {
@@ -89,7 +93,8 @@ function makeFakeSupervisor(opts: { textFor?: (task: string) => string; hang?: b
     supervisor,
     get spawnCount() { return spawnCount; },
     prompts,
-  } as unknown as { supervisor: BranchSupervisor; spawnCount: number; prompts: BranchPrompt[] };
+    identities,
+  } as unknown as { supervisor: BranchSupervisor; spawnCount: number; prompts: BranchPrompt[]; identities: { preApproved?: string[] }[] };
 }
 
 function provider() {
@@ -208,7 +213,7 @@ test("spawnSubagents: CP6 carried-forward — fails closed with no active run id
   assert.equal(fake.spawnCount, 0, "no branch may spawn without a run id run-teardown can reconstruct");
 });
 
-test("spawnSubagents: resolves callerSkills from south.listUserSkills under the caller's own identity, then delegates to the injected supervisor", async () => {
+test("spawnSubagents F51: branches inherit the run's own preApproved list — never recomputed from the caller's skills", async () => {
   // The aggregator step is a real GovernanceBridge.reason() call (this is
   // "reasoner: this" in the production wiring) — stub fetch so this test
   // proves the WIRING, not reason()'s own dialect-shaping (governance-
@@ -223,7 +228,7 @@ test("spawnSubagents: resolves callerSkills from south.listUserSkills under the 
   const south = makeSouth({ skills: ["web.fetch"] });
   const clients = { north: makeNorth(), south } as unknown as import("../src/broker/clients.js").BrokerClients;
   const bridge = new GovernanceBridge(
-    cfg, clients, identity, async () => true, log, async () => {}, undefined, "run-xyz", "", fake.supervisor,
+    cfg, clients, { ...identity, preApproved: ["doc.read"] }, async () => true, log, async () => {}, undefined, "run-xyz", "", fake.supervisor,
   );
 
   const result = await bridge.spawnSubagents([{ task: "find X" }], "Combine the findings.");
@@ -231,7 +236,8 @@ test("spawnSubagents: resolves callerSkills from south.listUserSkills under the 
   assert.equal(result.ok, true, `expected ok, got error: ${result.error}`);
   assert.equal(result.branches?.length, 1);
   assert.equal(result.branches?.[0]?.ok, true);
-  assert.deepEqual(south.listUserSkillsCalls, [{ tenantId: TENANT, userId: "alice@example.com" }]);
+  assert.deepEqual(south.listUserSkillsCalls, [], "the user's skills must play no part in a branch's pre-approval");
+  assert.deepEqual(fake.identities.map((i) => i.preApproved), [["doc.read"]]);
 });
 
 test("spawnSubagents: F-13 — rejects a fan-out wider than cfg.subagentMaxWidth, the production wiring, not a hand-passed maxWidth", async () => {

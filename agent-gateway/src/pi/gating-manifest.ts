@@ -93,10 +93,14 @@ export const GATING_MANIFEST: Readonly<Record<string, GatingEntry>> = {
     model: "bridge-direct",
     authz: "broker RPC boundary: CheckFGA(user, can_invoke, skill:workflows)",
   },
+  // F52: a schedule is a standing consent to run the workflow's tool steps
+  // unattended, so creating one is a human decision: gated as WRITE_EXTERNAL
+  // (OPA → NEEDS_HUMAN) with the workflow's version and tool steps in the plan
+  // args, then created bridge-direct only for the arguments that were allowed.
   workflow_schedule: {
-    model: "bridge-direct",
+    model: "gate-then-bridge-direct",
     authz:
-      "broker RPC boundary: CheckFGA(user, can_invoke, skill:scheduler) at create + workflow visibility re-check (skill:workflows) via GetWorkflow",
+      "JIT plan CheckFGA(skill:scheduler) + human approval (WRITE_EXTERNAL); execution bridge-direct: CreateScheduledRun re-checks skill:scheduler + workflow visibility (skill:workflows)",
   },
   analyze_image: {
     model: "gate-then-bridge-direct",

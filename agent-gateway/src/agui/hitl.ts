@@ -83,9 +83,11 @@ export class ApprovalRegistry {
 
   // Resolve and remove only the approvals belonging to one run (e.g. its
   // /agui connection closed). Other runs' pending approvals are untouched.
-  drainForRun(runId: string, ok = false): void {
+  // F62: matched on (user, runId) — the runId is client-chosen, so another user
+  // reusing it and hanging up must not deny this user's cards.
+  drainForRun(runId: string, user: string, ok = false): void {
     for (const [key, p] of this.pending) {
-      if (p.runId === runId) this.settle(key, p, ok);
+      if (p.runId === runId && p.user === user) this.settle(key, p, ok);
     }
   }
 

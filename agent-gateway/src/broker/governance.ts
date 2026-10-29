@@ -32,7 +32,8 @@ import { chatCandidates, visionCandidates, shouldFailover } from "../llm/provide
 import { decisionOnlyGatedTools, gateSkippedTools } from "../pi/gating-manifest.js";
 import { PERSONAL_SKILL_PREFIX } from "../pi/load-skill.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
-import { isStepUpRequired } from "../http-errors.js";
+import { isAccessRevoked, isStepUpRequired } from "../http-errors.js";
+import type { AgentSpec } from "../pi/session.js";
 // CP5: a runtime import of runSubagents plus a
 // type-only import of BranchSupervisor/SubagentBranch/BranchResult. There is no
 // runtime cycle back to this file: subagent/run.ts's own import of this module
@@ -77,6 +78,17 @@ export interface Identity {
   ownerGrant?: string; // broker-minted HMAC grant (south-path only; absent on the north/bearer path)
   runId?: string; // scheduled-run id (scheduler-path only); forwarded as CreateGatewayTask's client_request_id for idempotent replay
   envelopeId?: string; // inbox envelope this chat run handles (AG-17); the broker records its sender as delegated_by when the caller is the recipient
+  // F51: the tool ids this run's own approver pre-approves (an auto agent's
+  // allowlist, a schedule's standing list). spawn_subagents branches inherit
+  // exactly this; absent means [] — a branch never pre-approves more than the
+  // run that spawned it.
+  preApproved?: string[];
+  // F203: the bound agent's spec, so parent-side LLM calls (reason steps, the
+  // subagent aggregator) and role-less branches honour its provider pin.
+  agentSpec?: AgentSpec;
+  // F129: called when the broker refuses this run's user as blocked or
+  // revoked, so the run's owner can end it instead of letting the model talk on.
+  onAccessRevoked?: (err: unknown) => void;
 }
 
 export interface ApprovalInfo {
@@ -129,6 +141,9 @@ interface PendingCall {
 /** Parent-side broker RPC bridge: gates each Pi tool call through create-task → SubmitPlan → optional HITL, then executes via InvokeTool with the minted capability token. */
 export class GovernanceBridge {
   private readonly pending = new Map<string, PendingCall>();
+  // F52: workflow_schedule calls a gate allowed, keyed by scheduleKey → the
+  // workflow version the approval card showed. Consumed by scheduleWorkflow.
+  private readonly approvedSchedules = new Map<string, number>();
   // Aborted by close(): ends any approval this run still waits for.
   private readonly closed = new AbortController();
   // How often a waiting gate polls the broker for the decision (AG-07).
@@ -234,13 +249,25 @@ export class GovernanceBridge {
       return { allow: false, reason: `tool '${toolName}' is not permitted by aikonOS policy` };
     }
 
+    // F52: a schedule is a standing consent, so its card shows what the human
+    // is consenting to — the workflow's version and tool steps ride in the plan
+    // args (and so in the broker's argsDigest), not just the lineage id.
+    let args = input;
+    let scheduleVersion: number | undefined;
+    if (toolName === "workflow_schedule") {
+      const shown = await this.scheduleApprovalArgs(input);
+      if ("reason" in shown) return { allow: false, reason: shown.reason };
+      args = shown.args;
+      scheduleVersion = shown.version;
+    }
+
     // One gateway-managed broker task per tool call (the broker won't run its
     // own executor for these — the gateway calls InvokeTool itself).
     // When a token is present (interactive) use the north surface so the broker
     // can bind the verified OIDC subject. When absent (scheduled runs) use the
     // SPIFFE-gated south twin — the gateway SVID is the trust anchor.
-    const handle = this.identity.token
-      ? await this.north.createTask(
+    const handle = await Promise.resolve(this.identity.token
+      ? this.north.createTask(
           {
             tenantId: this.identity.tenantId,
             userId: this.identity.userId,
@@ -260,7 +287,7 @@ export class GovernanceBridge {
           },
           this.identity.token,
         )
-      : await this.south.createGatewayTask({
+      : this.south.createGatewayTask({
           tenantId: this.identity.tenantId,
           ownerUserId: this.identity.userId,
           prompt: `agent tool call: ${mapping.toolId}`,
@@ -280,7 +307,11 @@ export class GovernanceBridge {
           // retry wrapper, or a transport-level gRPC retry, dedupe correctly
           // once one exists. Wiring an actual retry is out of scope here.
           clientRequestId: this.identity.runId ? `${this.identity.runId}:${toolCallId}` : "",
-        });
+        })
+    ).catch((err: unknown) => {
+      this.noteRevoked(err);
+      throw err;
+    });
     const taskId = handle.taskId;
 
     // A gate-then-bridge-direct tool (analyze_image, spawn_subagents) is gated
@@ -294,7 +325,7 @@ export class GovernanceBridge {
     // it fails loudly on the missing entry instead.
     const decisionOnly = decisionOnlyGatedTools().has(toolName);
 
-    const plan = oneStepPlan({ taskId, tenantId: this.identity.tenantId, toolCallId, mapping, args: input });
+    const plan = oneStepPlan({ taskId, tenantId: this.identity.tenantId, toolCallId, mapping, args });
     const result = await this.south.submitPlan({
       taskId,
       sandboxSpiffeId: this.cfg.gatewaySpiffeId,
@@ -303,7 +334,7 @@ export class GovernanceBridge {
 
     switch (result.outcome) {
       case ValidationOutcome.APPROVED: {
-        if (decisionOnly) return { allow: true };
+        if (decisionOnly) return this.allowDecisionOnly(toolName, input, scheduleVersion);
         const tok = result.capabilityTokenIds[1];
         if (!tok) return { allow: false, reason: "internal: no capability token minted" };
         this.pending.set(toolCallId, { taskId, capToken: tok, mapping, args: input });
@@ -323,7 +354,7 @@ export class GovernanceBridge {
           toolId: mapping.toolId,
           effectClass: mapping.effectClass,
           reason: gate.stepUp ? "elevated (step-up) approval required" : "human approval required",
-          args: input,
+          args,
           stepUp: gate.stepUp,
           argsDigest: result.argsDigest,
           requiresN: gate.requiresN,
@@ -331,7 +362,7 @@ export class GovernanceBridge {
           ownerMayApprove: gate.ownerMayApprove,
         });
         if ("reason" in decided) return { allow: false, reason: decided.reason };
-        if (decisionOnly) return { allow: true };
+        if (decisionOnly) return this.allowDecisionOnly(toolName, input, scheduleVersion);
         const tok = decided.tokens[1];
         if (!tok) return { allow: false, reason: "internal: no token after approval" };
         this.pending.set(toolCallId, { taskId, capToken: tok, mapping, args: input });
@@ -340,6 +371,54 @@ export class GovernanceBridge {
       default:
         return { allow: false, reason: `unexpected validation outcome ${result.outcome}` };
     }
+  }
+
+  // A decision-only allow. workflow_schedule's allow is recorded against its
+  // exact arguments and the version the card showed: scheduleWorkflow creates
+  // nothing without one (F52), so a child that skips the gate gets no schedule.
+  private allowDecisionOnly(toolName: string, input: Record<string, unknown>, version?: number): GateDecision {
+    if (toolName === "workflow_schedule") {
+      this.approvedSchedules.set(
+        scheduleKey(String(input.lineageId ?? ""), (input.inputs ?? {}) as Record<string, string>, {
+          kind: input.kind as ScheduleRecurrence["kind"],
+          cronExpr: input.cronExpr as string | undefined,
+          runAt: input.runAt as string | undefined,
+        }),
+        version ?? 0,
+      );
+    }
+    return { allow: true };
+  }
+
+  // scheduleApprovalArgs builds workflow_schedule's plan args: the tool call's
+  // own params plus the version and tool steps (skill + static args) of the
+  // workflow it would schedule, read under the caller's own bearer.
+  private async scheduleApprovalArgs(
+    input: Record<string, unknown>,
+  ): Promise<{ args: Record<string, unknown>; version: number } | { reason: string }> {
+    if (!this.identity.token) {
+      return { reason: "workflow_schedule requires an interactive chat session — scheduled runs cannot create schedules" };
+    }
+    try {
+      const resp = await this.north.getWorkflow(
+        { tenantId: this.identity.tenantId, ownerGrant: "", userId: this.identity.userId, lineageId: String(input.lineageId ?? "") },
+        this.identity.token,
+      );
+      const def = JSON.parse(resp.definitionJson) as Partial<WorkflowDef>;
+      const toolSteps = (Array.isArray(def.steps) ? def.steps : [])
+        .filter((s) => s.kind !== "reason")
+        .map((s) => ({ skill: s.skill, args: s.args ?? {} }));
+      const version = resp.version ?? 0;
+      return { args: { ...input, workflowVersion: version, toolSteps }, version };
+    } catch (err) {
+      this.noteRevoked(err);
+      return { reason: `workflow_schedule: could not read the workflow to approve: ${String(err)}` };
+    }
+  }
+
+  // F129: a blocked or revoked user ends the run (see Identity.onAccessRevoked).
+  private noteRevoked(err: unknown): void {
+    if (isAccessRevoked(err)) this.identity.onAccessRevoked?.(err);
   }
 
   // awaitApproval waits for the human decision on a gated call (AG-07 slice 2).
@@ -741,6 +820,14 @@ export class GovernanceBridge {
         error: "workflow_schedule requires an interactive chat session (no OIDC token) — scheduled runs cannot create schedules",
       };
     }
+    // F52: only what a gate allowed, once, with these exact arguments.
+    const key = scheduleKey(lineageId, inputs, recurrence);
+    const approvedVersion = this.approvedSchedules.get(key);
+    this.approvedSchedules.delete(key);
+    if (approvedVersion === undefined) {
+      this.log.warn({ lineageId }, "workflow_schedule refused: no approved gate decision for these arguments");
+      return { ok: false, error: "workflow_schedule was not approved for these arguments" };
+    }
     try {
       const resp = await this.north.getWorkflow(
         {
@@ -751,6 +838,12 @@ export class GovernanceBridge {
         },
         this.identity.token,
       );
+      if ((resp.version ?? 0) !== approvedVersion) {
+        return {
+          ok: false,
+          error: `workflow_schedule: the workflow changed since it was approved (approved version ${approvedVersion}, now ${resp.version ?? 0}) — schedule it again`,
+        };
+      }
       const parsed: unknown = JSON.parse(resp.definitionJson);
       const defInputs =
         parsed !== null && typeof parsed === "object" && Array.isArray((parsed as WorkflowDef).inputs)
@@ -876,7 +969,7 @@ export class GovernanceBridge {
       if (budget) return { ok: false, error: budget };
 
       const { providers } = await this.south.getLlmProviders({ tenantId: this.identity.tenantId });
-      const candidates = visionCandidates(providers);
+      const candidates = visionCandidates(providers, this.identity.agentSpec);
       if (candidates.length === 0) {
         return { ok: false, error: "no vision provider assigned" };
       }
@@ -953,7 +1046,7 @@ export class GovernanceBridge {
       if (budget) return { ok: false, error: budget };
 
       const { providers } = await this.south.getLlmProviders({ tenantId: this.identity.tenantId });
-      const candidates = chatCandidates(providers);
+      const candidates = chatCandidates(providers, this.identity.agentSpec);
       if (candidates.length === 0) {
         return { ok: false, error: "no default LLM provider configured" };
       }
@@ -1074,12 +1167,10 @@ export class GovernanceBridge {
   // gated through the ordinary gate()->InvokeTool path, under this same
   // caller's identity).
   //
-  // callerSkills is resolved HERE, not carried on the bridge: a fresh
-  // listUserSkills read under the caller's own identity, mirroring the FGA
-  // read every other skill-gated surface in this class already does. Never
-  // unions in a role-bound agent's skills (run.ts's own doc explains why: it
-  // would grant standing consent the caller does not hold) — that narrowing
-  // happens entirely inside runSubagents via the resolved AgentSpec.
+  // F51: branches pre-approve exactly what this run's own approver does
+  // (identity.preApproved, [] when absent) — never a list recomputed from the
+  // caller's skills, which pre-approved for a branch what a HITL chat would
+  // have shown the user a card for.
   async spawnSubagents(
     branches: SubagentBranch[],
     aggregatorInstruction: string,
@@ -1103,10 +1194,6 @@ export class GovernanceBridge {
       };
     }
     try {
-      const { skills } = await this.south.listUserSkills({
-        tenantId: this.identity.tenantId,
-        userId: this.identity.userId,
-      });
       const result = await runSubagents(branches, {
         supervisor: this.branchSupervisor,
         identity: this.identity,
@@ -1128,7 +1215,6 @@ export class GovernanceBridge {
         maxWidth: this.cfg.subagentMaxWidth,
         rateLimitChecker: this.rateLimitChecker,
         branchTimeoutMs: this.cfg.subagentBranchTimeoutMs,
-        callerSkills: skills.map((s) => s.toolId),
         reasoner: this,
         aggregatorInstruction,
         onBranchEvent: this.onSubagentEvent,
@@ -1161,6 +1247,7 @@ export class GovernanceBridge {
         agentId: this.identity.agentId,
       });
     } catch (err) {
+      this.noteRevoked(err);
       await this.finish(p.taskId, false, String(err));
       return { ok: false, output: null, error: String(err) };
     }
@@ -1182,6 +1269,12 @@ export class GovernanceBridge {
       this.log.warn({ err: String(err), taskId }, "EmitStatus failed (best-effort)");
     }
   }
+}
+
+// scheduleKey identifies one workflow_schedule call by everything it would
+// create. Inputs are sorted so key order in the model's JSON cannot matter.
+function scheduleKey(lineageId: string, inputs: Record<string, string>, r: ScheduleRecurrence): string {
+  return JSON.stringify([lineageId, Object.entries(inputs).sort(), r.kind, r.cronExpr ?? "", r.runAt ?? ""]);
 }
 
 // invalidSkillError returns an error message when any workflow step references a

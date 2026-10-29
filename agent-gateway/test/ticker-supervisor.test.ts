@@ -748,6 +748,9 @@ test("ticker: scheduled run acts as the broker-named actor, never the bare owner
         ],
       }),
     reportScheduledRunResult: () => Promise.resolve(),
+    // F203: the actor's spec is resolved before the run; the tenant default
+    // agent carries none.
+    resolveRunAgent: async () => ({ agentId: "x", isDefault: true }),
   };
   const reportClients = { south: reportSouth } as unknown as BrokerClients;
 

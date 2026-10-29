@@ -15,10 +15,8 @@ import { status } from "@grpc/grpc-js";
 import { ephemeralKey, GatewayOverloadError } from "../ipc/supervisor.js";
 import type { ChildHandle } from "../ipc/supervisor.js";
 import type { Approver, Identity } from "../broker/governance.js";
-import { resolveAutoApproveAllowlist } from "../broker/auto-approve.js";
-import { preAuthApprover, unattendedAllowed } from "../scheduler/ticker.js";
+import { preAuthApprover } from "../scheduler/ticker.js";
 import type { AgentSpec } from "../pi/session.js";
-import type { ResolveSouth } from "../pi/session-plan.js";
 import { chatCandidates, type ChatProviderLike } from "../llm/provider-fallback.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
 import type { Logger } from "../log.js";
@@ -219,21 +217,17 @@ export interface AgentSpecLike {
   soul?: string;
 }
 
-// The two MCP listings are reused verbatim from ResolveSouth so
-// resolveAutoApproveAllowlist can walk this same injected south rather than a
-// second, independently-drifting copy of that walk.
-export interface SubagentSouth
-  extends Pick<ResolveSouth, "listAccessibleMcpServersForAgent" | "listMcpServerToolsSouth"> {
+export interface SubagentSouth {
   getLlmProviders(req: { tenantId: string }): Promise<{ providers: SubagentProviderLike[] }>;
   getAgentSpec(req: { tenantId: string; agentId: string }): Promise<AgentSpecLike>;
-  getOrgSettings(req: { tenantId: string }): Promise<{ settings?: { unattendedAllowed?: boolean } }>;
 }
 
 export interface SubagentRunDeps {
   supervisor: BranchSupervisor;
   /**
    * The caller's own identity. Branch children spawn under this verbatim — the
-   * synthetic ephemeralKey is a POOL key only and never an identity.
+   * synthetic ephemeralKey is a POOL key only and never an identity. Its
+   * preApproved list (F51) is the whole of every branch approver's allowlist.
    */
   identity: Identity;
   north: SubagentNorth;
@@ -252,13 +246,6 @@ export interface SubagentRunDeps {
   rateLimitChecker: RateLimitChecker;
   /** config.subagentBranchTimeoutMs — wall clock per branch, then its child is aborted. */
   branchTimeoutMs: number;
-  /**
-   * The CALLER's own FGA-derived skills. The branch approver's allowlist derives
-   * from these and nothing else. A role-bound branch is already narrowed by its
-   * AgentSpec (CP3) — its agent's skills must never be unioned in here, or a
-   * `role` would grant standing consent the caller does not hold.
-   */
-  callerSkills: string[];
   /** Parent-side aggregator call (GovernanceBridge.reason). */
   reasoner: Reasoner;
   /** The caller's synthesis instruction for the aggregator. */
@@ -323,21 +310,12 @@ export async function runSubagents(
 
   const specsByRole = await resolveRoles(branches, deps);
 
-  // One resolve for the whole fan-out: every branch shares the caller's
-  // auto-approve surface, so per-branch resolution would just repeat the same
-  // 1+N south RPCs. resolveAutoApproveAllowlist fails OPEN to skills-only on an
-  // MCP-listing error, which narrows the allowlist — never widens it.
-  // H-06: with the org master off (or unreadable) branches pre-approve
-  // nothing, so a gated branch call is refused.
-  const approverAllowlist = (await unattendedAllowed(deps.south, deps.identity.tenantId, deps.log))
-    ? await resolveAutoApproveAllowlist(
-        deps.south,
-        deps.identity.tenantId,
-        deps.identity.agentId,
-        deps.callerSkills,
-        deps.identity.userId,
-      )
-    : [];
+  // F51: a branch pre-approves exactly what the run that spawned it does —
+  // [] for a human-in-the-loop chat (its gated branch calls are refused and
+  // reported in deniedTools), the auto agent's or schedule's own list otherwise.
+  // The parent already applied the org master (H-06) when it built that list.
+  // A role-bound branch is narrowed by its AgentSpec, never widened here.
+  const approverAllowlist = deps.identity.preApproved ?? [];
 
   // allSettled, not all: a rejecting branch must not leave its siblings running
   // unobserved (their withEphemeralChild finally still has to evict them).
@@ -399,7 +377,7 @@ function stringifySynthesis(output: unknown): string {
 // pre-gated individually by its egress-proxy registration.
 async function preGateFanOut(deps: SubagentRunDeps): Promise<void> {
   const { providers } = await deps.south.getLlmProviders({ tenantId: deps.identity.tenantId });
-  const [head] = chatCandidates(providers);
+  const [head] = chatCandidates(providers, deps.identity.agentSpec);
   if (!head) {
     throw new Error("spawn_subagents: no default LLM provider configured");
   }
@@ -489,7 +467,7 @@ class BranchTimeoutError extends Error {
   }
 }
 
-// branchApprover is preAuthApprover over the caller's own auto-approve allowlist,
+// branchApprover is preAuthApprover over the parent run's inherited allowlist,
 // wrapped only to RECORD refusals so the aggregator can name the tool the subtask
 // needed. preAuthApprover is already the deny-fast policy: it answers from a Set
 // and never touches ApprovalRegistry, so a branch tool call that would escalate
@@ -541,7 +519,8 @@ async function runBranch(
   deps: SubagentRunDeps,
 ): Promise<BranchResult> {
   const role = branch.role && branch.role.trim() !== "" ? branch.role.trim() : undefined;
-  const agentSpec = role ? specsByRole.get(roleKey(role)) : undefined;
+  // A role-less branch is the parent's own agent (F203: same provider pin).
+  const agentSpec = role ? specsByRole.get(roleKey(role)) : deps.identity.agentSpec;
   const deniedTools: string[] = [];
   const base = { index, task: branch.task, role };
   // This branch's own accumulated usage cost (CP7); absent per-event cost

@@ -24,7 +24,7 @@ test("drainForRun resolves and removes only the matching run's pending approvals
   const promiseA = registry.await_(makeInfo("call-a"), "user-a", "run-a");
   const promiseB = registry.await_(makeInfo("call-b"), "user-b", "run-b");
 
-  registry.drainForRun("run-a");
+  registry.drainForRun("run-a", "user-a");
 
   assert.equal(await promiseA, false);
   assert.equal(registry.listForUser("user-a").length, 0);
@@ -47,9 +47,22 @@ test("drainForRun with ok=true resolves matching entries to true", async () => {
   const registry = new ApprovalRegistry();
   const promise = registry.await_(makeInfo("call-c"), "user-c", "run-c");
 
-  registry.drainForRun("run-c", true);
+  registry.drainForRun("run-c", "user-c", true);
 
   assert.equal(await promise, true);
+});
+
+// F62: the runId is client-chosen — another user who reuses it and hangs up
+// must not deny this user's pending card.
+test("drainForRun by another user with the same runId leaves the owner's approval pending", async () => {
+  const registry = new ApprovalRegistry();
+  const victim = registry.await_(makeInfo("call-v"), "user-victim", "run-shared");
+
+  registry.drainForRun("run-shared", "user-attacker", false);
+
+  assert.equal(registry.listForUser("user-victim").length, 1, "the victim's card must still be pending");
+  registry.resolve("call-v", "user-victim", true, "");
+  assert.equal(await victim, true);
 });
 
 // ── Approval timeout (Config.approvalTimeoutMs) ────────────────────────────────
@@ -101,7 +114,7 @@ test("drainForRun on a timeout-armed approval leaves no timer behind", async () 
   const registry = new ApprovalRegistry(40);
   const promise = registry.await_(makeInfo("call-drained"), "user-d", "run-d");
 
-  registry.drainForRun("run-d", false);
+  registry.drainForRun("run-d", "user-d", false);
   assert.equal(await promise, false);
 
   await new Promise((resolve) => setTimeout(resolve, 80));

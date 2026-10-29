@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TOOL_NAMES } from "../src/pi/tools.js";
 import { mapTool } from "../src/broker/mapping.js";
+import { EffectClass } from "../gen/ts/proto/plan";
 import {
   GATING_MANIFEST,
   MCP_GATING,
@@ -25,7 +26,6 @@ const PINNED_BRIDGE_DIRECT = [
   "workflow_list",
   "workflow_publish",
   "workflow_propose",
-  "workflow_schedule",
 ];
 
 test("every TOOL_NAMES entry appears in the manifest exactly once", () => {
@@ -102,4 +102,12 @@ test("CP5 spawn_subagents: must NOT be pinned bridge-direct — that list is mod
     "spawn_subagents is gate-then-bridge-direct, not bridge-direct — adding it to PINNED_BRIDGE_DIRECT would wrongly skip its JIT gate",
   );
   assert.ok(!gateSkippedTools().has("spawn_subagents"), "gateSkippedTools() must not include spawn_subagents");
+});
+
+test("F52 workflow_schedule: gate-then-bridge-direct, WRITE_EXTERNAL — a schedule is a human decision, never skipped", () => {
+  // WHY: a schedule is a standing consent to run the workflow's tool steps
+  // unattended. Bridge-direct let the model create one with no card at all.
+  assert.strictEqual(GATING_MANIFEST.workflow_schedule?.model, "gate-then-bridge-direct");
+  assert.ok(!gateSkippedTools().has("workflow_schedule"), "workflow_schedule must reach gate()'s JIT plan");
+  assert.deepEqual(mapTool("workflow_schedule"), { toolId: "scheduler", effectClass: EffectClass.WRITE_EXTERNAL });
 });

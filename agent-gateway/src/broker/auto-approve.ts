@@ -20,6 +20,9 @@ export async function resolveAutoApproveAllowlist(
   userId: string,
 ): Promise<string[]> {
   const ids = new Set<string>(skills);
+  // F52: "scheduler" (workflow_schedule) creates a standing consent of its own,
+  // so it is never pre-approved — an auto agent's schedule still asks a human.
+  ids.delete("scheduler");
 
   let connections: { id: string }[];
   try {
