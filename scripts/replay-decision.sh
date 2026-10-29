@@ -72,6 +72,16 @@ jqr() { jq -b "$@"; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
+# The revision check below proves the snapshot is self-consistent, not where it
+# came from, so its Rego is untrusted code. Compile it without the builtins that
+# reach the network or the process (http.send, net.*, opa.runtime): a policy
+# that calls one fails to compile and the replay stops. env -i keeps the shell's
+# tokens out of the opa process as well.
+"${OPA_BIN}" capabilities --current \
+  | jqr '.builtins |= map(select(.name == "http.send" or .name == "opa.runtime" or (.name | startswith("net.")) | not)) | .allow_net = []' \
+  > "${WORK}/capabilities.json" \
+  || die "could not build the opa capabilities file" 2
+
 jqr -e --arg k "${EVIDENCE_KIND}" '.kind == $k' "${EVIDENCE}" >/dev/null \
   || die "not a decision export (kind is not ${EVIDENCE_KIND})"
 
@@ -145,7 +155,7 @@ if [[ -n "${server_version}" && "${server_version}" != "${local_version}" ]]; th
 fi
 
 ref="data.${query//\//.}"
-"${OPA_BIN}" eval --format json --data "${POLICY_DIR}" --input "${WORK}/input.json" "${ref}" > "${WORK}/eval.json" \
+env -i PATH="${PATH}" "${OPA_BIN}" eval --capabilities "${WORK}/capabilities.json" --format json --data "${POLICY_DIR}" --input "${WORK}/input.json" "${ref}" > "${WORK}/eval.json" \
   || die "opa could not evaluate ${ref} against the snapshot"
 jqr '.result[0].expressions[0].value // {}' "${WORK}/eval.json" > "${WORK}/replayed.json"
 jqr '.opa.result // {}' "${WORK}/record.json" > "${WORK}/recorded.json"
@@ -175,7 +185,7 @@ if [[ ! -s "${WORK}/decisive.txt" ]]; then
 fi
 while IFS= read -r rule; do
   [[ "${rule}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-  "${OPA_BIN}" eval --format json --explain full --data "${POLICY_DIR}" --input "${WORK}/input.json" "${ref}.${rule}" > "${WORK}/trace.json" \
+  env -i PATH="${PATH}" "${OPA_BIN}" eval --capabilities "${WORK}/capabilities.json" --format json --explain full --data "${POLICY_DIR}" --input "${WORK}/input.json" "${ref}.${rule}" > "${WORK}/trace.json" \
     || die "opa could not trace ${ref}.${rule}"
   value="$(jqr -c --arg r "${rule}" '.[$r]' "${WORK}/replayed.json")"
   # Locations are reported relative to the snapshot (the scratch directory is

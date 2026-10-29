@@ -1,6 +1,11 @@
 model
   schema 1.1
 
+# Single tenant per store is a hard limit: group, skill, agent and
+# mcp_connector ids are global and no can_* relation checks the tenant, so two
+# tenants sharing one store would share every grant. Give each tenant its own
+# store (the broker pins one TenantID, broker/internal/broker/roles.go).
+
 # ── Core entity types ─────────────────────────────────────────────────────────
 
 type user
@@ -123,5 +128,6 @@ type skill_submission
     define reviewer: [user, group#member]
     define approver: [user, group#member]
     define can_review: reviewer
-    define can_approve: approver
-    define can_publish: approver
+    # Separation of duty: a submitter never approves or publishes their own skill.
+    define can_approve: approver but not submitter
+    define can_publish: approver but not submitter

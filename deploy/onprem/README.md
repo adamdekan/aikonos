@@ -183,10 +183,16 @@ Run **on the on-prem host** after step 1:
 ```bash
 cp ~/apps/aikonos/scripts/git-deploy-hook.sh ~/repos/aikonos.git/hooks/post-receive
 chmod +x ~/repos/aikonos.git/hooks/post-receive
+# Refuse force-pushes and branch deletes before the ref moves; the post-receive
+# hook runs after the update, so it can refuse the deploy but not the push.
+git -C ~/repos/aikonos.git config receive.denyNonFastForwards true
+git -C ~/repos/aikonos.git config receive.denyDeletes true
 ```
 
 After the hook is installed, every push to the bare repo automatically:
-1. Verifies the pushed ref's signature (see **Signing setup** below)
+1. Verifies the pushed ref's signature (see **Signing setup** below) and refuses a
+   deploy-branch sha that is not a fast-forward of the last deployed commit (recorded in
+   `~/repos/aikonos.git/aikonos-deployed`), so an older signed commit cannot be replayed
 2. Checks out the new code to `~/apps/aikonos`
 3. Rebuilds every service image (`docker compose build` — webui always rebuilds since OIDC
    vars bake in at build time; other services rebuild cheaply via the Docker layer cache when
@@ -211,9 +217,10 @@ git push on-prem main
 
 The deploy hook (`scripts/git-deploy-hook.sh`) verifies the pushed ref's tip commit (or
 tag, if a tag was pushed) against an **allowed-signers** file before checking out and
-deploying. This is an **adoption path**: until the allowed-signers file exists on the
-server, the hook prints a loud warning and deploys unverified — nothing breaks until an
-operator opts in by creating the file.
+deploying. It **fails closed**: without the allowed-signers file the deploy is refused.
+For a first-time setup before any keys are collected, set
+`AIKONOS_DEPLOY_REQUIRE_SIGNED=false` explicitly (logged) and remove it once the file
+exists.
 
 ### 1. Generate or choose an SSH signing key (each deployer, on their dev machine)
 
@@ -263,7 +270,8 @@ host, keyed to who is actually trusted to push there.
 | Variable | Default | Effect |
 |---|---|---|
 | `AIKONOS_DEPLOY_ALLOWED_SIGNERS` | `/etc/aikonos/allowed_signers` | Path to the allowed-signers file. |
-| `AIKONOS_DEPLOY_REQUIRE_SIGNED` | unset | `false` skips verification entirely (logged). `true` fails closed — refuses to deploy if the allowed-signers file is missing (misconfiguration), instead of falling back to the warn-and-proceed adoption path. Unset (default) behaves adoption-style: verify if the file exists, warn-and-proceed if it doesn't. |
+| `AIKONOS_DEPLOY_REQUIRE_SIGNED` | `true` | Fails closed: a missing allowed-signers file refuses the deploy. Only an explicit `false` skips verification (logged) — first-time setup only. |
+| `AIKONOS_DEPLOY_ALLOW_ROLLBACK` | unset | `1` deploys a sha that is not a fast-forward of the last deployed commit (logged). For a deliberate rollback only. |
 
 Set these in the hook's process environment on the on-prem host (e.g. exported in the git user's
 shell profile, or prefixed on the `post-receive` script itself) if you need non-default
@@ -271,14 +279,24 @@ values.
 
 ### 5. Adoption path
 
-1. **Before** any allowed-signers file exists: every push deploys with a loud
-   `WARNING: ... signature verification is NOT enforced` — nobody is blocked.
-2. Create `/etc/aikonos/allowed_signers` with your team's keys (step 3) whenever ready —
-   from that point every push is verified; an unsigned or unrecognized-signer push is
-   refused with instructions to sign.
-3. Optionally set `AIKONOS_DEPLOY_REQUIRE_SIGNED=true` to make a missing allowed-signers
-   file a hard failure instead of a silent-warn fallback (belt-and-suspenders once
-   signing is fully rolled out).
+1. **Before** any allowed-signers file exists every push is refused. To bootstrap,
+   set `AIKONOS_DEPLOY_REQUIRE_SIGNED=false` on the hook (every push then logs that
+   verification is skipped).
+2. Create `/etc/aikonos/allowed_signers` with your team's keys (step 3) and remove
+   `AIKONOS_DEPLOY_REQUIRE_SIGNED=false` — from that point every push is verified; an
+   unsigned or unrecognized-signer push is refused with instructions to sign.
+
+### 6. Deliberate rollback
+
+The hook refuses a deploy-branch sha that does not descend from the last deployed commit,
+even when it is validly signed. To roll back on purpose, reset the branch and run the hook
+on the host:
+
+```bash
+cd ~/repos/aikonos.git
+git update-ref refs/heads/main <older-signed-sha>
+AIKONOS_DEPLOY_ALLOW_ROLLBACK=1 ./hooks/post-receive </dev/null
+```
 
 An unsigned or unverifiable push is refused with:
 

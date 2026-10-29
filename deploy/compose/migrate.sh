@@ -103,8 +103,10 @@ echo "[migrate] app role ready"
 # The "LLM Spend" dashboard queries
 # Postgres directly. aikonos_grafana is LOGIN, NOSUPERUSER, NOBYPASSRLS with
 # SELECT on exactly six tables and no DML anywhere — the narrowest grant that
-# answers the dashboard's questions. Deliberately no ALTER DEFAULT PRIVILEGES:
-# a future table must be named here to become visible.
+# answers the dashboard's questions. agents and user_directory are read only for
+# display names, so they get column grants: never agents.soul (system prompts)
+# or user_directory.email. Deliberately no ALTER DEFAULT PRIVILEGES: a future
+# table (or column) must be named here to become visible.
 if [ "$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
     "SELECT 1 FROM pg_roles WHERE rolname = 'aikonos_grafana'")" = "1" ]; then
   echo "[migrate] grafana role aikonos_grafana exists — syncing password + attributes"
@@ -124,7 +126,12 @@ echo "[migrate] granting read-only analytics SELECT to aikonos_grafana"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR_STOP=1 <<SQL
 GRANT CONNECT ON DATABASE "${PGDATABASE}" TO aikonos_grafana;
 GRANT USAGE ON SCHEMA public TO aikonos_grafana;
-GRANT SELECT ON llm_usage_events, llm_spend_counters, spend_caps, llm_providers, agents, user_directory TO aikonos_grafana;
+GRANT SELECT ON llm_usage_events, llm_spend_counters, spend_caps, llm_providers TO aikonos_grafana;
+-- REVOKE first: a column GRANT leaves an earlier table-level SELECT in place,
+-- so a re-run on an existing deployment must drop it explicitly.
+REVOKE ALL ON agents, user_directory FROM aikonos_grafana;
+GRANT SELECT (id, tenant_id, name) ON agents TO aikonos_grafana;
+GRANT SELECT (tenant_id, subject, name) ON user_directory TO aikonos_grafana;
 -- All six tables are RLS-enabled, so a SELECT grant alone yields zero rows.
 -- The dashboard is deliberately cross-tenant (operator view); scoping stays a
 -- visible per-table SELECT policy rather than a blanket BYPASSRLS, and

@@ -77,6 +77,23 @@ jobs:
       - name: Run OPA policy tests
         run: opa test policies/opa/ -v
 
+      # Replaying an untrusted export must not reach the network or the
+      # environment (http.send, net.*, opa.runtime are compiled out).
+      - name: Decision replay sandbox test
+        run: bash scripts/tests/replay-decision.test.sh
+
+      # Pinned by version and checksum like OPA above.
+      - name: Install the OpenFGA CLI
+        run: |
+          curl -sL -o fga.tar.gz https://github.com/openfga/cli/releases/download/v0.6.3/fga_0.6.3_linux_amd64.tar.gz
+          echo "8c0883c72027390d90c454fe5f766362aa90c83579453c97937d09bcf25c1970  fga.tar.gz" | sha256sum -c
+          tar -xzf fga.tar.gz fga
+          sudo mv fga /usr/local/bin/fga
+          fga version
+
+      - name: Run OpenFGA model tests
+        run: fga model test --tests policies/fga/model.fga.yaml
+
   gateway-test:
     name: Gateway tests
     runs-on: ubuntu-latest
@@ -225,6 +242,14 @@ jobs:
           echo "expected ${want} applied migrations, ledger has ${got}"
           [ "${want}" -eq "${got}" ]
 
+      # The Grafana role reads display names only: never agents.soul (system
+      # prompts) or user_directory.email, also after a re-run over an older grant.
+      - name: Assert aikonos_grafana column grants
+        run: |
+          has() { psql -tAc "SELECT has_column_privilege('aikonos_grafana', '$1', '$2', 'SELECT')"; }
+          [ "$(has agents name)" = t ] && [ "$(has user_directory name)" = t ]
+          [ "$(has agents soul)" = f ] && [ "$(has user_directory email)" = f ]
+
   compose-config:
     name: Compose config drift (local/azure/onprem)
     runs-on: ubuntu-latest
@@ -286,6 +311,10 @@ jobs:
       # source but has no entry in .github/release-images.json.
       - name: Release scripts (overlay coverage, assembly, verification)
         run: bash scripts/tests/release-scripts.test.sh
+
+      # Signed, fast-forward-only push-to-deploy gate (scripts/git-deploy-hook.sh).
+      - name: Deploy hook verification
+        run: bash scripts/tests/git-deploy-hook-verify.test.sh
 
   scorecard:
     name: OpenSSF Scorecard

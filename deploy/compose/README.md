@@ -148,8 +148,9 @@ utilization against `spend_caps`.
 
 For that read path, `grafana` joins the otherwise datastore-only `backend` network — a deliberate
 deviation from the network-isolation table below. It connects as `aikonos_grafana`, a role `migrate.sh`
-provisions with `SELECT` on five analytics tables and nothing else: no DML, no `BYPASSRLS`, no other
-table. Set **`AIKONOS_GRAFANA_DB_PASSWORD`** in `.env` (it reaches `migrate` as the role's password and
+provisions with `SELECT` on four analytics tables plus the display-name columns of `agents` and
+`user_directory` (never `agents.soul` or `user_directory.email`), and nothing else: no DML, no
+`BYPASSRLS`, no other table. Set **`AIKONOS_GRAFANA_DB_PASSWORD`** in `.env` (it reaches `migrate` as the role's password and
 `grafana` as `GRAFANA_PG_RO_PASSWORD`, which `datasources.yaml` reads). Rotating it means re-running
 `docker compose up migrate` and recreating `grafana`.
 

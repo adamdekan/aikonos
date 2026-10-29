@@ -44,6 +44,15 @@ tuples:
   - user: user:carol
     relation: permitted_user
     object: mcp_connector:c1
+  - user: user:alice
+    relation: submitter
+    object: skill_submission:s1
+  - user: group:ops#member
+    relation: approver
+    object: skill_submission:s1
+  - user: user:alice
+    relation: approver
+    object: skill_submission:s1
 tests:
   # AG-04: user and group owners both own and may use the agent; only a named
   # user owner may delegate; a plain user of the agent owns nothing.
@@ -124,3 +133,17 @@ tests:
         object: task:t1
         assertions:
           can_approve: false
+  # Separation of duty: a skill's submitter cannot approve or publish it, even
+  # when they also hold the approver relation.
+  - name: skill submission approvers
+    check:
+      - user: user:alice
+        object: skill_submission:s1
+        assertions:
+          can_approve: false
+          can_publish: false
+      - user: user:bob
+        object: skill_submission:s1
+        assertions:
+          can_approve: true
+          can_publish: true
