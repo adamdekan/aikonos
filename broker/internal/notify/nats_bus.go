@@ -4,6 +4,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,22 +19,28 @@ type natsBus struct {
 	logger *zap.Logger
 }
 
-func newNATSBus(url string, logger *zap.Logger) (*natsBus, error) {
-	conn, err := nats.Connect(url,
+func newNATSBus(rawURL string, logger *zap.Logger) (*natsBus, error) {
+	conn, err := nats.Connect(rawURL,
 		nats.Name("aikonos-broker"),
 		nats.MaxReconnects(-1), // reconnect forever; the broker outlives NATS blips
 		nats.ReconnectWait(2*time.Second),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("nats connect %s: %w", RedactURL(url), err)
+		// An unparseable URL comes back as url.Parse's *url.Error, which
+		// quotes the whole URL, credential included; keep only its cause.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("nats connect %s: %w", RedactURL(rawURL), err)
 	}
 	return &natsBus{conn: conn, logger: logger}, nil
 }
 
 // RedactURL returns a NATS URL (or comma-separated list, as nats.Connect
-// takes) safe to log: compose passes the client token as the userinfo
-// (nats://<token>@nats:4222), and url.Redacted masks only a password, never a
-// token-as-username.
+// takes) safe to log: compose passes the client credential as the userinfo
+// (nats://broker:<password>@nats:4222; a bare token rides as the username),
+// and url.Redacted masks only a password, never a token-as-username.
 func RedactURL(raw string) string {
 	parts := strings.Split(raw, ",")
 	for i, p := range parts {

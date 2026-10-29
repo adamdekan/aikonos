@@ -49,11 +49,20 @@ and most of them fail closed. Before the first `up`, check each item that
 applies; the variables are described in `deploy/compose/README.md` "Security
 settings (0.7.5)".
 
-- **New required secrets.** `.env` must set `AIKONOS_NATS_TOKEN` and
+- **New required secrets.** `.env` must set `AIKONOS_NATS_BROKER_PASSWORD`,
+  `AIKONOS_NATS_GATEWAY_PASSWORD` (two different values) and
   `AIKONOS_OFFICE_WORKER_TOKEN` (`openssl rand -hex 32` each), or every
   `docker compose` command stops with a `required variable` message.
-  Compose no longer reads `AIKONOS_NATS_URL` from `.env`: it builds the URL
-  from the token.
+  Compose no longer reads `AIKONOS_NATS_URL` from `.env`: it builds each
+  client's URL from its password. Outside dev mode the broker also refuses
+  to start when its NATS password or the office token is a placeholder or
+  shorter than 32 bytes.
+- **Dev CA owner.** `dev-ca-mint` runs as `AIKONOS_HOST_UID:AIKONOS_HOST_GID`
+  (default `1000:1000`) and now writes `deploy/compose/tls/broker/` and
+  `tls/agent-gateway/`. Set both to the checkout owner (`id -u`, `id -g`) when
+  that is not 1000, or the mint fails and the broker and gateway never start.
+  Recovery: set them, or run `bash scripts/compose-dev-ca.sh` on the host as
+  the checkout owner, then `docker compose up -d` again.
 - **Dev mode is off by default.** `AIKONOS_DEV_MODE` defaults to `false` on the
   broker and the gateway, so an unset or blank value gets the production guard.
   Local dev keeps `AIKONOS_DEV_MODE=true` in `.env`.

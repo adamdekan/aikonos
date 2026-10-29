@@ -223,8 +223,11 @@ needs no network. `ca.key` stays in `deploy/compose/tls/`; the broker and gatewa
 `tls/broker/` and `tls/agent-gateway/` (their own leaf plus `ca.crt`), which the script refreshes on
 every run.
 
-NATS requires a client token (`--auth`): set `AIKONOS_NATS_TOKEN` in `.env` (`openssl rand -hex 32`);
-compose builds the broker's and gateway's `nats://<token>@nats:4222` URL from it.
+NATS requires a login per client (`deploy/compose/nats/nats.conf`): set `AIKONOS_NATS_BROKER_PASSWORD`
+and `AIKONOS_NATS_GATEWAY_PASSWORD` in `.env` (two different `openssl rand -hex 32` values); compose
+builds `nats://broker:<pw>@nats:4222` and `nats://gateway:<pw>@nats:4222` from them. Only the broker
+may publish; the gateway may only read `aikonos.audit.>`, so a compromised gateway (or a child that
+reads its environment) cannot forge audit events, though it can still read every tenant's.
 `office-worker` requires `AIKONOS_OFFICE_WORKER_TOKEN` as a bearer on every job, which the broker
 sends; both are required (`:?`), so `up` stops with a message when either is missing.
 
@@ -247,7 +250,8 @@ document the compose-wired ones next to their lines; `docs/OPS-RUNBOOK.md`
 | `AIKONOS_POLICY_BUNDLE_HTTP_ADDR` | broker | unset: `:9092` in dev mode, `127.0.0.1:9092` otherwise | `:9092`, fixed | Listener for OPA's bundle downloads. Never published on the host. |
 | `AIKONOS_TENANT_ID` | broker, gateway | broker: `11111111-…` | required (`:?`) | The one tenant served. The broker refuses every north call whose tenant claim (Entra `tid`) differs. |
 | `AIKONOS_DEV_MODE` | broker, gateway, office-worker | `false` | `${…:-false}` on broker and gateway | `true` lets the broker run degraded, the gateway start without an OIDC issuer and JWKS URL, and office-worker start without its token. Dev machines only. Compose does not pass it to office-worker, whose token is required. |
-| `AIKONOS_NATS_TOKEN` | nats, broker, gateway | none | required (`:?`) | NATS client token; compose builds `nats://<token>@nats:4222`. Hex, `openssl rand -hex 32`. |
+| `AIKONOS_NATS_BROKER_PASSWORD` | nats, broker | none | required (`:?`) | NATS password of user `broker` (publishes and reads `aikonos.>`); compose builds `nats://broker:<pw>@nats:4222`. Hex, `openssl rand -hex 32`. |
+| `AIKONOS_NATS_GATEWAY_PASSWORD` | nats, gateway | none | required (`:?`) | NATS password of user `gateway` (reads `aikonos.audit.>` only, publishes nothing). Hex, and different from the broker's. |
 | `AIKONOS_OFFICE_WORKER_TOKEN` | broker, office-worker | none | required (`:?`) | Bearer the broker sends on every office job. `openssl rand -hex 32`. |
 | `AIKONOS_VAULT_ALLOW_INSECURE_HTTP` | broker | `false` | `${…:-false}` | `true` admits an `http://` Vault on a routable host. Loopback and single-label hosts (`http://vault:8200`) are always allowed. Use https instead where possible. |
 | `AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS` | broker | `false` | `${…:-false}` | One-time migration switch: accepts session records without a path-bound sidecar (saved before 0.7.5) and lets sessions be written unsigned. Remove once old sessions are re-saved. |

@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,19 @@ func TestRedactURL(t *testing.T) {
 		if got := RedactURL(in); got != want {
 			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// An unparseable URL (e.g. the "<...-CHANGE-ME>" placeholder as a password)
+// makes nats.Connect return url.Parse's *url.Error, which quotes the whole URL;
+// the connect error must not carry the credential to the fatal log.
+func TestNew_ParseErrorRedactsCredential(t *testing.T) {
+	_, err := New("nats://broker:<s3cr3t-pw>@nats:4222", zap.NewNop())
+	if err == nil {
+		t.Fatal("want a connect error for invalid userinfo")
+	}
+	if strings.Contains(err.Error(), "s3cr3t") {
+		t.Errorf("connect error leaks the credential: %v", err)
 	}
 }
 

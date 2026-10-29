@@ -320,11 +320,9 @@ ERROR: [aikonos-deploy] Signature verification FAILED for <sha> (refs/heads/main
 
 ```bash
 # Functional smoke test (auto-detects Entra from the issuer).
-# Note: in the onprem overlay, webui and gateway are Traefik-only (no host ports).
-# The verify script checks localhost:4200 and localhost:8080 which are internal-only
-# by design — expect those 2 checks to fail. The important checks (broker OpenFGA
-# enforcement, Vault capability key, audit sink) run via broker's host port 9090-9091
-# and will pass if the stack is healthy.
+# The onprem overlay publishes no app ports (webui and gateway are Traefik-only,
+# the broker has none). compose-verify.sh detects this and probes in-network:
+# webui, the gateway and broker 9090/9091 through `docker compose exec agent-gateway`.
 bash scripts/compose-verify.sh
 
 # Check all services are healthy.
@@ -416,8 +414,10 @@ docker compose -f compose.yaml -f deploy/compose/compose.onprem.yaml run --rm fg
 
 NATS is not published at all on-prem. It carries the audit event stream, so a host publish would let
 any reachable host try to subscribe to `aikonos.audit.>` or publish forged events into the subject the
-gateway's audit consumer trusts. Clients also need `AIKONOS_NATS_TOKEN` (NATS runs with `--auth`). Broker→NATS
-and gateway→NATS both ride the `mesh` network and need no host port.
+gateway's audit consumer trusts. Clients also log in (`deploy/compose/nats/nats.conf`): the broker
+with `AIKONOS_NATS_BROKER_PASSWORD`, the gateway, which may only read `aikonos.audit.>`, with
+`AIKONOS_NATS_GATEWAY_PASSWORD`. Broker→NATS and gateway→NATS both ride the `mesh` network and need
+no host port.
 
 Both `ports:` blocks live in `deploy/compose/compose.onprem.yaml`. A plain `ports:` list there
 **merges** with the base file's rather than replacing it, which silently leaves the wide binding in
