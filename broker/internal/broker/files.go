@@ -95,7 +95,10 @@ func agentDirGuard(rel string) error {
 // missing file → NotFound, a remote-backend 403 → PermissionDenied, a full
 // quota → ResourceExhausted, everything else → Internal. The Internal message
 // is generic (F41): the underlying error carries absolute volume paths and
-// remote backend bodies, so it is logged here and never returned.
+// remote backend bodies, so it is logged here and never returned. The same
+// holds for the remote-backend sentinels: they wrap DB connect errors, OBO
+// exchange errors and Graph URLs, so the caller gets a fixed message (the
+// sentinel's own text for reconnect, which the webui keys off).
 func fileError(verb string, err error) error {
 	switch {
 	case errors.Is(err, workspacefs.ErrQuota):
@@ -109,11 +112,14 @@ func fileError(verb string, err error) error {
 	case errors.Is(err, workspacefs.ErrIntegrityMismatch):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
 	case errors.Is(err, workspacefs.ErrUnavailable):
-		return status.Errorf(codes.Unavailable, "%v", err)
+		slog.Default().Warn("workspace backend unavailable", "op", verb, "error", err)
+		return status.Error(codes.Unavailable, verb+" temporarily unavailable")
 	case errors.Is(err, workspacefs.ErrReconnectRequired):
-		return status.Errorf(codes.FailedPrecondition, "%v", err)
+		slog.Default().Warn("workspace backend needs reconnect", "op", verb, "error", err)
+		return status.Error(codes.FailedPrecondition, workspacefs.ErrReconnectRequired.Error())
 	case errors.Is(err, workspacefs.ErrForbidden):
-		return status.Errorf(codes.PermissionDenied, "%v", err)
+		slog.Default().Warn("workspace backend denied", "op", verb, "error", err)
+		return status.Error(codes.PermissionDenied, workspacefs.ErrForbidden.Error())
 	case errors.Is(err, fs.ErrNotExist):
 		return status.Error(codes.NotFound, "file not found")
 	default:

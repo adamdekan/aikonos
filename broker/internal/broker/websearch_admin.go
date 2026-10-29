@@ -27,8 +27,6 @@ import (
 
 const (
 	webSearchTestTimeout = 12 * time.Second
-	// webSearchMaxResultsMax bounds the stored max_results (0 = engine default).
-	webSearchMaxResultsMax = 50
 )
 
 // websearchSecrets is the Vault write/delete seam this file needs on top of
@@ -116,8 +114,8 @@ func (s *BrokerService) UpsertWebSearchConfig(ctx context.Context, req *brokerv1
 	if !toolproxy.KnownSearchEngine(cfg.GetEngine()) {
 		return nil, status.Error(codes.InvalidArgument, "config.engine is not a supported search engine")
 	}
-	if cfg.GetMaxResults() < 0 || cfg.GetMaxResults() > webSearchMaxResultsMax {
-		return nil, status.Errorf(codes.InvalidArgument, "config.max_results must be between 0 and %d", webSearchMaxResultsMax)
+	if cfg.GetMaxResults() < 0 || cfg.GetMaxResults() > toolproxy.MaxSearchResults {
+		return nil, status.Errorf(codes.InvalidArgument, "config.max_results must be between 0 and %d", toolproxy.MaxSearchResults)
 	}
 
 	// Key handling mirrors UpsertM365Connection: write to Vault when supplied,
@@ -280,9 +278,11 @@ func (s *BrokerService) runWebSearchProbe(ctx context.Context, engine, apiKey st
 
 // webSearchToProto maps the stored settings + resolved has_key to the wire message.
 func webSearchToProto(s db.OrgSettings, hasKey bool) *brokerv1.WebSearchConfig {
+	// MaxResults is the effective value: a pre-G6 row above the cap reads back
+	// clamped, so the admin form can re-save it.
 	out := &brokerv1.WebSearchConfig{
 		Engine:     s.WebsearchEngine,
-		MaxResults: int32(s.WebsearchMaxResults),
+		MaxResults: int32(min(s.WebsearchMaxResults, toolproxy.MaxSearchResults)),
 		HasKey:     hasKey,
 		UpdatedBy:  s.UpdatedBy,
 	}

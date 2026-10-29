@@ -74,7 +74,7 @@ Record: task IDs, user subject, tool invocations, timestamps, plan steps, HITL d
 
 1. Review all FGA grants for the affected user/agent and remove any over-permissioned relations.
 2. If the capability root key may have been observed (e.g., by a compromised broker process):
-   - Rotate the key: delete from Vault (`secret/data/broker/capability-root-key`) + restart broker; `main.go` will generate and persist a new key via `cas=0`.
+   - Rotate the key with the root token: `docker compose exec vault vault kv metadata delete secret/broker/capability`, then `docker compose up -d --force-recreate broker` (every replica). The broker finds no key and creates a new one via `cas=0`. Do not use `vault kv delete`: it is a soft delete that keeps the metadata, so the broker's `cas=0` create is refused and the broker refuses to start (outside dev mode). If `AIKONOS_CAPABILITY_ROOT_KEY` is set in `.env`, it overrides Vault: replace that value instead (`docs/OPS-RUNBOOK.md`, E-08).
    - All in-flight Biscuit tokens minted with the old key become invalid immediately.
 3. Review the `allowed_tools` list in the implicated skill bundle; re-upload with reduced scope if warranted.
 4. File a follow-up security review request with the security team.
@@ -89,7 +89,7 @@ Record: task IDs, user subject, tool invocations, timestamps, plan steps, HITL d
 
 - Broker log lines: `capability key: minting token for tool=<X>` for tools not in any known agent's `allowed_tools`.
 - `InvokeTool` audit events for tool IDs that no active task plan contains.
-- Vault audit log shows unexpected reads of `secret/data/broker/capability-root-key`.
+- Vault audit log shows unexpected reads of `secret/data/broker/capability`.
 
 ### Isolate
 
@@ -115,17 +115,21 @@ Record: task IDs, user subject, tool invocations, timestamps, plan steps, HITL d
 
 ### Recover
 
-1. Re-seed Vault (AppRole + new capability root key):
+1. Re-seed Vault (policy + a new AppRole secret ID; this does not touch the capability key):
    ```bash
    bash scripts/compose-vault-seed.sh
    ```
-2. Restart broker:
+2. Remove the old capability root key with the root token (a hard delete; see Scenario 1, Recover step 2 for why `vault kv delete` is not enough, and for a key pinned in `.env`):
    ```bash
-   docker compose up -d broker
+   docker compose exec vault vault kv metadata delete secret/broker/capability
    ```
-3. The broker generates a new capability root key on startup (`cas=0` write); all previously minted Biscuit tokens are now invalid.
-4. Monitor audit stream for 30 minutes post-restart for unexpected `InvokeTool` events.
-5. Escalate to S1 if key compromise is confirmed; export WORM chain immediately.
+3. Restart broker:
+   ```bash
+   docker compose up -d --force-recreate broker
+   ```
+4. The broker generates a new capability root key on startup (`cas=0` write); all previously minted Biscuit tokens are now invalid.
+5. Monitor audit stream for 30 minutes post-restart for unexpected `InvokeTool` events.
+6. Escalate to S1 if key compromise is confirmed; export WORM chain immediately.
 
 ---
 

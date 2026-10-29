@@ -280,6 +280,31 @@ func TestWebSearchHandler_TavilyConfiguredMapsRequestAndContent(t *testing.T) {
 	}
 }
 
+// G6: a max_results stored before the admin upsert bounded it is clamped at
+// call time, never passed upstream as is.
+func TestWebSearchHandler_ClampsStoredMaxResults(t *testing.T) {
+	srv := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if derr := json.NewDecoder(r.Body).Decode(&body); derr != nil {
+			t.Fatalf("decode request body: %v", derr)
+		}
+		if body["max_results"] != float64(MaxSearchResults) {
+			t.Errorf("body.max_results = %v, want %d", body["max_results"], MaxSearchResults)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{}})
+	})
+	defer srv.Close()
+
+	h := newWebSearchHandler(WebSearchConfig{
+		Settings:      fakeWebSearchSettings{engine: "tavily", maxResults: 10000, configured: true},
+		TavilyBaseURL: srv.URL,
+	}, fakeWebSearchKeys{ok: true, key: "tavily-key"})
+	if _, _, err := h(context.Background(), Request{Args: map[string]any{"query": "aikonos"}, TenantID: "t1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // ── ProbeSearchEngine ( CP6: admin Test probe reuses
 // the same engine impl web.search calls, no duplicated per-engine HTTP shape
 // in the broker package) ─────────────────────────────────────────────────────

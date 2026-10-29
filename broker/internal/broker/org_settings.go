@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"sort"
 	"unicode/utf16"
 
@@ -226,7 +227,9 @@ func requireWorkflowSharingAllowed(ctx context.Context, repo orgSettingsGetter, 
 	}
 	settings, err := repo.Get(ctx, tenant)
 	if err != nil {
-		return status.Errorf(codes.Internal, "org settings read: %v", err)
+		// The DB error names the host, user and database: log it, never return it.
+		slog.Default().Error("org settings read failed", "tenant", tenant, "error", err)
+		return status.Error(codes.Internal, "org settings read failed")
 	}
 	if !settings.WorkflowSharingAllowedOrDefault() {
 		return status.Error(codes.PermissionDenied, "workflow sharing is disabled for this organization")

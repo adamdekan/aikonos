@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -452,10 +453,7 @@ func (c *VaultClient) WriteCapabilityKey(ctx context.Context, b64 string) error 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
-		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
-		// when the policy grants create but not update (F115). Either way the
-		// caller re-reads; a re-read that finds no key fails closed.
-		return ErrCASConflict
+		return casConflict(resp.StatusCode, c.capabilityDataPath())
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("secrets: write capability status %d: %s", resp.StatusCode, readSnippet(resp.Body))
@@ -518,10 +516,7 @@ func (c *VaultClient) WriteGatewayGrantKey(ctx context.Context, b64 string) erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
-		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
-		// when the policy grants create but not update (F115). Either way the
-		// caller re-reads; a re-read that finds no key fails closed.
-		return ErrCASConflict
+		return casConflict(resp.StatusCode, c.gatewayGrantDataPath())
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("secrets: write gateway-grant status %d: %s", resp.StatusCode, readSnippet(resp.Body))
@@ -622,10 +617,7 @@ func (c *VaultClient) WriteAuditSigningKey(ctx context.Context, b64 string) erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
-		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
-		// when the policy grants create but not update (F115). Either way the
-		// caller re-reads; a re-read that finds no key fails closed.
-		return ErrCASConflict
+		return casConflict(resp.StatusCode, c.auditSigningKeyDataPath())
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("secrets: write audit-signing-key status %d: %s", resp.StatusCode, readSnippet(resp.Body))
@@ -690,10 +682,7 @@ func (c *VaultClient) WriteWorkspaceSessionKey(ctx context.Context, b64 string) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusForbidden {
-		// KV-v2 returns 400 on a cas mismatch (key already exists), and 403
-		// when the policy grants create but not update (F115). Either way the
-		// caller re-reads; a re-read that finds no key fails closed.
-		return ErrCASConflict
+		return casConflict(resp.StatusCode, c.workspaceSessionKeyDataPath())
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("secrets: write workspace-session-key status %d: %s", resp.StatusCode, readSnippet(resp.Body))
@@ -1051,6 +1040,20 @@ func (c *VaultClient) DeleteMcpBearer(ctx context.Context, path string) error {
 		return nil
 	}
 	return fmt.Errorf("secrets: delete mcp bearer status %d: %s", resp.StatusCode, readSnippet(resp.Body))
+}
+
+// casConflict maps a refused cas=0 key create to ErrCASConflict, so the caller
+// re-reads the winner's key. KV-v2 returns 400 on a cas mismatch (key already
+// exists), and 403 when the policy grants create but not update (F115). A
+// policy that lacks create also returns 403, so a 403 is logged with the path:
+// if the re-read then finds no key and the broker gives up (fail closed), the
+// log points the operator at the policy, not at a race.
+func casConflict(status int, path string) error {
+	if status == http.StatusForbidden {
+		slog.Default().Warn("vault denied key create (403); re-reading in case another replica created it. If the key stays missing, check that deploy/compose/vault-broker-policy.hcl grants create on this path",
+			"path", path)
+	}
+	return ErrCASConflict
 }
 
 func readSnippet(r io.Reader) string {

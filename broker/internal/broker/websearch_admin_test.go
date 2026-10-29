@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/db"
+	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
 )
 
@@ -232,7 +233,7 @@ func TestUpsertWebSearchConfig_RejectsUnknownEngineAndOversizedMaxResults(t *tes
 	for _, cfg := range []*brokerv1.WebSearchConfig{
 		{Engine: "google", MaxResults: 5},
 		{Engine: "Brave", MaxResults: 5},
-		{Engine: "brave", MaxResults: webSearchMaxResultsMax + 1},
+		{Engine: "brave", MaxResults: toolproxy.MaxSearchResults + 1},
 	} {
 		_, err := svc.UpsertWebSearchConfig(ctx, &brokerv1.UpsertWebSearchConfigRequest{Config: cfg})
 		if status.Code(err) != codes.InvalidArgument {
@@ -242,7 +243,7 @@ func TestUpsertWebSearchConfig_RejectsUnknownEngineAndOversizedMaxResults(t *tes
 	// The bounds themselves pass validation (and stop at the unwired repo).
 	for _, cfg := range []*brokerv1.WebSearchConfig{
 		{Engine: "tavily", MaxResults: 0},
-		{Engine: "exa", MaxResults: webSearchMaxResultsMax},
+		{Engine: "exa", MaxResults: toolproxy.MaxSearchResults},
 	} {
 		_, err := svc.UpsertWebSearchConfig(ctx, &brokerv1.UpsertWebSearchConfigRequest{Config: cfg})
 		if status.Code(err) != codes.FailedPrecondition {
@@ -507,6 +508,15 @@ func TestWebSearchToProto(t *testing.T) {
 	zero := webSearchToProto(db.OrgSettings{}, false)
 	if zero.Engine != "" || zero.MaxResults != 0 || zero.HasKey || zero.UpdatedAt != "" {
 		t.Fatalf("zero-value settings must map to zero-value proto, got %+v", zero)
+	}
+}
+
+// G6: a row stored above the cap before the upsert check existed reads back
+// as the effective (clamped) value, so the admin form can re-save it.
+func TestWebSearchToProto_ClampsPreG6MaxResults(t *testing.T) {
+	out := webSearchToProto(db.OrgSettings{WebsearchEngine: "brave", WebsearchMaxResults: 10000}, true)
+	if out.MaxResults != 50 {
+		t.Fatalf("MaxResults = %d, want 50", out.MaxResults)
 	}
 }
 
