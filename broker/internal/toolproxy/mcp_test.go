@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeMCPServer is a minimal httptest server that speaks JSON-RPC 2.0 over
@@ -405,5 +406,79 @@ func TestMCPClient_SSEFramedResponse(t *testing.T) {
 	}
 	if client.sessionID != sessionID {
 		t.Errorf("sessionID = %q, want %q", client.sessionID, sessionID)
+	}
+}
+
+// F26: a response past mcpMaxResponseBytes errors out instead of being
+// buffered whole (JSON body and SSE event alike).
+func TestMCPClient_OversizedResponse_Errors(t *testing.T) {
+	big := strings.Repeat("a", mcpMaxResponseBytes)
+	for _, sse := range []bool{false, true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			payload := `{"jsonrpc":"2.0","id":1,"result":{"x":"` + big + `"}}`
+			if sse {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\n", payload)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(payload))
+		}))
+		_, err := newMCPClient(srv.URL, "", true).doRPC(context.Background(), "tools/list", map[string]any{})
+		srv.Close()
+		if err == nil {
+			t.Errorf("sse=%v: oversized response accepted", sse)
+		}
+	}
+}
+
+// F189: the server URL must be https (http only for loopback or under the
+// allowPrivate dev flag) and carry no userinfo.
+func TestValidateMcpURL(t *testing.T) {
+	cases := []struct {
+		url          string
+		allowPrivate bool
+		ok           bool
+	}{
+		{"https://mcp.example.com/rpc", false, true},
+		{"http://mcp.example.com/rpc", false, false},
+		{"http://mcp.example.com/rpc", true, true},
+		{"http://127.0.0.1:8080/rpc", false, true},
+		{"http://localhost:8080/rpc", false, true},
+		{"http://[::1]:8080/rpc", false, true},
+		{"ftp://mcp.example.com/rpc", false, false},
+		{"ftp://mcp.example.com/rpc", true, false},
+		{"https://user:pw@mcp.example.com/rpc", false, false},
+		{"mcp.example.com/rpc", false, false},
+	}
+	for _, c := range cases {
+		if err := ValidateMcpURL(c.url, c.allowPrivate); (err == nil) != c.ok {
+			t.Errorf("ValidateMcpURL(%q, %v) = %v, want ok=%v", c.url, c.allowPrivate, err, c.ok)
+		}
+	}
+}
+
+// F189: the client re-checks the URL itself, so a stored http:// row never
+// sends its bearer — the refusal happens before any dial.
+func TestMCPClient_RefusesCleartextURL(t *testing.T) {
+	err := newMCPClient("http://mcp.example.com/rpc", "secret", false).connect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("want https refusal, got %v", err)
+	}
+}
+
+// F189: net/http keeps Authorization on a same-host https→http redirect; the
+// hardened client must refuse that hop.
+func TestHardenedClient_RefusesCredentialDowngradeRedirect(t *testing.T) {
+	check := hardenedClient(time.Second, true, nil).CheckRedirect
+	prev, _ := http.NewRequest(http.MethodPost, "https://mcp.example.com/rpc", nil)
+	next, _ := http.NewRequest(http.MethodPost, "http://mcp.example.com/rpc", nil)
+	next.Header.Set("Authorization", "Bearer secret")
+	if err := check(next, []*http.Request{prev}); err == nil {
+		t.Fatal("https→http redirect with Authorization accepted")
+	}
+	next.Header.Del("Authorization")
+	if err := check(next, []*http.Request{prev}); err != nil {
+		t.Fatalf("credential-free downgrade (web.fetch) refused: %v", err)
 	}
 }

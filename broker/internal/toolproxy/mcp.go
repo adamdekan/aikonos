@@ -16,7 +16,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,7 +29,35 @@ const (
 	mcpClientName      = "aikonos-broker"
 	mcpClientVersion   = "0.1"
 	mcpTimeout         = 30 * time.Second
+	// mcpMaxResponseBytes caps one JSON-RPC response (JSON body or SSE event):
+	// the server is admin-registered but its output is untrusted, and the
+	// broker must not buffer an unbounded body (L-05).
+	mcpMaxResponseBytes = 8 << 20
 )
+
+// ValidateMcpURL checks an MCP server URL before any token is sent to it: it
+// must be absolute https with no userinfo. Plain http is accepted only for a
+// loopback host, or anywhere when allowPrivate (the dev/test flag that also
+// lifts the SSRF guard) is set — otherwise the shared bearer or a user's OAuth
+// token would cross the network in cleartext.
+func ValidateMcpURL(raw string, allowPrivate bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("mcp: url must be an absolute https URL")
+	}
+	if u.User != nil {
+		return fmt.Errorf("mcp: url must not carry credentials")
+	}
+	host := u.Hostname()
+	loopback := strings.EqualFold(host, "localhost")
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		loopback = true
+	}
+	if u.Scheme == "https" || (u.Scheme == "http" && (loopback || allowPrivate)) {
+		return nil
+	}
+	return fmt.Errorf("mcp: url must be https (http only for loopback), got scheme %q", u.Scheme)
+}
 
 // McpToolSchema is the discovery result for one tool on an MCP server.
 type McpToolSchema struct {
@@ -71,21 +101,49 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, args map[string]a
 
 // mcpClient holds the connection state for one MCP server session.
 type mcpClient struct {
-	baseURL   string
-	bearer    string
-	httpc     *http.Client
-	sessionID string // set after initialize; echoed on subsequent requests
-	idCounter uint64 // JSON-RPC request id sequence
+	baseURL      string
+	bearer       string
+	allowPrivate bool
+	httpc        *http.Client
+	sessionID    string // set after initialize; echoed on subsequent requests
+	idCounter    uint64 // JSON-RPC request id sequence
 }
 
 // newMCPClient constructs an mcpClient. allowPrivate should be false in
 // production (enables the SSRF guard); true in tests to reach 127.0.0.1.
 func newMCPClient(baseURL, bearer string, allowPrivate bool) *mcpClient {
 	return &mcpClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		bearer:  bearer,
-		httpc:   hardenedClient(mcpTimeout, allowPrivate, nil),
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		bearer:       bearer,
+		allowPrivate: allowPrivate,
+		httpc:        hardenedClient(mcpTimeout, allowPrivate, nil),
 	}
+}
+
+// post sends one JSON-RPC payload with the MCP headers. The URL is re-checked
+// here, not only at connection create/update, so a row stored before the https
+// rule still never carries a token in cleartext.
+func (c *mcpClient) post(ctx context.Context, payload map[string]any) (*http.Response, error) {
+	if err := ValidateMcpURL(c.baseURL, c.allowPrivate); err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if c.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	}
+	if c.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	return c.httpc.Do(req)
 }
 
 // connect performs the MCP handshake: POST initialize, capture the
@@ -196,35 +254,19 @@ func (c *mcpClient) doRPC(ctx context.Context, method string, params any) (map[s
 // connect() can capture Mcp-Session-Id from the initialize response.
 func (c *mcpClient) doRPCWithHeader(ctx context.Context, method string, params any) (map[string]any, http.Header, error) {
 	id := atomic.AddUint64(&c.idCounter, 1)
-	payload := map[string]any{
+	resp, err := c.post(ctx, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
-	}
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
-
-	resp, err := c.httpc.Do(req)
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp: POST %s: %w", method, err)
 	}
 	defer resp.Body.Close()
+	// Bounded read: a body cut at the cap fails to decode, so an oversized
+	// response errors out instead of being buffered whole.
+	body := io.LimitReader(resp.Body, mcpMaxResponseBytes)
 
 	ct := resp.Header.Get("Content-Type")
 
@@ -239,7 +281,8 @@ func (c *mcpClient) doRPCWithHeader(ctx context.Context, method string, params a
 
 	if strings.Contains(ct, "text/event-stream") {
 		// Streamable HTTP: read lines until we find a "data:" event.
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(body)
+		scanner.Buffer(make([]byte, 0, 64*1024), mcpMaxResponseBytes)
 		found := false
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -257,7 +300,7 @@ func (c *mcpClient) doRPCWithHeader(ctx context.Context, method string, params a
 			return nil, resp.Header, fmt.Errorf("mcp: no data: line in SSE response for %s", method)
 		}
 	} else {
-		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		if err := json.NewDecoder(body).Decode(&rpcResp); err != nil {
 			return nil, resp.Header, fmt.Errorf("mcp: decode response for %s: %w", method, err)
 		}
 	}
@@ -274,28 +317,11 @@ func (c *mcpClient) sendNotification(ctx context.Context, method string, params 
 	if params == nil {
 		params = map[string]any{}
 	}
-	payload := map[string]any{
+	resp, err := c.post(ctx, map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
-	}
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
-	resp, err := c.httpc.Do(req)
+	})
 	if err != nil {
 		return fmt.Errorf("mcp: notification %s: %w", method, err)
 	}

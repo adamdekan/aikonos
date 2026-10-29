@@ -129,6 +129,47 @@ func TestWorkspaceWrite_RejectsAgentPrefix(t *testing.T) {
 	}
 }
 
+// TestWorkspaceWrite_RejectsSkillsPrefix (F23): the personal-skills catalog is
+// loaded into later sessions as user-authored instructions, so no seam writer
+// may create or overwrite anything under Skills/ — case-insensitively and after
+// the same cleaning the Store applies.
+func TestWorkspaceWrite_RejectsSkillsPrefix(t *testing.T) {
+	for _, rel := range []string{
+		"Skills/helper/SKILL.md",
+		"Skills",
+		"skills/helper/SKILL.md",
+		"SKILLS/x",
+		"./Skills/x",
+		" Skills/x",
+		"notes/../Skills/helper/SKILL.md",
+	} {
+		for _, branch := range []string{"seam", "legacy"} {
+			fake := &fakeWorkspaceBackend{}
+			cfg := WorkspaceConfig{Root: t.TempDir()}
+			req := Request{TenantID: "ten1", TaskID: "task1"}
+			if branch == "seam" {
+				cfg.fs = fake
+				req.UserID = "user1"
+			}
+			err := cfg.workspaceWrite(context.Background(), req, rel, "doc.write", []byte("x"))
+			if err == nil || !strings.Contains(err.Error(), "Skills/") {
+				t.Errorf("%s: %q: want Skills/ refusal, got %v", branch, rel, err)
+			}
+			if len(fake.calls) != 0 {
+				t.Errorf("%s: %q: backend touched on a rejected write: %v", branch, rel, fake.calls)
+			}
+		}
+	}
+	for _, rel := range []string{"notes/Skills/x", "Skillset/x", "SkillsX.md"} {
+		fake := &fakeWorkspaceBackend{}
+		cfg := WorkspaceConfig{Root: t.TempDir(), fs: fake}
+		if err := cfg.workspaceWrite(context.Background(),
+			Request{TenantID: "ten1", UserID: "user1"}, rel, "doc.write", []byte("x")); err != nil {
+			t.Errorf("%q rejected: %v", rel, err)
+		}
+	}
+}
+
 // TestDocWrite_RejectsAgentPrefix proves the guard is reached through a real
 // handler, not only by calling the seam helper directly.
 func TestDocWrite_RejectsAgentPrefix(t *testing.T) {

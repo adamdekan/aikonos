@@ -102,6 +102,9 @@ func gdriveReadOne(ctx context.Context, d connectorDeps, token string, args map[
 	if fileID == "" {
 		return cloudFileMeta{}, nil, false, nil
 	}
+	if err := validProviderID(fileID); err != nil {
+		return cloudFileMeta{}, nil, false, err
+	}
 
 	metaURL := fmt.Sprintf("%s/files/%s?fields=id,name,mimeType,size,modifiedTime,webViewLink",
 		googleDriveAPIBase, url.PathEscape(fileID))
@@ -147,8 +150,12 @@ func gdriveListOp(ctx context.Context, d connectorDeps, token string, args map[s
 		q.Set("q", query)
 	} else if folderID := argString(args, "file_id", "fileId"); folderID != "" {
 		// Same folder selector readOne used to detect the folder — scope the
-		// listing to its direct children.
-		q.Set("q", fmt.Sprintf("%q in parents", folderID))
+		// listing to its direct children. The charset check keeps quotes out
+		// of the single-quoted Drive query literal.
+		if err := validProviderID(folderID); err != nil {
+			return nil, err
+		}
+		q.Set("q", fmt.Sprintf("'%s' in parents", folderID))
 	}
 	listURL := googleDriveAPIBase + "/files?" + q.Encode()
 	var out struct {

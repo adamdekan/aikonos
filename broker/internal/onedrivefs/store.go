@@ -235,8 +235,7 @@ func (s *Store) sendJSON(ctx context.Context, method, rawURL, token, contentType
 		return resp.StatusCode, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, fmt.Errorf("onedrivefs: unexpected status %d: %s", resp.StatusCode, string(b))
+		return resp.StatusCode, s.statusError("unexpected", resp)
 	}
 	if out != nil && resp.StatusCode != http.StatusNoContent {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -244,6 +243,16 @@ func (s *Store) sendJSON(ctx context.Context, method, rawURL, token, contentType
 		}
 	}
 	return resp.StatusCode, nil
+}
+
+// statusError reads at most 512 bytes of a non-2xx body, logs that snippet
+// server-side only, and returns just the status (L-12): Graph error JSON
+// carries request ids, item paths and tenant detail that must not reach the
+// workspace RPC caller, and a hostile body must not be buffered whole.
+func (s *Store) statusError(what string, resp *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	s.logger().Warn("onedrivefs: unexpected Graph status", "op", what, "status", resp.StatusCode, "body", string(b))
+	return fmt.Errorf("onedrivefs: %s status %d", what, resp.StatusCode)
 }
 
 func (s *Store) getJSON(ctx context.Context, rawURL, token string, out any) (int, error) {

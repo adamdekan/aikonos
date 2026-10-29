@@ -98,7 +98,7 @@ func (s *BrokerService) AddMcpConnection(ctx context.Context, req *brokerv1.AddM
 	if req.Connection == nil {
 		return nil, status.Error(codes.InvalidArgument, "connection is required")
 	}
-	if err := validateMcpConnection(req.Connection); err != nil {
+	if err := validateMcpConnection(req.Connection, s.deps.Mcp.AllowPrivate); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +169,7 @@ func (s *BrokerService) UpdateMcpConnection(ctx context.Context, req *brokerv1.U
 	if req.Connection.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "connection.id is required")
 	}
-	if err := validateMcpConnection(req.Connection); err != nil {
+	if err := validateMcpConnection(req.Connection, s.deps.Mcp.AllowPrivate); err != nil {
 		return nil, err
 	}
 
@@ -436,13 +436,18 @@ func (s *BrokerService) ListMcpServerTools(ctx context.Context, req *brokerv1.Li
 	return &brokerv1.ListMcpServerToolsResponse{Tools: out}, nil
 }
 
-// validateMcpConnection checks required fields and allowed enum values.
-func validateMcpConnection(c *brokerv1.McpConnection) error {
+// validateMcpConnection checks required fields and allowed enum values, and
+// that the URL is https (http only for loopback, or under the AllowPrivate dev
+// flag) so the bearer / OAuth token is never sent in cleartext.
+func validateMcpConnection(c *brokerv1.McpConnection, allowPrivate bool) error {
 	if strings.TrimSpace(c.Name) == "" {
 		return status.Error(codes.InvalidArgument, "connection.name is required")
 	}
 	if strings.TrimSpace(c.Url) == "" {
 		return status.Error(codes.InvalidArgument, "connection.url is required")
+	}
+	if err := toolproxy.ValidateMcpURL(strings.TrimSpace(c.Url), allowPrivate); err != nil {
+		return status.Errorf(codes.InvalidArgument, "connection.url: %v", err)
 	}
 	switch strings.TrimSpace(c.Transport) {
 	case "streamable_http", "sse":

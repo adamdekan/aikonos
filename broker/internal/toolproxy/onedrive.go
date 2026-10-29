@@ -11,7 +11,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
+	"unicode"
 
 	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 
@@ -99,11 +101,18 @@ func newOneDriveReadHandler(d connectorDeps, ws WorkspaceConfig) Handler {
 
 func onedriveReadOne(ctx context.Context, d connectorDeps, token string, args map[string]any, maxBytes int64) (cloudFileMeta, []byte, bool, error) {
 	if itemID := argString(args, "item_id", "itemId"); itemID != "" {
+		if err := validProviderID(itemID); err != nil {
+			return cloudFileMeta{}, nil, false, err
+		}
 		base := fmt.Sprintf("%s/me/drive/items/%s", graphAPIBase, url.PathEscape(itemID))
 		return onedriveFetchItem(ctx, d, token, base, base+"/content", maxBytes)
 	}
 	if path := argString(args, "path"); path != "" {
-		base := fmt.Sprintf("%s/me/drive/root:/%s", graphAPIBase, escapeGraphPath(path))
+		escaped, err := escapeGraphPath(path)
+		if err != nil {
+			return cloudFileMeta{}, nil, false, err
+		}
+		base := fmt.Sprintf("%s/me/drive/root:/%s", graphAPIBase, escaped)
 		meta, err := onedriveResolveMeta(ctx, d, token, base)
 		if err != nil {
 			return cloudFileMeta{}, nil, false, err
@@ -149,8 +158,12 @@ func onedriveFetchItem(ctx context.Context, d connectorDeps, token, metaURL, con
 func onedriveListOp(ctx context.Context, d connectorDeps, token string, args map[string]any) ([]cloudFileMeta, error) {
 	var listURL string
 	if path := argString(args, "path"); path != "" {
+		escaped, err := escapeGraphPath(path)
+		if err != nil {
+			return nil, err
+		}
 		listURL = fmt.Sprintf("%s/me/drive/root:/%s:/children?$select=id,name,size,lastModifiedDateTime,file&$top=%d",
-			graphAPIBase, escapeGraphPath(path), clampPageSize(args, 25))
+			graphAPIBase, escaped, clampPageSize(args, 25))
 	} else {
 		listURL = fmt.Sprintf("%s/me/drive/root/children?$select=id,name,size,lastModifiedDateTime,file&$top=%d",
 			graphAPIBase, clampPageSize(args, 25))
@@ -175,7 +188,11 @@ func onedriveWriteOp(ctx context.Context, d connectorDeps, token string, args ma
 	if ct == "" {
 		ct = "text/plain"
 	}
-	uploadURL := fmt.Sprintf("%s/me/drive/root:/%s:/content", graphAPIBase, escapeGraphPath(path))
+	escaped, err := escapeGraphPath(path)
+	if err != nil {
+		return cloudFileMeta{}, 0, err
+	}
+	uploadURL := fmt.Sprintf("%s/me/drive/root:/%s:/content", graphAPIBase, escaped)
 	var created graphItem
 	if err := d.doJSON(ctx, "PUT", uploadURL, token, ct, []byte(content), &created); err != nil {
 		return cloudFileMeta{}, 0, err
@@ -188,12 +205,31 @@ func newOneDriveWriteHandler(d connectorDeps, ws WorkspaceConfig) Handler {
 }
 
 // escapeGraphPath escapes each path segment but preserves the slashes Graph uses
-// to address nested folders under /me/drive/root:/.
-func escapeGraphPath(p string) string {
+// to address nested folders under /me/drive/root:/. url.PathEscape leaves "."
+// and ".." untouched, so a dot or empty segment (or a control character) is
+// refused: a front end that normalises dot-segments would otherwise let a
+// path argument address another Graph resource under the same bearer.
+func escapeGraphPath(p string) (string, error) {
 	p = strings.Trim(p, "/")
 	parts := strings.Split(p, "/")
 	for i, seg := range parts {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsFunc(seg, unicode.IsControl) {
+			return "", fmt.Errorf("invalid path %q: empty, dot or control-character segment", p)
+		}
 		parts[i] = url.PathEscape(seg)
 	}
-	return strings.Join(parts, "/")
+	return strings.Join(parts, "/"), nil
+}
+
+// providerIDRe is the charset a Drive file id or Graph item id is accepted in
+// before it is spliced into a provider URL path or Drive query: Google ids are
+// [A-Za-z0-9_-], OneDrive personal ids add '!'. No '.', '/', quote or
+// backslash, so neither dot-segment traversal nor a q-clause injection fits.
+var providerIDRe = regexp.MustCompile(`^[A-Za-z0-9_!-]{1,256}$`)
+
+func validProviderID(id string) error {
+	if !providerIDRe.MatchString(id) {
+		return fmt.Errorf("invalid id %q", id)
+	}
+	return nil
 }

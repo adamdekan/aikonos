@@ -261,6 +261,36 @@ func TestAddMcpConnection_BearerWritesToVaultAndOmitsToken(t *testing.T) {
 	}
 }
 
+// F189: an MCP URL that would carry the bearer / OAuth token in cleartext, or
+// embeds credentials, is refused on add (update shares validateMcpConnection).
+func TestAddMcpConnection_RequiresHTTPS(t *testing.T) {
+	f := &fakeFGAForMcp{allowed: map[string]bool{
+		"user:admin@example.com||admin||tenant:aikonos-dev": true,
+	}}
+	srv := f.server(t)
+	defer srv.Close()
+	repo := &fakeMcpRepo{}
+	svc := NewBrokerService(testMcpDeps(t, srv.URL, repo, nil))
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	for _, u := range []string{"http://mcp.example.com/rpc", "ftp://mcp.example.com", "https://user:pw@mcp.example.com"} {
+		_, err := svc.AddMcpConnection(ctx, &brokerv1.AddMcpConnectionRequest{
+			UserId:     "admin@example.com",
+			Connection: &brokerv1.McpConnection{Name: "x", Url: u, Transport: "streamable_http", AuthType: "bearer"},
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: want InvalidArgument, got %v", u, err)
+		}
+	}
+	_, err := svc.AddMcpConnection(ctx, &brokerv1.AddMcpConnectionRequest{
+		UserId:     "admin@example.com",
+		Connection: &brokerv1.McpConnection{Name: "local", Url: "http://127.0.0.1:9000/rpc", Transport: "streamable_http", AuthType: "none"},
+	})
+	if err != nil {
+		t.Fatalf("loopback http: %v", err)
+	}
+}
+
 // List must omit bearer tokens (auth_secret_ref may be set, but no token field in response).
 func TestListMcpConnections_OmitsToken(t *testing.T) {
 	f := &fakeFGAForMcp{allowed: map[string]bool{

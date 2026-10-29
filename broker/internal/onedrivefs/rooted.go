@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -61,6 +62,18 @@ func (r *Rooted) itemPath(rel, suffix string) string {
 	return r.itemBase() + ":/" + escapeGraphPath(rel) + ":" + suffix
 }
 
+// maxListPages caps @odata.nextLink pages per listing: 100 × $top=200 is 20k
+// direct children, far past any real folder. Overridable in tests.
+var maxListPages = 100
+
+// onGraphHost reports whether raw has graphBase's scheme and host (graphBase,
+// not a literal, so the httptest override keeps working).
+func onGraphHost(raw string) bool {
+	u, err := url.Parse(raw)
+	base, berr := url.Parse(graphBase)
+	return err == nil && berr == nil && u.Scheme == base.Scheme && strings.EqualFold(u.Host, base.Host)
+}
+
 type childrenPage struct {
 	Value    []graphItem `json:"value"`
 	NextLink string      `json:"@odata.nextLink"`
@@ -69,9 +82,24 @@ type childrenPage struct {
 // listChildren fetches every page of rel's children (via @odata.nextLink).
 // found=false means rel itself does not exist (404) — the caller decides
 // what that means for its op (missing dir lists empty).
+//
+// Each nextLink comes from the response body and is requested with the
+// user's bearer, so it must stay on graphBase's scheme and host, and the page
+// count is capped so a self-referencing link cannot spin forever (L-16).
 func (r *Rooted) listChildren(ctx context.Context, token, rel string) (items []graphItem, found bool, err error) {
 	listURL := r.itemPath(rel, "/children") + "?$select=name,size,folder,file,lastModifiedDateTime&$top=200"
-	for listURL != "" {
+	for pages := 0; listURL != ""; pages++ {
+		if pages >= maxListPages {
+			return nil, false, fmt.Errorf("onedrivefs: listing exceeds %d pages: %w", maxListPages, workspacefs.ErrUnavailable)
+		}
+		if pages > 0 && !onGraphHost(listURL) {
+			host := ""
+			if u, perr := url.Parse(listURL); perr == nil {
+				host = u.Host
+			}
+			r.store.logger().Warn("onedrivefs: refusing off-Graph nextLink", "host", host)
+			return nil, false, fmt.Errorf("onedrivefs: nextLink leaves the Graph host: %w", workspacefs.ErrUnavailable)
+		}
 		var page childrenPage
 		status, err := r.store.getJSON(ctx, listURL, token, &page)
 		if err != nil {
@@ -217,8 +245,7 @@ func (r *Rooted) fetchContent(ctx context.Context, token, rel string) ([]byte, e
 		return nil, fs.ErrNotExist
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("onedrivefs: content status %d: %s", resp.StatusCode, string(b))
+		return nil, r.store.statusError("content", resp)
 	}
 	limited := io.LimitReader(resp.Body, workspacefs.MaxFileBytes+1)
 	data, err := io.ReadAll(limited)
@@ -318,12 +345,12 @@ func (r *Rooted) sessionUpload(ctx context.Context, token, rel string, data []by
 			return graphItem{}, fmt.Errorf("onedrivefs: %w: %v", workspacefs.ErrUnavailable, err)
 		}
 		if resp.StatusCode >= 400 {
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if cerr := classifyStatus(resp.StatusCode); cerr != nil {
-				return graphItem{}, cerr
+			err := classifyStatus(resp.StatusCode)
+			if err == nil {
+				err = r.store.statusError("chunk upload", resp)
 			}
-			return graphItem{}, fmt.Errorf("onedrivefs: chunk upload status %d: %s", resp.StatusCode, string(b))
+			resp.Body.Close()
+			return graphItem{}, err
 		}
 		if end == total {
 			if err := json.NewDecoder(resp.Body).Decode(&final); err != nil {

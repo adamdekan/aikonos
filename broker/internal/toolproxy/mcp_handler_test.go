@@ -144,6 +144,35 @@ func TestInvokeMCP_BearerAttached(t *testing.T) {
 
 // TestInvokeMCP_NoMcpDeps_ReturnsNotConfigured verifies invokeMCP is a no-op
 // when no MCP deps are wired.
+// F26: a tool the server does not advertise in tools/list is refused before
+// tools/call (fail closed), instead of skipping arg validation and calling it.
+func TestInvokeMCP_UnlistedTool_FailsClosed(t *testing.T) {
+	fake := newFakeMCPServer("sid-unlisted")
+	fake.addTool("echo", "Echo tool", map[string]any{"type": "object"})
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	connID := uuid.New().String()
+	repo := &fakeConnRepo{conns: map[string]*db.McpConnection{
+		connID: {ID: uuid.MustParse(connID), URL: srv.URL, AuthType: "none"},
+	}}
+	proxy := New(Config{McpConnections: repo, AllowMcpPrivate: true}, zap.NewNop())
+
+	res, err := proxy.Invoke(context.Background(), Request{
+		ToolID: "mcp:" + connID + ":ghost", TenantID: "tenant-1",
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Success || !strings.Contains(res.Error, "not advertised") {
+		t.Fatalf("want not-advertised refusal, got success=%v err=%q", res.Success, res.Error)
+	}
+	// init + notif + list only; tools/call never sent.
+	if got := int(fake.requestCount); got != 3 {
+		t.Errorf("want 3 requests (no tools/call), got %d", got)
+	}
+}
+
 func TestInvokeMCP_NoMcpDeps_ReturnsNotConfigured(t *testing.T) {
 	proxy := New(Config{}, zap.NewNop())
 	res, err := proxy.Invoke(context.Background(), Request{

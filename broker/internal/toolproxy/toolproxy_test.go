@@ -82,6 +82,28 @@ func TestIsDisallowedIP(t *testing.T) {
 		"::1":             true,  // ipv6 loopback
 		"8.8.8.8":         false, // public
 		"93.184.216.34":   false, // public (example.com)
+		// F24: special-use ranges Go's predicates miss.
+		"168.63.129.16":        true, // Azure WireServer
+		"::ffff:168.63.129.16": true, // ... v4-mapped
+		"100.100.100.200":      true, // Alibaba metadata (CGNAT)
+		"fd00:ec2::254":        true, // AWS IPv6 metadata (ULA)
+		"0.1.2.3":              true, // "this network"
+		"192.0.0.170":          true, // IETF protocol assignments
+		"192.0.2.1":            true, // TEST-NET-1
+		"198.18.0.1":           true, // benchmarking
+		"198.51.100.1":         true, // TEST-NET-2
+		"203.0.113.1":          true, // TEST-NET-3
+		"240.0.0.1":            true, // reserved
+		"255.255.255.255":      true, // broadcast
+		"224.0.0.251":          true, // multicast
+		"100::1":               true, // discard-only
+		"2001:db8::1":          true, // documentation
+		"64:ff9b::a9fe:a9fe":   true, // NAT64 → 169.254.169.254
+		"2002:a9fe:a9fe::1":    true, // 6to4 → 169.254.169.254
+		"2001:0:4136:e378::1":  true, // Teredo
+		"168.63.129.17":        false,
+		"2606:4700:4700::1111": false, // public v6
+		"::ffff:93.184.216.34": false, // v4-mapped public
 	}
 	for ipStr, want := range cases {
 		if got := isDisallowedIP(net.ParseIP(ipStr)); got != want {

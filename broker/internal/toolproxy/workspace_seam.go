@@ -15,7 +15,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/adamdekan/aikonos/broker/internal/personalskill"
 	"github.com/adamdekan/aikonos/broker/internal/workspacefs"
 )
 
@@ -90,11 +92,34 @@ func (cfg WorkspaceConfig) workspaceRead(ctx context.Context, req Request, rel, 
 // workspacefs.UnderAgentDir, shared with the user-facing file RPCs; unlike
 // those, this seam has NO Sessions carve-out — a tool may never write a session
 // record either.
+//
+// Skills/ is refused for the same reason: the personal-skills catalog is read
+// back into later sessions as user-authored instructions, so a tool write
+// there (e.g. an injected doc.write of Skills/x/SKILL.md) would be persistent
+// prompt injection. Users author skills through the Files RPC and the gateway
+// import route, neither of which passes this seam.
 func agentDirGuard(rel, toolID string) error {
 	if workspacefs.UnderAgentDir(rel) {
 		return fmt.Errorf("%s: writing under .agent/ is not permitted", toolID)
 	}
+	if underSkillsDir(rel) {
+		return fmt.Errorf("%s: writing under %s/ is not permitted", toolID, personalskill.Dir)
+	}
 	return nil
+}
+
+// underSkillsDir is UnderAgentDir's test for personalskill.Dir: the Store's own
+// CleanRel normalization, then a case-insensitive prefix match (the BLOCK side,
+// so over-matching only refuses more). A CleanRel error reports "not under" —
+// the Store refuses that path anyway.
+func underSkillsDir(rel string) bool {
+	clean, err := workspacefs.CleanRel(rel)
+	if err != nil {
+		return false
+	}
+	clean = strings.ToLower(filepath.ToSlash(clean))
+	dir := strings.ToLower(personalskill.Dir)
+	return clean == dir || strings.HasPrefix(clean, dir+"/")
 }
 
 // workspaceWrite writes data at rel for toolID, routing per useFS. Callers

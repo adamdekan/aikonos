@@ -136,7 +136,57 @@ func TestOneDriveWrite_MissingPath(t *testing.T) {
 }
 
 func TestEscapeGraphPath(t *testing.T) {
-	if got := escapeGraphPath("/folder/my file.txt"); got != "folder/my%20file.txt" {
-		t.Fatalf("escapeGraphPath = %q", got)
+	if got, err := escapeGraphPath("/folder/my file.txt"); err != nil || got != "folder/my%20file.txt" {
+		t.Fatalf("escapeGraphPath = %q, %v", got, err)
+	}
+	// "%2e%2e" is a literal name: its '%' is escaped, so it cannot decode to "..".
+	if got, err := escapeGraphPath("%2e%2e/x"); err != nil || got != "%252e%252e/x" {
+		t.Fatalf("escapeGraphPath(%%2e%%2e) = %q, %v", got, err)
+	}
+}
+
+// G28: dot, empty and control-character segments and non-charset ids never
+// reach a provider URL, so a path/id argument cannot address another Graph or
+// Drive resource under the user's bearer.
+func TestOneDrive_RejectsTraversalArgs(t *testing.T) {
+	for _, p := range []string{"../../drives/D/root:/x", "a/./b", "a//b", "..", "a/\x00b"} {
+		if _, err := escapeGraphPath(p); err == nil {
+			t.Errorf("escapeGraphPath(%q) accepted", p)
+		}
+	}
+	for _, id := range []string{"..", ".", "a/b", "a'b", `a"b`, `a\b`, "a.b", ""} {
+		if err := validProviderID(id); err == nil {
+			t.Errorf("validProviderID(%q) accepted", id)
+		}
+	}
+	for _, id := range []string{"01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K", "D4648F06C91D9D3D!54927", "1a2B_c-D"} {
+		if err := validProviderID(id); err != nil {
+			t.Errorf("validProviderID(%q) rejected: %v", id, err)
+		}
+	}
+
+	// End to end: the handlers refuse before any provider call.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("provider reached: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	origGraph, origDrive := graphAPIBase, googleDriveAPIBase
+	graphAPIBase, googleDriveAPIBase = srv.URL, srv.URL
+	defer func() { graphAPIBase, googleDriveAPIBase = origGraph, origDrive }()
+	deps := gdriveDeps(fakeStore{at: "test-at"})
+	ws := WorkspaceConfig{Root: t.TempDir()}
+	for _, c := range []struct {
+		h    Handler
+		args map[string]any
+	}{
+		{newOneDriveReadHandler(deps, ws), map[string]any{"item_id": ".."}},
+		{newOneDriveReadHandler(deps, ws), map[string]any{"path": "../../drives/D/items/I/content"}},
+		{newOneDriveWriteHandler(deps, ws), map[string]any{"path": "../x", "content": "x"}},
+		{newGDriveReadHandler(deps, ws), map[string]any{"file_id": ".."}},
+		{newGDriveReadHandler(deps, ws), map[string]any{"file_id": "x' or 'a' in parents"}},
+	} {
+		if _, _, err := c.h(context.Background(), req(c.args)); err == nil {
+			t.Errorf("%v accepted", c.args)
+		}
 	}
 }

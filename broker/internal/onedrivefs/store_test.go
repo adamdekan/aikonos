@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -453,6 +454,60 @@ func TestListDir_Pagination_ConcatenatesPages(t *testing.T) {
 	names := map[string]bool{out[0].Path: true, out[1].Path: true}
 	if !names["a.txt"] || !names["b.txt"] {
 		t.Fatalf("unexpected entries: %+v", out)
+	}
+}
+
+// --- pagination: nextLink must stay on the Graph host, pages are capped --
+
+// G29/F45: a nextLink naming another host is never requested (it would get
+// the user's bearer), and a self-referencing nextLink stops at maxListPages.
+func TestListDir_Pagination_RefusesForeignNextLinkAndCapsPages(t *testing.T) {
+	var foreignHits int
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignHits++
+	}))
+	defer foreign.Close()
+
+	var srv *httptest.Server
+	var next string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/drives/DRV1/items/ROOT/children", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"value": []map[string]any{{"id": "I1", "name": "a.txt"}}, "@odata.nextLink": next})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+	withTestGraphBase(t, srv)
+	root := testStore(srv).WithRoot("DRV1", "ROOT")
+
+	next = foreign.URL + "/v1.0/page2"
+	if _, err := root.ListDir(context.Background(), "t", "u", "", false); !errors.Is(err, workspacefs.ErrUnavailable) {
+		t.Fatalf("foreign nextLink: want ErrUnavailable, got %v", err)
+	}
+	if foreignHits != 0 {
+		t.Fatalf("foreign host received %d requests", foreignHits)
+	}
+
+	orig := maxListPages
+	maxListPages = 3
+	t.Cleanup(func() { maxListPages = orig })
+	next = srv.URL + "/v1.0/drives/DRV1/items/ROOT/children"
+	if _, err := root.ListDir(context.Background(), "t", "u", "", false); !errors.Is(err, workspacefs.ErrUnavailable) {
+		t.Fatalf("self-referencing nextLink: want ErrUnavailable, got %v", err)
+	}
+}
+
+// G30: a Graph error body is not echoed into the returned error.
+func TestSendJSON_ErrorBodyNotEmbedded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"x","innerError":{"request-id":"SECRET-REQ-ID"}}}`))
+	}))
+	defer srv.Close()
+	withTestGraphBase(t, srv)
+
+	_, err := testStore(srv).getJSON(context.Background(), srv.URL+"/v1.0/x", testToken, nil)
+	if err == nil || strings.Contains(err.Error(), "SECRET-REQ-ID") || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("want bare status error, got %v", err)
 	}
 }
 

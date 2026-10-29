@@ -205,10 +205,25 @@ func hostOf(raw string) string {
 	return raw
 }
 
-// cgnatNet is RFC 6598 shared (carrier-grade NAT) address space. It is routable
-// on some networks but never a legitimate egress-fetch target, and Go's
-// net.IP.IsPrivate does not cover it.
-var cgnatNet = mustCIDR("100.64.0.0/10")
+// blockedNets are special-use ranges Go's net.IP predicates miss: RFC 6598
+// CGNAT (also holds Alibaba's 100.100.100.200 metadata), the Azure WireServer
+// / host agent (a public-range address reachable from every Azure VM), "this
+// network", IETF protocol assignments, documentation, benchmarking and
+// reserved space, plus IPv6 discard, documentation and the IPv4-embedding
+// transition prefixes (NAT64, 6to4, Teredo) that could tunnel to any of the
+// above. IPNet.Contains matches a v4-mapped IPv6 address against the v4 nets.
+var blockedNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range []string{
+		"100.64.0.0/10", "168.63.129.16/32", "0.0.0.0/8", "192.0.0.0/24",
+		"192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+		"240.0.0.0/4", "100::/64", "2001:db8::/32", "64:ff9b::/96",
+		"2002::/16", "2001::/32",
+	} {
+		out = append(out, mustCIDR(c))
+	}
+	return out
+}()
 
 func mustCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)
@@ -220,17 +235,19 @@ func mustCIDR(s string) *net.IPNet {
 
 // isDisallowedIP reports whether an address is in a range an egress fetch must
 // never reach (loopback, RFC1918 private, link-local incl. cloud metadata
-// 169.254.169.254, CGNAT shared space, or unspecified).
+// 169.254.169.254, multicast, unspecified, or any of blockedNets).
 func isDisallowedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
-		return true
+	for _, n := range blockedNets {
+		if n.Contains(ip) {
+			return true
+		}
 	}
 	return false
 }
@@ -263,6 +280,12 @@ func hardenedClient(timeout time.Duration, allowPrivate bool, acl NetACL) *http.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("web.fetch: too many redirects (>%d)", maxRedirects)
+			}
+			// net/http keeps Authorization across a same-host redirect even when
+			// it downgrades https → http; refuse rather than send a token in
+			// cleartext (MCP bearer / OAuth token).
+			if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" && req.Header.Get("Authorization") != "" {
+				return fmt.Errorf("web.fetch: refusing https→http redirect with credentials")
 			}
 			if acl != nil && acl.Enabled() {
 				if p, ok := req.Context().Value(aclPrincipalKey{}).(aclPrincipal); ok {

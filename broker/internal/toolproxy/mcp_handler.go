@@ -10,9 +10,10 @@
 //
 // Arg schema validation: after connect, before callTool, the handler calls
 // tools/list, finds the target tool's inputSchema, compiles it (cached), and
-// validates req.Args against it. An empty/unparseable schema or a listTools
-// error is a pass-through (never blocks the call). Only a well-formed schema
-// with a schema violation returns Result{Success:false} before the external call.
+// validates req.Args against it. A listTools error or a tool missing from the
+// list fails closed (Result{Success:false}, no tools/call). An empty/unparseable
+// schema is a pass-through; a well-formed schema with a violation fails before
+// the external call.
 package toolproxy
 
 import (
@@ -136,34 +137,41 @@ func (p *Proxy) invokeMCP(ctx context.Context, req Request) (*Result, error) {
 		return &Result{Success: false, Error: fmt.Sprintf("mcp: connect %q: %v", conn.URL, err)}, nil
 	}
 
-	// Arg schema validation: on any error from listTools, or when the tool or
-	// its schema can't be found/compiled, fall through to callTool unchanged.
-	if p.mcpSchemas != nil {
-		if tools, lerr := client.listTools(ctx); lerr == nil {
-			for _, t := range tools {
-				if t.Name != toolName {
-					continue
-				}
-				if sch, ok := p.mcpSchemas.compileMcpSchema(t.InputSchemaJSON); ok {
-					// A no-args call is a valid empty object — nil would marshal
-					// to JSON null and fail an `{"type":"object"}` schema.
-					args := req.Args
-					if args == nil {
-						args = map[string]any{}
-					}
-					// JSON round-trip to normalize number types for jsonschema/v6.
-					b, _ := json.Marshal(args)
-					argsAny, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
-					if verr := sch.Validate(argsAny); verr != nil {
-						return &Result{
-							Success: false,
-							Error:   fmt.Sprintf("mcp: invalid arguments for %q: %v", toolName, verr),
-						}, nil
-					}
-				}
-				break
+	// Fail closed: the tool must be in the server's advertised tools/list (an
+	// unlisted name, or a listing that fails, never reaches tools/call). Arg
+	// schema validation then runs when the listed schema compiles; an empty or
+	// uncompilable schema leaves the server as the authority.
+	tools, lerr := client.listTools(ctx)
+	if lerr != nil {
+		return &Result{Success: false, Error: fmt.Sprintf("mcp: list tools: %v", lerr)}, nil
+	}
+	listed := false
+	for _, t := range tools {
+		if t.Name != toolName {
+			continue
+		}
+		listed = true
+		if sch, ok := p.mcpSchemas.compileMcpSchema(t.InputSchemaJSON); ok {
+			// A no-args call is a valid empty object — nil would marshal
+			// to JSON null and fail an `{"type":"object"}` schema.
+			args := req.Args
+			if args == nil {
+				args = map[string]any{}
+			}
+			// JSON round-trip to normalize number types for jsonschema/v6.
+			b, _ := json.Marshal(args)
+			argsAny, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+			if verr := sch.Validate(argsAny); verr != nil {
+				return &Result{
+					Success: false,
+					Error:   fmt.Sprintf("mcp: invalid arguments for %q: %v", toolName, verr),
+				}, nil
 			}
 		}
+		break
+	}
+	if !listed {
+		return &Result{Success: false, Error: fmt.Sprintf("mcp: tool %q is not advertised by the server", toolName)}, nil
 	}
 
 	content, isErr, err := client.callTool(ctx, toolName, req.Args)
