@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { status } from "@grpc/grpc-js";
 import pino from "pino";
-import { grpcToHttp, isAccessRevoked, sendError, trimmedErrorMessage } from "../src/http-errors.js";
+import { grpcToHttp, isAccessRevoked, sendError, trimmedErrorMessage, trimmedErrorText } from "../src/http-errors.js";
 
 function grpcErr(code: number, message = "boom"): { code: number; message: string; details: string } {
   return { code, message: `${code} X: ${message}`, details: message };
@@ -145,6 +145,18 @@ test("trimmedErrorMessage: non-gRPC Error never leaks stack/message text", () =>
   assert.equal(message, "internal error");
   assert.doesNotMatch(message, /Error:/);
   assert.doesNotMatch(message, /at .+:\d+:\d+/);
+});
+
+test("trimmedErrorText (F66): a gateway prefix around String(err) keeps the prefix and trims the gRPC part", () => {
+  // WHY: "could not read the workflow to approve: ${String(err)}" put broker
+  // hosts in front of the model and the chat; the ^-anchored form missed it.
+  assert.equal(
+    trimmedErrorText("workflow_schedule: could not read the workflow to approve: Error: 14 UNAVAILABLE: connect ECONNREFUSED 10.0.0.5:9090"),
+    "workflow_schedule: could not read the workflow to approve: upstream unavailable",
+  );
+  assert.equal(trimmedErrorText("lookup failed: Error: 5 NOT_FOUND: no such workflow"), "lookup failed: no such workflow");
+  assert.equal(trimmedErrorText("Error: 13 INTERNAL: pq: relation missing"), "internal error");
+  assert.equal(trimmedErrorText("tool 'x' is not permitted by aikonOS policy"), "tool 'x' is not permitted by aikonOS policy");
 });
 
 test("sendError: response body never leaks a 'Error:' / stack-shaped string", () => {

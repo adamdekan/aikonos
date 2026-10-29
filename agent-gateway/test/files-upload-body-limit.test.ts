@@ -12,6 +12,7 @@ import Fastify from "fastify";
 import { request as httpRequest } from "node:http";
 import { registerFilesRoutes } from "../src/routes/files.js";
 import { registerSkillsRoutes } from "../src/routes/skills.js";
+import { registerAdminRoutes } from "../src/routes/admin.js";
 
 const FILE_UPLOAD_BODY_LIMIT = 14 * 1024 * 1024;
 
@@ -70,12 +71,12 @@ test("POST /files — still rejects a body over the route's own limit", async ()
 // sendHeadersOnly declares a 1 MiB body but sends only a few bytes. A route
 // that parses the body before authenticating would wait for the rest and never
 // answer; one that authenticates first answers 401 right away.
-function sendHeadersOnly(port: number, path: string, authorization?: string): Promise<number> {
+function sendHeadersOnly(port: number, path: string, authorization?: string, method = "POST"): Promise<number> {
   return new Promise((resolve) => {
     const safety = setTimeout(() => resolve(-1), 2000);
     const headers: Record<string, string> = { "content-type": "application/json", "content-length": String(1024 * 1024) };
     if (authorization) headers.authorization = authorization;
-    const req = httpRequest({ host: "127.0.0.1", port, path, method: "POST", headers }, (res) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method, headers }, (res) => {
       clearTimeout(safety);
       res.resume();
       resolve(res.statusCode ?? 0);
@@ -99,6 +100,24 @@ test("F57 POST /files and /skills/import — an unauthenticated upload is refuse
     for (const path of ["/files", "/skills/import"]) {
       assert.equal(await sendHeadersOnly(address.port, path), 401, `${path}: no bearer`);
       assert.equal(await sendHeadersOnly(address.port, path, "Bearer not-a-jwt"), 401, `${path}: bad bearer`);
+    }
+  } finally {
+    app.server.closeAllConnections();
+    await app.close();
+  }
+});
+
+test("F57 admin skill upload routes — an unauthenticated upload is refused before its body is read", async () => {
+  const app = Fastify({ logger: false });
+  const jwksResolver = (() => Promise.reject(new Error("no key"))) as never;
+  registerAdminRoutes(app, { clients: { north: {}, south: {} }, jwksResolver, verifyOpts: { issuer: "i", audience: "a" } } as never);
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+  try {
+    for (const [method, path] of [["POST", "/admin/skills/upload"], ["PUT", "/admin/skill-bundles/b1"]]) {
+      assert.equal(await sendHeadersOnly(address.port, path, undefined, method), 401, `${method} ${path}: no bearer`);
+      assert.equal(await sendHeadersOnly(address.port, path, "Bearer not-a-jwt", method), 401, `${method} ${path}: bad bearer`);
     }
   } finally {
     app.server.closeAllConnections();

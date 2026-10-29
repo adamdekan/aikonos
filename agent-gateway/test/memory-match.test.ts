@@ -145,18 +145,36 @@ test("mergeRecall: empty keyword tier surfaces semantic entries alone", () => {
   assert.equal(result.via.get("only-semantic"), "semantic");
 });
 
-test("F202 matchMemoryConcepts: a 10k-tag concept and a 1 MiB prompt stay bounded", () => {
-  // WHY: matching runs synchronously on the parent's shared event loop; one
-  // member's bundle with uncapped tags (and a 4 KB phrase tag) against a huge
-  // prompt stalled every user's requests for seconds.
-  const tags = Array.from({ length: 10_000 }, (_, i) => `tag word ${i}`);
-  tags.push("a ".repeat(2000));
-  const bundle = Array.from({ length: 600 }, (_, i) => concept({ id: `c${i}`, tags, title: "x" }));
-  const prompt = "a ".repeat(512 * 1024);
-  const started = performance.now();
-  matchMemoryConcepts(prompt, bundle);
-  // ponytail: generous ceiling for slow CI; the unbounded path took seconds.
-  assert.ok(performance.now() - started < 1500, `recall took ${performance.now() - started} ms`);
+// cpuMs returns fn's best CPU time over up to three runs after a warm-up, so
+// a busy test runner (time spent descheduled, a cold JIT) does not fail a
+// bound the code itself meets.
+function cpuMs(fn: () => void): number {
+  fn();
+  let best = Infinity;
+  for (let i = 0; i < 3 && best >= 50; i++) {
+    const start = process.cpuUsage();
+    fn();
+    const { user, system } = process.cpuUsage(start);
+    best = Math.min(best, (user + system) / 1000);
+  }
+  return best;
+}
+
+test("F202 matchMemoryConcepts: adversarial phrase tags inside every cap stay under 50 ms", () => {
+  // WHY: matching runs synchronously on the parent's shared event loop. 512
+  // concepts x 32 63-char phrase tags ("a a … a z") plus a 199-char title of
+  // the same shape against an 8000-char "a a …" prompt stalled every user for
+  // ~32 s, all within the per-piece caps; only a bound on total work holds.
+  // The short tag shape is the one the word cap lets through to the budget.
+  for (const tag of ["a ".repeat(31) + "z", "a a a a a z"]) {
+    const bundle = Array.from({ length: 512 }, (_, i) =>
+      concept({ id: `c${i}`, tags: Array.from({ length: 32 }, () => tag), title: "a ".repeat(99) + "z" }),
+    );
+    for (const prompt of ["a ".repeat(4000), "a ".repeat(3999) + "z"]) {
+      const ms = cpuMs(() => matchMemoryConcepts(prompt, bundle));
+      assert.ok(ms < 50, `recall took ${ms} ms (tag ${tag.length} chars, prompt ends ${JSON.stringify(prompt.slice(-2))})`);
+    }
+  }
 });
 
 test("F202 matchMemoryConcepts: only the first 32 tags of at most 64 chars count", () => {

@@ -51,7 +51,9 @@ function catalogField(s: string, max: number): string {
 // buildSkillCatalogText returns the catalog snippet injected into the system
 // prompt — names + descriptions of non-disable_model_invocation bundles only.
 // Returns "" when there is nothing to show (no injected section → no prompt bloat).
-// Each entry is one flattened line: name clipped to 64 runes, description to 300.
+// Each entry is one flattened line, each field clipped to 300 runes. That is
+// above any real name ("personal:" plus one path segment of at most 255
+// bytes): load_skill looks names up exactly, so a clipped name is unloadable.
 export function buildSkillCatalogText(bundles: SkillBundleEntry[]): string {
   const visible = bundles.filter((b) => !b.disableModelInvocation);
   if (visible.length === 0) return "";
@@ -61,7 +63,7 @@ export function buildSkillCatalogText(bundles: SkillBundleEntry[]): string {
   // key, but the explicit suffix keeps the distinction readable even if that
   // naming convention ever changes.
   const lines = visible.map(
-    (b) => `- ${catalogField(b.name, 64)}: ${catalogField(b.description, 300)}${b.origin === "personal" ? " (personal)" : ""}`,
+    (b) => `- ${catalogField(b.name, 300)}: ${catalogField(b.description, 300)}${b.origin === "personal" ? " (personal)" : ""}`,
   );
   return `Available skills (call load_skill(name) to activate):\n${lines.join("\n")}`;
 }

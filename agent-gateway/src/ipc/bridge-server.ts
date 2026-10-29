@@ -475,13 +475,18 @@ export class RemoteBridgeServer {
 
     // F66: error text reaches the model and the chat, so a gRPC infra error
     // (broker hosts, SQL or policy text) is trimmed the way HTTP routes trim it.
-    // Bridge results carry it pre-flattened by String(err), hence the text form.
+    // Bridge results carry it pre-flattened by String(err), hence the text form,
+    // in `error` or, for a gate refusal, in `reason`.
     // Promise.resolve().then also turns a synchronous throw in call() into a
     // rejection, so it gets a failure reply like any other.
     this.withPending(seq, Promise.resolve().then(() => call(bridge))).then(
       (result) => {
-        const r = result as { error?: unknown };
-        const safe = typeof r.error === "string" ? { ...result, error: trimmedErrorText(r.error) } : result;
+        const r = result as { error?: unknown; reason?: unknown };
+        const safe = {
+          ...result,
+          ...(typeof r.error === "string" ? { error: trimmedErrorText(r.error) } : {}),
+          ...(typeof r.reason === "string" ? { reason: trimmedErrorText(r.reason) } : {}),
+        };
         this.link.send({ kind: replyKind, seq, ...safe });
       },
       (err: unknown) => {

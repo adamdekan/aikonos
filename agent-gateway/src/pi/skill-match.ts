@@ -54,14 +54,11 @@ function escapeRegExp(s: string): string {
 // edge instead uses a lookaround that forbids a word character immediately
 // outside the match (so it still won't match mid-word), without requiring an
 // actual \w/non-\w transition.
-// Exported for memory-match.ts: the
-// memory recall matcher must use the exact same boundary rule, so it reuses
-// this builder instead of growing a second copy that can drift.
 //
 // F202: a keyword longer than MAX_KEYWORD_CHARS is skipped — matching runs
 // synchronously on the parent's shared event loop, and memory tags and titles
 // carry no length cap of their own.
-export function buildKeywordPattern(keyword: string): RegExp | null {
+function buildKeywordPattern(keyword: string): RegExp | null {
   const trimmed = keyword.trim();
   if (!trimmed || trimmed.length > MAX_KEYWORD_CHARS) return null;
   const escaped = escapeRegExp(trimmed).replace(/\s+/g, "\\s+");
@@ -70,24 +67,60 @@ export function buildKeywordPattern(keyword: string): RegExp | null {
   return new RegExp(`${startBoundary}${escaped}${endBoundary}`, "gi");
 }
 
-// countKeywordMatches returns how many of the bundle's keywords occur (as
-// whole-word/whole-phrase, case-insensitive matches) in the message. Each
-// keyword counted once regardless of repeat occurrences — the count is used
-// only to rank distinct-keyword relevance, not term frequency.
-function countKeywordMatches(message: string, keywords: string[]): number {
-  let count = 0;
-  for (const keyword of keywords) {
-    const pattern = buildKeywordPattern(keyword);
-    if (pattern && pattern.test(message)) count++;
-  }
-  return count;
-}
-
 // F202: bounds on one turn's keyword matching. Only the head of the prompt is
 // matched (an /agui prompt may be up to 1 MiB), and a keyword is at most a
 // short phrase.
-export const MATCH_PROMPT_CLIP_CHARS = 8000;
+const MATCH_PROMPT_CLIP_CHARS = 8000;
 const MAX_KEYWORD_CHARS = 200;
+// One regex test costs about prompt length x keyword length, plus a fixed
+// compile-and-scan cost, so one matcher call spends at most this budget of
+// keyword chars (plus MATCH_PATTERN_COST each) on regexes: ~20 ms worst case.
+const MATCH_BUDGET = 1000;
+const MATCH_PATTERN_COST = 4;
+// A keyword is a short phrase; more words than this never match.
+const MAX_KEYWORD_WORDS = 6;
+
+// keywordCounter returns a counter of how many of a list's keywords occur (as
+// whole-word/whole-phrase, case-insensitive matches) in the message. Each
+// keyword counted once regardless of repeat occurrences — the count is used
+// only to rank distinct-keyword relevance, not term frequency.
+//
+// F202: matching runs synchronously on the parent's shared event loop, so the
+// work is bounded per call, not per keyword. A keyword goes on only when each
+// of its (at most MAX_KEYWORD_WORDS) words is a word of the prompt — a Set
+// lookup each, and sound, since a match needs every \w-run of the keyword to
+// be a whole \w-run of the prompt. For a lone word that lookup is the match;
+// a phrase or symbol keyword is compiled and draws down MATCH_BUDGET.
+// ponytail: past the budget a phrase is skipped (recall degrades, never
+// stalls); a token-index matcher lifts the ceiling if real stores ever hit it.
+export function keywordCounter(message: string): (keywords: string[]) => number {
+  const text = message.slice(0, MATCH_PROMPT_CLIP_CHARS);
+  const promptWords = new Set(text.match(/\w+/g)?.map((w) => w.toLowerCase()));
+  const wordsInPrompt = (keyword: string): boolean => {
+    let n = 0;
+    for (const [w] of keyword.matchAll(/\w+/g)) {
+      if (++n > MAX_KEYWORD_WORDS || !promptWords.has(w.toLowerCase())) return false;
+    }
+    return true;
+  };
+  let budget = MATCH_BUDGET;
+  return (keywords) => {
+    let count = 0;
+    for (const keyword of keywords) {
+      const trimmed = keyword.trim();
+      if (!trimmed || trimmed.length > MAX_KEYWORD_CHARS || !wordsInPrompt(trimmed)) continue;
+      if (/^\w+$/.test(trimmed)) {
+        count++;
+        continue;
+      }
+      const cost = trimmed.length + MATCH_PATTERN_COST;
+      if (cost > budget) continue;
+      budget -= cost;
+      if (buildKeywordPattern(trimmed)?.test(text)) count++;
+    }
+    return count;
+  };
+}
 
 // matchSkillBundles computes the auto-load match set for one turn.
 //
@@ -100,9 +133,9 @@ const MAX_KEYWORD_CHARS = 200;
 // slot (a bundle that could never activate should not push an eligible one
 // out of the top 3).
 export function matchSkillBundles<T extends MatchableBundle>(message: string, bundles: T[]): SkillMatchResult<T> {
-  message = message.slice(0, MATCH_PROMPT_CLIP_CHARS);
+  const countMatches = keywordCounter(message);
   const candidates = bundles
-    .map((bundle) => ({ bundle, count: countKeywordMatches(message, bundle.keywords) }))
+    .map((bundle) => ({ bundle, count: countMatches(bundle.keywords) }))
     .filter((c) => c.count > 0)
     .sort((a, b) => b.count - a.count || a.bundle.name.localeCompare(b.bundle.name));
 

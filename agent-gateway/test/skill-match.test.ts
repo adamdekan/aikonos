@@ -182,3 +182,34 @@ test("matchSkillBundles: cap and flag-blocked suppression apply identically to a
   assert.equal(result.suppressed[0].entry.name, "personal:blocked");
   assert.equal(result.suppressed[0].reason, "flag_blocked");
 });
+
+test("F202 matchSkillBundles: adversarial phrase keywords stay under 50 ms", () => {
+  // WHY: matching runs synchronously on the parent's shared event loop; 50
+  // personal skills x 32 phrase keywords ("a a … a z") against an 8000-char
+  // "a a …" prompt blocked every user for ~5 s.
+  const keywords = Array.from({ length: 32 }, () => "a ".repeat(31) + "z");
+  const bundles = Array.from({ length: 50 }, (_, i) => bundle({ name: `personal:s${i}`, keywords }));
+  for (const prompt of ["a ".repeat(4000), "a ".repeat(3999) + "z"]) {
+    matchSkillBundles(prompt, bundles); // warm-up: time the code, not the JIT
+    let best = Infinity;
+    for (let i = 0; i < 3 && best >= 50; i++) {
+      const start = process.cpuUsage(); // CPU time: a busy runner's waits do not count
+      matchSkillBundles(prompt, bundles);
+      const { user, system } = process.cpuUsage(start);
+      best = Math.min(best, (user + system) / 1000);
+    }
+    assert.ok(best < 50, `matching took ${best} ms of CPU`);
+  }
+});
+
+test("F202 matchSkillBundles: phrases are capped at 6 words and a spent budget skips phrases, never lone words", () => {
+  const msg = "one two three four five six seven";
+  const six = bundle({ name: "six", keywords: ["one two three four five six"] });
+  const seven = bundle({ name: "seven", keywords: ["one two three four five six seven"] });
+  assert.deepEqual(matchSkillBundles(msg, [six, seven]).loaded.map((b) => b.name), ["six"]);
+
+  const spender = bundle({ name: "a-spender", keywords: Array.from({ length: 200 }, () => "one two") });
+  const word = bundle({ name: "word", keywords: ["seven"] });
+  const latePhrase = bundle({ name: "z-late-phrase", keywords: ["six seven"] });
+  assert.deepEqual(matchSkillBundles(msg, [spender, word, latePhrase]).loaded.map((b) => b.name), ["a-spender", "word"]);
+});

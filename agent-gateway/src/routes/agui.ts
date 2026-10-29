@@ -312,7 +312,9 @@ export async function resolveCommandSkill(deps: CommandSkillDeps): Promise<Comma
   } catch (err) {
     // F129: a blocked/revoked user is refused, not shown a chat error.
     if (isAccessRevoked(err)) throw err;
-    return { kind: "error", message: `skill resolution failed: ${String(err)}` };
+    // F66: the message reaches the chat, so it is trimmed; the raw error stays in the log.
+    log.warn({ err: String(err), skillName }, "command skill resolution failed");
+    return { kind: "error", message: `skill resolution failed: ${trimmedErrorMessage(err)}` };
   }
 
   // Personal skills: union the caller's

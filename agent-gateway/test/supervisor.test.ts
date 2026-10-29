@@ -345,7 +345,7 @@ test("CP6 env-scrub: SECURITY — scrubbed env EQUALS the allowlist (fail-closed
 
   const scrubbed = scrubEnv(injectedEnv);
 
-  // The surviving key set must EQUAL the allowlist plus AIKONOS_CHILD_ENTRY.
+  // The surviving key set must EQUAL the allowlist plus the injected markers.
   // Any key not in this set surviving = denylist, not allowlist.
   const expectedKeys = new Set([
     "PATH",
@@ -356,6 +356,7 @@ test("CP6 env-scrub: SECURITY — scrubbed env EQUALS the allowlist (fail-closed
     "NODE_ENV",
     "AIKONOS_GATEWAY_THREAD_TTL_MS",
     "AIKONOS_CHILD_ENTRY",
+    "TSX_DISABLE_CACHE",
   ]);
 
   const survivingKeys = new Set(Object.keys(scrubbed));
@@ -373,6 +374,12 @@ test("CP6 env-scrub: SECURITY — scrubbed env EQUALS the allowlist (fail-closed
   for (const k of expectedKeys) {
     if (k === "AIKONOS_CHILD_ENTRY") {
       assert.equal(scrubbed["AIKONOS_CHILD_ENTRY"], "1", "AIKONOS_CHILD_ENTRY must be injected");
+      continue;
+    }
+    if (k === "TSX_DISABLE_CACHE") {
+      // M-24/F55: children share one uid, so a shared on-disk transform cache
+      // would let one user's compromised child plant code for the next child.
+      assert.equal(scrubbed["TSX_DISABLE_CACHE"], "1", "TSX_DISABLE_CACHE must be injected");
       continue;
     }
     if (Object.prototype.hasOwnProperty.call(injectedEnv, k)) {

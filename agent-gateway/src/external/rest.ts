@@ -146,11 +146,14 @@ export function registerExternalRoutes(
       });
 
       // F208: a client that leaves mid-stream aborts the run (and its token
-      // spend) instead of leaving it to finish or time out unattended.
+      // spend) instead of leaving it to finish or time out unattended. A client
+      // that left during the awaits above closed the socket before this
+      // listener existed, so a response already destroyed aborts too.
       const disconnected = new AbortController();
       reply.raw.on("close", () => {
         if (!reply.raw.writableEnded) disconnected.abort();
       });
+      if (reply.raw.destroyed) disconnected.abort();
 
       try {
         const iter = runAgentInvocation(agentId, principal, tenantId, agentSpec.skills, prompt, {

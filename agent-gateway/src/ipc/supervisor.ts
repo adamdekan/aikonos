@@ -47,6 +47,11 @@ import { failedPreconditionError, providerErrorMessage } from "../http-errors.js
 //                                  switches (dev vs production logging, etc.)
 //   AIKONOS_GATEWAY_THREAD_TTL_MS — child-entry.ts line 77 reads this directly
 //   AIKONOS_CHILD_ENTRY           — injected below; child-entry.ts entry guard
+//   TSX_DISABLE_CACHE             — injected below (M-24/F55): the child neither
+//                                  reads nor writes tsx's on-disk transform
+//                                  cache, so a child with code execution
+//                                  cannot plant a module that the next child,
+//                                  forked for another user, loads
 
 const CHILD_ENV_ALLOWLIST: ReadonlySet<string> = new Set([
   "PATH",
@@ -58,7 +63,7 @@ const CHILD_ENV_ALLOWLIST: ReadonlySet<string> = new Set([
   "AIKONOS_GATEWAY_THREAD_TTL_MS",
 ]);
 
-/** Returns an allowlist-only copy of env for the forked child (secrets absent from the allowlist are excluded by default, fail-closed) plus the injected AIKONOS_CHILD_ENTRY=1 marker. */
+/** Returns an allowlist-only copy of env for the forked child (secrets absent from the allowlist are excluded by default, fail-closed) plus the injected AIKONOS_CHILD_ENTRY=1 marker and TSX_DISABLE_CACHE=1. */
 export function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {};
   for (const k of CHILD_ENV_ALLOWLIST) {
@@ -67,6 +72,7 @@ export function scrubEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     }
   }
   result["AIKONOS_CHILD_ENTRY"] = "1";
+  result["TSX_DISABLE_CACHE"] = "1";
   return result;
 }
 

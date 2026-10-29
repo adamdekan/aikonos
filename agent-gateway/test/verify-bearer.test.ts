@@ -161,6 +161,27 @@ test("verifyBearer: rejects a token expired beyond the clock-skew tolerance", as
   );
 });
 
+test("verifyBearer: rejects a token without exp", async () => {
+  // WHY: a token with no exp (a misconfigured IdP client) would be accepted
+  // forever and never arm the audit stream's expiry timer (F59).
+  const { privateKey, jwk, kid } = await makeKey();
+  const resolver = await localResolver([jwk]);
+  const token = await mintToken(privateKey, kid, {
+    sub: "user-uuid-6",
+    email: "user@example.com",
+    tenant_id: "11111111-1111-1111-1111-111111111111",
+  }, { expiresIn: "no-exp" });
+
+  await assert.rejects(
+    () =>
+      verifyBearer(token, resolver, {
+        issuer: "http://localhost:18080/realms/aikonos",
+        audience: "aikonos-broker",
+      }),
+    /missing required "exp" claim/i,
+  );
+});
+
 test("verifyBearer: accepts a token expired within the clock-skew tolerance", async () => {
   const { privateKey, jwk, kid } = await makeKey();
   const resolver = await localResolver([jwk]);
