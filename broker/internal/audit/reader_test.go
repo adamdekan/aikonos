@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -213,6 +214,7 @@ func (f *fakeStore) list(_ context.Context, prefix string) ([]objMeta, error) {
 			out = append(out, objMeta{key: k, lastModified: f.modTime[k]})
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key }) // MinIO lists lexically
 	return out, nil
 }
 
@@ -493,5 +495,41 @@ func TestReader_VerifyChain_NoUnsignedMetric_OnPartiallySignedChain(t *testing.T
 	rm := collectAuditMetrics(t, reader)
 	if _, found := findAuditMetric(rm, "audit_chain_unsigned_total"); found {
 		t.Fatal("audit_chain_unsigned_total unexpectedly emitted for a partially-signed chain")
+	}
+}
+
+// TestReader_Query_OverCapReturnsNewest: with more objects than the scan cap,
+// Query must still see the newest events (and older ones via a time range).
+func TestReader_Query_OverCapReturnsNewest(t *testing.T) {
+	n := maxScanObjects + 100
+	objects := make(map[string][]byte, n)
+	for i := 0; i < n; i++ {
+		ev := &auditv1.AuditEvent{
+			EventId:    ids_for_test(i),
+			TenantId:   "tenant1",
+			EventType:  "test.event",
+			OccurredAt: timestamppb.New(t0.Add(time.Duration(i) * 20 * time.Minute)),
+		}
+		objects[objectKey(ev)] = mustMarshalEvent(ev)
+	}
+	r := &Reader{store: &fakeStore{objects: objects}, cfg: Config{}, logger: nopLogger()}
+
+	events, _, _, err := r.Query(context.Background(), "tenant1", QueryFilter{Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(events); len(got) != 3 || got[0] != ids_for_test(n-1) {
+		t.Fatalf("want newest events first, got %v", got)
+	}
+
+	// An old time range still reaches events beyond the cap's window.
+	events, _, _, err = r.Query(context.Background(), "tenant1", QueryFilter{
+		StartTime: t0, EndTime: t0.Add(30 * time.Minute), Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventIDs(events); len(got) != 2 || got[0] != ids_for_test(1) {
+		t.Fatalf("want the two oldest events for the old range, got %v", got)
 	}
 }
