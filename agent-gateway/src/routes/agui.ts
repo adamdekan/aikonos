@@ -741,7 +741,8 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // /approve/:id POST via the parent-side ApprovalRegistry.
     // AG-07 slice 2: when the broker decides first (another approver, the
     // Inbox), `decided` withdraws the card and the dialog is told to close.
-    const hitl: Approver = async (info, decided) => {
+    const hitl: Approver = async (gated, decided) => {
+      const info = { ...gated, threadId };
       stream.custom(AIKONOS_APPROVAL_REQUEST, info);
       const ok = await approvals.await_(info, user, runId, decided);
       if (decided?.aborted) stream.custom(AIKONOS_APPROVAL_RESOLVED, { toolCallId: info.toolCallId });

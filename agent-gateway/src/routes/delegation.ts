@@ -27,8 +27,24 @@ export function registerDelegationRoutes(app: FastifyInstance, ctx: DelegationCt
     async (req, reply) => {
       const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
       if (!principal) return;
-      const { to = "bob@example.com", group, intent = "", scopes = ["siem:read"], maxCost = 50 } = req.body ?? {};
-      const recipient = group ? { groupId: group } : { userId: to };
+      // No guessed recipient and no scope the sender did not name: exactly one
+      // of to/group, scopes default to none, and the cost cap to 50 units.
+      const { to, group, intent = "", scopes = [], maxCost = 50 } = req.body ?? {};
+      const hasTo = typeof to === "string" && to.trim() !== "";
+      const hasGroup = typeof group === "string" && group.trim() !== "";
+      if (hasTo === hasGroup) {
+        reply.code(400).send({ ok: false, error: "name exactly one recipient: to or group" });
+        return;
+      }
+      if (!Array.isArray(scopes) || !scopes.every((sc) => typeof sc === "string")) {
+        reply.code(400).send({ ok: false, error: "scopes must be a list of strings" });
+        return;
+      }
+      if (typeof maxCost !== "number" || !Number.isFinite(maxCost) || maxCost < 0) {
+        reply.code(400).send({ ok: false, error: "maxCost must be a number of cost units, 0 or more" });
+        return;
+      }
+      const recipient = hasGroup ? { groupId: group!.trim() } : { userId: to!.trim() };
       try {
         const handle = await ctx.clients.north.sendEnvelope(
           {

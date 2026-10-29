@@ -100,6 +100,9 @@ export interface ApprovalInfo {
   requiresN: number;
   approvals: number;
   ownerMayApprove: boolean;
+  // The chat thread whose run asked (set by /agui), so a chat lists only its
+  // own approvals and not those of the same user's other tabs.
+  threadId?: string;
 }
 
 // Injected decision for NEEDS_HUMAN/STEP_UP. CLI auto-approves; the AG-UI server

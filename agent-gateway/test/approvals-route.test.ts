@@ -229,3 +229,16 @@ test("POST /pending-approvals/:taskId maps step_up_required to 401 with the acr"
   assert.deepEqual(res.json(), { error: "step_up_required", acr: "mfa" });
   await app.close();
 });
+
+test("GET /approvals?threadId= lists only that chat's approvals, not the same user's other tabs", async () => {
+  const { app, approvals, alice } = await buildApp();
+  void approvals.await_({ ...makeInfo("call-1"), threadId: "thread-a" }, "alice@example.com", "run-a");
+  void approvals.await_({ ...makeInfo("call-2"), threadId: "thread-b" }, "alice@example.com", "run-b");
+
+  const one = await app.inject({ method: "GET", url: "/approvals?threadId=thread-a", headers: { authorization: `Bearer ${alice}` } });
+  assert.deepEqual(one.json().approvals.map((a: ApprovalInfo) => a.toolCallId), ["call-1"]);
+  const all = await app.inject({ method: "GET", url: "/approvals", headers: { authorization: `Bearer ${alice}` } });
+  assert.equal(all.json().approvals.length, 2);
+  approvals.drain();
+  await app.close();
+});
