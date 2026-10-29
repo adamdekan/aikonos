@@ -88,9 +88,9 @@ func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name str
 // FileSize reports the size of the file at rel from a shallow listing of its
 // directory, so a caller can refuse an over-cap file without buffering it
 // (G17). ok is false when the listing fails or holds no such file, and the
-// caller then refuses without reading: a listing truncated at
-// workspacefs.MaxListEntries may have dropped the file, so an unknown size
-// fails closed.
+// caller then refuses without reading, so an unknown size fails closed. A
+// listing past the cap (max(workspacefs.MaxListEntries, entry quota)) fails
+// with ErrListTruncated and so counts as failed.
 func FileSize(ctx context.Context, be workspacefs.Backend, tenant, user, rel string) (int64, bool) {
 	infos, err := be.ListDir(ctx, tenant, user, path.Dir(rel), false)
 	if err != nil {

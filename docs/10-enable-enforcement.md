@@ -71,7 +71,8 @@ This wraps five steps:
 1. `scripts/compose-dev-ca.sh` — mint the dev-CA + leaf certs (idempotent).
 2. `scripts/compose-vault-seed.sh` — provision the broker's Vault AppRole
    (enables approle, writes least-privilege policy, injects role_id/secret_id
-   into `.env`). Re-run after any Vault restart (dev Vault is in-memory).
+   into `.env`). Vault storage is durable, so this is first-boot only; re-run
+   after `docker compose down -v` wipes the `vault-data` volume.
 3. `scripts/compose-seed-openfga.sh` — find-or-create the store, write
    `policies/fga/model.fga` + (optionally) dev-seed tuples, and set
    `AIKONOS_POLICY_OPENFGA_STORE_ID` in `.env`. Dev-seed tuples (alice/bob)

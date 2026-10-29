@@ -2,7 +2,7 @@
 // gRPC interceptors that establish and audit caller identity.
 //
 //	North-bound chain:  OIDC → tenant → revocation → provisioning → audit
-//	                    (streams: OIDC → tenant → revocation)
+//	                    (streams: the same)
 //	South-bound chain:  SPIFFE → audit
 //
 // Transport-level mTLS (and SPIFFE trust-domain membership) is enforced by the
@@ -245,6 +245,29 @@ func AuditInterceptor(emitter auditEmitter, defaultTenant string, log *zap.Logge
 			emitRPCAudit(ctx, emitter, defaultTenant, info.FullMethod, err)
 		}()
 		return handler(ctx, req)
+	}
+}
+
+// AuditStreamInterceptor is AuditInterceptor for streaming RPCs: one event
+// when the stream ends, with the same panic recovery. A stream the client
+// closed (Canceled with its context done) is how a stream normally ends, so it
+// is recorded as ALLOW: a DENY would raise a denial alert for every closed
+// event stream.
+func AuditStreamInterceptor(emitter auditEmitter, defaultTenant string, log *zap.Logger) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("recovered panic in stream handler",
+					zap.String("method", info.FullMethod), zap.Any("panic", r))
+				err = status.Errorf(codes.Internal, "internal error")
+			}
+			outcome := err
+			if status.Code(err) == codes.Canceled && ss.Context().Err() != nil {
+				outcome = nil
+			}
+			emitRPCAudit(ss.Context(), emitter, defaultTenant, info.FullMethod, outcome)
+		}()
+		return handler(srv, ss)
 	}
 }
 

@@ -97,11 +97,11 @@ services:
       - "127.0.0.1:3030:3000"
 
   # ── Vault: durable `file` storage backend, no dev-mode ───────────────────────
-  # Base compose.yaml's vault service stays dev-mode for local dev; this overlay
-  # drops it for a real deploy. Init/unseal is a manual first-boot step — see
-  # docs/OPS-RUNBOOK.md "Vault operations". In-network reachability (plain HTTP,
-  # 0.0.0.0:8200 inside the `backend` network) is unchanged from dev-mode, so
-  # AIKONOS_VAULT_ADDR needs no edit — only the host port publish is dropped below.
+  # Same durable config as base compose.yaml (which local dev auto-unseals via
+  # vault-init); here AIKONOS_VAULT_AUTO_UNSEAL=false, so init/unseal is a manual
+  # first-boot step — see docs/OPS-RUNBOOK.md "Vault operations". In-network
+  # reachability (plain HTTP, 0.0.0.0:8200 inside the `backend` network) is the
+  # same as local, so AIKONOS_VAULT_ADDR needs no edit; no host port is published.
   vault:
     # No explicit `-config` arg: the image's own entrypoint always injects
     # `-config=/vault/config` for the `server` subcommand (verified against

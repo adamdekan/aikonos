@@ -9,3 +9,7 @@
 
 ALTER TABLE scim_tokens
     ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '365 days');
+
+INSERT INTO schema_migrations (version, description)
+VALUES ('064', 'scim_tokens.expires_at: SCIM bearer tokens expire (F13)')
+ON CONFLICT (version) DO NOTHING;

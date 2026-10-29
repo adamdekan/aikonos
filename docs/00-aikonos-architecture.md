@@ -275,7 +275,7 @@ column is what the Compose deployment actually runs.
 | Networking | Cilium + WireGuard + egress proxy | Compose `aikonos` bridge network; SSRF guard + netacl egress allowlist in the Tool Proxy |
 | Identity | Keycloak + SPIFFE/SPIRE + WebAuthn | Keycloak (OIDC) + static dev-CA mTLS (replaces SPIRE) |
 | Policy | OpenFGA or Cedar + OPA (admission) | OpenFGA (ReBAC) + OPA (ABAC), both as Compose services |
-| Secrets | HashiCorp Vault + External Secrets | Vault (dev-mode, inmem) Compose service |
+| Secrets | HashiCorp Vault + External Secrets | Vault Compose service, durable `file` storage (local dev auto-unsealed; azure/onprem unsealed by hand) |
 | Inter-agent bus | NATS JetStream (mTLS + JWT accounts) | NATS JetStream Compose service |
 | Capabilities | Biscuit tokens | Biscuit tokens (root key read-or-created in Vault) |
 | Audit | OpenTelemetry + Falco + Tetragon + immutable object store | OpenTelemetry (obs profile) + MinIO WORM object-lock |
