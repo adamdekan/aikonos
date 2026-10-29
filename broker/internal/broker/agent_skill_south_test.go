@@ -52,6 +52,8 @@ func newAgentSkillSouthSvc(t *testing.T, repo agentSkillRepo, sp skillGatePolicy
 		GatewaySpiffeID:   testGateway,
 		TenantID:          testTenant,
 		AgentSkillBundles: repo,
+		GatewayGrantKey:   testGrantKey,
+		GatewayGrantTTL:   testGrantTTL,
 	})
 	svc.skillPolicy = sp
 	return svc
@@ -100,8 +102,9 @@ func TestListUserAgentSkills_Keywords_Propagated(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)
@@ -127,8 +130,9 @@ func TestListUserAgentSkills_NoPeer_PermissionDenied(t *testing.T) {
 	repo := newFakeAgentSkillRepo()
 	svc := newAgentSkillSouthSvc(t, repo, &fakeSkillPolicy{enabled: false})
 	_, err := svc.ListUserAgentSkills(context.Background(), &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("no peer: want PermissionDenied, got %v", err)
@@ -140,6 +144,7 @@ func TestListUserAgentSkills_NoPeer_PermissionDenied(t *testing.T) {
 func TestListUserAgentSkills_EmptyTenant_InvalidArgument(t *testing.T) {
 	repo := newFakeAgentSkillRepo()
 	svc := newAgentSkillSouthSvc(t, repo, &fakeSkillPolicy{enabled: false})
+	svc.deps.DevMode = true // request ids are read only on the dev-mode no-grant path (F171)
 	ctx := gatewayCtx(testGateway)
 	_, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{UserId: "alice"})
 	if status.Code(err) != codes.InvalidArgument {
@@ -150,6 +155,7 @@ func TestListUserAgentSkills_EmptyTenant_InvalidArgument(t *testing.T) {
 func TestListUserAgentSkills_EmptyUser_InvalidArgument(t *testing.T) {
 	repo := newFakeAgentSkillRepo()
 	svc := newAgentSkillSouthSvc(t, repo, &fakeSkillPolicy{enabled: false})
+	svc.deps.DevMode = true // request ids are read only on the dev-mode no-grant path (F171)
 	ctx := gatewayCtx(testGateway)
 	_, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{TenantId: testTenant})
 	if status.Code(err) != codes.InvalidArgument {
@@ -168,8 +174,9 @@ func TestListUserAgentSkills_FGADisabled_ReturnsAllBundles(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)
@@ -193,8 +200,9 @@ func TestListUserAgentSkills_FGAEnabled_GrantedBundleIncluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)
@@ -224,8 +232,9 @@ func TestListUserAgentSkills_FGAEnabled_DeniedBundleExcluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)
@@ -243,8 +252,9 @@ func TestListUserAgentSkills_FGAEnabled_CheckFGAError_BundleExcluded(t *testing.
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("CheckFGA error must not surface: %v", err)
@@ -267,8 +277,9 @@ func TestListUserAgentSkills_FilePaths_Populated(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)
@@ -307,7 +318,7 @@ func TestGetAgentSkillFileSouth_RequiresGatewayPeer(t *testing.T) {
 	repo := newFakeAgentSkillRepo()
 	svc := newAgentSkillSouthSvc(t, repo, &fakeSkillPolicy{enabled: false})
 	_, err := svc.GetAgentSkillFileSouth(context.Background(), &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: uuid.New().String(), Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: uuid.New().String(), Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("no peer: want PermissionDenied, got %v", err)
@@ -317,6 +328,7 @@ func TestGetAgentSkillFileSouth_RequiresGatewayPeer(t *testing.T) {
 func TestGetAgentSkillFileSouth_EmptyFields_InvalidArgument(t *testing.T) {
 	repo := newFakeAgentSkillRepo()
 	svc := newAgentSkillSouthSvc(t, repo, &fakeSkillPolicy{enabled: false})
+	svc.deps.DevMode = true // request ids are read only on the dev-mode no-grant path (F171)
 	ctx := gatewayCtx(testGateway)
 	id := uuid.New().String()
 
@@ -339,7 +351,7 @@ func TestGetAgentSkillFileSouth_UnknownId_NotFound(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	_, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: uuid.New().String(), Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: uuid.New().String(), Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("unknown id: want NotFound, got %v", err)
@@ -353,7 +365,7 @@ func TestGetAgentSkillFileSouth_UnknownPath_NotFound(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	_, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "missing.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "missing.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("unknown path: want NotFound, got %v", err)
@@ -367,7 +379,7 @@ func TestGetAgentSkillFileSouth_InvalidPath_NotFound(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	_, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "../escape.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "../escape.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("traversal path: want NotFound, got %v", err)
@@ -381,7 +393,7 @@ func TestGetAgentSkillFileSouth_FGADisabled_ReturnsContent(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("GetAgentSkillFileSouth: %v", err)
@@ -399,7 +411,7 @@ func TestGetAgentSkillFileSouth_FGAEnabledGranted_ReturnsContent(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("GetAgentSkillFileSouth: %v", err)
@@ -422,7 +434,7 @@ func TestGetAgentSkillFileSouth_FGAEnabledDenied_NotFound(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	_, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("denied: want NotFound, got %v", err)
@@ -436,7 +448,7 @@ func TestGetAgentSkillFileSouth_FGAEnabledError_NotFound(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	_, err := svc.GetAgentSkillFileSouth(ctx, &brokerv1.GetAgentSkillFileSouthRequest{
-		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt",
+		TenantId: testTenant, UserId: "alice", Id: id, Path: "a.txt", OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("CheckFGA error: want NotFound (fail-closed), got %v", err)
@@ -454,8 +466,9 @@ func TestListUserAgentSkills_DisableModelInvocation_Propagated(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserAgentSkills(ctx, &brokerv1.ListUserAgentSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserAgentSkills: %v", err)

@@ -250,6 +250,8 @@ async function makeRig(): Promise<Rig> {
     getOrgSettings: async () => ({ settings: { unattendedAllowed: true } }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const spawn = makeFakeSpawn();
   const supervisor = new ChildSupervisor(

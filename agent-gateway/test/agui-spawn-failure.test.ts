@@ -179,6 +179,8 @@ test("POST /agui: getOrSpawn rejection (spawn failure) settles the request with 
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const approvals = new ApprovalRegistry();
   const { spawnFn, count: spawnCount } = makeCountingSpawn();
@@ -258,6 +260,8 @@ async function postAgui(southFns: Record<string, unknown>, cfg: Config): Promise
   const south: SouthClient = Object.create(SouthClient.prototype);
   Object.assign(south, southFns);
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
   const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => {
     throw new Error("no bridge expected");
   }, makeCountingSpawn().spawnFn, makeRejectingCredentials());

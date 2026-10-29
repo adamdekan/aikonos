@@ -44,7 +44,7 @@ test("resolveAutoApproveAllowlist: MCP id present — skill + mcp:<server>:<tool
     { s1: [{ name: "echo" }] },
   );
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice", "grant-alice");
 
   assert.ok(allowlist.includes("web.fetch"), "skills must be in allowlist");
   assert.ok(allowlist.includes("mcp:s1:echo"), "MCP tool not in skills must still be in allowlist");
@@ -60,7 +60,7 @@ test("resolveAutoApproveAllowlist: listAccessibleMcpServersForAgent rejects — 
     listMcpServerToolsSouth: async () => ({ tools: [] }),
   };
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice", "grant-alice");
 
   assert.deepEqual(allowlist.sort(), ["doc.write", "web.fetch"]);
 });
@@ -82,7 +82,7 @@ test("resolveAutoApproveAllowlist: per-server listMcpServerToolsSouth rejects �
     },
   };
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice", "grant-alice");
 
   assert.ok(allowlist.includes("mcp:good:ping"), "good server's tool must be included");
   assert.ok(!allowlist.includes("mcp:bad:"), "bad server must be skipped");
@@ -99,8 +99,26 @@ test("resolveAutoApproveAllowlist: dedup — skill id equal to mcp id appears on
     { s1: [{ name: "echo" }] },
   );
 
-  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice");
+  const allowlist: string[] = await resolve(south, "t1", "alice-agent", skills, "alice", "grant-alice");
 
   const echoEntries = allowlist.filter((id) => id === "mcp:s1:echo");
   assert.equal(echoEntries.length, 1, "duplicate mcp id must appear exactly once");
+});
+
+// F171: the broker binds the MCP tool listing's user to the session's owner
+// grant, so the grant must ride on every listMcpServerToolsSouth call.
+test("resolveAutoApproveAllowlist: forwards the session owner grant", async () => {
+  const { resolveAutoApproveAllowlist: resolve } = await import("../src/broker/auto-approve.js");
+  const grants: string[] = [];
+  const south: AllowlistSouth = {
+    listAccessibleMcpServersForAgent: async () => ({
+      connections: [{ id: "s1", name: "S", url: "x", transport: "streamable_http" as const, authType: "bearer" as const, authSecretRef: "", createdBy: "", createdAt: undefined }],
+    }),
+    listMcpServerToolsSouth: async (req: { ownerGrant: string }) => {
+      grants.push(req.ownerGrant);
+      return { tools: [] };
+    },
+  };
+  await resolve(south, "t1", "alice-agent", [], "alice", "grant-alice");
+  assert.deepEqual(grants, ["grant-alice"]);
 });

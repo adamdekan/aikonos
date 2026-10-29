@@ -18,6 +18,7 @@ const identity = {
   tenantId: "11111111-1111-1111-1111-111111111111",
   userId: "alice@example.com",
   agentId: "alice-agent",
+  ownerGrant: "grant-alice", // F171: forwarded on every south read
 };
 
 test("saveWorkflow: a throwing broker client logs one warn and returns { ok:false, error } unchanged", async () => {
@@ -99,7 +100,7 @@ test("getSkillFile: a 'personal:'-prefixed ref routes to getPersonalSkillFileSou
   // a raw Uint8Array is flattened by the real child's serialization:"json" fork.
   assert.equal(result.contentB64, Buffer.from("notes body", "utf8").toString("base64"));
   assert.deepEqual(calls, [{
-    tenantId: identity.tenantId, userId: identity.userId, name: "my-notes", path: "notes.md",
+    tenantId: identity.tenantId, userId: identity.userId, name: "my-notes", path: "notes.md", ownerGrant: "grant-alice",
   }]);
 });
 
@@ -125,7 +126,7 @@ test("getSkillFile: a bare ref (bundle UUID) routes to getAgentSkillFileSouth wi
   assert.equal(result.ok, true);
   assert.equal(result.contentB64, Buffer.from("bundle file body", "utf8").toString("base64"));
   assert.deepEqual(calls, [{
-    tenantId: identity.tenantId, userId: identity.userId, id: "bundle-uuid-1", path: "references/guide.md",
+    tenantId: identity.tenantId, userId: identity.userId, id: "bundle-uuid-1", path: "references/guide.md", ownerGrant: "grant-alice",
   }]);
 });
 
@@ -150,4 +151,35 @@ test("getSkillFile: a throwing south client logs one warn and returns { ok:false
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /south unreachable/);
   assert.equal(warnCalls.length, 1, "exactly one log.warn at the catch site");
+});
+
+// F171: the south MCP listing needs an owner grant; a personal token-path run
+// (the HTTP workflow route) mints its session's own once, on first need.
+test("resolveMcpReadOnlyHints: a token-only run mints one session grant for its south listings", async () => {
+  const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as import("../src/log.js").Logger;
+  const mints: unknown[] = [];
+  const grants: string[] = [];
+  const north = {
+    mintSessionGrant: async (req: unknown, token?: string) => {
+      mints.push({ req, token });
+      return { ownerGrant: "minted" };
+    },
+  };
+  const south = {
+    listMcpServerToolsSouth: async (req: { ownerGrant: string }) => {
+      grants.push(req.ownerGrant);
+      return { tools: [{ name: "read", readOnlyHint: true }] };
+    },
+  };
+  const clients = { north, south } as unknown as import("../src/broker/clients.js").BrokerClients;
+  const tokenOnly = { token: "bearer-tok", tenantId: identity.tenantId, userId: identity.userId, agentId: "" };
+  const bridge = new GovernanceBridge(cfg, clients, tokenOnly, async () => true, log);
+
+  const hints = await (bridge as unknown as {
+    resolveMcpReadOnlyHints(def: unknown): Promise<Map<string, boolean>>;
+  }).resolveMcpReadOnlyHints({ steps: [{ skill: "mcp:c1:read", args: {} }, { skill: "mcp:c2:read", args: {} }] });
+
+  assert.deepEqual(mints, [{ req: { tenantId: identity.tenantId, userId: identity.userId }, token: "bearer-tok" }]);
+  assert.deepEqual(grants, ["minted", "minted"]);
+  assert.equal(hints.get("mcp:c1:read"), true);
 });

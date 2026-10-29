@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -35,7 +36,11 @@ func TestScimRepo_RoundTrip(t *testing.T) {
 	if _, err := repo.ResolveToken(ctx, tenant, "hash-1-"+tenant); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rotated token still resolves: %v", err)
 	}
-	if list, err := repo.ListTokens(ctx, tenant); err != nil || len(list) != 1 || list[0].ID != tok2.ID || list[0].LastUsedAt != nil {
+	// F13: the expiry is reported on create and list (365 days by default).
+	if tok2.ExpiresAt.Before(tok2.CreatedAt.Add(364 * 24 * time.Hour)) {
+		t.Fatalf("token expiry not returned: %+v", tok2)
+	}
+	if list, err := repo.ListTokens(ctx, tenant); err != nil || len(list) != 1 || list[0].ID != tok2.ID || list[0].LastUsedAt != nil || !list[0].ExpiresAt.Equal(tok2.ExpiresAt) {
 		t.Fatalf("list tokens: %v %v", list, err)
 	}
 	// F13: past expires_at the token resolves as expired, unstamped.

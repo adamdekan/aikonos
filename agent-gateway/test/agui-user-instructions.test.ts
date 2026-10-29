@@ -179,6 +179,8 @@ test("POST /agui: oversized or non-string userInstructions is a 400 before any c
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const { spawnFn, count: spawnCount } = makeCountingSpawn();
   const supervisor = new ChildSupervisor(

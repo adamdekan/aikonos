@@ -18,6 +18,8 @@ export async function resolveAutoApproveAllowlist(
   // The session subject: the broker lists only tools that agentId may call
   // and, under AG-02 enforce, that this user may reach.
   userId: string,
+  // The session's owner grant, which binds userId broker-side (F171).
+  ownerGrant: string,
 ): Promise<string[]> {
   const ids = new Set<string>(skills);
   // F52: "scheduler" (workflow_schedule) creates a standing consent of its own,
@@ -40,6 +42,7 @@ export async function resolveAutoApproveAllowlist(
         connectorId: server.id,
         userId,
         agentId,
+        ownerGrant,
       });
       for (const tool of resp.tools ?? []) {
         ids.add(`mcp:${server.id}:${tool.name}`);

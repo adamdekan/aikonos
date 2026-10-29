@@ -115,6 +115,16 @@ func seedRaw(t *testing.T, be workspacefs.Backend, tenant, seg, id string, data 
 	}
 }
 
+// conceptSHA is the content_sha256 a reviewer's Get would have returned (G19).
+func conceptSHA(t *testing.T, be workspacefs.Backend, tenant, seg, id string) string {
+	t.Helper()
+	data, _, err := be.Read(context.Background(), tenant, seg, memorybundle.ConceptPath(id))
+	if err != nil {
+		t.Fatalf("read concept: %v", err)
+	}
+	return contentSHA256(data)
+}
+
 func slaSpec() memorybundle.ConceptSpec {
 	return memorybundle.ConceptSpec{
 		Type:        "Fact",
@@ -163,7 +173,7 @@ func TestMemoryRPCs_UserScope_SelfRoundTrip(t *testing.T) {
 		t.Fatalf("body missing: %q", got.Body)
 	}
 
-	ver, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla"})
+	ver, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla", ContentSha256: got.ContentSha256})
 	if err != nil {
 		t.Fatalf("VerifyMemoryConcept: %v", err)
 	}
@@ -221,7 +231,8 @@ func TestVerifyMemoryConcept_PreservesUnknownKeys(t *testing.T) {
 		[]byte("---\ntype: Fact\nfuture_key: keep-me\nstatus: stable\n---\n\nbody text\n"))
 
 	ctx := ctxWithIdentity(testTenantUUID, memUser)
-	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/x"}); err != nil {
+	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/x",
+		ContentSha256: conceptSHA(t, deps.Workspace.Local, testTenantUUID, memUser, "facts/x")}); err != nil {
 		t.Fatalf("VerifyMemoryConcept: %v", err)
 	}
 	data, _, err := deps.Workspace.Local.Read(context.Background(), testTenantUUID, memUser, memorybundle.ConceptPath("facts/x"))
@@ -309,7 +320,8 @@ func TestMemoryRPCs_GroupScope_AuthorizationMatrix(t *testing.T) {
 			if status.Code(err) != tc.wantRead {
 				t.Fatalf("ListMemoryConcepts: want %v, got %v", tc.wantRead, err)
 			}
-			_, err = svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "group", GroupId: memGroup, Id: "facts/sla"})
+			_, err = svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "group", GroupId: memGroup, Id: "facts/sla",
+				ContentSha256: conceptSHA(t, deps.Workspace.Local, testTenantUUID, seg, "facts/sla")})
 			if status.Code(err) != tc.wantManage {
 				t.Fatalf("VerifyMemoryConcept: want %v, got %v", tc.wantManage, err)
 			}
@@ -572,7 +584,12 @@ func TestMemoryMutations_TakeTheSharedBundleLock(t *testing.T) {
 		call func(*BrokerService, context.Context) error
 	}{
 		{"verify", func(s *BrokerService, ctx context.Context) error {
-			_, err := s.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla"})
+			// Get takes no bundle lock, so it returns while the test holds it.
+			got, err := s.GetMemoryConcept(ctx, &brokerv1.GetMemoryConceptRequest{Scope: "user", Id: "facts/sla"})
+			if err != nil {
+				return err
+			}
+			_, err = s.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla", ContentSha256: got.ContentSha256})
 			return err
 		}},
 		{"deprecate", func(s *BrokerService, ctx context.Context) error {
@@ -637,13 +654,14 @@ func TestVerifyMemoryConcept_SerializesWithConcurrentToolWrite(t *testing.T) {
 	}}
 
 	const writers = 8
+	sha := conceptSHA(t, deps.Workspace.Local, testTenantUUID, memUser, "facts/sla")
 	errs := make([]error, writers+1)
 	var wg sync.WaitGroup
 	wg.Add(writers + 1)
 	go func() {
 		defer wg.Done()
 		_, errs[writers] = north.VerifyMemoryConcept(ctxWithIdentity(testTenantUUID, memUser),
-			&brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla"})
+			&brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla", ContentSha256: sha})
 	}()
 	for i := range writers {
 		go func() {
@@ -798,7 +816,8 @@ func TestMemoryMutations_LogAttribution(t *testing.T) {
 	seedConcept(t, be, testTenantUUID, memUser, "facts/sla", slaSpec())
 	seedConcept(t, be, testTenantUUID, memUser, "facts/old", slaSpec())
 
-	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla"}); err != nil {
+	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla",
+		ContentSha256: conceptSHA(t, be, testTenantUUID, memUser, "facts/sla")}); err != nil {
 		t.Fatalf("VerifyMemoryConcept: %v", err)
 	}
 	if _, err := svc.DeprecateMemoryConcept(ctx, &brokerv1.DeprecateMemoryConceptRequest{Scope: "user", Id: "facts/sla"}); err != nil {
@@ -1004,5 +1023,53 @@ func TestListMemoryConceptsSouth_CleanBundleUnchanged(t *testing.T) {
 		if !proto.Equal(got, want[i]) {
 			t.Errorf("concept %d altered by the scan:\n got %+v\nwant %+v", i, got, want[i])
 		}
+	}
+}
+
+// G19: Verify is bound to the content the reviewer saw. No hash is
+// InvalidArgument; a concept rewritten between Get and Verify is
+// FailedPrecondition and stays unverified.
+func TestVerifyMemoryConcept_BoundToReviewedContent(t *testing.T) {
+	deps, _ := memoryDeps(t, memoryFGA(t, &fakeFGA{}), t.TempDir())
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, memUser)
+	be := deps.Workspace.Local
+	seedConcept(t, be, testTenantUUID, memUser, "facts/sla", slaSpec())
+	get := &brokerv1.GetMemoryConceptRequest{Scope: "user", Id: "facts/sla"}
+	reviewed, err := svc.GetMemoryConcept(ctx, get)
+	if err != nil || reviewed.ContentSha256 == "" {
+		t.Fatalf("GetMemoryConcept: want a content hash, got %v err=%v", reviewed, err)
+	}
+
+	if _, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("no content_sha256: want InvalidArgument, got %v", err)
+	}
+
+	swapped := slaSpec()
+	swapped.Body = "Orders never need to be fresh."
+	seedConcept(t, be, testTenantUUID, memUser, "facts/sla", swapped)
+	_, err = svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/sla", ContentSha256: reviewed.ContentSha256})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale content_sha256: want FailedPrecondition, got %v", err)
+	}
+	now, err := svc.GetMemoryConcept(ctx, get)
+	if err != nil || now.Meta.GetTrustTier() != memorybundle.TrustUnverified {
+		t.Fatalf("the swapped body must stay unverified: %v err=%v", now.GetMeta(), err)
+	}
+}
+
+// F202: a concept over the tag caps (written before them) cannot be verified.
+func TestVerifyMemoryConcept_TagCapRefused(t *testing.T) {
+	deps, _ := memoryDeps(t, memoryFGA(t, &fakeFGA{}), t.TempDir())
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, memUser)
+	tags := strings.Repeat("\n  - t", memorybundle.MaxTags+1)
+	seedRaw(t, deps.Workspace.Local, testTenantUUID, memUser, "facts/tags",
+		[]byte("---\ntype: Fact\nstatus: stable\ntags:"+tags+"\n---\n\nbody\n"))
+
+	_, err := svc.VerifyMemoryConcept(ctx, &brokerv1.VerifyMemoryConceptRequest{Scope: "user", Id: "facts/tags",
+		ContentSha256: conceptSHA(t, deps.Workspace.Local, testTenantUUID, memUser, "facts/tags")})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("over-cap tags: want FailedPrecondition, got %v", err)
 	}
 }

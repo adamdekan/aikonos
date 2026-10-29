@@ -142,12 +142,13 @@ function fmt(iso) {
     </div>
     <p v-if="!tokens.length" class="muted" data-testid="scim-no-tokens">No active SCIM tokens.</p>
     <table v-else class="tokens">
-      <thead><tr><th>Token</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+      <thead><tr><th>Token</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
       <tbody>
         <tr v-for="t in tokens" :key="t.id" data-testid="scim-token-row">
           <td class="mono">{{ t.prefix }}…</td>
           <td class="muted">{{ fmt(t.createdAt) }} · {{ t.createdBy }}</td>
           <td class="muted">{{ fmt(t.lastUsedAt) }}</td>
+          <td class="muted" data-testid="scim-token-expires">{{ fmt(t.expiresAt) }}</td>
           <td class="right">
             <button class="btn-ghost" :data-testid="`scim-rotate-${t.id}`" :disabled="busy" @click="mint(t.id)">Rotate</button>
             <button class="btn-danger-sm" :data-testid="`scim-revoke-${t.id}`" :disabled="busy" @click="revoke(t)">Revoke</button>

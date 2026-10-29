@@ -81,9 +81,13 @@ func (s *SandboxService) ListMcpServerToolsSouth(ctx context.Context, req *broke
 	ctx, span := tracer.Start(ctx, "broker.mcp.south.list_server_tools")
 	defer span.End()
 
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	// F171: the session subject (whose MCP OAuth token may be loaded below)
+	// is the owner grant's owner, never a gateway-asserted user_id.
+	tenant, user, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, req.UserId)
+	if err != nil {
 		return nil, err
 	}
+	req.TenantId, req.UserId = tenant, user
 	if s.deps.Mcp.Connections == nil {
 		return nil, status.Error(codes.FailedPrecondition, "MCP connections not configured")
 	}

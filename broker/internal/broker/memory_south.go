@@ -38,10 +38,12 @@ func (s *SandboxService) ListMemoryConceptsSouth(ctx context.Context, req *broke
 	ctx, span := tracer.Start(ctx, "broker.memory.list_concepts_south")
 	defer span.End()
 
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	// F171/F129: the user, and so every group bundle below, is the session's
+	// owner grant's owner; a blocked owner is refused by verifyOwnerGrant.
+	tenant, user, err := s.southPrincipal(ctx, req.GetTenantId(), req.GetOwnerGrant(), req.GetUserId())
+	if err != nil {
 		return nil, err
 	}
-	tenant, user := req.GetTenantId(), req.GetUserId()
 	if tenant == "" || user == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id and user_id required")
 	}

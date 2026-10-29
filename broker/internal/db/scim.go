@@ -28,6 +28,7 @@ type ScimToken struct {
 	CreatedBy  string
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
+	ExpiresAt  time.Time // F13: refused from this time on (migration 064)
 }
 
 // ScimEmail is one entry of a SCIM user's emails attribute.
@@ -103,8 +104,8 @@ func (r *ScimRepo) CreateToken(ctx context.Context, tenantID, hash, prefix, by s
 		t := ScimToken{Prefix: prefix, CreatedBy: by}
 		if err := tx.QueryRow(ctx, `
 		INSERT INTO scim_tokens (tenant_id, token_hash, token_prefix, created_by)
-		VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
-			tenantID, hash, prefix, by).Scan(&t.ID, &t.CreatedAt); err != nil {
+		VALUES ($1, $2, $3, $4) RETURNING id, created_at, expires_at`,
+			tenantID, hash, prefix, by).Scan(&t.ID, &t.CreatedAt, &t.ExpiresAt); err != nil {
 			return ScimToken{}, fmt.Errorf("insert scim token: %w", err)
 		}
 		return t, tx.Commit(ctx)
@@ -115,7 +116,7 @@ func (r *ScimRepo) CreateToken(ctx context.Context, tenantID, hash, prefix, by s
 func (r *ScimRepo) ListTokens(ctx context.Context, tenantID string) ([]ScimToken, error) {
 	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) ([]ScimToken, error) {
 		rows, err := conn.Query(ctx, `
-		SELECT id, token_prefix, created_by, created_at, last_used_at FROM scim_tokens
+		SELECT id, token_prefix, created_by, created_at, last_used_at, expires_at FROM scim_tokens
 		 WHERE tenant_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC`, tenantID)
 		if err != nil {
 			return nil, fmt.Errorf("list scim tokens: %w", err)
@@ -124,7 +125,7 @@ func (r *ScimRepo) ListTokens(ctx context.Context, tenantID string) ([]ScimToken
 		var out []ScimToken
 		for rows.Next() {
 			var t ScimToken
-			if err := rows.Scan(&t.ID, &t.Prefix, &t.CreatedBy, &t.CreatedAt, &t.LastUsedAt); err != nil {
+			if err := rows.Scan(&t.ID, &t.Prefix, &t.CreatedBy, &t.CreatedAt, &t.LastUsedAt, &t.ExpiresAt); err != nil {
 				return nil, err
 			}
 			out = append(out, t)

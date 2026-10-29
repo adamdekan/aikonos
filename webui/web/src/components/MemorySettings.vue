@@ -33,7 +33,7 @@ const loading   = ref(false);
 const loadError = ref("");
 const forbidden = ref(false);
 
-const selected     = ref(null); // { meta, body }
+const selected     = ref(null); // { meta, body, contentSha256 }
 const busy         = ref(false);
 const manageDenied = ref(false);
 
@@ -104,7 +104,7 @@ async function openConcept(id) {
   try {
     const data = await getMemoryConcept({ ...scopeArgs(), id });
     if (data.forbidden) { forbidden.value = true; return; }
-    selected.value = { meta: data.meta ?? { id }, body: data.body ?? "" };
+    selected.value = { meta: data.meta ?? { id }, body: data.body ?? "", contentSha256: data.contentSha256 ?? "" };
   } catch (e) {
     toast("error", e.message);
   }
@@ -133,7 +133,11 @@ async function runAction(apiFn, okMsg, { keepOpen }) {
   }
 }
 
-const verify    = () => runAction(verifyMemoryConcept, "Concept verified.", { keepOpen: true });
+// G19: verify exactly the content shown; a concept changed since is refused.
+const verify    = () => {
+  const contentSha256 = selected.value?.contentSha256;
+  return runAction((args) => verifyMemoryConcept({ ...args, contentSha256 }), "Concept verified.", { keepOpen: true });
+};
 const deprecate = () => runAction(deprecateMemoryConcept, "Concept deprecated.", { keepOpen: true });
 
 function remove() {

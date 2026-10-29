@@ -64,6 +64,7 @@ test("CP8 resolveCommandSkill: granted skill name returns bundle body", async ()
     south,
     tenantId: "tenant-1",
     userId: "user-1",
+    ownerGrant: "grant-1",
     skillName: "my-skill",
   });
 
@@ -85,6 +86,7 @@ test("CP8 resolveCommandSkill: unknown skill name returns user-facing error", as
     south,
     tenantId: "tenant-1",
     userId: "user-1",
+    ownerGrant: "grant-1",
     skillName: "does-not-exist",
   });
 
@@ -115,6 +117,7 @@ test("CP8 resolveCommandSkill: non-granted skill (absent from FGA-filtered list)
     south,
     tenantId: "tenant-1",
     userId: "user-1",
+    ownerGrant: "grant-1",
     skillName: "my-skill",
   });
 
@@ -141,6 +144,7 @@ test("CP8 resolveCommandSkill: disable_model_invocation=true bundle is activatab
     south,
     tenantId: "tenant-1",
     userId: "user-1",
+    ownerGrant: "grant-1",
     skillName: "admin-skill",
   });
 
@@ -168,6 +172,7 @@ test("D5 resolveCommandSkill: bundle.allowedTools is returned verbatim, unfilter
     south,
     tenantId: "tenant-1",
     userId: "user-1",
+    ownerGrant: "grant-1",
     skillName: "my-skill",
   });
 
@@ -196,6 +201,7 @@ test("CP8 resolveCommandSkill: south RPC failure returns error result, does not 
       south: failSouth,
       tenantId: "tenant-1",
       userId: "user-1",
+      ownerGrant: "grant-1",
       skillName: "my-skill",
     });
   }, "resolveCommandSkill must not throw when south fails");
@@ -225,7 +231,7 @@ test("CP5 resolveCommandSkill: resolves a personal skill by its qualified 'perso
   };
 
   const result = await resolveCommandSkill({
-    south, tenantId: "tenant-1", userId: "user-1", skillName: "personal:my-notes",
+    south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "personal:my-notes",
   });
 
   assert.equal(result.kind, "ok", `expected ok, got: ${JSON.stringify(result)}`);
@@ -246,7 +252,7 @@ test("CP5 resolveCommandSkill: a bare (unqualified) name resolving both a bundle
   };
 
   const result = await resolveCommandSkill({
-    south, tenantId: "tenant-1", userId: "user-1", skillName: "my-notes",
+    south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "my-notes",
   });
 
   assert.equal(result.kind, "ok");
@@ -259,8 +265,20 @@ test("CP5 resolveCommandSkill: a south lacking listPersonalSkillsSouth resolves 
   const south: CommandSkillSouth = { listUserAgentSkills: async () => ({ bundles: [b] }) };
 
   const result = await resolveCommandSkill({
-    south, tenantId: "tenant-1", userId: "user-1", skillName: "my-skill",
+    south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "my-skill",
   });
 
   assert.equal(result.kind, "ok");
+});
+
+// F171: the broker takes the user from the session's owner grant, so /command
+// resolution must forward it on both south reads.
+test("resolveCommandSkill: forwards the session owner grant to both south reads", async () => {
+  const grants: string[] = [];
+  const south: CommandSkillSouth = {
+    listUserAgentSkills: async (req) => { grants.push(req.ownerGrant); return { bundles: [] }; },
+    listPersonalSkillsSouth: async (req) => { grants.push(req.ownerGrant); return { skills: [] }; },
+  };
+  await resolveCommandSkill({ south, tenantId: "tenant-1", userId: "user-1", ownerGrant: "grant-1", skillName: "x" });
+  assert.deepEqual(grants, ["grant-1", "grant-1"]);
 });

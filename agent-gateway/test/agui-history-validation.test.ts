@@ -139,6 +139,8 @@ test("POST /agui: malformed or oversized history is a 400 before any child spawn
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const { spawnFn, count: spawnCount } = makeCountingSpawn();
   const supervisor = new ChildSupervisor(
@@ -229,6 +231,8 @@ test("POST /agui: an agent the user may not use is a 403 before any child spawn"
     },
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const { spawnFn, count: spawnCount } = makeCountingSpawn();
   const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => {

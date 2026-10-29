@@ -26,7 +26,7 @@ import type {
   AgentApiKey,
 } from "../gen/ts/proto/broker.js";
 import { buildExternalApp } from "../src/external/server.js";
-import { apiKeyView, publicKeyView } from "../src/routes/admin.js";
+import { apiKeyView, publicKeyView, scimTokenView } from "../src/routes/admin.js";
 import type { Config } from "../src/config.js";
 import { BrokerClients } from "../src/broker/clients.js";
 import pino from "pino";
@@ -429,6 +429,13 @@ test("AG-15: apiKeyView exposes expiresAt and lastUsedAt as ISO strings (null wh
   assert.equal(v.expiresAt, "2027-01-01T00:00:00.000Z");
   assert.equal(v.lastUsedAt, "2026-10-01T00:00:00.000Z");
   assert.equal(apiKeyView({ id: "k", keyPrefix: "", label: "", createdBy: "" }).lastUsedAt, null);
+});
+
+// F13: the SCIM token view carries the token's expiry for the admin.
+test("scimTokenView exposes expiresAt as an ISO string", () => {
+  const v = scimTokenView({ id: "t", prefix: "scim_x", createdBy: "", expiresAt: new Date("2027-10-01T00:00:00Z") });
+  assert.equal(v.expiresAt, "2027-10-01T00:00:00.000Z");
+  assert.equal(scimTokenView({ id: "t", prefix: "", createdBy: "" }).expiresAt, null);
 });
 
 // AG-05: the public key view carries kid, alg, expiry and last use, never key material.

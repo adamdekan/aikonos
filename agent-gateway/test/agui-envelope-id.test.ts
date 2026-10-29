@@ -188,6 +188,8 @@ async function run(extra: Record<string, unknown>): Promise<{ body: string; iden
     listMemoryConceptsSouth: async () => ({ concepts: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const identities: RunIdentity[] = [];
   const spawn = makeFakeSpawn();

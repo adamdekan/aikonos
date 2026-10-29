@@ -39,7 +39,7 @@ func (f *fakeScimStore) CreateToken(_ context.Context, _, hash, prefix, by strin
 		}
 		delete(f.tokens, *replaces)
 	}
-	t := db.ScimToken{ID: uuid.New(), Prefix: prefix, CreatedBy: by, CreatedAt: time.Now()}
+	t := db.ScimToken{ID: uuid.New(), Prefix: prefix, CreatedBy: by, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(365 * 24 * time.Hour)}
 	f.tokens[t.ID] = hash
 	f.created = append(f.created, t)
 	return t, nil
@@ -117,6 +117,10 @@ func TestScimTokens_CreateRotateRevoke(t *testing.T) {
 	}
 	if b, _ := json.Marshal(list); strings.Contains(string(b), first.RawToken) {
 		t.Fatal("list leaks the raw token")
+	}
+	// F13: admins see when each token stops working.
+	if exp := list.Tokens[0].GetExpiresAt(); exp == nil || !exp.AsTime().After(time.Now()) || first.Token.GetExpiresAt() == nil {
+		t.Fatalf("token expiry not reported: list=%v create=%v", exp, first.Token.GetExpiresAt())
 	}
 
 	second, err := svc.CreateScimToken(ctx, &brokerv1.CreateScimTokenRequest{ReplacesId: first.Token.Id})

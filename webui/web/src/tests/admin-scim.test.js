@@ -10,7 +10,7 @@ import ScimSettings from "../views/admin/ScimSettings.vue";
 import Provisioning from "../views/admin/Provisioning.vue";
 import * as client from "../api/client.js";
 
-const TOKEN = { id: "t1", prefix: "scim_abc", createdBy: "admin", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: null };
+const TOKEN = { id: "t1", prefix: "scim_abc", createdBy: "admin", createdAt: "2026-10-01T00:00:00Z", lastUsedAt: null, expiresAt: "2027-10-01T00:00:00Z" };
 
 function mockGet(scim) {
   client.get.mockImplementation((url) =>
@@ -32,6 +32,8 @@ describe("ScimSettings.vue", () => {
     const rows = w.findAll("[data-testid='scim-token-row']");
     expect(rows.length).toBe(1);
     expect(rows[0].text()).toContain("scim_abc");
+    // F13: the admin sees when the token stops working.
+    expect(rows[0].find("[data-testid='scim-token-expires']").text()).toBe(new Date(TOKEN.expiresAt).toLocaleString());
     expect(w.find("[data-testid='scim-raw-token']").exists()).toBe(false);
   });
 

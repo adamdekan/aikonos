@@ -252,13 +252,14 @@ func (s *SandboxService) CreateGatewayTask(ctx context.Context, req *brokerv1.Cr
 
 // verifyOwnerGrant requires an owner grant, verifies it with the configured key
 // and v1 policy, and checks it names tenantID. Every rejection is audited
-// (invalid_grant / grant_tenant_mismatch / grant_v1_refused /
+// (grant_missing / invalid_grant / grant_tenant_mismatch / grant_v1_refused /
 // grant_actor_missing / subject_blocked / grant_revoked / agent_<status>) and returned as
 // PermissionDenied; grant_v1_used is
 // logged when a legacy grant is accepted.
 // ponytail: plain log per v1 use; rate-limit per gateway SVID if it gets noisy.
 func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token string) (gatewaygrant.Grant, error) {
 	if token == "" {
+		s.emitGrantDenied(ctx, tenantID, "", "", "grant_missing", nil)
 		return gatewaygrant.Grant{}, status.Error(codes.PermissionDenied, "owner grant required")
 	}
 	g, err := gatewaygrant.Verify(s.deps.GatewayGrantKey, token, s.deps.GatewayGrantAcceptV1)
@@ -323,6 +324,71 @@ func (s *SandboxService) verifyOwnerGrant(ctx context.Context, tenantID, token s
 	return g, nil
 }
 
+// southPrincipal binds a south call that acts for a user to the session's
+// owner grant (F171), as workflowCallerSouth does: requireGatewayPeer, then
+// verifyOwnerGrant, and the tenant and user are the grant's. A non-empty
+// userID naming anyone else is refused (audited grant_user_mismatch). Without
+// a grant only a dev-mode broker falls back to the request's ids — the
+// recovery path — and still refuses a blocked user.
+func (s *SandboxService) southPrincipal(ctx context.Context, tenantID, ownerGrant, userID string) (tenant, user string, err error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return "", "", err
+	}
+	if ownerGrant == "" && s.deps.DevMode {
+		if userID != "" {
+			if err := s.refuseBlockedUser(ctx, tenantID, userID); err != nil {
+				return "", "", err
+			}
+		}
+		return tenantID, userID, nil
+	}
+	g, err := s.verifyOwnerGrant(ctx, tenantID, ownerGrant)
+	if err != nil {
+		return "", "", err
+	}
+	if userID != "" && userID != g.Owner() {
+		s.emitGrantDenied(ctx, tenantID, g.Owner(), g.Actor, "grant_user_mismatch",
+			map[string]any{"requested_user": userID})
+		return "", "", status.Error(codes.PermissionDenied, "user_id does not match the owner grant")
+	}
+	return g.TenantID, g.Owner(), nil
+}
+
+// refuseBlockedUser refuses a blocked user (or a user of a blocked tenant)
+// with the north RevocationInterceptor's exact detail, "user is blocked",
+// which the gateway reads as access revoked (F129). Audited subject_blocked;
+// a state read failure fails closed.
+func (s *SandboxService) refuseBlockedUser(ctx context.Context, tenantID, user string) error {
+	st, err := s.deps.Revocation.User(ctx, tenantID, user)
+	if err != nil {
+		s.deps.Logger.Error("revocation state read failed", zap.Error(err))
+		return status.Error(codes.Unavailable, "access state could not be read; retry")
+	}
+	if st.Blocked {
+		s.emitGrantDenied(ctx, tenantID, user, "", "subject_blocked", nil)
+		return status.Error(codes.PermissionDenied, "user is blocked")
+	}
+	return nil
+}
+
+// MintSessionGrant issues an interactive session's owner grant (F171): the
+// subject is the OIDC caller, so the gateway can present a grant only for a
+// user with a live session. The north interceptors have already refused a
+// blocked user and a revoked session (AG-06) and audited the call.
+func (s *BrokerService) MintSessionGrant(ctx context.Context, req *brokerv1.MintSessionGrantRequest) (*brokerv1.MintSessionGrantResponse, error) {
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, req.UserId)
+	if err != nil {
+		return nil, err
+	}
+	g, err := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
+		TenantID: tenant, Subject: user, Kind: gatewaygrant.KindInteractive,
+	}, s.deps.GatewayGrantTTL)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "mint owner grant: %v", err)
+	}
+	return &brokerv1.MintSessionGrantResponse{OwnerGrant: g}, nil
+}
+
 // v2GrantMaxTTL bounds the lifetime assumed for a grant without an issue
 // time (v1/v2, minted before F244). A revoke-all within this window voids
 // such grants even if they were minted after it: fail safe until they expire.
@@ -355,9 +421,11 @@ func (s *SandboxService) emitGrantDenied(ctx context.Context, tenantID, owner, a
 }
 
 // ApproveGatewayTask approves a gateway-managed task and mints per-step tokens.
-// SPIFFE-gated to the gateway SVID.  The approver is derived from the stored
-// task row (task.OwnerUserID), NOT from req.OwnerUserId — req.OwnerUserId is
-// kept for wire compat only and is ignored for authorization.
+// SPIFFE-gated to the gateway SVID. The approver is the stored task's owner
+// (task.OwnerUserID), NOT req.OwnerUserId (wire compat only), and the call must
+// carry an owner grant naming that owner (F5/G46, M-06): the gateway may vote
+// only for a user whose session it holds, and never on a task it does not
+// manage. A refusal is audited gateway_vote_refused.
 func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.ApproveGatewayTaskRequest) (*brokerv1.ApproveTaskResponse, error) {
 	ctx, span := tracer.Start(ctx, "broker.task.approve_gateway")
 	defer span.End()
@@ -371,6 +439,11 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 	}
 	if req.TenantId == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id required")
+	}
+	// The grant owner; "" only on the dev-mode no-grant fallback.
+	_, grantOwner, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, "")
+	if err != nil {
+		return nil, err
 	}
 
 	// Derive the approver from the stored task row — the gateway cannot assert
@@ -388,6 +461,16 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 		}
 		s.deps.Logger.Error("ApproveGatewayTask: load task failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to load task")
+	}
+	if !task.GatewayManaged {
+		s.emitGrantDenied(ctx, req.TenantId, grantOwner, "", "gateway_vote_refused",
+			map[string]any{"task_id": req.TaskId, "detail": "not_gateway_managed"})
+		return nil, status.Errorf(codes.FailedPrecondition, "task %s is not gateway-managed", req.TaskId)
+	}
+	if grantOwner != "" && grantOwner != task.OwnerUserID {
+		s.emitGrantDenied(ctx, req.TenantId, grantOwner, "", "gateway_vote_refused",
+			map[string]any{"task_id": req.TaskId, "detail": "owner_mismatch"})
+		return nil, status.Error(codes.PermissionDenied, "owner grant does not name the task owner")
 	}
 	approverUserID := task.OwnerUserID
 
@@ -448,8 +531,8 @@ func (s *SandboxService) ApproveGatewayTask(ctx context.Context, req *brokerv1.A
 // approval (AG-07 slice 2). The gateway's waiting run polls it, so a vote cast
 // anywhere (the chat dialog, the Inbox, another session) wakes the run. Once
 // the task is APPROVED it mints the step tokens for that run, as the deciding
-// vote did. SPIFFE-gated to the gateway SVID, which may already vote as the
-// task owner (ApproveGatewayTask), so the tokens grant it nothing more.
+// vote did. SPIFFE-gated to the gateway SVID; the tokens cover only steps a
+// vote already approved.
 func (s *SandboxService) GetGatewayApproval(ctx context.Context, req *brokerv1.GetGatewayApprovalRequest) (*brokerv1.GatewayApproval, error) {
 	if err := s.requireGatewayPeer(ctx); err != nil {
 		return nil, err

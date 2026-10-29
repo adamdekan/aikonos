@@ -34,8 +34,10 @@ export function getMemoryConcept({ scope, groupId, agentId, id }) {
   return get(`/memory/concept?${qs}`);
 }
 
-export function verifyMemoryConcept(args) {
-  return post("/memory/verify", { body: scopeBody(args) });
+// contentSha256: the hash getMemoryConcept returned for the content the
+// reviewer saw (G19); the broker refuses a verify of anything since changed.
+export function verifyMemoryConcept({ contentSha256, ...args }) {
+  return post("/memory/verify", { body: { ...scopeBody(args), content_sha256: contentSha256 } });
 }
 
 export function deprecateMemoryConcept(args) {

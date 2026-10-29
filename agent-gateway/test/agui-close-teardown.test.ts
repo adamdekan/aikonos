@@ -199,6 +199,8 @@ test("POST /agui close handler: stops the ping heartbeat AND runs drainForRun/ab
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const approvals = new ApprovalRegistry();
   const drainCalls: Array<{ runId: string; user: string; ok: boolean }> = [];
@@ -327,6 +329,8 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
     listUserAgentSkills: async () => ({ bundles: [] }),
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const approvals = new ApprovalRegistry();
   const supervisor = new ChildSupervisor(

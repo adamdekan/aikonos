@@ -18,6 +18,9 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -263,19 +266,28 @@ func (s *BrokerService) GetMemoryConcept(ctx context.Context, req *brokerv1.GetM
 	if err != nil {
 		return nil, err
 	}
-	_, c, err := loadMemoryConcept(ctx, s.deps.Workspace.Local, tenant, seg, req.GetId())
+	data, c, err := loadMemoryConcept(ctx, s.deps.Workspace.Local, tenant, seg, req.GetId())
 	if err != nil {
 		return nil, err
 	}
 	return &brokerv1.GetMemoryConceptResponse{
-		Meta: memoryMeta(req.GetScope(), req.GetGroupId(), req.GetAgentId(), req.GetId(), c, time.Now().UTC()),
-		Body: c.Body,
+		Meta:          memoryMeta(req.GetScope(), req.GetGroupId(), req.GetAgentId(), req.GetId(), c, time.Now().UTC()),
+		Body:          c.Body,
+		ContentSha256: contentSHA256(data),
 	}, nil
+}
+
+// contentSHA256 is the hex sha256 of a concept file's raw bytes: what Get
+// hands the reviewer and what Verify must echo back (G19).
+func contentSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // VerifyMemoryConcept appends a human verification entry — the only write of
 // `verified` in the system, and therefore the only way a concept reaches the
-// human-reviewed trust tier.
+// human-reviewed trust tier. It is bound to the content the reviewer saw
+// (G19): content_sha256 is required and must still match the file on disk.
 func (s *BrokerService) VerifyMemoryConcept(ctx context.Context, req *brokerv1.VerifyMemoryConceptRequest) (*brokerv1.VerifyMemoryConceptResponse, error) {
 	ctx, span := tracer.Start(ctx, "broker.memory.verify_concept")
 	defer span.End()
@@ -284,9 +296,12 @@ func (s *BrokerService) VerifyMemoryConcept(ctx context.Context, req *brokerv1.V
 	if err != nil {
 		return nil, err
 	}
+	if req.GetContentSha256() == "" {
+		return nil, status.Error(codes.InvalidArgument, "content_sha256 required: verify the content you reviewed")
+	}
 	verifier := memoryHumanVerifier + user
 	entry := map[string]any{"by": verifier, "at": time.Now().UTC().Format(time.RFC3339)}
-	meta, err := s.amendMemoryConcept(ctx, tenant, user, verifier, seg, req, "verified", memoryVerifiedEvent, func(fm map[string]any) {
+	meta, err := s.amendMemoryConcept(ctx, tenant, user, verifier, seg, req, req.GetContentSha256(), "verified", memoryVerifiedEvent, func(fm map[string]any) {
 		// A non-list `verified` is unusable to TrustTier anyway, so a malformed
 		// one is replaced rather than appended to.
 		existing, _ := fm["verified"].([]any)
@@ -308,7 +323,7 @@ func (s *BrokerService) DeprecateMemoryConcept(ctx context.Context, req *brokerv
 	if err != nil {
 		return nil, err
 	}
-	meta, err := s.amendMemoryConcept(ctx, tenant, user, memoryUserActor+user, seg, req, "deprecated", memoryDeprecatedEvent, func(fm map[string]any) {
+	meta, err := s.amendMemoryConcept(ctx, tenant, user, memoryUserActor+user, seg, req, "", "deprecated", memoryDeprecatedEvent, func(fm map[string]any) {
 		fm["status"] = "deprecated"
 	})
 	if err != nil {
@@ -348,8 +363,9 @@ func (s *BrokerService) DeleteMemoryConcept(ctx context.Context, req *brokerv1.D
 
 // amendMemoryConcept is the read-modify-write Verify and Deprecate share, held
 // under the bundle lock for the whole concept+index+log sequence so a concurrent
-// memory.write cannot interleave its own index regeneration.
-func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, user, actor, seg string, ref memoryConceptRef, verb, eventType string, mutate func(map[string]any)) (*brokerv1.MemoryConceptMeta, error) {
+// memory.write cannot interleave its own index regeneration. A non-empty
+// wantSHA must match the file as loaded under that lock (G19).
+func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, user, actor, seg string, ref memoryConceptRef, wantSHA, verb, eventType string, mutate func(map[string]any)) (*brokerv1.MemoryConceptMeta, error) {
 	be := s.deps.Workspace.Local
 	id := ref.GetId()
 
@@ -359,7 +375,13 @@ func (s *BrokerService) amendMemoryConcept(ctx context.Context, tenant, user, ac
 	if err != nil {
 		return nil, err
 	}
+	if wantSHA != "" && !strings.EqualFold(wantSHA, contentSHA256(data)) {
+		return nil, status.Error(codes.FailedPrecondition, "memory concept changed since it was read; reload it and review again")
+	}
 	amended, aerr := memorybundle.AmendFrontmatter(data, mutate)
+	if errors.Is(aerr, memorybundle.ErrTagCap) {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v; rewrite the concept with fewer, shorter tags or delete it", aerr)
+	}
 	if aerr != nil {
 		return nil, status.Errorf(codes.Internal, "amend memory concept: %v", aerr)
 	}

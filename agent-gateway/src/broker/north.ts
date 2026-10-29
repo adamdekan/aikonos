@@ -212,6 +212,8 @@ import type {
   DeleteWorkflowResponse,
   BeginWorkflowRunRequest,
   BeginWorkflowRunResponse,
+  MintSessionGrantRequest,
+  MintSessionGrantResponse,
   GetOrgSettingsRequest,
   GetOrgSettingsResponse,
   UpdateOrgSettingsRequest,
@@ -911,6 +913,12 @@ export class NorthClient {
 
   beginWorkflowRun(req: BeginWorkflowRunRequest, token?: string): Promise<BeginWorkflowRunResponse> {
     return unary((r, m, o, cb) => this.client.beginWorkflowRun(r, m, o, cb), req, bearer(token));
+  }
+
+  // F171: the owner grant an interactive session presents on its south reads,
+  // minted for the bearer's own subject (refused for a blocked user).
+  mintSessionGrant(req: MintSessionGrantRequest, token?: string): Promise<MintSessionGrantResponse> {
+    return unary((r, m, o, cb) => this.client.mintSessionGrant(r, m, o, cb), req, bearer(token));
   }
 
   getWorkspaceBackend(

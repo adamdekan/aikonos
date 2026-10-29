@@ -4,8 +4,8 @@ package broker
 // the SPIFFE-gated session-build twins the gateway calls to union a user's
 // own Skills/<name>/ folders into the catalog.
 //
-// Mirrors memory_south.go's posture exactly: requireGatewayPeer first, then
-// CheckFGA(user, can_invoke, skill:personal-skills) — ungranted or an FGA
+// Mirrors memory_south.go's posture exactly: the session's owner grant first
+// (southPrincipal, F171), then CheckFGA(user, can_invoke, skill:personal-skills) — ungranted or an FGA
 // error yields an empty list / NotFound get, never a transport error, so a
 // withdrawn grant or an OpenFGA hiccup cannot fail a chat turn. Both RPCs also
 // reject a svc-/group- prefixed user_id: personal skills have no agent/group
@@ -53,10 +53,10 @@ func (s *SandboxService) ListPersonalSkillsSouth(ctx context.Context, req *broke
 	ctx, span := tracer.Start(ctx, "broker.personalskill.list_south")
 	defer span.End()
 
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.GetTenantId(), req.GetOwnerGrant(), req.GetUserId())
+	if err != nil {
 		return nil, err
 	}
-	tenant, user := req.GetTenantId(), req.GetUserId()
 	if tenant == "" || user == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id and user_id required")
 	}
@@ -95,12 +95,13 @@ func (s *SandboxService) GetPersonalSkillSouth(ctx context.Context, req *brokerv
 	ctx, span := tracer.Start(ctx, "broker.personalskill.get_south")
 	defer span.End()
 
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.GetTenantId(), req.GetOwnerGrant(), req.GetUserId())
+	if err != nil {
 		return nil, err
 	}
 	notFound := status.Error(codes.NotFound, "personal skill not found")
 
-	tenant, user, name := req.GetTenantId(), req.GetUserId(), req.GetName()
+	name := req.GetName()
 	if tenant == "" || user == "" || name == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id, user_id, and name required")
 	}
@@ -111,6 +112,10 @@ func (s *SandboxService) GetPersonalSkillSouth(ctx context.Context, req *brokerv
 		return nil, notFound
 	}
 
+	// G17: refuse an over-cap SKILL.md from its listed size, without reading it.
+	if n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, personalskill.SkillMdPath(name)); ok && n > personalskill.MaxSkillMdBytes {
+		return nil, notFound
+	}
 	data, _, err := s.deps.Workspace.Local.Read(ctx, tenant, user, personalskill.SkillMdPath(name))
 	if err != nil {
 		return nil, notFound
@@ -150,12 +155,13 @@ func (s *SandboxService) GetPersonalSkillFileSouth(ctx context.Context, req *bro
 	ctx, span := tracer.Start(ctx, "broker.personalskill.get_file_south")
 	defer span.End()
 
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.GetTenantId(), req.GetOwnerGrant(), req.GetUserId())
+	if err != nil {
 		return nil, err
 	}
 	notFound := status.Error(codes.NotFound, "personal skill file not found")
 
-	tenant, user, name, relPath := req.GetTenantId(), req.GetUserId(), req.GetName(), req.GetPath()
+	name, relPath := req.GetName(), req.GetPath()
 	if tenant == "" || user == "" || name == "" || relPath == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id, user_id, name, and path required")
 	}
@@ -166,13 +172,21 @@ func (s *SandboxService) GetPersonalSkillFileSouth(ctx context.Context, req *bro
 		return nil, notFound
 	}
 
-	data, _, err := s.deps.Workspace.Local.Read(ctx, tenant, user, personalskill.SkillDir(name)+"/"+relPath)
+	tooBig := func(n int64) error {
+		return status.Errorf(codes.InvalidArgument,
+			"file %q is %d bytes, exceeds the %d byte cap", relPath, n, personalskill.MaxSkillFileBytes)
+	}
+	filePath := personalskill.SkillDir(name) + "/" + relPath
+	// G17: an over-cap file is refused from its listed size, never read.
+	if n, ok := personalskill.FileSize(ctx, s.deps.Workspace.Local, tenant, user, filePath); ok && n > personalskill.MaxSkillFileBytes {
+		return nil, tooBig(n)
+	}
+	data, _, err := s.deps.Workspace.Local.Read(ctx, tenant, user, filePath)
 	if err != nil {
 		return nil, notFound
 	}
 	if len(data) > personalskill.MaxSkillFileBytes {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"file %q is %d bytes, exceeds the %d byte cap", relPath, len(data), personalskill.MaxSkillFileBytes)
+		return nil, tooBig(int64(len(data)))
 	}
 	return &brokerv1.GetPersonalSkillFileSouthResponse{Content: data}, nil
 }

@@ -233,6 +233,8 @@ async function makeRig(
     ...southOverrides,
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const spawn = makeFakeSpawn();
   const supervisor = new ChildSupervisor(
@@ -337,6 +339,23 @@ test("POST /agui: a matching prompt prepends the recall preamble and emits AIKON
         },
       ],
     });
+  } finally {
+    await teardown(rig);
+  }
+});
+
+// F171: the recall read presents the session's owner grant, minted for the
+// caller, so the broker takes the user (and so the group bundles) from it.
+test("POST /agui: listMemoryConceptsSouth carries the session owner grant", async () => {
+  let seen: unknown;
+  const rig = await makeRig(async (...args: unknown[]) => {
+    seen = args[0];
+    return { concepts: RECALLABLE_CONCEPTS };
+  });
+  try {
+    await postAgui(rig.port, rig.token, { prompt: "how do we deploy the service?", threadId: "thread-g", runId: "run-g" });
+    rig.destroyLastRequest();
+    assert.equal((seen as { ownerGrant?: string }).ownerGrant, "grant-test");
   } finally {
     await teardown(rig);
   }

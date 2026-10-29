@@ -71,7 +71,7 @@ export function registerMemoryRoutes(app: FastifyInstance, ctx: MemoryCtx): void
     if (!principal) return;
     try {
       const resp = await ctx.clients.north.listMemoryConcepts(
-        scopeRequest(principal, req.query),
+        { ...scopeRequest(principal, req.query), ownerGrant: "" }, // owner_grant is south-only
         principal.token,
       );
       reply.send({ concepts: resp.concepts ?? [] });
@@ -88,18 +88,20 @@ export function registerMemoryRoutes(app: FastifyInstance, ctx: MemoryCtx): void
         { ...scopeRequest(principal, req.query), id: req.query.id ?? "" },
         principal.token,
       );
-      reply.send({ meta: resp.meta, body: resp.body });
+      reply.send({ meta: resp.meta, body: resp.body, contentSha256: resp.contentSha256 });
     } catch (err) {
       sendError(reply, log, err, { route: `${req.method} ${req.url}` });
     }
   });
 
-  app.post<{ Body: ScopeArgs & { id?: string } }>("/memory/verify", async (req, reply) => {
+  // G19: content_sha256 is the hash GET /memory/concept returned for the
+  // content the reviewer saw; the broker refuses a verify of anything else.
+  app.post<{ Body: ScopeArgs & { id?: string; content_sha256?: string } }>("/memory/verify", async (req, reply) => {
     const principal = await requireUser(req, reply, ctx.jwksResolver, ctx.verifyOpts);
     if (!principal) return;
     try {
       const resp = await ctx.clients.north.verifyMemoryConcept(
-        { ...scopeRequest(principal, req.body ?? {}), id: req.body?.id ?? "" },
+        { ...scopeRequest(principal, req.body ?? {}), id: req.body?.id ?? "", contentSha256: req.body?.content_sha256 ?? "" },
         principal.token,
       );
       reply.send({ meta: resp.meta });

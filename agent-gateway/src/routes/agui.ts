@@ -81,6 +81,8 @@ interface ApproverDeps {
   log: Logger;
   // The run's subject, sent with the MCP tool listing (AG-08).
   userId: string;
+  // The session's owner grant, which binds userId broker-side (F171).
+  ownerGrant: string;
 }
 
 // selectRunApprover is the pure approver-selection logic extracted for unit
@@ -114,6 +116,7 @@ export async function selectRunApprover(
     sessionAgentId,
     spec.skills,
     deps.userId,
+    deps.ownerGrant,
   );
   return { approver: preAuthApprover(allowlist, deps.log), preApproved: allowlist };
 }
@@ -256,7 +259,7 @@ export function buildMemoryPreamble(concepts: MemoryConceptLike[]): string {
 // can resolve a personal entry by its qualified "personal:<name>" — optional,
 // so every existing test stub without it is unaffected.
 export interface CommandSkillSouth extends PersonalSkillSouth {
-  listUserAgentSkills(req: { tenantId: string; userId: string }): Promise<{
+  listUserAgentSkills(req: { tenantId: string; userId: string; ownerGrant: string }): Promise<{
     bundles?: Array<{
       id: string;
       name: string;
@@ -276,6 +279,7 @@ export interface CommandSkillDeps {
   south: CommandSkillSouth;
   tenantId: string;
   userId: string;
+  ownerGrant: string; // the session's owner grant (F171)
   skillName: string;
 }
 
@@ -295,7 +299,7 @@ export interface CommandSkillDeps {
 // excludes the bundle from the model's auto-catalog (load_skill rejects them);
 // explicit /command by the user is always permitted when the grant exists.
 export async function resolveCommandSkill(deps: CommandSkillDeps): Promise<CommandSkillResult> {
-  const { south, tenantId, userId, skillName } = deps;
+  const { south, tenantId, userId, ownerGrant, skillName } = deps;
 
   let bundles: Array<{
     id: string; name: string; description: string; body: string;
@@ -303,7 +307,7 @@ export async function resolveCommandSkill(deps: CommandSkillDeps): Promise<Comma
     keywords?: string[]; filePaths?: string[]; origin?: "personal";
   }>;
   try {
-    const resp = await south.listUserAgentSkills({ tenantId, userId });
+    const resp = await south.listUserAgentSkills({ tenantId, userId, ownerGrant });
     bundles = resp.bundles ?? [];
   } catch (err) {
     // F129: a blocked/revoked user is refused, not shown a chat error.
@@ -317,7 +321,7 @@ export async function resolveCommandSkill(deps: CommandSkillDeps): Promise<Comma
   // for the chat system prompt (CP4). Fail-open (personalSkillBundleEntries
   // never throws): a broken personal fetch must not deny /command for an
   // otherwise-granted admin bundle.
-  bundles = bundles.concat(await personalSkillBundleEntries(south, tenantId, userId));
+  bundles = bundles.concat(await personalSkillBundleEntries(south, tenantId, userId, ownerGrant));
 
   const raw = bundles.find((b) => b.name === skillName);
   if (!raw) {
@@ -402,6 +406,7 @@ interface ChatTurnPlan {
   user: string;
   displayName: string;
   token: string;
+  ownerGrant: string;
   prompt: string;
   history: ConvMessage[] | undefined;
   userInstructions: string | undefined;
@@ -431,9 +436,11 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
     if (!principal) return;
     try {
+      const { ownerGrant } = await clients.north.mintSessionGrant({ tenantId: principal.tenant, userId: principal.sub }, principal.token);
       const resp = await clients.south.listUserAgentSkills({
         tenantId: principal.tenant,
         userId: principal.sub,
+        ownerGrant,
       });
       reply.send({ bundles: resp.bundles ?? [] });
     } catch (err) {
@@ -452,9 +459,11 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     const principal = await requireUser(req, reply, jwksResolver, verifyOpts);
     if (!principal) return;
     try {
+      const { ownerGrant } = await clients.north.mintSessionGrant({ tenantId: principal.tenant, userId: principal.sub }, principal.token);
       const resp = await clients.south.listUserSkills({
         tenantId: principal.tenant,
         userId: principal.sub,
+        ownerGrant,
       });
       reply.send({ skills: (resp.skills ?? []).map((s) => s.toolId) });
     } catch (err) {
@@ -524,6 +533,16 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     }
     const history = body.history === undefined ? undefined : historyValidation.history;
 
+    // F171: every south read below, and the run's own, presents this session's
+    // owner grant; the broker takes the user from it and refuses a blocked one.
+    let ownerGrant: string;
+    try {
+      ({ ownerGrant } = await clients.north.mintSessionGrant({ tenantId, userId: user }, principal.token));
+    } catch (err) {
+      sendError(reply, log, err, { route: `${req.method} ${req.url}` });
+      return null;
+    }
+
     // CP8: /command resolution (A3). If the client sent {skillName}, resolve it
     // server-side before the SSE hijack so the result is available for routing.
     // Errors (unknown/non-granted skill) are NOT 4xx — they are surfaced as SSE
@@ -535,6 +554,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
           south: clients.south,
           tenantId,
           userId: user,
+          ownerGrant,
           skillName: body.skillName,
         });
       } catch (err) {
@@ -551,12 +571,12 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     let skillMatch: SkillMatchResult<SkillBundleEntry> | undefined;
     if (!body.skillName && prompt) {
       try {
-        const resp = await clients.south.listUserAgentSkills({ tenantId, userId: user });
+        const resp = await clients.south.listUserAgentSkills({ tenantId, userId: user, ownerGrant });
         // Personal skills: union the
         // caller's own Skills/<name>/ catalog into the auto-load candidate
         // set — same catalog resolveSessionPlan builds for the chat system
         // prompt (CP4). Fail-open, never throws.
-        const personalEntries = await personalSkillBundleEntries(clients.south, tenantId, user);
+        const personalEntries = await personalSkillBundleEntries(clients.south, tenantId, user, ownerGrant);
         skillMatch = matchSkillBundles(prompt, [...(resp.bundles ?? []), ...personalEntries]);
       } catch (err) {
         // F129: a blocked/revoked user ends here with 401/403, not a skipped match.
@@ -617,6 +637,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
           scope: "",
           groupId: "",
           agentId: namedAgentId ?? "",
+          ownerGrant,
         });
         const concepts = resp.concepts ?? [];
         const { recalled } = matchMemoryConcepts(prompt, concepts);
@@ -700,6 +721,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
         userId: user,
         agentId: sessionAgentId,
         token: principal.token,
+        ownerGrant,
       }, spec);
     } catch (err) {
       if (err instanceof GatewayOverloadError) {
@@ -718,6 +740,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       user,
       displayName,
       token: principal.token,
+      ownerGrant,
       prompt,
       history,
       userInstructions,
@@ -737,7 +760,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
   // status code.
   async function streamTurn(reply: FastifyReply, plan: ChatTurnPlan): Promise<void> {
     const {
-      tenantId, threadId, runId, sessionId, user, displayName, token, prompt, history,
+      tenantId, threadId, runId, sessionId, user, displayName, token, ownerGrant, prompt, history,
       userInstructions, envelopeId, sessionAgentId, spec, handle, commandSkillResult, skillMatch,
       memoryRecall, memoryVia,
     } = plan;
@@ -789,7 +812,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // A8 / H-06: the org unattended-mode master. Fails closed: an unreadable
     // setting only means this run asks its user, it never breaks the run.
     const { approver, preApproved } = await selectRunApprover(
-      { south: clients.south, tenantId, log, userId: user },
+      { south: clients.south, tenantId, log, userId: user, ownerGrant },
       spec,
       sessionAgentId,
       hitl,
@@ -827,6 +850,7 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       userId: user,
       agentId: sessionAgentId,
       token,
+      ownerGrant,
       ...(envelopeId ? { envelopeId } : {}),
       preApproved,
       ...(spec ? { agentSpec: spec } : {}),

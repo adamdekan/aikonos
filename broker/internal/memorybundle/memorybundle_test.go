@@ -1,6 +1,7 @@
 package memorybundle
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -501,5 +502,35 @@ func TestAmendFrontmatterRejects(t *testing.T) {
 	}
 	if _, err := AmendFrontmatter([]byte("not a concept\n"), func(fm map[string]any) {}); err == nil {
 		t.Fatal("expected an unparseable concept to be rejected")
+	}
+}
+
+// F202: tags are capped at MaxTags of at most MaxTagChars on write (compose)
+// and on amend.
+func TestTagCaps(t *testing.T) {
+	spec := ConceptSpec{Type: "Fact", Body: "b"}
+	spec.Tags = make([]string, MaxTags)
+	for i := range spec.Tags {
+		spec.Tags[i] = strings.Repeat("é", MaxTagChars)
+	}
+	data, err := ComposeConcept(spec, "user:u", time.Now())
+	if err != nil {
+		t.Fatalf("at the caps: %v", err)
+	}
+	if _, err := AmendFrontmatter(data, func(map[string]any) {}); err != nil {
+		t.Fatalf("amend at the caps: %v", err)
+	}
+	for name, tags := range map[string][]string{
+		"too many": append(spec.Tags, "x"),
+		"too long": {strings.Repeat("a", MaxTagChars+1)},
+	} {
+		spec.Tags = tags
+		if _, err := ComposeConcept(spec, "user:u", time.Now()); !errors.Is(err, ErrTagCap) {
+			t.Errorf("compose %s: want ErrTagCap, got %v", name, err)
+		}
+	}
+	over := "---\ntype: Fact\ntags:" + strings.Repeat("\n  - t", MaxTags+1) + "\n---\n\nbody\n"
+	if _, err := AmendFrontmatter([]byte(over), func(map[string]any) {}); !errors.Is(err, ErrTagCap) {
+		t.Fatalf("amend over the cap: want ErrTagCap, got %v", err)
 	}
 }

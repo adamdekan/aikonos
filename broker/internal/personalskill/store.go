@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -66,14 +67,8 @@ func Scan(ctx context.Context, be workspacefs.Backend, tenant, user string) ([]S
 // oversize SKILL.md is never buffered; the post-read check stays because the
 // file can grow in between.
 func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name string) SkillEntry {
-	infos, err := be.ListDir(ctx, tenant, user, SkillDir(name), false)
-	if err != nil {
-		return SkillEntry{Name: name, Warning: "missing SKILL.md"}
-	}
-	for _, fi := range infos {
-		if fi.Path == SkillMdPath(name) && fi.Size > MaxSkillMdBytes {
-			return SkillEntry{Name: name, Warning: fmt.Sprintf("SKILL.md is %d bytes, exceeds the %d byte cap", fi.Size, MaxSkillMdBytes)}
-		}
+	if n, ok := FileSize(ctx, be, tenant, user, SkillMdPath(name)); ok && n > MaxSkillMdBytes {
+		return SkillEntry{Name: name, Warning: fmt.Sprintf("SKILL.md is %d bytes, exceeds the %d byte cap", n, MaxSkillMdBytes)}
 	}
 	data, _, err := be.Read(ctx, tenant, user, SkillMdPath(name))
 	if err != nil {
@@ -84,6 +79,23 @@ func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name str
 	}
 	fm, err := ParseFrontmatter(data)
 	return buildEntry(name, fm, err)
+}
+
+// FileSize reports the size of the file at rel from a shallow listing of its
+// directory, so a caller can refuse an over-cap file without buffering it
+// (G17). ok is false when the listing fails or holds no such file; the caller
+// then reads as before and keeps its post-read cap check.
+func FileSize(ctx context.Context, be workspacefs.Backend, tenant, user, rel string) (int64, bool) {
+	infos, err := be.ListDir(ctx, tenant, user, path.Dir(rel), false)
+	if err != nil {
+		return 0, false
+	}
+	for _, fi := range infos {
+		if fi.Path == rel && !fi.IsDir {
+			return fi.Size, true
+		}
+	}
+	return 0, false
 }
 
 // ListFiles returns the sorted relative paths of every file under

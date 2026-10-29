@@ -170,7 +170,8 @@ func (s *BrokerService) EnsureDefaultAgent(ctx context.Context, tenant string) e
 
 // ResolveRunAgent resolves the agent a gateway run binds to (AG-01, H-05):
 // a named agent the user can_use, else the user's default agent. A refusal is
-// audited as aikonos.broker.task.denied and returned as PermissionDenied.
+// audited as aikonos.broker.task.denied and returned as PermissionDenied; a
+// blocked user starts no run at all (F129).
 func (s *SandboxService) ResolveRunAgent(ctx context.Context, req *brokerv1.ResolveRunAgentRequest) (*brokerv1.ResolveRunAgentResponse, error) {
 	if err := s.requireGatewayPeer(ctx); err != nil {
 		return nil, err
@@ -180,6 +181,9 @@ func (s *SandboxService) ResolveRunAgent(ctx context.Context, req *brokerv1.Reso
 	}
 	if req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
+	}
+	if err := s.refuseBlockedUser(ctx, req.TenantId, req.UserId); err != nil {
+		return nil, err
 	}
 	if s.deps.Agents == nil {
 		return nil, status.Error(codes.FailedPrecondition, "agents are not enabled")

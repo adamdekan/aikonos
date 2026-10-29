@@ -29,13 +29,14 @@ import (
 // SKILL.md bundles to offer to the user (via the load_skill catalog or /command
 // palette).
 func (s *SandboxService) ListUserAgentSkills(ctx context.Context, req *brokerv1.ListUserAgentSkillsRequest) (*brokerv1.ListUserAgentSkillsResponse, error) {
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, req.UserId)
+	if err != nil {
 		return nil, err
 	}
-	if req.TenantId == "" {
+	if tenant == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id required")
 	}
-	if req.UserId == "" {
+	if user == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
 	}
 
@@ -44,7 +45,7 @@ func (s *SandboxService) ListUserAgentSkills(ctx context.Context, req *brokerv1.
 		return nil, status.Error(codes.FailedPrecondition, "agent skill bundle store not configured")
 	}
 
-	rows, err := repo.ListByTenant(ctx, req.TenantId)
+	rows, err := repo.ListByTenant(ctx, tenant)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list agent_skill bundles: %v", err)
 	}
@@ -53,7 +54,7 @@ func (s *SandboxService) ListUserAgentSkills(ctx context.Context, req *brokerv1.
 	fgaOn := sp != nil && sp.FGAEnabled()
 
 	out := make([]*brokerv1.AgentSkillBundle, 0, len(rows))
-	userRef := "user:" + req.UserId
+	userRef := "user:" + user
 	for _, row := range rows {
 		if fgaOn {
 			granted, err := sp.CheckFGA(ctx, userRef, "can_use", "agentskill:"+row.ID.String())
@@ -80,10 +81,11 @@ func (s *SandboxService) ListUserAgentSkills(ctx context.Context, req *brokerv1.
 // user, or an unknown/invalid path — never a transport error distinguishing
 // those cases, mirroring personal_skills_south.go's posture.
 func (s *SandboxService) GetAgentSkillFileSouth(ctx context.Context, req *brokerv1.GetAgentSkillFileSouthRequest) (*brokerv1.GetAgentSkillFileSouthResponse, error) {
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, req.UserId)
+	if err != nil {
 		return nil, err
 	}
-	if req.TenantId == "" || req.UserId == "" || req.Id == "" || req.Path == "" {
+	if tenant == "" || user == "" || req.Id == "" || req.Path == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id, user_id, id, and path required")
 	}
 	notFound := status.Error(codes.NotFound, "agent skill file not found")
@@ -99,17 +101,17 @@ func (s *SandboxService) GetAgentSkillFileSouth(ctx context.Context, req *broker
 	if err != nil {
 		return nil, notFound
 	}
-	row, err := repo.Get(ctx, req.TenantId, id)
+	row, err := repo.Get(ctx, tenant, id)
 	if err != nil {
 		return nil, notFound
 	}
 
 	sp := s.skillPolicyFor()
 	if sp != nil && sp.FGAEnabled() {
-		granted, ferr := sp.CheckFGA(ctx, "user:"+req.UserId, "can_use", "agentskill:"+row.ID.String())
+		granted, ferr := sp.CheckFGA(ctx, "user:"+user, "can_use", "agentskill:"+row.ID.String())
 		if ferr != nil {
 			s.deps.Logger.Warn("GetAgentSkillFileSouth: CheckFGA error — treating as not found",
-				zap.String("user", req.UserId), zap.String("bundle", row.ID.String()), zap.Error(ferr))
+				zap.String("user", user), zap.String("bundle", row.ID.String()), zap.Error(ferr))
 			return nil, notFound
 		}
 		if !granted {

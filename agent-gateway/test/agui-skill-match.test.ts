@@ -252,6 +252,8 @@ async function makeRig(southOverrides: Record<string, unknown> = {}): Promise<Ri
     ...southOverrides,
   });
   clients.south = south;
+  // F171: /agui mints the session grant its south reads present.
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
 
   const spawn = makeFakeSpawn();
   const supervisor = new ChildSupervisor(

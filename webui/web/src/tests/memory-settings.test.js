@@ -52,7 +52,7 @@ const deprecatedConcept = {
 function resetApi({ groups = [], concepts = [stableConcept], agents = [] } = {}) {
   memoryApi.listMemoryGroups.mockResolvedValue({ groups });
   memoryApi.listMemoryConcepts.mockResolvedValue({ concepts });
-  memoryApi.getMemoryConcept.mockResolvedValue({ meta: stableConcept, body: "# body text" });
+  memoryApi.getMemoryConcept.mockResolvedValue({ meta: stableConcept, body: "# body text", contentSha256: "sha-reviewed" });
   memoryApi.verifyMemoryConcept.mockResolvedValue({ meta: { ...stableConcept, trustTier: "human-reviewed" } });
   memoryApi.deprecateMemoryConcept.mockResolvedValue({ meta: { ...stableConcept, status: "deprecated" } });
   memoryApi.deleteMemoryConcept.mockResolvedValue({ deleted: true });
@@ -113,7 +113,8 @@ describe("MemorySettings.vue", () => {
     await w.find("[data-testid='memory-verify-btn']").trigger("click");
     await flushPromises();
 
-    expect(memoryApi.verifyMemoryConcept).toHaveBeenCalledWith({ scope: "user", id: "deploy-runbook" });
+    // G19: the verify is bound to the content the reviewer was shown.
+    expect(memoryApi.verifyMemoryConcept).toHaveBeenCalledWith({ scope: "user", id: "deploy-runbook", contentSha256: "sha-reviewed" });
     expect(memoryApi.listMemoryConcepts).toHaveBeenCalled();
   });
 

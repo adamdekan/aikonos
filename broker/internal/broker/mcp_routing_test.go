@@ -550,6 +550,8 @@ func buildSouthSvcForMcp(
 		Mcp:             McpDeps{Connections: repo, AllowPrivate: true},
 		TenantID:        "aikonos-dev",
 		GatewaySpiffeID: gatewaySpiffeID,
+		GatewayGrantKey: testGrantKey,
+		GatewayGrantTTL: testGrantTTL,
 		Agents: &fakeAgentStoreForSkill{agent: &db.Agent{
 			ID: uuid.MustParse(mcpTestAgent), McpServers: []string{connID}, McpTools: []string{"mcp:" + connID + ":echo"},
 		}},
@@ -632,6 +634,7 @@ func TestListMcpServerToolsSouth_GatewayAllowed(t *testing.T) {
 		ConnectorId: connID,
 		AgentId:     "agent:" + mcpTestAgent,
 		UserId:      "svc-ticker",
+		OwnerGrant:  mintTestGrant(t, testTenantUUID, "svc-ticker"),
 	})
 	if err != nil {
 		t.Fatalf("ListMcpServerToolsSouth: %v", err)
@@ -655,12 +658,14 @@ func TestListMcpServerToolsSouth_OnlyAllowlistedTools(t *testing.T) {
 
 	resp, err := svc.ListMcpServerToolsSouth(ctx, &brokerv1.ListMcpServerToolsRequest{
 		TenantId: testTenantUUID, ConnectorId: connID, AgentId: mcpTestAgent, UserId: "svc-ticker",
+		OwnerGrant: mintTestGrant(t, testTenantUUID, "svc-ticker"),
 	})
 	if err != nil || len(resp.Tools) != 0 {
 		t.Fatalf("echo not allowlisted: want no tools, got %v err=%v", resp, err)
 	}
 	if _, err := svc.ListMcpServerToolsSouth(ctx, &brokerv1.ListMcpServerToolsRequest{
 		TenantId: testTenantUUID, ConnectorId: connID, UserId: "svc-ticker",
+		OwnerGrant: mintTestGrant(t, testTenantUUID, "svc-ticker"),
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("no agent_id: want InvalidArgument, got %v", err)
 	}
@@ -675,6 +680,7 @@ func TestListMcpServerToolsSouth_UserBound(t *testing.T) {
 	ctx := gatewayCtx(testGatewaySpiffeID)
 	req := &brokerv1.ListMcpServerToolsRequest{
 		TenantId: testTenantUUID, ConnectorId: connID, AgentId: mcpTestAgent, UserId: "alice@example.com",
+		OwnerGrant: mintTestGrant(t, testTenantUUID, "alice@example.com"),
 	}
 	for mode, want := range map[string]int{"enforce": 0, "audit": 1} {
 		svc.deps.Config = userBoundCfg(mode)

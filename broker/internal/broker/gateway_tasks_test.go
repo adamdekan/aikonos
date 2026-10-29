@@ -343,6 +343,7 @@ func TestApproveGatewayTask_GatewayPeer_MintsTokens(t *testing.T) {
 		OwnerUserId: "alice@example.com",
 		Approved:    true,
 		ArgsDigest:  webFetchDigest,
+		OwnerGrant:  mintTestGrant(t, testTenantUUID, "alice@example.com"),
 	})
 	if err != nil {
 		t.Fatalf("gateway ApproveGatewayTask: %v", err)
@@ -378,6 +379,7 @@ func TestApproveGatewayTask_StepUp_Refused(t *testing.T) {
 	}
 	req := &brokerv1.ApproveGatewayTaskRequest{
 		TenantId: testTenantUUID, TaskId: taskID.String(), Approved: true, ArgsDigest: webFetchDigest,
+		OwnerGrant: mintTestGrant(t, testTenantUUID, "alice@example.com"),
 	}
 	resp, err := newSandboxSvcForGatewayTest(t, store(), minter).ApproveGatewayTask(gatewaySpiffeCtx(), req)
 	if !approvalsvc.IsStepUpRequired(err) || resp != nil {
@@ -439,6 +441,7 @@ func TestApproveGatewayTask_Denied_StatusIsDenied(t *testing.T) {
 		TaskId:      taskID.String(),
 		OwnerUserId: "alice@example.com",
 		Approved:    false,
+		OwnerGrant:  mintTestGrant(t, testTenantUUID, "alice@example.com"),
 	})
 	if err != nil {
 		t.Fatalf("denial path: unexpected error %v", err)
@@ -593,6 +596,7 @@ func TestApproveGatewayTask_UsesStoredOwner_NotAssertedField(t *testing.T) {
 		OwnerUserId: "bob@example.com", // gateway asserts wrong approver
 		Approved:    true,
 		ArgsDigest:  webFetchDigest,
+		OwnerGrant:  mintTestGrant(t, testTenantUUID, "alice@example.com"), // alice's session
 	})
 	if err != nil {
 		t.Fatalf("ApproveGatewayTask with wrong asserted owner: %v", err)

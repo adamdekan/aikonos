@@ -39,6 +39,8 @@ func newSkillsSouthSvc(t *testing.T, sp skillGatePolicy) *SandboxService {
 		GatewaySpiffeID: testGateway,
 		TenantID:        testTenant,
 		ToolRegistry:    reg,
+		GatewayGrantKey: testGrantKey,
+		GatewayGrantTTL: testGrantTTL,
 	}
 	svc := NewSandboxService(deps)
 	svc.skillPolicy = sp
@@ -50,8 +52,9 @@ func newSkillsSouthSvc(t *testing.T, sp skillGatePolicy) *SandboxService {
 func TestListUserSkills_NoPeer_PermissionDenied(t *testing.T) {
 	svc := newSkillsSouthSvc(t, &fakeSkillPolicy{enabled: false})
 	_, err := svc.ListUserSkills(context.Background(), &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("no peer: want PermissionDenied, got %v", err)
@@ -62,8 +65,9 @@ func TestListUserSkills_WrongPeer_PermissionDenied(t *testing.T) {
 	svc := newSkillsSouthSvc(t, &fakeSkillPolicy{enabled: false})
 	ctx := gatewayCtx("spiffe://aikonos.com/wrong-svc")
 	_, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong peer: want PermissionDenied, got %v", err)
@@ -74,6 +78,7 @@ func TestListUserSkills_WrongPeer_PermissionDenied(t *testing.T) {
 
 func TestListUserSkills_EmptyTenant_InvalidArgument(t *testing.T) {
 	svc := newSkillsSouthSvc(t, &fakeSkillPolicy{enabled: false})
+	svc.deps.DevMode = true // request ids are read only on the dev-mode no-grant path (F171)
 	ctx := gatewayCtx(testGateway)
 	_, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{UserId: "alice"})
 	if status.Code(err) != codes.InvalidArgument {
@@ -83,6 +88,7 @@ func TestListUserSkills_EmptyTenant_InvalidArgument(t *testing.T) {
 
 func TestListUserSkills_EmptyUser_InvalidArgument(t *testing.T) {
 	svc := newSkillsSouthSvc(t, &fakeSkillPolicy{enabled: false})
+	svc.deps.DevMode = true // request ids are read only on the dev-mode no-grant path (F171)
 	ctx := gatewayCtx(testGateway)
 	_, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{TenantId: testTenant})
 	if status.Code(err) != codes.InvalidArgument {
@@ -98,8 +104,9 @@ func TestListUserSkills_FGADisabled_ReturnsAllTools(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -137,8 +144,9 @@ func TestListUserSkills_FGAEnabled_GrantedToolIncluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -167,8 +175,9 @@ func TestListUserSkills_FGAEnabled_DeniedToolExcluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -186,8 +195,9 @@ func TestListUserSkills_FGAEnabled_CheckFGAError_ToolExcluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("CheckFGA error must not surface: %v", err)
@@ -210,8 +220,9 @@ func TestListUserSkills_CapabilitySkill_FGAGranted_Included(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -245,8 +256,9 @@ func TestListUserSkills_SubagentsCapability_FGAGranted_Included(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -270,8 +282,9 @@ func TestListUserSkills_SubagentsCapability_FGADenied_Excluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)
@@ -291,8 +304,9 @@ func TestListUserSkills_CapabilitySkill_FGADenied_Excluded(t *testing.T) {
 	ctx := gatewayCtx(testGateway)
 
 	resp, err := svc.ListUserSkills(ctx, &brokerv1.ListUserSkillsRequest{
-		TenantId: testTenant,
-		UserId:   "alice",
+		TenantId:   testTenant,
+		UserId:     "alice",
+		OwnerGrant: mintTestGrant(t, testTenant, "alice"),
 	})
 	if err != nil {
 		t.Fatalf("ListUserSkills: %v", err)

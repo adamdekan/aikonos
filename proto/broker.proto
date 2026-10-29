@@ -461,6 +461,12 @@ service BrokerService {
   // the chat path (workflow_run Pi tool) is unchanged.
   rpc BeginWorkflowRun(BeginWorkflowRunRequest) returns (BeginWorkflowRunResponse);
 
+  // MintSessionGrant (F171) issues the owner grant an interactive gateway
+  // session presents on its south reads (skills, memory recall, MCP tool
+  // listing). The subject is the OIDC caller, so the gateway can only act for
+  // a user with a live, unblocked session; kind=interactive, no actor.
+  rpc MintSessionGrant(MintSessionGrantRequest) returns (MintSessionGrantResponse);
+
   // ── Agent memory management ───────────────────
   // The settings-modal Memory surface. Identity is bound from the OIDC bearer
   // (callerIdentity); the explicit tenant_id/user_id fields may only echo it.
@@ -560,7 +566,8 @@ service SandboxService {
   rpc CreateGatewayTask(CreateGatewayTaskRequest) returns (TaskHandle);
 
   // Gateway approves a task and mints per-step capability tokens (south twin of
-  // BrokerService.ApproveTask). SPIFFE-gated to the agent-gateway identity.
+  // BrokerService.ApproveTask). SPIFFE-gated to the agent-gateway identity;
+  // only a gateway-managed task, voted as the owner its owner_grant names.
   rpc ApproveGatewayTask(ApproveGatewayTaskRequest) returns (ApproveTaskResponse);
 
   // The broker-held state of a gateway task's approval (AG-07 slice 2). The
@@ -1373,7 +1380,9 @@ message DeleteScheduledRunResponse {
 
 message ClaimDueScheduledRunsRequest {
   string tenant_id = 1;
-  google.protobuf.Timestamp now = 2;
+  // DEPRECATED (F12): ignored. Due time and delegation expiry use the broker's
+  // own clock; a gateway-supplied time could keep an expired delegation alive.
+  google.protobuf.Timestamp now = 2 [deprecated = true];
   int32 limit = 3;            // 0 → server default
 }
 
@@ -1647,6 +1656,9 @@ message ListMcpServerToolsRequest {
   // the tools in this agent's mcp_tools allowlist (AG-08); user_id is then
   // the session's subject, not the agent.
   string agent_id = 4;
+  // South only (F171): the session's owner grant; the subject is its owner and
+  // a user_id naming anyone else is refused. Ignored on the north path.
+  string owner_grant = 5;
 }
 
 message ListMcpServerToolsResponse {
@@ -1949,6 +1961,9 @@ message ApproveGatewayTaskRequest {
   bool   approved       = 4;
   string reason         = 5;
   string args_digest    = 6;  // AG-07: as ApproveTaskRequest.args_digest
+  // F5/G46 (M-06): the session's owner grant; its owner must own the task, and
+  // the task must be gateway-managed. Required outside dev mode.
+  string owner_grant    = 7;
 }
 
 // ── Agent API key types ───────────────────────────────────────────────────────
@@ -2054,6 +2069,7 @@ message ScimToken {
   string created_by   = 3;
   google.protobuf.Timestamp created_at   = 4;
   google.protobuf.Timestamp last_used_at = 5;  // unset if never used
+  google.protobuf.Timestamp expires_at   = 6;  // F13: refused from this time on; rotate before it
 }
 
 message ListScimTokensRequest  { string tenant_id = 1; string user_id = 2; }
@@ -2405,8 +2421,9 @@ message ListOneDriveFoldersResponse {
 // ── ListUserSkills messages ───────────────────────────────────────────────────
 
 message ListUserSkillsRequest {
-  string tenant_id = 1;
-  string user_id   = 2; // subject id (without the "user:" prefix)
+  string tenant_id   = 1;
+  string user_id     = 2; // subject id (without the "user:" prefix)
+  string owner_grant = 3; // F171: the session's owner grant; required outside dev mode
 }
 
 message SkillItem {
@@ -2485,8 +2502,9 @@ message DeleteAgentSkillResponse {}
 // South RPC
 
 message ListUserAgentSkillsRequest {
-  string tenant_id = 1;
-  string user_id   = 2; // subject id (without the "user:" prefix)
+  string tenant_id   = 1;
+  string user_id     = 2; // subject id (without the "user:" prefix)
+  string owner_grant = 3; // F171: the session's owner grant; required outside dev mode
 }
 
 message ListUserAgentSkillsResponse {
@@ -2498,6 +2516,7 @@ message GetAgentSkillFileSouthRequest {
   string user_id   = 2; // subject id (without the "user:" prefix)
   string id        = 3; // UUID of the bundle
   string path      = 4; // relative path within the bundle's file tree
+  string owner_grant = 5; // F171: the session's owner grant; required outside dev mode
 }
 
 message GetAgentSkillFileSouthResponse {
@@ -2872,6 +2891,16 @@ message BeginWorkflowRunResponse {
   string bound_agent_id = 2;
 }
 
+// MintSessionGrantRequest: tenant_id/user_id may only echo the OIDC identity.
+message MintSessionGrantRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message MintSessionGrantResponse {
+  string owner_grant = 1; // broker-minted HMAC grant (kind=interactive), GatewayGrantTTL
+}
+
 // ── Workflow self-improvement RPC types (CP6b) ────────────────────────────────
 
 enum WorkflowRating {
@@ -3124,13 +3153,16 @@ message ListMemoryGroupsResponse {
 
 // ListMemoryConceptsRequest carries explicit identity fields (north validates
 // them against the bearer via callerIdentity; the SPIFFE-gated south twin
-// trusts the gateway peer) — same shape as GetWorkspaceBackendRequest.
+// binds them to owner_grant) — same shape as GetWorkspaceBackendRequest.
 message ListMemoryConceptsRequest {
   string tenant_id = 1;
   string user_id   = 2;
   string scope     = 3; // "user" | "group" | "agent"; ignored by the south twin
   string group_id  = 4; // required iff scope="group"
   string agent_id  = 5; // required iff scope="agent"; south: recall the agent bundle
+  // South only (F171): the session's owner grant; the user (and so its groups)
+  // is the grant's owner. Ignored on the north path.
+  string owner_grant = 6;
 }
 
 message ListMemoryConceptsResponse {
@@ -3147,8 +3179,9 @@ message GetMemoryConceptRequest {
 }
 
 message GetMemoryConceptResponse {
-  MemoryConceptMeta meta = 1;
-  string            body = 2;
+  MemoryConceptMeta meta           = 1;
+  string            body           = 2;
+  string            content_sha256 = 3; // G19: hex sha256 of the concept file as read
 }
 
 message VerifyMemoryConceptRequest {
@@ -3158,6 +3191,9 @@ message VerifyMemoryConceptRequest {
   string group_id  = 4;
   string agent_id  = 5;
   string id        = 6;
+  // G19: GetMemoryConceptResponse.content_sha256 of the content the reviewer
+  // saw. Required; a concept changed since then is FailedPrecondition.
+  string content_sha256 = 7;
 }
 
 message VerifyMemoryConceptResponse {
@@ -3193,8 +3229,9 @@ message DeleteMemoryConceptResponse {}
 // on SandboxService. North management/transfer RPCs are a later checkpoint.
 
 message ListPersonalSkillsSouthRequest {
-  string tenant_id = 1;
-  string user_id   = 2;
+  string tenant_id   = 1;
+  string user_id     = 2;
+  string owner_grant = 3; // F171: the session's owner grant; required outside dev mode
 }
 
 message ListPersonalSkillsSouthResponse {
@@ -3218,9 +3255,10 @@ message PersonalSkillEntry {
 }
 
 message GetPersonalSkillSouthRequest {
-  string tenant_id = 1;
-  string user_id   = 2;
-  string name      = 3;
+  string tenant_id   = 1;
+  string user_id     = 2;
+  string name        = 3;
+  string owner_grant = 4; // F171: the session's owner grant; required outside dev mode
 }
 
 message GetPersonalSkillSouthResponse {
@@ -3234,6 +3272,7 @@ message GetPersonalSkillFileSouthRequest {
   string user_id   = 2;
   string name      = 3;
   string path      = 4; // relative path within Skills/<name>/, excluding SKILL.md
+  string owner_grant = 5; // F171: the session's owner grant; required outside dev mode
 }
 
 message GetPersonalSkillFileSouthResponse {

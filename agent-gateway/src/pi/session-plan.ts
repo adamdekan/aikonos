@@ -81,12 +81,14 @@ export interface SessionLike {
   toolDescriptions?: Record<string, string>;
 }
 
-// The subset of identity the resolve half needs. Does NOT include bearer or
-// ownerGrant — those stay in the parent's spawn record.
+// The subset of identity the resolve half needs. No bearer. The resolve half
+// runs in the parent; ownerGrant rides only on its south reads (F171) and
+// never into the plan the child receives.
 export interface ResolveIdentity {
   tenantId: string;
   userId: string;
   agentId: string;
+  ownerGrant?: string;
 }
 
 // ProviderLike covers the fields resolveSessionPlan actually reads from a
@@ -115,7 +117,7 @@ export interface PersonalSkillListLike {
 // resolution and keyword auto-load matching, so all three catalogs union the caller's own
 // Skills/<name>/ entries through one implementation.
 export interface PersonalSkillSouth {
-  listPersonalSkillsSouth?(req: { tenantId: string; userId: string }): Promise<{ skills: PersonalSkillListLike[] }>;
+  listPersonalSkillsSouth?(req: { tenantId: string; userId: string; ownerGrant: string }): Promise<{ skills: PersonalSkillListLike[] }>;
 }
 
 // personalSkillBundleEntries fetches the caller's own personal skills and maps
@@ -130,11 +132,12 @@ export async function personalSkillBundleEntries(
   south: PersonalSkillSouth,
   tenantId: string,
   userId: string,
+  ownerGrant: string, // the session's owner grant (F171)
 ): Promise<SkillBundleEntry[]> {
   const isServiceOrGroupPrincipal = userId.startsWith("svc-") || userId.startsWith("group-");
   if (isServiceOrGroupPrincipal || !south.listPersonalSkillsSouth) return [];
   try {
-    const resp = await south.listPersonalSkillsSouth({ tenantId, userId });
+    const resp = await south.listPersonalSkillsSouth({ tenantId, userId, ownerGrant });
     // Invalid entries (unparseable/oversize/missing description) are excluded
     // from every catalog — the per-skill warning is surfaced by the Skills
     // management view (ListPersonalSkills), not chat/command/auto-load.
@@ -169,12 +172,13 @@ const BARE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export interface ResolveSouth {
   getLlmProviders(req: { tenantId: string }): Promise<{ providers: ProviderLike[] }>;
   getTenantModel(req: { tenantId: string }): Promise<{ model: string }>;
-  listUserSkills(req: { tenantId: string; userId: string }): Promise<{ skills: string[] }>;
-  listUserAgentSkills(req: { tenantId: string; userId: string }): Promise<{ bundles: SkillBundleEntry[] }>;
+  // F171: ownerGrant binds userId broker-side on these south reads.
+  listUserSkills(req: { tenantId: string; userId: string; ownerGrant: string }): Promise<{ skills: string[] }>;
+  listUserAgentSkills(req: { tenantId: string; userId: string; ownerGrant: string }): Promise<{ bundles: SkillBundleEntry[] }>;
   listAccessibleMcpServersForAgent(req: { tenantId: string; agentId: string }): Promise<{ connections?: { id: string; name: string }[] }>;
   // AG-08: agentId is the session's bound agent (the broker lists only its
   // allowlisted tools); userId is the session subject.
-  listMcpServerToolsSouth(req: { tenantId: string; connectorId: string; userId: string; agentId: string }): Promise<{
+  listMcpServerToolsSouth(req: { tenantId: string; connectorId: string; userId: string; agentId: string; ownerGrant: string }): Promise<{
     tools?: { name: string; description: string; inputSchemaJson?: string; readOnlyHint?: boolean }[];
   }>;
   getAgentSpec(req: { tenantId: string; agentId: string }): Promise<{ found: boolean; soul?: string }>;
@@ -184,7 +188,7 @@ export interface ResolveSouth {
   // Personal skills. Optional so every
   // existing ResolveSouth stub (workflow/analyze-image/etc. tests) is
   // unaffected; absent/failed resolution simply means no personal entries.
-  listPersonalSkillsSouth?(req: { tenantId: string; userId: string }): Promise<{ skills: PersonalSkillListLike[] }>;
+  listPersonalSkillsSouth?(req: { tenantId: string; userId: string; ownerGrant: string }): Promise<{ skills: PersonalSkillListLike[] }>;
 }
 
 // pickModelId picks the head of the shared selection chain (assigned → tenant
@@ -263,6 +267,7 @@ async function resolveMcpTools(
   tenantId: string,
   agentId: string,
   userId: string,
+  ownerGrant: string,
 ): Promise<McpTool[]> {
   let servers: { id: string; name: string }[];
   try {
@@ -284,6 +289,7 @@ async function resolveMcpTools(
         connectorId: server.id,
         userId,
         agentId,
+        ownerGrant,
       });
       for (const t of resp.tools ?? []) {
         const name = piMcpToolName(server.id, t.name);
@@ -349,7 +355,7 @@ export async function resolveSessionPlan(
   // next idle plan re-check restores it).
   let userSkills: string[] | undefined;
   try {
-    const resp = await south.listUserSkills({ tenantId: identity.tenantId, userId: identity.userId });
+    const resp = await south.listUserSkills({ tenantId: identity.tenantId, userId: identity.userId, ownerGrant: identity.ownerGrant ?? "" });
     userSkills = resp.skills;
   } catch (err) {
     userSkills = [];
@@ -360,7 +366,7 @@ export async function resolveSessionPlan(
   // Failure → warn + empty list (no bundles in session, SubmitPlan remains the enforcement point).
   let skillBundles: SkillBundleEntry[] = [];
   try {
-    const resp = await south.listUserAgentSkills({ tenantId: identity.tenantId, userId: identity.userId });
+    const resp = await south.listUserAgentSkills({ tenantId: identity.tenantId, userId: identity.userId, ownerGrant: identity.ownerGrant ?? "" });
     skillBundles = resp.bundles ?? [];
   } catch (err) {
     log.warn({ err: String(err), userId: identity.userId }, "listUserAgentSkills RPC failed — no skill bundles in session");
@@ -371,7 +377,7 @@ export async function resolveSessionPlan(
   // helper (see personalSkillBundleEntries above) — keyed on identity.userId,
   // not on agentSpec presence, so an OIDC user with an agentSpec (agent-bound
   // chat) still gets their own personal skills.
-  skillBundles.push(...(await personalSkillBundleEntries(south, identity.tenantId, identity.userId)));
+  skillBundles.push(...(await personalSkillBundleEntries(south, identity.tenantId, identity.userId, identity.ownerGrant ?? "")));
 
   // Resolve providers from south. Failure → env fallback.
   let providers: ProviderLike[] = [];
@@ -405,7 +411,7 @@ export async function resolveSessionPlan(
   }
 
   // Resolve MCP tools from south discovery.
-  const mcpTools = await resolveMcpTools(south, identity.tenantId, identity.agentId, identity.userId);
+  const mcpTools = await resolveMcpTools(south, identity.tenantId, identity.agentId, identity.userId, identity.ownerGrant ?? "");
 
   const mcpToolNames = mcpTools.map((t) => t.name);
   // Agent-bound runs (external invoke, and any future path that threads a spec)

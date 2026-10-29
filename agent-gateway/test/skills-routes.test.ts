@@ -480,10 +480,14 @@ async function makeAppWithAuth() {
     async listWorkspaceFiles() {
       return { files: [] };
     },
+    async mintSessionGrant(req: { tenantId: string; userId: string }, token?: string) {
+      calls.mintSessionGrant = { req, token };
+      return { ownerGrant: "grant-alice" };
+    },
   };
 
   const south = {
-    async listUserAgentSkills(req: { tenantId: string; userId: string }) {
+    async listUserAgentSkills(req: { tenantId: string; userId: string; ownerGrant: string }) {
       calls.listUserAgentSkills = req;
       if (listUserAgentSkillsErr) throw listUserAgentSkillsErr;
       return { bundles: [{ id: "b1", name: "deployer", description: "d", body: "", allowedTools: [], contextFork: false, disableModelInvocation: false, keywords: [], createdBy: "admin@example.com", filePaths: [] }] };
@@ -507,6 +511,9 @@ test("GET /skills — returns own skills + granted bundles", async () => {
 
   assert.equal(res.statusCode, 200);
   assert.deepEqual(calls.listPersonalSkills, { tenantId: "aikonos-dev", userId: "alice@example.com" });
+  // F171: the granted-bundle south read presents the caller's own session grant.
+  assert.deepEqual(calls.mintSessionGrant, { req: { tenantId: "aikonos-dev", userId: "alice@example.com" }, token });
+  assert.deepEqual(calls.listUserAgentSkills, { tenantId: "aikonos-dev", userId: "alice@example.com", ownerGrant: "grant-alice" });
   const body = JSON.parse(res.body);
   assert.equal(body.skills.length, 1);
   assert.equal(body.granted.length, 1);

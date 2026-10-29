@@ -63,6 +63,7 @@ function makeDeps(south: AllowlistSouth, tenantId = "tenant-1"): Parameters<type
     tenantId,
     log: makeLog(),
     userId: "alice",
+    ownerGrant: "grant-alice",
   };
 }
 

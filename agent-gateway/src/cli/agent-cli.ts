@@ -19,11 +19,17 @@ async function main(): Promise<void> {
   const clients = new BrokerClients(cfg);
   // AG-01: run as the user's default agent, resolved by the broker.
   const { agentId = "" } = await clients.south.resolveRunAgent({ tenantId: cfg.defaultTenantId, userId, agentId: "" });
+  const token = process.env.AIKONOS_OIDC_TOKEN;
   const identity: Identity = {
-    token: process.env.AIKONOS_OIDC_TOKEN,
+    token,
     tenantId: cfg.defaultTenantId,
     userId,
     agentId: `agent:${agentId}`,
+    // F171: south reads need the session's owner grant; without a token only
+    // a dev-mode broker serves them.
+    ownerGrant: token
+      ? (await clients.north.mintSessionGrant({ tenantId: cfg.defaultTenantId, userId }, token)).ownerGrant
+      : undefined,
   };
 
   // Same breaker-wrapped rate-limit pre-gate server.ts builds. Without it the
@@ -42,7 +48,7 @@ async function main(): Promise<void> {
   // provider directly with the real OpenRouter key, mirroring the legacy
   // buildSession behaviour — the CLI is a trusted local process, not the
   // untrusted forked child.
-  const resolveIdentity: ResolveIdentity = { tenantId: identity.tenantId, userId, agentId };
+  const resolveIdentity: ResolveIdentity = { tenantId: identity.tenantId, userId, agentId, ownerGrant: identity.ownerGrant };
   const plan = await resolveSessionPlan(resolveIdentity, {
     south: {
       getLlmProviders: (req) => clients.south.getLlmProviders(req),

@@ -75,7 +75,10 @@ export interface Identity {
   tenantId: string;
   userId: string;
   agentId: string; // registered agent acting for this user: "agent:<uuid>" or bare uuid (AG-01)
-  ownerGrant?: string; // broker-minted HMAC grant (south-path only; absent on the north/bearer path)
+  // Broker-minted HMAC owner grant: the scheduled/external/workflow run's own,
+  // or an interactive session's (MintSessionGrant, F171). South calls carry it;
+  // the broker takes the user from it.
+  ownerGrant?: string;
   runId?: string; // scheduled-run id (scheduler-path only); forwarded as CreateGatewayTask's client_request_id for idempotent replay
   envelopeId?: string; // inbox envelope this chat run handles (AG-17); the broker records its sender as delegated_by when the caller is the recipient
   // F51: the tool ids this run's own approver pre-approves (an auto agent's
@@ -467,6 +470,7 @@ export class GovernanceBridge {
                 approved: true,
                 reason: "approved via agent-gateway",
                 argsDigest,
+                ownerGrant: this.identity.ownerGrant ?? "",
               })
           ).catch((err: unknown) => {
             if (isStepUpRequired(err)) return undefined;
@@ -665,11 +669,20 @@ export class GovernanceBridge {
     }
     for (const connectorId of connectorIds) {
       try {
+        // F171: a personal token-path run (the HTTP workflow route) has no
+        // owner grant yet; it mints its session's own on first need.
+        if (!this.identity.ownerGrant && this.identity.token) {
+          this.identity.ownerGrant = (await this.north.mintSessionGrant(
+            { tenantId: this.identity.tenantId, userId: this.identity.userId },
+            this.identity.token,
+          )).ownerGrant;
+        }
         const resp = await this.south.listMcpServerToolsSouth({
           tenantId: this.identity.tenantId,
           userId: this.identity.userId,
           agentId: this.identity.agentId,
           connectorId,
+          ownerGrant: this.identity.ownerGrant ?? "",
         });
         for (const t of resp.tools ?? []) {
           if (typeof t.readOnlyHint === "boolean") {
@@ -1110,6 +1123,7 @@ export class GovernanceBridge {
         tenantId: this.identity.tenantId,
         userId: this.identity.userId,
         name,
+        ownerGrant: this.identity.ownerGrant ?? "",
       });
       return { ok: true, body: resp.body, allowedTools: resp.allowedTools, filePaths: resp.filePaths };
     } catch (err) {
@@ -1143,6 +1157,7 @@ export class GovernanceBridge {
           userId: this.identity.userId,
           name: ref.slice(PERSONAL_SKILL_PREFIX.length),
           path,
+          ownerGrant: this.identity.ownerGrant ?? "",
         });
         return { ok: true, contentB64: Buffer.from(resp.content).toString("base64") };
       }
@@ -1151,6 +1166,7 @@ export class GovernanceBridge {
         userId: this.identity.userId,
         id: ref,
         path,
+        ownerGrant: this.identity.ownerGrant ?? "",
       });
       return { ok: true, contentB64: Buffer.from(resp.content).toString("base64") };
     } catch (err) {

@@ -9,6 +9,7 @@ package broker
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -449,5 +450,48 @@ func TestGetPersonalSkillFileSouth_GroupPrefixedUserReturnsNotFound(t *testing.T
 	req := &brokerv1.GetPersonalSkillFileSouthRequest{TenantId: testTenantUUID, UserId: "group-" + pskUser, Name: "demo", Path: "references/notes.md"}
 	if _, err := svc.GetPersonalSkillFileSouth(gatewayCtxForWorkflow(), req); status.Code(err) != codes.NotFound {
 		t.Fatalf("want NotFound for a group- user, got %v", err)
+	}
+}
+
+// readCountingBackend counts Reads, to prove an over-cap file is never buffered.
+type readCountingBackend struct {
+	workspaceFS
+	reads int
+}
+
+func (b *readCountingBackend) Read(ctx context.Context, tenant, user, rel string) ([]byte, time.Time, error) {
+	b.reads++
+	return b.workspaceFS.Read(ctx, tenant, user, rel)
+}
+
+// G17: the single-skill south reads refuse an over-cap SKILL.md or skill file
+// from its listed size, without reading it.
+func TestPersonalSkillSouth_OversizeNotRead(t *testing.T) {
+	root := t.TempDir()
+	deps := personalSkillsDeps(t, pskGrantedFGA(t), root)
+	ctx := context.Background()
+	if _, err := deps.Workspace.Local.Write(ctx, testTenantUUID, pskUser, "Skills/big/SKILL.md", make([]byte, personalskill.MaxSkillMdBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillMd(t, deps.Workspace.Local, testTenantUUID, pskUser, "demo", demoSkillMd)
+	if _, err := deps.Workspace.Local.Write(ctx, testTenantUUID, pskUser, "Skills/demo/big.bin", make([]byte, personalskill.MaxSkillFileBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	be := &readCountingBackend{workspaceFS: deps.Workspace.Local}
+	deps.Workspace.Local = be
+	svc := NewSandboxService(deps)
+
+	if _, err := svc.GetPersonalSkillSouth(gatewayCtxForWorkflow(), &brokerv1.GetPersonalSkillSouthRequest{
+		TenantId: testTenantUUID, UserId: pskUser, Name: "big",
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("oversize SKILL.md: want NotFound, got %v", err)
+	}
+	if _, err := svc.GetPersonalSkillFileSouth(gatewayCtxForWorkflow(), &brokerv1.GetPersonalSkillFileSouthRequest{
+		TenantId: testTenantUUID, UserId: pskUser, Name: "demo", Path: "big.bin",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("oversize file: want InvalidArgument, got %v", err)
+	}
+	if be.reads != 0 {
+		t.Fatalf("over-cap files were read %d times", be.reads)
 	}
 }

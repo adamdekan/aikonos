@@ -14,6 +14,7 @@
 package memorybundle
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -41,6 +42,13 @@ const (
 	// magnitude below that.
 	MaxTitleChars = 200
 	MaxDescChars  = 500
+
+	// MaxTags and MaxTagChars bound a concept's tags (F202), the same limits
+	// personal-skill keywords have and the gateway clips recall tags to: every
+	// tag becomes a keyword pattern matched against each chat prompt, so an
+	// uncapped list lets one bundle writer stall the shared gateway.
+	MaxTags     = 32
+	MaxTagChars = 64
 
 	// IndexFile and LogFile are server-maintained and never writable as concepts.
 	IndexFile = "index.md"
@@ -170,6 +178,22 @@ type generatedStamp struct {
 	At time.Time `yaml:"at"`
 }
 
+// ErrTagCap marks a concept whose tags exceed MaxTags or MaxTagChars.
+var ErrTagCap = errors.New("memorybundle: tags over the cap")
+
+// checkTags enforces MaxTags and MaxTagChars (F202).
+func checkTags(tags []string) error {
+	if len(tags) > MaxTags {
+		return fmt.Errorf("%w: %d tags, at most %d", ErrTagCap, len(tags), MaxTags)
+	}
+	for _, t := range tags {
+		if n := utf8.RuneCountInString(t); n > MaxTagChars {
+			return fmt.Errorf("%w: a tag is %d characters, at most %d", ErrTagCap, n, MaxTagChars)
+		}
+	}
+	return nil
+}
+
 // ComposeConcept builds the canonical concept file bytes. generatedBy and
 // generatedAt are the server-side stamp (`user:<sub>` or `agent:<id>`, now UTC);
 // both are required. Fails loud on a missing type/body, an unknown status, a
@@ -187,6 +211,9 @@ func ComposeConcept(spec ConceptSpec, generatedBy string, generatedAt time.Time)
 	}
 	if n := utf8.RuneCountInString(spec.Description); n > MaxDescChars {
 		return nil, fmt.Errorf("memorybundle: description is %d characters, exceeds the %d character cap", n, MaxDescChars)
+	}
+	if err := checkTags(spec.Tags); err != nil {
+		return nil, err
 	}
 	if generatedBy == "" {
 		return nil, fmt.Errorf("memorybundle: generated.by must not be empty")
@@ -253,6 +280,18 @@ func AmendFrontmatter(data []byte, mutate func(fm map[string]any)) ([]byte, erro
 	// the concept from every later index regeneration.
 	if t, _ := c.Frontmatter["type"].(string); strings.TrimSpace(t) == "" {
 		return nil, fmt.Errorf("memorybundle: amend must leave a non-empty \"type\"")
+	}
+	// F202: a concept written before the tag caps is not re-emitted (or
+	// verified) over them; memory.write rewriting it, or a delete, recovers.
+	raw, _ := c.Frontmatter["tags"].([]any)
+	tags := make([]string, 0, len(raw))
+	for _, t := range raw {
+		if s, ok := t.(string); ok {
+			tags = append(tags, s)
+		}
+	}
+	if err := checkTags(tags); err != nil {
+		return nil, err
 	}
 	fm, err := yaml.Marshal(c.Frontmatter)
 	if err != nil {

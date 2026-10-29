@@ -23,13 +23,14 @@ import (
 // The gateway calls this during session build to discover which tools to
 // expose to Pi for the requesting user.
 func (s *SandboxService) ListUserSkills(ctx context.Context, req *brokerv1.ListUserSkillsRequest) (*brokerv1.ListUserSkillsResponse, error) {
-	if err := s.requireGatewayPeer(ctx); err != nil {
+	tenant, user, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, req.UserId)
+	if err != nil {
 		return nil, err
 	}
-	if req.TenantId == "" {
+	if tenant == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id required")
 	}
-	if req.UserId == "" {
+	if user == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id required")
 	}
 
@@ -43,7 +44,7 @@ func (s *SandboxService) ListUserSkills(ctx context.Context, req *brokerv1.ListU
 	fgaOn := sp != nil && sp.FGAEnabled()
 
 	out := make([]*brokerv1.SkillItem, 0, len(all))
-	userRef := "user:" + req.UserId
+	userRef := "user:" + user
 	for _, e := range all {
 		if fgaOn {
 			granted, err := sp.CheckFGA(ctx, userRef, "can_invoke", "skill:"+e.ToolID)

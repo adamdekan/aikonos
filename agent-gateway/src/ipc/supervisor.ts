@@ -524,6 +524,7 @@ export class ChildSupervisor {
       tenantId: identity.tenantId,
       userId: identity.userId,
       agentId: identity.agentId,
+      ownerGrant: identity.ownerGrant,
     };
     const plan = await resolveSessionPlan(resolveIdentity, {
       south: this.deps.south,
@@ -814,6 +815,7 @@ export class ChildSupervisor {
         tenantId: identity.tenantId,
         userId: identity.userId,
         agentId: identity.agentId,
+        ownerGrant: identity.ownerGrant,
       };
       const plan = await resolveSessionPlan(resolveIdentity, {
         south: this.deps.south,

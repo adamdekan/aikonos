@@ -44,6 +44,9 @@ func toProtoScimToken(t db.ScimToken) *brokerv1.ScimToken {
 	if t.LastUsedAt != nil {
 		out.LastUsedAt = timestamppb.New(*t.LastUsedAt)
 	}
+	if !t.ExpiresAt.IsZero() {
+		out.ExpiresAt = timestamppb.New(t.ExpiresAt)
+	}
 	return out
 }
 

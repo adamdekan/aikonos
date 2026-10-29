@@ -69,6 +69,7 @@ export function scimTokenView(t: ScimToken) {
     createdBy: t.createdBy,
     createdAt: t.createdAt ? t.createdAt.toISOString() : null,
     lastUsedAt: t.lastUsedAt ? t.lastUsedAt.toISOString() : null,
+    expiresAt: t.expiresAt ? t.expiresAt.toISOString() : null, // F13
   };
 }
 
@@ -1051,7 +1052,7 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AdminCtx): void {
       if (!principal) return;
       try {
         const resp = await clients.north.listMcpServerTools(
-          { tenantId: principal.tenant, userId: principal.sub, connectorId: req.params.id, agentId: "" },
+          { tenantId: principal.tenant, userId: principal.sub, connectorId: req.params.id, agentId: "", ownerGrant: "" },
           principal.token,
         );
         reply.send({

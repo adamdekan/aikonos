@@ -27,6 +27,7 @@ export interface SkillsCtx {
       | "acceptSkillTransfer"
       | "listWorkspaceFiles"
       | "uploadWorkspaceFile"
+      | "mintSessionGrant"
     >;
     south: Pick<SouthClient, "listUserAgentSkills">;
   };
@@ -313,7 +314,9 @@ export function registerSkillsRoutes(app: FastifyInstance, ctx: SkillsCtx): void
     let granted: Awaited<ReturnType<typeof clients.south.listUserAgentSkills>>["bundles"] = [];
     let grantedUnavailable = false;
     try {
-      const resp = await clients.south.listUserAgentSkills({ tenantId: principal.tenant, userId: principal.sub });
+      // F171: the south read presents this session's owner grant.
+      const { ownerGrant } = await clients.north.mintSessionGrant({ tenantId: principal.tenant, userId: principal.sub }, principal.token);
+      const resp = await clients.south.listUserAgentSkills({ tenantId: principal.tenant, userId: principal.sub, ownerGrant });
       granted = resp.bundles ?? [];
     } catch (err) {
       log.warn({ err: String(err), userId: principal.sub }, "listUserAgentSkills RPC failed — granted skills section unavailable");
