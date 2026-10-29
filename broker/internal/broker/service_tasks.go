@@ -207,12 +207,14 @@ func (s *BrokerService) writeTaskRelations(ctx context.Context, owner, taskID st
 }
 
 // GetTaskState returns the current state and cost counters for a task;
-// returns NotFound when the task does not exist under the given tenant.
+// returns NotFound when the task does not exist under the given tenant and
+// PermissionDenied unless the caller owns the task, may approve it, or is a
+// tenant admin (M-01).
 func (s *BrokerService) GetTaskState(ctx context.Context, req *brokerv1.GetTaskStateRequest) (*brokerv1.TaskState, error) {
 	ctx, span := tracer.Start(ctx, "broker.task.get_state")
 	defer span.End()
 
-	tenant, _, err := s.callerIdentity(ctx, req.TenantId, "")
+	tenant, user, err := s.callerIdentity(ctx, req.TenantId, "")
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +226,26 @@ func (s *BrokerService) GetTaskState(ctx context.Context, req *brokerv1.GetTaskS
 		}
 		s.deps.Logger.Error("GetTaskState: DB query failed", zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "failed to get task")
+	}
+
+	// Owner, an approver of this task (so they can see what they decide), or a
+	// tenant admin. An FGA error fails closed.
+	if t.OwnerUserID != user {
+		ok, ferr := s.deps.Policy.CheckFGA(ctx, "user:"+user, "can_approve", "task:"+req.TaskId)
+		switch {
+		case ferr != nil:
+			err = status.Error(codes.Internal, "authorization check failed")
+		case !ok:
+			err = s.requireTenantAdmin(ctx, user)
+		}
+		if err != nil {
+			emitTaskAudit(ctx, s.deps, span.SpanContext().TraceID().String(), tenant, req.TaskId, user,
+				"aikonos.broker.task.get_denied", auditv1.PolicyDecision_DENY, t)
+			if status.Code(err) == codes.PermissionDenied {
+				return nil, status.Error(codes.PermissionDenied, "only the task owner, an approver, or a tenant admin may read this task")
+			}
+			return nil, err
+		}
 	}
 
 	return taskToProto(t), nil
