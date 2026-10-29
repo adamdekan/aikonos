@@ -19,7 +19,7 @@ function approvalResponse(capToken = "tok-1") {
 }
 
 // The broker's approval row as GetGatewayApproval reports it (AG-07 slice 2).
-function gatewayApproval(over: Partial<{ status: TaskStatus; ownerMayApprove: boolean; capabilityTokenIds: Record<number, string> }> = {}) {
+function gatewayApproval(over: Partial<{ status: TaskStatus; ownerMayApprove: boolean; requiresN: number; approvals: number; capabilityTokenIds: Record<number, string> }> = {}) {
   return { status: TaskStatus.AWAITING_APPROVAL, requiresN: 1, approvals: 0, stepUp: false, ownerMayApprove: true, capabilityTokenIds: {}, ...over };
 }
 
@@ -292,6 +292,26 @@ test("2-of-n gate the owner may not vote on: waits, then runs on the others' app
   assert.equal(shown?.ownerMayApprove, false, "dialog is told the owner cannot vote");
   assert.equal(released, true, "dialog released once the broker decided");
   assert.equal(south.calls.filter((c) => c.method === "approveGatewayTask").length, 0, "owner never votes");
+});
+
+test("the waiting dialog's vote count follows the broker poll", async () => {
+  const south = makeSouth(needsHumanPlan(), [
+    gatewayApproval({ ownerMayApprove: false, requiresN: 3, approvals: 0 }),
+    gatewayApproval({ ownerMayApprove: false, requiresN: 3, approvals: 2 }),
+    gatewayApproval({ status: TaskStatus.APPROVED, capabilityTokenIds: { 1: "tok" } }),
+  ]);
+  let shown: { approvals: number } | undefined;
+  const counts: number[] = [];
+  const waitingDialog = (info: { approvals: number }, decided?: AbortSignal) => {
+    shown = info;
+    return new Promise<boolean>((resolve) => decided?.addEventListener("abort", () => { counts.push(info.approvals); resolve(false); }));
+  };
+  const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, waitingDialog, log);
+  bridge.approvalPollMs = 1;
+
+  assert.equal((await bridge.gate("call-count", "web_fetch", { url: "https://example.com" })).allow, true);
+  assert.ok(shown);
+  assert.deepEqual(counts, [2], "the info the dialog holds saw the second vote");
 });
 
 test("a denial cast elsewhere (Inbox) ends the wait with a refusal", async () => {

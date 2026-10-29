@@ -98,6 +98,8 @@ export interface ApprovalInfo {
   // threshold, votes so far, and whether the run's own user may vote. False
   // under separation of duty: the dialog then waits for the other approvers.
   requiresN: number;
+  // Kept current by the broker poll while the call waits, so the requester's
+  // card (GET /approvals) counts the votes as they come in.
   approvals: number;
   ownerMayApprove: boolean;
   // The chat thread whose run asked (set by /agui), so a chat lists only its
@@ -355,7 +357,7 @@ export class GovernanceBridge {
     const stop = () => decided.abort();
     this.closed.signal.addEventListener("abort", stop);
     try {
-      const remote = this.pollApproval(taskId, decided.signal);
+      const remote = this.pollApproval(taskId, decided.signal, info);
       let local: boolean | undefined;
       let state = await Promise.race([
         remote,
@@ -414,6 +416,7 @@ export class GovernanceBridge {
   private async pollApproval(
     taskId: string,
     signal: AbortSignal,
+    info: ApprovalInfo,
   ): Promise<{ status: TaskStatus; capabilityTokenIds: Record<number, string> }> {
     const cancelled = { status: TaskStatus.CANCELLED, capabilityTokenIds: {} };
     for (;;) {
@@ -426,6 +429,7 @@ export class GovernanceBridge {
         const st = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
         if (signal.aborted) return cancelled;
         if (st.status !== TaskStatus.AWAITING_APPROVAL) return st;
+        info.approvals = st.approvals;
       } catch (err) {
         this.log.warn({ taskId, err: String(err) }, "approval poll failed; retrying");
       }

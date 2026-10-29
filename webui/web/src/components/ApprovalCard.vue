@@ -3,12 +3,12 @@
 // decides a gated call of its run. It comes from the live stream or, after a
 // reload or on reopening the session, from the broker's pending list. Approve
 // and Deny go to the broker with the args digest shown (slice 2: a live run
-// wakes on its broker poll). A step-up approval refused for want of a recent
-// MFA sign-in (AG-13) offers a fresh sign-in, then retries.
-import { ref, computed, onMounted } from "vue";
+// wakes on its broker poll). A step-up gate never asks its requester for a
+// vote (n >= 2, separation of duty), so its MFA re-sign-in (AG-13) lives in the
+// approvers' Inbox, not here.
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { get, post } from "../api/client.js";
-import { decideApproval, isStepUpRequired, withdrawApproval } from "../api/approvals.js";
-import { stepUpSignin } from "../auth/oidc.js";
+import { decideApproval, withdrawApproval } from "../api/approvals.js";
 import ArgsView from "./ArgsView.vue";
 import Icon from "./Icon.vue";
 import ToggleSwitch from "./ui/ToggleSwitch.vue";
@@ -26,10 +26,10 @@ const emit = defineEmits(["done"]);
 const root = ref(null);
 const busy = ref("");          // "approve" | "deny" while a decision is in flight
 const error = ref("");
-const stepUpAcr = ref(null);   // set while a fresh MFA sign-in is due (AG-13)
 const reviewed = ref(false);
 const voted = ref(false);      // our vote is in, more approvers are due
 const gone = ref("");          // the run that asked no longer exists
+const approvals = ref(null);   // live vote count from the run's /approvals entry
 
 const id = computed(() => props.request.toolCallId);
 const highRisk = computed(() => !!(props.request.stepUp || props.request.risk === "high"));
@@ -38,11 +38,30 @@ const highRisk = computed(() => !!(props.request.stepUp || props.request.risk ==
 // (the broker then closes the request and cancels its task).
 const waitingFor = computed(() =>
   props.request.ownerMayApprove === false || voted.value
-    ? Math.max(1, (props.request.requiresN ?? 1) - (props.request.approvals ?? 0) - (voted.value ? 1 : 0))
+    ? Math.max(1, (props.request.requiresN ?? 1) - (approvals.value ?? props.request.approvals ?? 0) - (voted.value ? 1 : 0))
     : 0
 );
 
-onMounted(() => root.value?.scrollIntoView?.({ block: "nearest" }));
+// While waiting on others, re-read the run's approval (the gateway keeps its
+// vote count current from the broker) so the count drops as they vote. The
+// card goes away when the request resolves, which stops the poll.
+const POLL_MS = 5000;
+let poll;
+async function refreshCount() {
+  if (!waitingFor.value || gone.value || busy.value) return;
+  try {
+    const a = ((await get("/approvals")).approvals ?? []).find((x) => x.toolCallId === id.value);
+    if (a && typeof a.approvals === "number") approvals.value = a.approvals;
+  } catch {
+    // Best effort: the next tick retries.
+  }
+}
+
+onMounted(() => {
+  root.value?.scrollIntoView?.({ block: "nearest" });
+  poll = setInterval(refreshCount, POLL_MS);
+});
+onBeforeUnmount(() => clearInterval(poll));
 
 // The gateway holds an approval only while its run waits on it; a reload or a
 // gateway restart ends the run, the broker keeps the request.
@@ -58,7 +77,6 @@ async function respond(approved) {
   if (busy.value) return;
   busy.value = approved ? "approve" : "deny";
   error.value = "";
-  stepUpAcr.value = null;
   const { taskId, argsDigest = "" } = props.request;
   try {
     if (waitingFor.value && taskId) {
@@ -87,26 +105,10 @@ async function respond(approved) {
       emit("done", id.value);
     }
   } catch (e) {
-    if (isStepUpRequired(e)) {
-      stepUpAcr.value = e.data.acr ?? "";
-      error.value = "This approval needs a recent multi-factor sign-in.";
-    } else {
-      error.value = e?.message || "Decision failed. Please try again.";
-    }
+    error.value = e?.message || "Decision failed. Please try again.";
   } finally {
     busy.value = "";
   }
-}
-
-// Fresh MFA sign-in in a popup (keeps this page and its run alive), then retry.
-async function verifyAndApprove() {
-  try {
-    await stepUpSignin(stepUpAcr.value);
-  } catch (e) {
-    error.value = e?.message || "Sign-in failed";
-    return;
-  }
-  await respond(true);
 }
 </script>
 
@@ -152,13 +154,6 @@ async function verifyAndApprove() {
       <p v-if="error" class="ac-error" role="alert">{{ error }}</p>
 
       <div class="ac-actions">
-        <button
-          v-if="stepUpAcr !== null"
-          class="ac-btn ac-approve"
-          :disabled="!!busy"
-          :data-testid="`chat-approval-step-up-${id}`"
-          @click="verifyAndApprove"
-        >Verify sign-in and approve</button>
         <button
           class="ac-btn"
           :disabled="!!busy"

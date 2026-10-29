@@ -12,8 +12,6 @@ vi.mock("../api/client.js", () => ({
   del: vi.fn(),
   patch: vi.fn(),
 }));
-const mockStepUpSignin = vi.fn().mockResolvedValue(undefined);
-vi.mock("../auth/oidc.js", () => ({ stepUpSignin: (...a) => mockStepUpSignin(...a) }));
 
 const base = {
   toolCallId: "tc-1",
@@ -36,7 +34,6 @@ describe("ApprovalCard.vue", () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockPost.mockResolvedValue({ newStatus: 5 });
-    mockStepUpSignin.mockClear();
   });
 
   it("shows the tool, the risk and collapsed arguments", () => {
@@ -129,23 +126,30 @@ describe("ApprovalCard.vue", () => {
     expect(w.find("[data-testid='chat-approval-gone-tc-1']").exists()).toBe(true);
   });
 
-  // AG-13: approve stays locked until reviewed; a refusal for want of MFA
-  // offers a fresh sign-in, then retries.
-  it("step-up: signs in again on step_up_required and retries", async () => {
-    live();
-    const stepUpErr = Object.assign(new Error("step_up_required"), { status: 401, data: { error: "step_up_required", acr: "mfa" } });
-    mockPost.mockRejectedValueOnce(stepUpErr).mockResolvedValueOnce({ newStatus: 5 });
-    const w = card({ stepUp: true });
-    expect(w.find("[data-testid='chat-approve-tc-1']").attributes("disabled")).toBeDefined();
-    await w.find("[data-testid='chat-approval-reviewed-tc-1']").trigger("click");
-    await w.find("[data-testid='chat-approve-tc-1']").trigger("click");
-    await flushPromises();
-    expect(w.find("[role='alert']").text()).toContain("multi-factor");
+  // A step-up gate needs two approvers other than the requester (M-11), so
+  // the chat card only waits; the MFA re-sign-in lives in the Inbox.
+  it("step-up: the requester waits, with no approve or sign-in path", () => {
+    const w = card({ stepUp: true, ownerMayApprove: false, requiresN: 2 });
+    expect(w.find("[data-testid='chat-approval-waiting-tc-1']").exists()).toBe(true);
+    expect(w.find("[data-testid='chat-approve-tc-1']").exists()).toBe(false);
+    expect(w.find("[data-testid='chat-approval-step-up-tc-1']").exists()).toBe(false);
+  });
 
-    await w.find("[data-testid='chat-approval-step-up-tc-1']").trigger("click");
-    await flushPromises();
-    expect(mockStepUpSignin).toHaveBeenCalledWith("mfa");
-    expect(mockPost).toHaveBeenCalledTimes(2);
-    expect(w.emitted("done")).toBeTruthy();
+  it("n-of-m: the waiting count follows the votes as they come in", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGet.mockResolvedValue({ approvals: [{ toolCallId: "tc-1", approvals: 2 }] });
+      const w = card({ ownerMayApprove: false, requiresN: 3, approvals: 0 });
+      expect(w.find("[data-testid='chat-approval-waiting-tc-1']").text()).toContain("Waiting for 3 more approvers");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(mockGet).toHaveBeenCalledWith("/approvals");
+      expect(w.find("[data-testid='chat-approval-waiting-tc-1']").text()).toContain("Waiting for 1 more approver.");
+      w.unmount();
+      mockGet.mockClear();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(mockGet).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
