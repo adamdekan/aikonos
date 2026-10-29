@@ -320,7 +320,7 @@ const TABLE_COLS = [
             <template #row="{ row: ev }">
               <td class="muted mono nowrap" data-testid="audit-history-time">{{ fmtTimeHistory(ev) }}</td>
               <td class="accent mono">{{ ev.event_type }}</td>
-              <td class="mono">{{ actor(ev) }}</td>
+              <td class="mono overflow" :title="actor(ev)">{{ actor(ev) }}</td>
               <td class="muted overflow" :title="ev.resource_ref">{{ ev.resource_ref }}</td>
               <td><DecisionBadge :decision="ev.decision" /></td>
             </template>
@@ -522,7 +522,7 @@ const TABLE_COLS = [
 
 .table-wrap {
   flex: 1 1 auto;
-  overflow-y: auto;
+  overflow: auto;
   min-width: 0;
 }
 
@@ -599,6 +599,6 @@ const TABLE_COLS = [
 .mono    { font-family: var(--font-mono); }
 .muted   { color: var(--text-muted); }
 .accent  { color: var(--accent-text); }
-.overflow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overflow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .nowrap  { white-space: nowrap; }
 </style>

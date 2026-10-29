@@ -156,6 +156,8 @@ async function submitAssign() {
 }
 
 async function revoke(tuple) {
+  const subject = displayNameById.value[tuple.user] ?? tuple.user;
+  if (!confirm(`Revoke ${tuple.relation} for ${subject} on ${objectLabel(tuple.object)}? This changes who can approve/access at once.`)) return;
   try {
     await revokeRole(tuple);
     toast("ok", "Assignment revoked.");
