@@ -4,6 +4,8 @@
 //! denies, the backdrop does nothing, and a step-up call keeps Approve
 //! locked until the user confirms they reviewed the arguments. If the
 //! dialog closes any other way while still undecided, the call is denied.
+//! Nested arguments start expanded, as in ArgsView.vue: nothing the user
+//! approves is hidden until clicked.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,7 +45,8 @@ pub struct ApprovalPanel {
     pending: Option<Pending>,
     decided: bool,
     error: Option<SharedString>,
-    open_paths: HashSet<String>,
+    /// Nested arguments the user folded away; everything else is shown.
+    collapsed_paths: HashSet<String>,
     deny_focus: FocusHandle,
 }
 
@@ -64,7 +67,7 @@ impl ApprovalPanel {
             pending: None,
             decided: false,
             error: None,
-            open_paths: HashSet::new(),
+            collapsed_paths: HashSet::new(),
             deny_focus: cx.focus_handle().tab_stop(true),
         }
     }
@@ -209,7 +212,7 @@ impl ApprovalPanel {
                     .child(key.clone());
                 match value {
                     Value::Object(_) | Value::Array(_) if depth < MAX_DEPTH => {
-                        let open = self.open_paths.contains(&key_path);
+                        let open = is_open(&self.collapsed_paths, &key_path);
                         let count = match value {
                             Value::Array(items) => {
                                 format!("[ {} item{} ]", items.len(), if items.len() == 1 { "" } else { "s" })
@@ -219,16 +222,7 @@ impl ApprovalPanel {
                             }
                             _ => String::new(),
                         };
-                        let nested = match value {
-                            Value::Array(items) => Value::Object(
-                                items
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(ix, item)| (ix.to_string(), item.clone()))
-                                    .collect(),
-                            ),
-                            other => other.clone(),
-                        };
+                        let nested = nested_args(value);
                         let toggle_path = key_path.clone();
                         v_flex()
                             .child(
@@ -237,8 +231,8 @@ impl ApprovalPanel {
                                     .gap_2()
                                     .cursor_pointer()
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !this.open_paths.remove(&toggle_path) {
-                                            this.open_paths.insert(toggle_path.clone());
+                                        if !this.collapsed_paths.remove(&toggle_path) {
+                                            this.collapsed_paths.insert(toggle_path.clone());
                                         }
                                         cx.notify();
                                     }))
@@ -264,11 +258,7 @@ impl ApprovalPanel {
                             .into_any_element()
                     }
                     other => {
-                        let text = match other {
-                            Value::String(text) => text.clone(),
-                            Value::Null => "null".into(),
-                            other => other.to_string(),
-                        };
+                        let text = leaf_text(other);
                         h_flex()
                             .items_start()
                             .gap_2()
@@ -277,6 +267,7 @@ impl ApprovalPanel {
                                 div()
                                     .flex_1()
                                     .min_w_0()
+                                    .whitespace_normal()
                                     .text_sm()
                                     .text_color(theme.foreground)
                                     .when(depth >= MAX_DEPTH, |this| {
@@ -289,6 +280,36 @@ impl ApprovalPanel {
                 }
             }))
             .into_any_element()
+    }
+}
+
+/// Whether a nested argument shows its contents: yes unless folded away.
+fn is_open(collapsed_paths: &HashSet<String>, key_path: &str) -> bool {
+    !collapsed_paths.contains(key_path)
+}
+
+/// A nested value as the object `render_args` walks; an array's items are
+/// keyed by index.
+fn nested_args(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Object(
+            items
+                .iter()
+                .enumerate()
+                .map(|(ix, item)| (ix.to_string(), item.clone()))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The full text of a value shown as a leaf; past `MAX_DEPTH` that is the
+/// whole remaining JSON.
+fn leaf_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".into(),
+        other => other.to_string(),
     }
 }
 
@@ -371,5 +392,61 @@ impl Render for ApprovalPanel {
             .when_some(self.error.clone(), |this, error| {
                 this.child(div().text_sm().text_color(theme.danger).child(error))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use serde_json::Value;
+
+    use super::{MAX_DEPTH, is_open, leaf_text, nested_args};
+
+    /// The text `render_args` puts on screen for `args`, walked with the
+    /// same rules: which nodes are open, how they nest, what a leaf shows.
+    fn visible_text(args: &Value, path: &str, depth: usize, collapsed: &HashSet<String>, out: &mut Vec<String>) {
+        let Some(map) = args.as_object() else {
+            return;
+        };
+        for (key, value) in map {
+            let key_path = format!("{path}/{key}");
+            match value {
+                Value::Object(_) | Value::Array(_) if depth < MAX_DEPTH => {
+                    if is_open(collapsed, &key_path) {
+                        visible_text(&nested_args(value), &key_path, depth + 1, collapsed, out);
+                    }
+                }
+                other => out.push(leaf_text(other)),
+            }
+        }
+    }
+
+    #[test]
+    fn nested_arguments_are_visible_without_a_click() {
+        let args = serde_json::json!({
+            "subject": "Q3 numbers",
+            "to": "me@corp.example",
+            "cc": ["attacker@evil.example"],
+            "attachments": [{"path": "finance/payroll.xlsx"}],
+            "deep": {"a": {"b": {"c": {"d": {"e": "hidden-five-levels-down"}}}}},
+        });
+        let mut shown = Vec::new();
+        visible_text(&args, "", 0, &HashSet::new(), &mut shown);
+        let shown = shown.join("\n");
+        for leaf in [
+            "Q3 numbers",
+            "attacker@evil.example",
+            "finance/payroll.xlsx",
+            "hidden-five-levels-down",
+        ] {
+            assert!(shown.contains(leaf), "{leaf} not shown in {shown}");
+        }
+
+        // Folding is the user's choice, and only hides what they folded.
+        let mut folded = Vec::new();
+        visible_text(&args, "", 0, &HashSet::from(["/cc".to_owned()]), &mut folded);
+        assert!(!folded.join("\n").contains("attacker@evil.example"));
+        assert!(folded.join("\n").contains("finance/payroll.xlsx"));
     }
 }

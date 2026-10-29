@@ -69,6 +69,14 @@ impl Prefs {
     }
 
     fn clamped(mut self) -> Self {
+        // An address saved before credentials were refused loses them.
+        if let Ok(mut url) = url::Url::parse(&self.server)
+            && (!url.username().is_empty() || url.password().is_some())
+        {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            self.server = url.to_string();
+        }
         if self.chat_instructions.chars().count() > MAX_CHAT_INSTRUCTIONS_CHARS {
             self.chat_instructions = self
                 .chat_instructions
@@ -113,6 +121,12 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_server_addresses_lose_credentials() {
+        let prefs: Prefs = serde_json::from_str(r#"{"server":"https://alice:S3cret@ai.example.org/"}"#).unwrap();
+        assert_eq!(prefs.clamped().server, "https://ai.example.org/");
+    }
 
     #[test]
     fn missing_fields_take_defaults() {

@@ -17,11 +17,16 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
+use crate::connection::{AUTH_TIMEOUT, read_text};
 use crate::error::{ApiError, ApiResult};
 use crate::server::{OidcSettings, TokenKind};
 
 /// How long the loopback listener waits for the browser to come back.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// The identity provider's answers are small JSON documents.
+const PROVIDER_BODY_LIMIT: usize = 1024 * 1024;
+/// The longest token lifetime believed; a larger `expires_in` is clamped.
+const MAX_TOKEN_LIFETIME: u64 = 24 * 60 * 60;
 const CALLBACK_PATH: &str = "/callback";
 
 /// The endpoints published at `<authority>/.well-known/openid-configuration`.
@@ -38,7 +43,7 @@ pub struct ProviderMetadata {
 
 pub async fn discover_provider(http: &reqwest::Client, settings: &OidcSettings) -> ApiResult<ProviderMetadata> {
     let url = format!("{}/.well-known/openid-configuration", settings.authority);
-    let response = http.get(&url).send().await.map_err(|err| {
+    let response = http.get(&url).timeout(AUTH_TIMEOUT).send().await.map_err(|err| {
         ApiError::SignIn(format!(
             "Can't reach the sign-in service at {}: {}",
             settings.authority,
@@ -52,10 +57,45 @@ pub async fn discover_provider(http: &reqwest::Client, settings: &OidcSettings) 
             response.status().as_u16()
         )));
     }
-    response
-        .json()
-        .await
-        .map_err(|err| ApiError::Decode(format!("openid-configuration: {err}")))
+    let text = read_text(response, PROVIDER_BODY_LIMIT).await?;
+    let metadata: ProviderMetadata =
+        serde_json::from_str(&text).map_err(|err| ApiError::Decode(format!("openid-configuration: {err}")))?;
+    validate_provider(settings, &metadata)?;
+    Ok(metadata)
+}
+
+/// The published metadata must be the configured provider's own: its
+/// issuer is the authority, and every endpoint the code, verifier or
+/// refresh token goes to is on the authority's scheme and host. Otherwise a
+/// rewritten discovery document could send them anywhere.
+fn validate_provider(settings: &OidcSettings, metadata: &ProviderMetadata) -> ApiResult<()> {
+    let refuse = |what: &str| {
+        Err(ApiError::SignIn(format!(
+            "The sign-in service at {} published {what}, so sign-in was stopped. Ask your administrator to check \
+             AIKONOS_WEBUI_OIDC_AUTHORITY.",
+            settings.authority
+        )))
+    };
+    if metadata.issuer.trim_end_matches('/') != settings.authority {
+        return refuse("another issuer");
+    }
+    let Ok(authority) = Url::parse(&settings.authority) else {
+        return refuse("an invalid address");
+    };
+    let endpoints = [
+        Some(&metadata.authorization_endpoint),
+        Some(&metadata.token_endpoint),
+        metadata.end_session_endpoint.as_ref(),
+        metadata.revocation_endpoint.as_ref(),
+    ];
+    for endpoint in endpoints.into_iter().flatten() {
+        let same_site =
+            Url::parse(endpoint).is_ok_and(|url| url.scheme() == authority.scheme() && url.host() == authority.host());
+        if !same_site {
+            return refuse("an endpoint on another host");
+        }
+    }
+    Ok(())
 }
 
 /// The person the identity provider says signed in. Read from the ID token
@@ -111,12 +151,24 @@ pub fn profile_from_claims(claims: &serde_json::Value) -> Profile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TokenSet {
     pub access_token: String,
     pub id_token: Option<String>,
     pub refresh_token: Option<String>,
     pub expires_at: SystemTime,
+}
+
+/// Never prints the tokens, so a stray `{:?}` cannot leak them into a log.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet")
+            .field("access_token", &"[REDACTED]")
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[REDACTED]"))
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl TokenSet {
@@ -172,11 +224,12 @@ async fn token_request(
     let response = http
         .post(&provider.token_endpoint)
         .form(form)
+        .timeout(AUTH_TIMEOUT)
         .send()
         .await
         .map_err(ApiError::transport)?;
     let status = response.status();
-    let text = response.text().await.map_err(ApiError::transport)?;
+    let text = read_text(response, PROVIDER_BODY_LIMIT).await?;
     if !status.is_success() {
         let detail = serde_json::from_str::<TokenError>(&text)
             .map(|err| err.error_description.unwrap_or(err.error))
@@ -195,8 +248,14 @@ async fn token_request(
         id_token: body.id_token,
         // Providers that do not rotate refresh tokens omit it on refresh.
         refresh_token: body.refresh_token.or_else(|| previous_refresh.map(str::to_owned)),
-        expires_at: SystemTime::now() + Duration::from_secs(body.expires_in.unwrap_or(300)),
+        expires_at: expiry_from(body.expires_in),
     })
+}
+
+/// When a token with this `expires_in` runs out. Clamped, so a huge value
+/// from the provider cannot overflow the clock.
+fn expiry_from(expires_in: Option<u64>) -> SystemTime {
+    SystemTime::now() + Duration::from_secs(expires_in.unwrap_or(300).min(MAX_TOKEN_LIFETIME))
 }
 
 /// Trade a refresh token for a fresh token set.
@@ -240,6 +299,7 @@ pub async fn end_session(
                 ("client_id", settings.client_id.as_str()),
                 ("refresh_token", refresh_token),
             ])
+            .timeout(AUTH_TIMEOUT)
             .send()
             .await;
     }
@@ -251,6 +311,7 @@ pub async fn end_session(
                 ("token", refresh_token),
                 ("token_type_hint", "refresh_token"),
             ])
+            .timeout(AUTH_TIMEOUT)
             .send()
             .await;
     }
@@ -273,6 +334,7 @@ pub struct PendingSignIn {
     redirect_uri: String,
     verifier: String,
     state: String,
+    nonce: String,
 }
 
 impl PendingSignIn {
@@ -290,6 +352,7 @@ impl PendingSignIn {
         let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
         let verifier = random_token(32);
         let state = random_token(16);
+        let nonce = random_token(16);
         let mut authorize_url = Url::parse(&provider.authorization_endpoint)
             .map_err(|_| ApiError::SignIn("The sign-in service published an invalid address.".into()))?;
         authorize_url
@@ -299,7 +362,7 @@ impl PendingSignIn {
             .append_pair("redirect_uri", &redirect_uri)
             .append_pair("scope", &settings.scope)
             .append_pair("state", &state)
-            .append_pair("nonce", &random_token(16))
+            .append_pair("nonce", &nonce)
             .append_pair("code_challenge", &pkce_challenge(&verifier))
             .append_pair("code_challenge_method", "S256");
         Ok(Self {
@@ -308,6 +371,7 @@ impl PendingSignIn {
             redirect_uri,
             verifier,
             state,
+            nonce,
         })
     }
 
@@ -328,7 +392,7 @@ impl PendingSignIn {
         let code = tokio::time::timeout(SIGN_IN_TIMEOUT, self.wait_for_code())
             .await
             .map_err(|_| ApiError::SignIn("Sign-in timed out. Try again.".into()))??;
-        token_request(
+        let tokens = token_request(
             http,
             provider,
             &[
@@ -346,7 +410,9 @@ impl PendingSignIn {
                 ApiError::SignIn("The sign-in service rejected the sign-in code. Try again.".into())
             }
             other => other,
-        })
+        })?;
+        check_nonce(&tokens, &self.nonce)?;
+        Ok(tokens)
     }
 
     async fn wait_for_code(&self) -> ApiResult<String> {
@@ -379,6 +445,21 @@ impl PendingSignIn {
             }
         }
     }
+}
+
+/// An ID token answering this sign-in carries the nonce it was asked with;
+/// one minted for another sign-in is refused.
+fn check_nonce(tokens: &TokenSet, nonce: &str) -> ApiResult<()> {
+    let Some(id_token) = tokens.id_token.as_deref() else {
+        return Ok(());
+    };
+    let sent_back = jwt_claims(id_token).and_then(|claims| claims.get("nonce")?.as_str().map(str::to_owned));
+    if sent_back.as_deref() != Some(nonce) {
+        return Err(ApiError::SignIn(
+            "The sign-in service answered for another sign-in. Try again.".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -533,6 +614,109 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"x","email":"e@x.org"}"#);
         let token = format!("h.{payload}.s");
         assert_eq!(jwt_claims(&token).unwrap()["email"], "e@x.org");
+    }
+
+    fn settings(authority: &str) -> OidcSettings {
+        OidcSettings {
+            authority: authority.into(),
+            client_id: "aikonos-desktop".into(),
+            scope: "openid profile".into(),
+            token_kind: TokenKind::Access,
+        }
+    }
+
+    fn metadata(issuer: &str, token_endpoint: &str) -> ProviderMetadata {
+        ProviderMetadata {
+            issuer: issuer.into(),
+            authorization_endpoint: "https://id.example.org/realms/a/auth".into(),
+            token_endpoint: token_endpoint.into(),
+            end_session_endpoint: None,
+            revocation_endpoint: None,
+        }
+    }
+
+    #[test]
+    fn provider_metadata_must_belong_to_the_authority() {
+        let settings = settings("https://id.example.org/realms/a");
+        assert!(
+            validate_provider(
+                &settings,
+                &metadata(
+                    "https://id.example.org/realms/a/",
+                    "https://id.example.org/realms/a/token"
+                )
+            )
+            .is_ok()
+        );
+        // A rewritten document: another issuer, or the code sent elsewhere.
+        assert!(
+            validate_provider(
+                &settings,
+                &metadata(
+                    "https://id.example.org/realms/b",
+                    "https://id.example.org/realms/a/token"
+                )
+            )
+            .is_err()
+        );
+        assert!(
+            validate_provider(
+                &settings,
+                &metadata("https://id.example.org/realms/a", "https://attacker.example/token")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_provider(
+                &settings,
+                &metadata(
+                    "https://id.example.org/realms/a",
+                    "http://id.example.org/realms/a/token"
+                )
+            )
+            .is_err()
+        );
+        let mut logout_elsewhere = metadata(
+            "https://id.example.org/realms/a",
+            "https://id.example.org/realms/a/token",
+        );
+        logout_elsewhere.end_session_endpoint = Some("https://attacker.example/logout".into());
+        assert!(validate_provider(&settings, &logout_elsewhere).is_err());
+    }
+
+    #[test]
+    fn a_huge_lifetime_does_not_overflow_the_clock() {
+        let expiry = expiry_from(Some(u64::MAX));
+        assert!(expiry <= SystemTime::now() + Duration::from_secs(MAX_TOKEN_LIFETIME));
+        assert!(expiry_from(None) > SystemTime::now());
+    }
+
+    #[test]
+    fn token_sets_never_print_their_tokens() {
+        let tokens = TokenSet {
+            access_token: "access-secret".into(),
+            id_token: Some("id-secret".into()),
+            refresh_token: Some("refresh-secret".into()),
+            expires_at: SystemTime::now(),
+        };
+        let printed = format!("{tokens:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(printed.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn the_id_token_must_answer_this_sign_in() {
+        let id_token = |claims: serde_json::Value| format!("h.{}.s", URL_SAFE_NO_PAD.encode(claims.to_string()));
+        let tokens = |id: Option<String>| TokenSet {
+            access_token: "a".into(),
+            id_token: id,
+            refresh_token: None,
+            expires_at: SystemTime::now(),
+        };
+        assert!(check_nonce(&tokens(Some(id_token(serde_json::json!({"nonce": "n1"})))), "n1").is_ok());
+        assert!(check_nonce(&tokens(Some(id_token(serde_json::json!({"nonce": "n2"})))), "n1").is_err());
+        assert!(check_nonce(&tokens(Some(id_token(serde_json::json!({})))), "n1").is_err());
+        assert!(check_nonce(&tokens(None), "n1").is_ok());
     }
 
     #[test]

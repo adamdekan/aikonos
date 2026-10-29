@@ -7,6 +7,7 @@
 //! gates as usual. Going the other way, a workspace file is written to disk
 //! only where the user chooses to save it.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aikonos_client::api::files::MAX_UPLOAD_BYTES;
@@ -85,7 +86,8 @@ pub async fn pick_save_path(suggested_name: &str, cx: &mut AsyncApp) -> Option<P
         .update(|cx| Prefs::global(cx).last_save_dir.clone())
         .filter(|dir| dir.is_dir())
         .unwrap_or_else(default_save_dir);
-    let receiver = cx.update(|cx| cx.prompt_for_new_path(&directory, Some(suggested_name)));
+    let suggested_name = safe_file_name(suggested_name);
+    let receiver = cx.update(|cx| cx.prompt_for_new_path(&directory, Some(&suggested_name)));
     let path = receiver.await.ok()?.ok()??;
     if let Some(dir) = path.parent().map(Path::to_path_buf) {
         cx.update(|cx| Prefs::update(cx, |prefs| prefs.last_save_dir = Some(dir)));
@@ -101,21 +103,60 @@ fn default_save_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Write `bytes` to `path` through a temporary file, so an interrupted save
-/// never leaves half a file under the user's chosen name.
-pub fn save_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!(
-        "{}aikonos-part",
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| format!("{ext}."))
-            .unwrap_or_default()
-    ));
-    std::fs::write(&tmp, bytes)?;
-    if path.exists() {
-        std::fs::remove_file(path)?;
+/// A server-supplied name made fit to suggest as a Windows file name: its
+/// last path segment, without stream colons, control characters, leading
+/// dots or trailing dots and spaces, and never a reserved device name.
+pub fn safe_file_name(name: &str) -> String {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
+        "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String = last
+        .chars()
+        .map(|c| if c == ':' || c.is_control() { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim_start_matches(['.', ' ']).trim_end_matches(['.', ' ']);
+    let stem = cleaned.split('.').next().unwrap_or_default().trim_end();
+    if cleaned.is_empty() {
+        "download".to_owned()
+    } else if RESERVED.iter().any(|reserved| stem.eq_ignore_ascii_case(reserved)) {
+        format!("_{cleaned}")
+    } else {
+        cleaned.to_owned()
     }
-    std::fs::rename(&tmp, path)
+}
+
+/// Write `bytes` to `path` through a temporary file, so an interrupted save
+/// never leaves half a file under the user's chosen name. The temporary
+/// file has a random name and must not exist yet, so nothing planted in the
+/// folder (a symlink included) is followed; the rename then replaces the
+/// target in one step. On Windows the file is marked as downloaded from the
+/// internet (Mark-of-the-Web), so SmartScreen and Office Protected View
+/// treat what an agent or a colleague put in the workspace with suspicion.
+pub fn save_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.aikonos-part", uuid::Uuid::new_v4()));
+    let saved = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|()| {
+            // Best effort: FAT drives and some shares have no streams. The
+            // rename carries the stream along.
+            #[cfg(windows)]
+            {
+                let mut zone = tmp.clone().into_os_string();
+                zone.push(":Zone.Identifier");
+                let _ = std::fs::write(zone, "[ZoneTransfer]\r\nZoneId=3\r\n");
+            }
+            std::fs::rename(&tmp, path)
+        });
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    saved
 }
 
 /// Show a saved file in Explorer.
@@ -144,6 +185,35 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saving_never_follows_a_planted_file() {
+        let dir = std::env::temp_dir().join(format!("aikonos-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The old predictable temporary name, planted ahead of the save.
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&victim, dir.join("report.pdf.aikonos-part")).unwrap();
+        save_bytes(&dir.join("report.pdf"), b"report").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(dir.join("report.pdf")).unwrap(), b"report");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn suggested_names_are_plain_file_names() {
+        assert_eq!(safe_file_name("reports/q3.pdf"), "q3.pdf");
+        assert_eq!(safe_file_name("..\\..\\x.bat"), "x.bat");
+        assert_eq!(safe_file_name("a.txt:evil.exe"), "a.txt_evil.exe");
+        assert_eq!(safe_file_name("bad\u{7}name.txt"), "bad_name.txt");
+        assert_eq!(safe_file_name(".bashrc"), "bashrc");
+        assert_eq!(safe_file_name("notes. . "), "notes");
+        assert_eq!(safe_file_name("con.txt"), "_con.txt");
+        assert_eq!(safe_file_name("LPT1"), "_LPT1");
+        assert_eq!(safe_file_name(".."), "download");
+        assert_eq!(safe_file_name("console.log"), "console.log");
     }
 
     #[test]
