@@ -13,6 +13,7 @@
 // runId threading: the child tags every request with the active runId so the
 // parent's bridge-server can look up the per-run bridge. The active runId is
 // set via withRun(runId, fn) for the duration of each prompt handling.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { makeSeq, type ChildLink, type IpcMessage } from "./protocol.js";
 import type {
   GateResult,
@@ -120,9 +121,12 @@ const GATE_TIMEOUT_MS = 2 ** 31 - 1; // setTimeout's maximum (~24.8 days)
 /** Child-side IPC drop-in for GovernanceBridge: forwards gate/execute/delegate requests to the parent over a ChildLink, tagging each with the active runId so the parent routes to the correct per-run bridge. */
 export class RemoteBridgeClient implements BridgeClientLike {
   private readonly seq = makeSeq();
-  // The runId for the currently executing prompt. Set by withRun() in
-  // child-entry.ts before any tool call can fire.
-  private activeRunId: string | undefined;
+  // The runId of each prompt, per async context: two prompts on one child
+  // (a follow-up while an earlier run winds down) each keep their own, and an
+  // earlier run ending cannot clear a later run's id. latestRunId is the
+  // fallback for a call Pi schedules outside the prompt's async context.
+  private readonly runIds = new AsyncLocalStorage<string>();
+  private latestRunId: string | undefined;
 
   constructor(private readonly link: ChildLink) {}
 
@@ -130,19 +134,20 @@ export class RemoteBridgeClient implements BridgeClientLike {
   // delegate calls within fn() will tag their IPC requests with this runId so
   // the parent bridge-server routes them to the correct per-run bridge.
   async withRun<T>(runId: string, fn: () => Promise<T>): Promise<T> {
-    this.activeRunId = runId;
+    this.latestRunId = runId;
     try {
-      return await fn();
+      return await this.runIds.run(runId, fn);
     } finally {
-      this.activeRunId = undefined;
+      if (this.latestRunId === runId) this.latestRunId = undefined;
     }
   }
 
   private requireRunId(): string {
-    if (!this.activeRunId) {
+    const runId = this.runIds.getStore() ?? this.latestRunId;
+    if (!runId) {
       throw new Error("RemoteBridgeClient: no active runId — gate/execute/delegate called outside withRun()");
     }
-    return this.activeRunId;
+    return runId;
   }
 
   // recv is the single generic mechanism collapsing the former 9 near-identical

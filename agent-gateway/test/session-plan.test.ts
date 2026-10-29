@@ -860,3 +860,58 @@ test("CP4 createSessionFromPlan: personal skill activation wires bridge.getSkill
   assert.match(result, /Fetched via the bridge\./, "the fetched body must be returned, not discarded");
   assert.deepEqual(fetchCalls, ["my-notes"], "bridge.getSkillBody must be called with the bare directory name");
 });
+
+test("createSessionFromPlan: an MCP tool keeps its input schema and description, and execute does not gate a second time (AG-08)", async () => {
+  // WHY: the tool_call hook (gateToolCall) already gated the call. A second
+  // bridge.gate() in execute raised a second approval for every MCP call, and
+  // an empty parameters schema meant the model could never pass required args.
+  const { Compile } = await import("typebox/compile");
+  const schema = {
+    type: "object",
+    properties: { text: { type: "string", description: "text to echo" } },
+    required: ["text"],
+  };
+  const name = piMcpToolName("echo-connector", "echo");
+  const plan: SessionPlan = {
+    kind: "init",
+    modelId: "m",
+    systemPrompt: "S.",
+    allowedToolNames: [name],
+    mcpTools: [{ name, toolId: name, schema, description: "Echo the text back" }],
+    proxyBaseUrl: "http://127.0.0.1:0",
+    proxyModelAllowlist: ["m"],
+  };
+  type Tool = { name: string; description: string; parameters: unknown; execute: (id: string, p: unknown) => Promise<unknown> };
+  let tools: Tool[] = [];
+  const deps: CreateSessionDeps = {
+    createAgentSession: async (opts?) => {
+      tools = (opts?.customTools ?? []) as unknown as Tool[];
+      return { session: { prompt: async () => {}, subscribe: () => () => {}, dispose: () => {} } };
+    },
+    onRegisterProvider: () => {},
+  };
+  let gates = 0;
+  let executes = 0;
+  const bridge = makeFakeBridge();
+  bridge.gate = async () => { gates++; return { allow: true }; };
+  bridge.execute = async () => { executes++; return { ok: true, output: "hi" }; };
+
+  await createSessionFromPlan(plan, bridge, deps, { useProxy: true });
+  const tool = tools.find((t) => t.name === name);
+  assert.ok(tool, "MCP tool registered");
+  assert.equal(tool.description, "Echo the text back");
+  const check = Compile(tool.parameters as never);
+  assert.equal(check.Check({ text: "x" }), true);
+  assert.equal(check.Check({}), false, "required args reach the model's schema");
+
+  await tool.execute("call-1", { text: "x" });
+  assert.equal(gates, 0, "execute must not gate again");
+  assert.equal(executes, 1);
+});
+
+test("mcpParameters: a non-object schema falls back to an open object", async () => {
+  const { mcpParameters } = await import("../src/pi/session-plan.js");
+  const { Compile } = await import("typebox/compile");
+  assert.equal(Compile(mcpParameters({}) as never).Check({ anything: 1 }), true);
+  assert.equal(Compile(mcpParameters({ type: "string" }) as never).Check({ a: 1 }), true);
+});
