@@ -798,6 +798,18 @@ describe("AccessControl.vue — Agents tab", () => {
     expect(detail.text()).toContain("mcp-conn-1");
   });
 
+  it("the owner select never offers the wildcard user:* (the broker refuses it)", async () => {
+    adminApi.listAssignments.mockResolvedValue({
+      ...makeAssignmentsResp(),
+      principals: [USER_ALICE, USER_BOB, { id: "user:*", kind: "user", displayName: "*" }],
+    });
+    const w = await mountAC();
+    await goAgents(w);
+    await w.find("[data-testid='agent-row-agent-1']").trigger("click");
+    expect(w.find("[data-testid='agent-owner-opt-user:bob@example.com']").exists()).toBe(true);
+    expect(w.find("[data-testid='agent-owner-opt-user:*']").exists()).toBe(false);
+  });
+
   // AG-04: owners are added and removed, not swapped; the last one stays.
   it("add owner (user) assigns owner_user without revoking the current owner", async () => {
     const w = await mountAC();

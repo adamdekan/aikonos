@@ -36,14 +36,45 @@ export function decision(ev) {
 export function detail(ev) {
   const c = ev.context || {};
   const bits = [];
+  if (c.kind)         bits.push(c.kind);   // policy decision record (AG-02 replay)
   if (c.tool_id)      bits.push(c.tool_id);
   if (c.effect_class) bits.push(c.effect_class);
   if (c.cost != null) bits.push(c.cost + "u");
-  if (c.outcome)      bits.push(c.outcome);
+  if (c.outcome && typeof c.outcome === "object") {
+    if (c.outcome.decision)   bits.push(c.outcome.decision);
+    if (c.outcome.decided_by) bits.push(c.outcome.decided_by);
+  } else if (c.outcome) {
+    bits.push(c.outcome);
+  }
+  if (c.reason)       bits.push(c.reason);
   if (c.error)        bits.push("err: " + c.error);
   if (bits.length) return bits.join(" · ");
-  const keys = Object.keys(c);
-  return keys.length ? JSON.stringify(c).slice(0, 120) : "";
+  // Otherwise the scalar fields as key=value, one level into objects
+  // (obo.subject=…), never "[object Object]" or a raw JSON dump.
+  const flat = [];
+  for (const [k, v] of Object.entries(c)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v)) {
+        if (v2 !== "" && v2 != null && typeof v2 !== "object") flat.push(`${k}.${k2}=${v2}`);
+      }
+    } else if (v !== "" && v != null) {
+      flat.push(`${k}=${Array.isArray(v) ? v.join(",") : v}`);
+    }
+  }
+  return flat.join(" · ").slice(0, 160);
+}
+
+// normalizeEvent: /admin/audit/query answers with the gRPC client's camelCase
+// objects (eventId, occurredAt as an ISO string); the live stream and these
+// helpers use the proto names (event_id, occurred_at {seconds, nanos}).
+// Converts the former to the latter; a stream event passes through.
+export function normalizeEvent(ev) {
+  if (!ev || ev.event_id !== undefined || ev.eventId === undefined) return ev;
+  const out = {};
+  for (const [k, v] of Object.entries(ev)) out[k.replace(/[A-Z]/g, (ch) => "_" + ch.toLowerCase())] = v;
+  const ms = typeof ev.occurredAt === "string" ? Date.parse(ev.occurredAt) : NaN;
+  out.occurred_at = Number.isNaN(ms) ? undefined : { seconds: Math.floor(ms / 1000), nanos: (ms % 1000) * 1e6 };
+  return out;
 }
 
 // chain is the event's actor chain (AG-12): the user acted for, the agent that

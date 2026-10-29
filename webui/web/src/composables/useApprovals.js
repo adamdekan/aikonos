@@ -20,7 +20,10 @@ import { useToast } from "../components/ui/useToast.js";
 // GET /approvals fired one poll interval after RUN_STARTED closes that gap
 // cheaply: if it finds anything, enqueue + start continuous polling; if not,
 // do nothing (no recurring poll spun up speculatively on every run).
-export function useApprovals() {
+//
+// threadId (optional ref): the chat's thread. The poll then lists only this
+// chat's approvals, never a card from the same user's run in another tab.
+export function useApprovals(threadId = null) {
   const queue = ref([]);          // FIFO of pending approval info objects
   const handled = new Set();      // toolCallIds already enqueued this run — cleared on run end
   let pollTimer = null;
@@ -28,6 +31,9 @@ export function useApprovals() {
   let toastedThisSession = false; // first poll failure per polling session surfaces a toast
 
   const { push: toast } = useToast();
+
+  const approvalsUrl = () =>
+    threadId?.value ? `/approvals?threadId=${encodeURIComponent(threadId.value)}` : "/approvals";
 
   function enqueue(info) {
     if (!info || handled.has(info.toolCallId)) return;
@@ -49,7 +55,7 @@ export function useApprovals() {
     oneShotTimer = setTimeout(async () => {
       oneShotTimer = null;
       try {
-        const data = await get("/approvals");
+        const data = await get(approvalsUrl());
         const approvals = data.approvals ?? [];
         for (const ap of approvals) enqueue(ap);
         // Only escalate to continuous polling if the safety net actually
@@ -73,7 +79,7 @@ export function useApprovals() {
     toastedThisSession = false;
     pollTimer = setInterval(async () => {
       try {
-        const data = await get("/approvals");
+        const data = await get(approvalsUrl());
         for (const ap of (data.approvals ?? [])) {
           // /approvals returns ApprovalInfo[] — keyed by toolCallId (same as CUSTOM event).
           enqueue(ap);

@@ -500,9 +500,35 @@ describe("Agents.vue", () => {
     await flushPromises();
     expect(adminApi.registerAgentPublicKey).toHaveBeenCalledWith("a1", "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----", "k2", 30);
 
+    // Retiring is irreversible: a declined confirm does nothing.
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     document.querySelector("[data-testid='retire-public-key-p1']").click();
     await flushPromises();
+    expect(adminApi.retireAgentPublicKey).not.toHaveBeenCalled();
+    document.querySelector("[data-testid='retire-public-key-p1']").click();
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
     expect(adminApi.retireAgentPublicKey).toHaveBeenCalledWith("a1", "p1");
+    confirmSpy.mockRestore();
+    w.unmount();
+  });
+
+  it("asks before revoking an API key", async () => {
+    adminApi.listAgents.mockResolvedValue({ agents: [SAMPLE_AGENT] });
+    adminApi.listAgentApiKeys.mockResolvedValue({
+      maxTtlDays: 30,
+      keys: [{ id: "k1", keyPrefix: "tk_a", label: "", expiresAt: new Date(Date.now() + 20 * 86400000).toISOString(), lastUsedAt: null }],
+    });
+    adminApi.revokeAgentApiKey.mockResolvedValue({});
+    const w = await openEditModal();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    document.querySelector("[data-testid='revoke-key-k1']").click();
+    await flushPromises();
+    expect(adminApi.revokeAgentApiKey).not.toHaveBeenCalled();
+    document.querySelector("[data-testid='revoke-key-k1']").click();
+    await flushPromises();
+    expect(adminApi.revokeAgentApiKey).toHaveBeenCalledWith("a1", "k1");
+    confirmSpy.mockRestore();
     w.unmount();
   });
 

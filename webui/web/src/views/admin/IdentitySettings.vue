@@ -1,10 +1,11 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { get, put } from "../../api/client.js";
+import { listAgents, listMcpConnections } from "../../api/admin.js";
 import Icon from "../../components/Icon.vue";
 import EmptyState from "../../components/ui/EmptyState.vue";
 import Spinner from "../../components/ui/Spinner.vue";
-import { fmtTimeHistory } from "../../components/audit/audit-format.js";
+import { fmtTimeHistory, normalizeEvent } from "../../components/audit/audit-format.js";
 
 // Identity enforcement switches (audit | enforce) and the AG-02 would-deny
 // feed: admins fix grants from it before flipping the user bound to enforce.
@@ -31,12 +32,15 @@ const forbidden = ref(false);
 const loading   = ref(false);
 const events    = ref([]);
 const eventsErr = ref("");
+// id → name for the feed's agent and connector columns; best effort, the raw
+// id shows (and stays in the tooltip) when a name is not known.
+const names     = ref({});
 
 async function loadEvents() {
   eventsErr.value = "";
   try {
     const resp = await get(`/admin/audit/query?event_type=${encodeURIComponent(WOULD_DENY_EVENT)}&limit=50`);
-    events.value = resp?.events ?? [];
+    events.value = (resp?.events ?? []).map(normalizeEvent);
   } catch (e) {
     eventsErr.value = String(e).replace(/^Error:\s*/, "");
   }
@@ -50,7 +54,7 @@ onMounted(async () => {
     for (const e of resp.entries ?? []) {
       if (MODES.some((m) => m.key === e.key)) enforce.value[e.key] = e.value === "enforce";
     }
-    await loadEvents();
+    await Promise.all([loadEvents(), loadNames()]);
   } finally {
     loading.value = false;
   }
@@ -69,7 +73,20 @@ async function toggle(key, on) {
   }
 }
 
+async function loadNames() {
+  const [agents, conns] = await Promise.all([
+    listAgents().catch(() => ({})),
+    listMcpConnections().catch(() => ({})),
+  ]);
+  const m = {};
+  for (const a of agents?.agents ?? []) m[a.id] = a.name;
+  for (const c of conns?.connections ?? []) m[c.id] = c.name;
+  names.value = m;
+}
+
 function ctx(ev) { return ev.context || {}; }
+function nameOf(id) { return (id && names.value[id]) || id || ""; }
+function userOf(ev) { return (ctx(ev).user || "").replace(/^user:/, ""); }
 </script>
 
 <template>
@@ -116,11 +133,11 @@ function ctx(ev) { return ev.context || {}; }
           <tr><th>Time</th><th>User</th><th>Agent</th><th>Connector / tool</th><th>Stage</th></tr>
         </thead>
         <tbody>
-          <tr v-for="ev in events" :key="ev.event_id" data-testid="would-deny-row">
-            <td>{{ fmtTimeHistory(ev) }}</td>
-            <td class="mono">{{ ctx(ev).user }}</td>
-            <td class="mono">{{ ctx(ev).agent }}</td>
-            <td class="mono">{{ ctx(ev).connector || ctx(ev).tool_id }}</td>
+          <tr v-for="(ev, i) in events" :key="ev.event_id || i" data-testid="would-deny-row">
+            <td data-testid="would-deny-time">{{ fmtTimeHistory(ev) }}</td>
+            <td class="mono">{{ userOf(ev) }}</td>
+            <td :title="ctx(ev).agent" data-testid="would-deny-agent">{{ nameOf(ctx(ev).agent) }}</td>
+            <td :title="ctx(ev).connector || ctx(ev).tool_id" data-testid="would-deny-target">{{ nameOf(ctx(ev).connector) || ctx(ev).tool_id }}</td>
             <td>{{ ctx(ev).stage }}</td>
           </tr>
         </tbody>

@@ -45,7 +45,8 @@ export function createMessageHelpers(messages, chatStore) {
 // maybeCreateSession/persistSessionMessages: from useSessionLifecycle.
 // pendingDelegation: ref from useDelegation — submit() routes @-mention delegation there.
 // pendingEnvelopeId: optional ref<string> — the inbox delegation this chat handles
-// (AG-17). The next run sends it and clears it, so only the first run carries it.
+// (AG-17). Every run of that chat sends it, so the delegation's limits (AG-11)
+// hold for follow-up turns too, not only the first.
 export function useAguiRun({
   draft,
   messages,
@@ -328,7 +329,6 @@ export function useAguiRun({
     const userInstructions = usePrefsStore().chatInstructions.trim() || undefined;
 
     const envelopeId = pendingEnvelopeId?.value || undefined;
-    if (pendingEnvelopeId) pendingEnvelopeId.value = "";
 
     abortController = new AbortController();
     await runAgui(
