@@ -38,11 +38,80 @@ These URLs are the local variant only. The azure and onprem overlays publish no
 host port beyond Traefik 80/443 and Grafana on `127.0.0.1:3030` (SSH tunnel);
 OpenFGA is `backend`-only in every variant.
 
-`up` stops with a `required variable` message until `.env` sets
-`AIKONOS_NATS_TOKEN` and `AIKONOS_OFFICE_WORKER_TOKEN` (`openssl rand -hex 32`
-each; copy them from `deploy/compose/.env.local.example` into an older `.env`).
-`AIKONOS_DEV_MODE` defaults to `false`: an unset or blank value gives the
-production guard, so local dev keeps `AIKONOS_DEV_MODE=true` in `.env`.
+An `.env` from before 0.7.5 needs the changes in "Upgrading to 0.7.5" below.
+
+---
+
+## Upgrading to 0.7.5
+
+0.7.5 carries the fixes for [17-security-findings.md](17-security-findings.md),
+and most of them fail closed. Before the first `up`, check each item that
+applies; the variables are described in `deploy/compose/README.md` "Security
+settings (0.7.5)".
+
+- **New required secrets.** `.env` must set `AIKONOS_NATS_TOKEN` and
+  `AIKONOS_OFFICE_WORKER_TOKEN` (`openssl rand -hex 32` each), or every
+  `docker compose` command stops with a `required variable` message.
+  Compose no longer reads `AIKONOS_NATS_URL` from `.env`: it builds the URL
+  from the token.
+- **Dev mode is off by default.** `AIKONOS_DEV_MODE` defaults to `false` on the
+  broker and the gateway, so an unset or blank value gets the production guard.
+  Local dev keeps `AIKONOS_DEV_MODE=true` in `.env`.
+- **Tenant id.** Compose now passes `AIKONOS_TENANT_ID` to the broker and
+  requires it. It must equal the tenant claim in users' tokens (the Entra
+  `tid`), or the broker refuses every north call as a foreign tenant.
+- **Gateway OIDC.** Outside dev mode the gateway refuses to start unless
+  `AIKONOS_OIDC_ISSUER` and `AIKONOS_OIDC_JWKS_URL` are both set; the broker
+  could derive the JWKS URL by discovery, the gateway cannot.
+- **Weak secrets.** Outside dev mode the broker refuses to start when the audit
+  signing key, gateway grant key, API key pepper or workspace session key is a
+  template placeholder (`<…>`, `change-me`) or shorter than 32 bytes.
+- **Audit.** Outside dev mode the broker refuses to start when Vault is
+  configured but cannot give it the audit signing key; it no longer falls back
+  to `AIKONOS_AUDIT_SIGNING_KEY`. Unseal Vault before starting the broker.
+- **Policy bundle.** The broker binds its OPA bundle listener on loopback unless
+  `AIKONOS_POLICY_BUNDLE_HTTP_ADDR` is set. Compose sets `:9092`; an OPA run in
+  another container outside this compose file needs the same, or every policy
+  decision is denied.
+- **Vault over http.** An `http://` Vault address on a routable host is refused.
+  Use https, or set `AIKONOS_VAULT_ALLOW_INSECURE_HTTP=true`; compose's
+  `http://vault:8200` is unaffected.
+- **MCP connections over http.** A stored `http://` MCP connection fails until
+  it is edited to `https://`. Plain http stays allowed for loopback, and
+  anywhere with `AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true`, which mesh-attached
+  servers such as docs-mcp already need.
+- **Agent sessions.** Sessions saved before 0.7.5 have no path-bound integrity
+  sidecar and are refused. Set `AIKONOS_WORKSPACE_ALLOW_UNSIGNED_SESSIONS=true`
+  until users have re-saved them, then remove it.
+- **Workspace quota.** Each user's workspace is capped at 2 GiB and 20000 files
+  and folders; a write past the cap fails. Change it with
+  `AIKONOS_WORKSPACE_QUOTA_BYTES` and `AIKONOS_WORKSPACE_QUOTA_ENTRIES` (`0` = off).
+- **External API.** `:8090` is now rate limited per client IP and per agent
+  (`AIKONOS_EXTERNAL_RATE_LIMIT`, 60 a minute). `AIKONOS_EXTERNAL_TRUST_PROXY`
+  is the number of proxies in front of it: compose sets `0` for local and `1`
+  behind the overlays' Traefik.
+- **SCIM tokens expire.** A token now works for 365 days; tokens that existed
+  before the upgrade expire 365 days after it. Rotate the token to renew it
+  ([18-scim-provisioning.md](18-scim-provisioning.md)).
+- **SCIM group adoption.** SCIM no longer adopts an existing aikonOS group that
+  already has members or grants: the create is refused with 409. Rename the
+  Entra group, or clear that group in Access Control and let Entra retry.
+- **Kill switch.** `aikonosctl kill-switch user` now requires
+  `--tenant <tenant-uuid>`; update any script that calls it.
+- **On-prem deploy hook.** The hook now requires signed commits and refuses a
+  deploy that does not fast-forward the last one.
+  `AIKONOS_DEPLOY_REQUIRE_SIGNED=false` (first-time setup) and
+  `AIKONOS_DEPLOY_ALLOW_ROLLBACK=1` (a deliberate rollback) are the logged
+  opt-outs ([deploy/onprem/README.md](../deploy/onprem/README.md)).
+- **Owner grants are v3.** v2 grants minted before the upgrade stay valid until
+  they expire, but a revoke-all in their last 24 hours also voids them. A broker
+  still on 0.7.4 refuses v3 grants, so upgrade every broker replica together.
+- **Host ports.** The azure and onprem overlays publish nothing but Traefik
+  80/443 and Grafana on `127.0.0.1:3030`; reach OpenFGA with
+  `docker compose run --rm fga-cli`.
+- **Windows app.** The app refuses a plain-http server that is not on the PC,
+  and an http identity provider, unless `AIKONOS_DESKTOP_ALLOW_HTTP=1` is set on
+  that PC ([16-desktop-client.md](16-desktop-client.md)).
 
 ---
 
@@ -357,13 +426,11 @@ docker compose up -d --force-recreate broker
 After the restart, new events sign under the new version; `python3 scripts/aikonosctl
 audit verify` (below) verifies the full chain across both versions transparently.
 
-**Degraded mode:** if Vault is unreachable at broker startup, the broker falls back to
-the `AIKONOS_AUDIT_SIGNING_KEY` env value (`signing_key_version=0`) and logs `audit
-signing key: Vault unavailable — falling back to static env key`. Fix Vault access and
-recreate the broker to resume Vault-backed, versioned signing. This degraded mode is
-permitted-but-alarmed (broker keeps serving, loudly logged) rather than startup-blocking
-— unlike the capability root key, whose Vault-unavailable fallback is gated by
-`devModeGuard` and refuses to serve outside `AIKONOS_DEV_MODE=true`.
+**Vault unavailable:** outside `AIKONOS_DEV_MODE=true`, a broker whose Vault is
+configured but cannot give it the audit signing key refuses to start (`refusing to start:
+audit signing key unavailable from Vault`); unseal or fix Vault and start it again. In dev
+mode it falls back to the `AIKONOS_AUDIT_SIGNING_KEY` env value (`signing_key_version=0`)
+and logs `audit signing key: Vault unavailable — falling back to static env key`.
 
 ### M365 / tenant OneDrive secret
 The tenant-wide OneDrive connection (Admin → Settings → Microsoft 365 panel) stores its Entra

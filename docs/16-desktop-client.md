@@ -65,8 +65,13 @@ and on sign-out asks the identity provider to end the session and revoke the
 refresh token, where the provider supports those calls.
 
 TLS uses the Windows certificate store, so an internal CA distributed by group
-policy works without configuration. Signing in to a non-local server over plain
-HTTP shows a warning.
+policy works without configuration. The app refuses a plain-HTTP server, or a
+plain-HTTP identity provider, unless both are on the PC itself (the development
+stack): bearer tokens and the sign-in would otherwise cross the network
+unencrypted. A PC that must reach a plain-HTTP server on its network can set the
+environment variable `AIKONOS_DESKTOP_ALLOW_HTTP=1` before starting the app; the
+sign-in screen then warns that the connection is unencrypted. Prefer an HTTPS
+address for the server instead.
 
 ### What the server publishes
 
@@ -105,7 +110,8 @@ It comes from the web server's environment:
 A server without `/desktop.json` still works: the app reads the identity
 provider from `/runtime-config.js` and uses its default client id, never the
 web console's. A site that publishes neither is refused with a message saying
-it doesn't answer like an aikonOS server.
+it doesn't answer like an aikonOS server, and a server that is not on the PC
+must name its identity provider (`AIKONOS_WEBUI_OIDC_AUTHORITY`, https).
 
 ### Registering the app with the identity provider
 

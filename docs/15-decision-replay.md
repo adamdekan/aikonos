@@ -192,7 +192,7 @@ unset (OPA loading its own files), carry no revision and cannot be replayed.
 | Setting | Environment | Default | Meaning |
 |---------|-------------|---------|---------|
 | `policy.bundle_dir` | `AIKONOS_POLICY_BUNDLE_DIR` | unset (compose: `/policies`) | Directory of the Rego the broker serves to OPA. Unset: OPA loads its own policy, and decisions carry no revision |
-| `policy.bundle_http_addr` | `AIKONOS_POLICY_BUNDLE_HTTP_ADDR` | `:9092` | Listener for OPA's bundle downloads |
+| `policy.bundle_http_addr` | `AIKONOS_POLICY_BUNDLE_HTTP_ADDR` | unset: `:9092` in dev mode, `127.0.0.1:9092` otherwise (compose: `:9092`) | Listener for OPA's bundle downloads. Unauthenticated, so never publish it; an OPA in another container needs it set beyond loopback |
 | `policy.bundle_reload_seconds` | `AIKONOS_POLICY_BUNDLE_RELOAD_SECONDS` | `30` | How often the broker re-reads the directory |
 | `policy.fga_model_refresh_seconds` | `AIKONOS_POLICY_FGA_MODEL_REFRESH_SECONDS` | `30` | How often the latest OpenFGA model is re-resolved, when none is configured |
 | `policy.openfga_model_id` | `AIKONOS_POLICY_OPENFGA_MODEL_ID` | unset | Pin one OpenFGA model for the broker's lifetime |

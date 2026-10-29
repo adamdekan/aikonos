@@ -10,6 +10,8 @@
 # the broker, and every change is recorded.
 services:
   broker:
+    # The broker binds this only with AIKONOS_POLICY_BUNDLE_HTTP_ADDR=:9092
+    # (compose.yaml sets it); its own default outside dev mode is loopback.
     url: http://broker:9092
 
 bundles:

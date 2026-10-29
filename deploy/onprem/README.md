@@ -15,6 +15,10 @@ Auth: the SPA performs Entra OIDC auth-code + PKCE itself. Every API call carrie
 Entra bearer token validated by the broker. No edge auth proxy — the static SPA files
 are public by design; all sensitive surfaces require a valid bearer.
 
+The `:8090` API rate-limits per client IP using the `X-Forwarded-For` of one proxy hop,
+Traefik (`AIKONOS_EXTERNAL_TRUST_PROXY=1`). If a load balancer sits in front of Traefik,
+set it to the number of proxies in front of the gateway.
+
 ### Docs site routing
 
 The end-user/administrator documentation site (`docs-site/`) is served at
@@ -746,7 +750,8 @@ so no external-network declaration is needed.
 | `Vault key resolution failed — falling back to EPHEMERAL key` | Vault restarted (in-memory) | `bash scripts/compose-vault-seed.sh && docker compose up -d broker` |
 | `claims invalid: iss` | AIKONOS_OIDC_ISSUER has literal `<ENTRA_TENANT_ID>` | Replace placeholder with actual tenant GUID in `.env` |
 | **401 on every API call; gateway logs `no applicable key found in the JSON Web Key Set`** | **Entra signs ID tokens with an app-specific key only published when `?appid=<client_id>` is on the JWKS URL** | **Append `?appid=<WEBUI_APP_CLIENT_ID>` to `AIKONOS_OIDC_JWKS_URL`, then `docker compose up -d --force-recreate broker agent-gateway`** |
-| Webui blank / "cannot connect to gateway" | Webui built with wrong OIDC authority | `docker compose build webui && docker compose up -d --force-recreate webui` |
+| Webui blank / "cannot connect to gateway", or the browser console reports a Content-Security-Policy block on the sign-in | `AIKONOS_WEBUI_OIDC_AUTHORITY` wrong or unset: the SPA signs in there and the webui's CSP allows only that origin | Fix it in `.env`, then `docker compose up -d --force-recreate webui` |
+| Every request refused; broker logs `authenticated caller names another tenant` | `AIKONOS_TENANT_ID` is not the Entra `tid` in users' tokens | Set it to the tenant GUID, then `docker compose up -d --force-recreate broker agent-gateway` |
 | Assigned MCP server invisible to its agent; agent says it has no MCP tools | MCP container not on `aikonos_mesh`, registered by a raw `172.x` IP, and/or broker SSRF guard blocking the private dial (gateway log: `web.fetch: loopback/private targets are not permitted`) | See **Maintenance → Attaching a self-hosted MCP server**: join `aikonos_mesh`, set `AIKONOS_TOOLPROXY_MCP_ALLOW_PRIVATE=true`, register by container DNS name |
 | Grafana MCP tools all fail with `x509: certificate signed by unknown authority` | `deploy/compose/tls/grafana-ca.crt` is missing, holds only the issuing CA without the root, or Docker created a *directory* there because the file did not exist at `up` time | Rebuild the chain (both certs, concatenated) per **Attaching the Grafana MCP server** step 1, `rm -rf` the stray directory if one was created, then `docker compose up -d --force-recreate aikonos-mcp-grafana` |
 | Grafana MCP server registered but every call returns `403 forbidden: host not allowed` | Registered by raw IP or a hostname other than `aikonos-mcp-grafana:8000`, which `--allowed-hosts` rejects | Re-register the URL as exactly `http://aikonos-mcp-grafana:8000/mcp` |
