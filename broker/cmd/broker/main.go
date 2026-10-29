@@ -209,6 +209,14 @@ func main() {
 	// sidecar signing disabled (Write/Read/Move degrade to unsigned — same
 	// posture as an unsigned audit chain).
 	viper.SetDefault("workspace.session_signing_key", "")
+	// F40 migration switch: read session records that have no path-bound
+	// sidecar (written before F40 or with no key) instead of failing them
+	// closed, and allow unsigned session writes. Off by default; turn it on
+	// only until old sessions have been re-saved.
+	viper.SetDefault("workspace.allow_unsigned_sessions", false)
+	// F33: per-(tenant,user) workspace quota; 0 turns a dimension off.
+	viper.SetDefault("workspace.quota_bytes", int64(workspacefs.DefaultQuotaBytes))
+	viper.SetDefault("workspace.quota_entries", workspacefs.DefaultQuotaEntries)
 	// Skills directory. Manifests are loaded at startup from this path.
 	// Empty dir or absent dir → baseline only (no error). Conflict → fatal.
 	viper.SetDefault("skills.dir", "skills")
@@ -807,6 +815,11 @@ func main() {
 	// exactly the same on-disk directory doc.write always wrote to.
 	sharedWorkspace := workspacefs.New(viper.GetString("toolproxy.workspace_root"))
 	sharedWorkspace.SetSessionSigningKey(workspaceSessionKey)
+	sharedWorkspace.SetAllowUnsignedSessions(viper.GetBool("workspace.allow_unsigned_sessions"))
+	sharedWorkspace.SetQuota(viper.GetInt64("workspace.quota_bytes"), viper.GetInt("workspace.quota_entries"))
+	if viper.GetBool("workspace.allow_unsigned_sessions") {
+		log.Warn("workspace.allow_unsigned_sessions is on — session records without a path-bound sidecar are read unverified (migration only)")
+	}
 	sharedWorkspaceRouter := &workspacefs.Router{Local: sharedWorkspace}
 	if workspacePrefResolver != nil {
 		sharedWorkspaceRouter.Remote = oneDriveRemoteBackend

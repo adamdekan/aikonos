@@ -33,16 +33,38 @@ import (
 // files want streaming/object-store upload (a follow-up).
 const MaxFileBytes = 10 << 20 // 10 MiB
 
+// Per-(tenant,user) workspace quota defaults (F33). Every tenant shares one
+// workspace volume, so the per-file cap alone lets one member fill it for
+// everyone. SetQuota overrides them (broker config workspace.quota_*).
+const (
+	DefaultQuotaBytes   = 2 << 30 // 2 GiB
+	DefaultQuotaEntries = 20000
+)
+
+// MaxListEntries caps one ListDir result. Past it ListDir returns the first
+// MaxListEntries entries together with ErrListTruncated.
+const MaxListEntries = 5000
+
 // Sentinel errors let the RPC layer map to gRPC codes: ErrInvalidPath/ErrTooLarge
 // → InvalidArgument, a missing file (fs.ErrNotExist) → NotFound, ErrExists →
 // AlreadyExists, ErrNotEmpty → FailedPrecondition, ErrUnavailable →
 // Unavailable, ErrReconnectRequired → FailedPrecondition, ErrForbidden →
-// PermissionDenied, else Internal.
+// PermissionDenied, ErrQuota → ResourceExhausted, else Internal.
 var (
 	ErrInvalidPath = errors.New("workspacefs: invalid path")
 	ErrTooLarge    = errors.New("workspacefs: file too large")
 	ErrExists      = errors.New("workspacefs: path already exists")
 	ErrNotEmpty    = errors.New("workspacefs: directory is not empty")
+
+	// ErrQuota is returned by Write/Mkdir when the change would take the
+	// user's workspace past its byte or entry quota.
+	ErrQuota = errors.New("workspacefs: workspace quota exceeded")
+
+	// ErrListTruncated is returned by ListDir, alongside the first
+	// MaxListEntries entries, when the listing was cut short. A caller that
+	// can show a partial listing checks for it; every other caller sees an
+	// error and fails closed.
+	ErrListTruncated = errors.New("workspacefs: listing truncated")
 
 	// ErrIntegrityMismatch is returned by ReadVerified when a session record's
 	// on-disk content no longer matches its HMAC sidecar (CP4.2). The message
@@ -205,11 +227,41 @@ type Store struct {
 	// the audit emitter's pre-existing "empty key == unsigned" degraded
 	// posture (broker/internal/audit/signing_key.go).
 	sessionKey []byte
+
+	// allowUnsignedSessions is the F40 migration switch: when false (the
+	// default) a session record with no sidecar, a pre-path-binding sidecar,
+	// or no key to check it with fails ErrIntegrityMismatch, and a session
+	// write with no key is refused. Set it only to read sessions written
+	// before path binding, until they have been re-saved.
+	allowUnsignedSessions bool
+
+	// quotaBytes/quotaEntries bound one (tenant,user) workspace; ≤0 turns
+	// that dimension off. See DefaultQuotaBytes.
+	quotaBytes   int64
+	quotaEntries int
 }
 
-func New(root string) *Store { return &Store{root: root, locks: make(map[string]*sync.Mutex)} }
+func New(root string) *Store {
+	return &Store{
+		root:         root,
+		locks:        make(map[string]*sync.Mutex),
+		quotaBytes:   DefaultQuotaBytes,
+		quotaEntries: DefaultQuotaEntries,
+	}
+}
 
 func (s *Store) Enabled() bool { return s.root != "" }
+
+// SetQuota overrides the per-(tenant,user) byte and entry quota (F33). A
+// value ≤0 turns that dimension off. Not safe to call concurrently with
+// Write/Mkdir.
+func (s *Store) SetQuota(bytes int64, entries int) {
+	s.quotaBytes, s.quotaEntries = bytes, entries
+}
+
+// SetAllowUnsignedSessions turns the F40 migration switch on or off; see
+// allowUnsignedSessions. Not safe to call concurrently with Read/Write.
+func (s *Store) SetAllowUnsignedSessions(allow bool) { s.allowUnsignedSessions = allow }
 
 // SetSessionSigningKey installs the HMAC key used by Write/Read/ReadVerified/
 // Move for session-record sidecars. Called once at startup
@@ -222,7 +274,23 @@ func (s *Store) SetSessionSigningKey(key []byte) { s.sessionKey = key }
 // signingEnabled reports whether a non-empty key is installed.
 func (s *Store) signingEnabled() bool { return len(s.sessionKey) > 0 }
 
-func (s *Store) sign(data []byte) string {
+// sign MACs a session record bound to where it lives (F40): tenant, user and
+// workspace-relative path, then the content. A sidecar copied next to another
+// user's or another path's record no longer verifies there.
+func (s *Store) sign(tenant, user, clean string, data []byte) string {
+	rel, _ := filepath.Rel(s.userDir(tenant, user), clean)
+	mac := hmac.New(sha256.New, s.sessionKey)
+	for _, part := range []string{sanitizeSeg(tenant), sanitizeSeg(user), filepath.ToSlash(rel)} {
+		mac.Write([]byte(part))
+		mac.Write([]byte{0})
+	}
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// signLegacy is the pre-F40 content-only MAC, accepted only while
+// allowUnsignedSessions is set.
+func (s *Store) signLegacy(data []byte) string {
 	mac := hmac.New(sha256.New, s.sessionKey)
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
@@ -294,18 +362,64 @@ func firstSegment(clean string) string {
 	return clean
 }
 
+// isReservedTop reports whether a first path segment names a reservedTop
+// subtree. Case-insensitive like router.go's isReserved (F43): on a
+// case-insensitive mount "Config/" is the real config/ directory.
+func isReservedTop(top string) bool { return reservedTop[strings.ToLower(top)] }
+
 // resolve validates rel and returns its absolute path under the user dir. It
-// rejects absolute paths, ".." escapes (both via CleanRel), and the reserved
-// "config/" subtree.
+// rejects absolute paths, ".." escapes (both via CleanRel), the reserved
+// "config/" subtree, and a path that a symlink carries out of the user dir.
 func (s *Store) resolve(tenant, user, rel string) (string, error) {
 	clean, err := CleanRel(rel)
 	if err != nil {
 		return "", err
 	}
-	if top := firstSegment(clean); reservedTop[top] {
+	if top := firstSegment(clean); isReservedTop(top) {
 		return "", fmt.Errorf("%w: %q is reserved", ErrInvalidPath, top)
 	}
-	return filepath.Join(s.userDir(tenant, user), clean), nil
+	base := s.userDir(tenant, user)
+	abs := filepath.Join(base, clean)
+	if err := containedReal(base, abs); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// containedReal is the symlink half of resolve's containment (F44): the
+// lexical check above cannot see a symlink, so the deepest part of abs that
+// exists is resolved with EvalSymlinks and must still sit under base's own
+// real path. Nothing under base existing yet passes trivially.
+//
+// ponytail: check-then-use, so a writer racing a symlink in between can still
+// win; os.OpenRoot for every Store operation is the race-free upgrade.
+func containedReal(base, abs string) error {
+	p := abs
+	for {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		}
+		if p == base {
+			return nil
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return nil
+		}
+		p = parent
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return fmt.Errorf("%w: path cannot be resolved", ErrInvalidPath)
+	}
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return fmt.Errorf("%w: path cannot be resolved", ErrInvalidPath)
+	}
+	if real != baseReal && !strings.HasPrefix(real, baseReal+string(os.PathSeparator)) {
+		return fmt.Errorf("%w: path leads outside the workspace", ErrInvalidPath)
+	}
+	return nil
 }
 
 // List walks the user dir and returns its files and directories (relative
@@ -322,7 +436,9 @@ func (s *Store) List(ctx context.Context, tenant, user string) ([]FileInfo, erro
 // validated via resolve() (traversal/absolute rejection, "config/"
 // exclusion, both as the scope target itself and as a descendant); a
 // non-existent dir returns an empty slice with a nil error rather than an
-// error, so callers can treat "not there yet" and "empty" identically.
+// error, so callers can treat "not there yet" and "empty" identically. More
+// than MaxListEntries entries returns the first MaxListEntries with
+// ErrListTruncated.
 func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive bool) ([]FileInfo, error) {
 	base := s.userDir(tenant, user)
 	walkRoot := base
@@ -344,6 +460,13 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 	}
 
 	var out []FileInfo
+	add := func(fi FileInfo) error {
+		if len(out) >= MaxListEntries {
+			return ErrListTruncated // stops the walk; out keeps the first MaxListEntries
+		}
+		out = append(out, fi)
+		return nil
+	}
 	err := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -370,7 +493,7 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 		}
 		rootDepth := strings.Count(relToRoot, string(os.PathSeparator)) + 1
 		if d.IsDir() {
-			if reservedTop[top] {
+			if isReservedTop(top) {
 				return filepath.SkipDir
 			}
 			if !recursive && rootDepth > 1 {
@@ -380,10 +503,9 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 			if info, ierr := d.Info(); ierr == nil {
 				mod = info.ModTime()
 			}
-			out = append(out, FileInfo{Path: filepath.ToSlash(rel), Size: 0, ModTime: mod, IsDir: true})
-			return nil
+			return add(FileInfo{Path: filepath.ToSlash(rel), Size: 0, ModTime: mod, IsDir: true})
 		}
-		if reservedTop[top] {
+		if isReservedTop(top) {
 			return nil
 		}
 		if strings.HasSuffix(rel, sigSuffix) {
@@ -401,9 +523,11 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 			size = info.Size()
 			mod = info.ModTime()
 		}
-		out = append(out, FileInfo{Path: filepath.ToSlash(rel), Size: size, ModTime: mod})
-		return nil
+		return add(FileInfo{Path: filepath.ToSlash(rel), Size: size, ModTime: mod})
 	})
+	if errors.Is(err, ErrListTruncated) {
+		return out, ErrListTruncated
+	}
 	if err != nil {
 		return nil, fmt.Errorf("workspacefs: list: %w", err)
 	}
@@ -413,13 +537,19 @@ func (s *Store) ListDir(ctx context.Context, tenant, user, dir string, recursive
 // readAtClean is the raw read given an already-resolved absolute path — no
 // resolve()/resolveSession() call, so it never recurses when Read's
 // integrity check reads a "<clean>.sig" sidecar.
+//
+// Lstat, not Stat (F44): a symlink — even one pointing inside the workspace —
+// is refused rather than followed, so only a regular file is ever read.
 func (s *Store) readAtClean(clean string) ([]byte, time.Time, error) {
-	info, err := os.Stat(clean)
+	info, err := os.Lstat(clean)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
 	if info.IsDir() {
-		return nil, time.Time{}, fmt.Errorf("%w: %q is a directory", ErrInvalidPath, clean)
+		return nil, time.Time{}, fmt.Errorf("%w: path is a directory", ErrInvalidPath)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, time.Time{}, fmt.Errorf("%w: not a regular file", ErrInvalidPath)
 	}
 	if info.Size() > MaxFileBytes {
 		return nil, time.Time{}, fmt.Errorf("%w: read exceeds %d bytes", ErrTooLarge, int64(MaxFileBytes))
@@ -444,11 +574,11 @@ func (s *Store) readAtClean(clean string) ([]byte, time.Time, error) {
 //
 //   - resolved path is not under SessionsDirPrefix: legacy=false, no sidecar
 //     lookup at all — ordinary workspace files are never HMAC-checked.
-//   - sidecar absent: legacy=true, err=nil (migration posture — CP4.2 spec;
-//     flipping absent-sidecar to a hard failure is a documented one-line
-//     follow-up once every session file has been re-signed).
-//   - sidecar present and matches: legacy=false, err=nil.
-//   - sidecar present and mismatched: err=ErrIntegrityMismatch (fail loud).
+//   - sidecar present and matches the path-bound MAC: legacy=false, err=nil.
+//   - sidecar absent, no key to verify with, or only the pre-F40 content-only
+//     MAC matches: ErrIntegrityMismatch (F40 fails closed) — unless the
+//     allowUnsignedSessions migration switch is on, then legacy=true, err=nil.
+//   - anything else: err=ErrIntegrityMismatch (fail loud).
 func (s *Store) readAndVerify(tenant, user, rel string) (data []byte, modTime time.Time, legacy bool, err error) {
 	clean, isSession, err := s.resolveSession(tenant, user, rel)
 	if err != nil {
@@ -462,22 +592,19 @@ func (s *Store) readAndVerify(tenant, user, rel string) (data []byte, modTime ti
 		return data, modTime, false, nil
 	}
 	sig, _, sigErr := s.readAtClean(clean + sigSuffix)
-	if sigErr != nil {
-		// No sidecar (or unreadable for the same reasons the primary read
-		// would be, e.g. permission) — treat as legacy/unsigned and allow.
+	switch {
+	case sigErr == nil && s.signingEnabled() && hmac.Equal([]byte(s.sign(tenant, user, clean, data)), sig):
+		return data, modTime, false, nil
+	case !s.allowUnsignedSessions:
+		return nil, time.Time{}, false, ErrIntegrityMismatch
+	case sigErr != nil || !s.signingEnabled():
+		// No sidecar, or no key to check one with: unverifiable legacy record.
 		return data, modTime, true, nil
-	}
-	if !s.signingEnabled() {
-		// A sidecar exists but we have no key to verify it with (e.g. Vault
-		// and the env fallback are both unavailable at startup). Can't prove
-		// integrity either way — degrade to allow rather than lock users out.
+	case hmac.Equal([]byte(s.signLegacy(data)), sig):
 		return data, modTime, true, nil
-	}
-	want := s.sign(data)
-	if !hmac.Equal([]byte(want), sig) {
+	default:
 		return nil, time.Time{}, false, ErrIntegrityMismatch
 	}
-	return data, modTime, false, nil
 }
 
 // Read returns a file's bytes (and mtime). Rejects directories and files over
@@ -490,9 +617,10 @@ func (s *Store) Read(ctx context.Context, tenant, user, rel string) ([]byte, tim
 	return data, modTime, err
 }
 
-// ReadVerified is Read plus the legacy flag (true when the resolved path is a
-// session record with no sidecar to check against) — callers that want to log
-// the migration-era "read without a sidecar" case use this instead of Read.
+// ReadVerified is Read plus the legacy flag (true only while the
+// allowUnsignedSessions migration switch is on, for a session record that
+// could not be verified against a path-bound sidecar) — callers that want to
+// log the migration-era case use this instead of Read.
 func (s *Store) ReadVerified(ctx context.Context, tenant, user, rel string) (data []byte, modTime time.Time, legacy bool, err error) {
 	return s.readAndVerify(tenant, user, rel)
 }
@@ -542,38 +670,113 @@ func (s *Store) writeAtClean(tenant, user, clean string, data []byte) (FileInfo,
 // the SessionsDirPrefix doc comment for why session-ness is decided from the
 // resolved path rather than the caller's raw rel string. General workspace
 // writes (resolved path outside SessionsDirPrefix) are never signed.
+//
+// A session write with no key is refused unless allowUnsignedSessions is on
+// (it could never be read back), and a session sidecar itself is never
+// writable through Write (F40). The write must also fit the user's quota.
 func (s *Store) Write(ctx context.Context, tenant, user, rel string, data []byte) (FileInfo, error) {
 	if int64(len(data)) > MaxFileBytes {
 		return FileInfo{}, fmt.Errorf("%w: %d bytes", ErrTooLarge, int64(MaxFileBytes))
 	}
+	defer s.lockUser(tenant, user)()
 	clean, isSession, err := s.resolveSession(tenant, user, rel)
 	if err != nil {
+		return FileInfo{}, err
+	}
+	if isSession {
+		if strings.HasSuffix(clean, sigSuffix) {
+			return FileInfo{}, fmt.Errorf("%w: session signatures are server-maintained", ErrInvalidPath)
+		}
+		if !s.signingEnabled() && !s.allowUnsignedSessions {
+			return FileInfo{}, fmt.Errorf("%w: session signing key is not configured", ErrUnavailable)
+		}
+	}
+	if err := s.checkQuota(tenant, user, clean, int64(len(data))); err != nil {
 		return FileInfo{}, err
 	}
 	info, err := s.writeAtClean(tenant, user, clean, data)
 	if err != nil {
 		return FileInfo{}, err
 	}
-	if strings.HasSuffix(clean, sigSuffix) {
-		return info, nil // writing a sidecar itself never recurses into signing
-	}
 	if isSession && s.signingEnabled() {
-		if _, err := s.writeAtClean(tenant, user, clean+sigSuffix, []byte(s.sign(data))); err != nil {
+		if _, err := s.writeAtClean(tenant, user, clean+sigSuffix, []byte(s.sign(tenant, user, clean, data))); err != nil {
 			return FileInfo{}, fmt.Errorf("workspacefs: session signature write failed: %w", err)
 		}
 	}
 	return info, nil
 }
 
+// checkQuota refuses a change that would take (tenant, user) past its byte or
+// entry quota (F33). size is the bytes the change writes at clean; an
+// overwrite counts only its net growth, and every directory the change has to
+// create counts as an entry. Caller holds lockUser.
+//
+// ponytail: walks the user dir on every Write/Mkdir — bounded by the entry
+// quota itself; keep a per-user counter if write latency ever shows it.
+func (s *Store) checkQuota(tenant, user, clean string, size int64) error {
+	if s.quotaBytes <= 0 && s.quotaEntries <= 0 {
+		return nil
+	}
+	base := s.userDir(tenant, user)
+	var usedBytes int64
+	usedEntries := 0
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if path == base {
+			return nil
+		}
+		usedEntries++
+		if !d.IsDir() {
+			if info, ierr := d.Info(); ierr == nil {
+				usedBytes += info.Size()
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("workspacefs: quota: %w", err)
+	}
+	newEntries := 0
+	if info, lerr := os.Lstat(clean); lerr == nil {
+		if !info.IsDir() {
+			size -= info.Size()
+		}
+	} else {
+		for p := clean; p != base && p != filepath.Dir(p); p = filepath.Dir(p) {
+			if _, err := os.Lstat(p); err == nil {
+				break
+			}
+			newEntries++
+		}
+	}
+	if s.quotaBytes > 0 && usedBytes+size > s.quotaBytes {
+		return fmt.Errorf("%w: %d byte limit", ErrQuota, s.quotaBytes)
+	}
+	if s.quotaEntries > 0 && usedEntries+newEntries > s.quotaEntries {
+		return fmt.Errorf("%w: %d entry limit", ErrQuota, s.quotaEntries)
+	}
+	return nil
+}
+
 // Delete removes a file, or an empty directory. A non-empty directory is
 // rejected with ErrNotEmpty (no recursive delete — see spec out-of-scope).
+// Deleting a session record drops its sidecar with it; the sidecar itself
+// cannot be deleted on its own (F40).
 func (s *Store) Delete(ctx context.Context, tenant, user, rel string) error {
 	defer s.lockUser(tenant, user)()
-	clean, err := s.resolve(tenant, user, rel)
+	clean, isSession, err := s.resolveSession(tenant, user, rel)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(clean)
+	if isSession && strings.HasSuffix(clean, sigSuffix) {
+		return fmt.Errorf("%w: session signatures are server-maintained", ErrInvalidPath)
+	}
+	info, err := os.Lstat(clean)
 	if err != nil {
 		return err
 	}
@@ -587,7 +790,13 @@ func (s *Store) Delete(ctx context.Context, tenant, user, rel string) error {
 		}
 		return os.Remove(clean)
 	}
-	return os.Remove(clean)
+	if err := os.Remove(clean); err != nil {
+		return err
+	}
+	if isSession {
+		_ = os.Remove(clean + sigSuffix) // no-op when there is none; never leave an orphan
+	}
+	return nil
 }
 
 // Move renames/relocates a file or directory within the user's workspace.
@@ -605,7 +814,7 @@ func (s *Store) Delete(ctx context.Context, tenant, user, rel string) error {
 // record. Directories are never signed (no single content blob to hash).
 func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileInfo, error) {
 	defer s.lockUser(tenant, user)()
-	fromClean, err := s.resolve(tenant, user, from)
+	fromClean, fromIsSession, err := s.resolveSession(tenant, user, from)
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -613,11 +822,22 @@ func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileIn
 	if err != nil {
 		return FileInfo{}, err
 	}
-	fromInfo, err := os.Stat(fromClean)
+	if (fromIsSession && strings.HasSuffix(fromClean, sigSuffix)) || (toIsSession && strings.HasSuffix(toClean, sigSuffix)) {
+		return FileInfo{}, fmt.Errorf("%w: session signatures are server-maintained", ErrInvalidPath)
+	}
+	if toIsSession && !s.signingEnabled() && !s.allowUnsignedSessions {
+		return FileInfo{}, fmt.Errorf("%w: session signing key is not configured", ErrUnavailable)
+	}
+	fromInfo, err := os.Lstat(fromClean)
 	if err != nil {
 		return FileInfo{}, err
 	}
-	if _, err := os.Stat(toClean); err == nil {
+	if fromInfo.IsDir() && (fromIsSession || toIsSession) {
+		// Sidecars are bound to their record's path (F40), and a directory
+		// move would carry them somewhere they no longer verify.
+		return FileInfo{}, fmt.Errorf("%w: directories are not moved into, within or out of %s", ErrInvalidPath, sessionsDir)
+	}
+	if _, err := os.Lstat(toClean); err == nil {
 		return FileInfo{}, fmt.Errorf("%w: %q", ErrExists, to)
 	}
 	if err := os.MkdirAll(filepath.Dir(toClean), 0o750); err != nil {
@@ -626,20 +846,22 @@ func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileIn
 	if err := os.Rename(fromClean, toClean); err != nil {
 		return FileInfo{}, err
 	}
-	info, err := os.Stat(toClean)
+	info, err := os.Lstat(toClean)
 	if err != nil {
 		return FileInfo{}, err
 	}
 
 	if !fromInfo.IsDir() {
-		_ = os.Remove(fromClean + sigSuffix) // no-op if it never existed; never leave a stale sidecar at the old path
+		if fromIsSession {
+			_ = os.Remove(fromClean + sigSuffix) // no-op if it never existed; never leave a stale sidecar at the old path
+		}
 		toSig := toClean + sigSuffix
 		if toIsSession && s.signingEnabled() {
-			data, rerr := os.ReadFile(toClean)
+			data, _, rerr := s.readAtClean(toClean)
 			if rerr != nil {
 				return FileInfo{}, fmt.Errorf("workspacefs: read moved session file for signing: %w", rerr)
 			}
-			if werr := os.WriteFile(toSig, []byte(s.sign(data)), 0o640); werr != nil {
+			if werr := os.WriteFile(toSig, []byte(s.sign(tenant, user, toClean, data)), 0o640); werr != nil {
 				return FileInfo{}, fmt.Errorf("workspacefs: session signature write failed: %w", werr)
 			}
 		} else {
@@ -658,15 +880,18 @@ func (s *Store) Move(ctx context.Context, tenant, user, from, to string) (FileIn
 }
 
 // Mkdir creates a new (possibly nested) directory. Refuses to clobber an
-// existing path.
+// existing path, and every directory it creates counts against the quota.
 func (s *Store) Mkdir(ctx context.Context, tenant, user, rel string) error {
 	defer s.lockUser(tenant, user)()
 	clean, err := s.resolve(tenant, user, rel)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(clean); err == nil {
+	if _, err := os.Lstat(clean); err == nil {
 		return fmt.Errorf("%w: %q", ErrExists, rel)
+	}
+	if err := s.checkQuota(tenant, user, clean, 0); err != nil {
+		return err
 	}
 	return os.MkdirAll(clean, 0o750)
 }

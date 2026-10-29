@@ -39,6 +39,14 @@ type fakeRunNotFoundErr struct{}
 
 func (e *fakeRunNotFoundErr) Error() string { return "run not found" }
 
+// sessionTestStore is a workspacefs.Store under wsRoot with a session signing
+// key, which session writes need since F40.
+func sessionTestStore(wsRoot string) *workspacefs.Store {
+	ws := workspacefs.New(wsRoot)
+	ws.SetSessionSigningKey([]byte("a-32-byte-test-key-aaaaaaaaaaaa!"))
+	return ws
+}
+
 // sandboxSvcForSessionTest builds a SandboxService with an in-memory scheduled
 // repo and a real workspacefs.Store under wsRoot.
 func sandboxSvcForSessionTest(t *testing.T, repo *fakeReportStore, wsRoot string) *SandboxService {
@@ -51,7 +59,7 @@ func sandboxSvcForSessionTest(t *testing.T, repo *fakeReportStore, wsRoot string
 		Logger:          zap.NewNop(),
 		Audit:           em,
 		GatewaySpiffeID: testGWSpiffeID,
-		Workspace:       WorkspaceDeps{Local: workspacefs.New(wsRoot)},
+		Workspace:       WorkspaceDeps{Local: sessionTestStore(wsRoot)},
 		Scheduled:       repo,
 	})
 }
@@ -91,7 +99,7 @@ func TestReportScheduledRunResult_WritesSessionFile(t *testing.T) {
 	}
 
 	// Verify via the same Store that the file is readable and the content matches.
-	ws := workspacefs.New(wsRoot)
+	ws := sessionTestStore(wsRoot)
 	got, _, readErr := ws.Read(context.Background(), testTenantUUID, owner, ".agent/Sessions/"+sessionID.String()+".json")
 	if readErr != nil {
 		t.Fatalf("session file unreadable: %v", readErr)
@@ -126,7 +134,7 @@ func TestReportScheduledRunResult_NoRecordNoWrite(t *testing.T) {
 	}
 
 	// No file should be listed under the workspace.
-	ws := workspacefs.New(wsRoot)
+	ws := sessionTestStore(wsRoot)
 	files, listErr := ws.List(context.Background(), testTenantUUID, "alice@example.com")
 	if listErr != nil {
 		t.Fatalf("list: %v", listErr)
@@ -160,7 +168,7 @@ func TestReportScheduledRunResult_BadSessionIDSkipsWrite(t *testing.T) {
 		t.Fatalf("bad session_id must not fail the RPC: %v", err)
 	}
 
-	ws := workspacefs.New(wsRoot)
+	ws := sessionTestStore(wsRoot)
 	files, listErr := ws.List(context.Background(), testTenantUUID, "alice@example.com")
 	if listErr != nil {
 		t.Fatalf("list: %v", listErr)

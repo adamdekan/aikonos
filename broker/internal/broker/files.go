@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"mime"
 	"net/http"
 	"path/filepath"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -89,10 +92,14 @@ func agentDirGuard(rel string) error {
 }
 
 // fileError maps a workspacefs error to a gRPC status: validation → InvalidArgument,
-// missing file → NotFound, a remote-backend 403 → PermissionDenied, everything
-// else → Internal.
+// missing file → NotFound, a remote-backend 403 → PermissionDenied, a full
+// quota → ResourceExhausted, everything else → Internal. The Internal message
+// is generic (F41): the underlying error carries absolute volume paths and
+// remote backend bodies, so it is logged here and never returned.
 func fileError(verb string, err error) error {
 	switch {
+	case errors.Is(err, workspacefs.ErrQuota):
+		return status.Errorf(codes.ResourceExhausted, "%v", err)
 	case errors.Is(err, workspacefs.ErrInvalidPath), errors.Is(err, workspacefs.ErrTooLarge):
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	case errors.Is(err, workspacefs.ErrExists):
@@ -110,7 +117,8 @@ func fileError(verb string, err error) error {
 	case errors.Is(err, fs.ErrNotExist):
 		return status.Error(codes.NotFound, "file not found")
 	default:
-		return status.Errorf(codes.Internal, "%s failed: %v", verb, err)
+		slog.Default().Error("workspace file operation failed", "op", verb, "error", err)
+		return status.Errorf(codes.Internal, "%s failed", verb)
 	}
 }
 
@@ -147,6 +155,13 @@ func (s *BrokerService) ListWorkspaceFiles(ctx context.Context, req *brokerv1.Li
 		files, err = s.deps.Workspace.Local.ListDir(ctx, tenant, user, req.Path, req.Recursive)
 	} else {
 		files, err = s.deps.Workspace.Local.List(ctx, tenant, user)
+	}
+	if errors.Is(err, workspacefs.ErrListTruncated) {
+		// F33: serve the capped listing and flag it in a response header — the
+		// response message has no truncated field.
+		s.deps.Logger.Warn("workspace listing truncated", zap.Int("entries", len(files)))
+		_ = grpc.SetHeader(ctx, metadata.Pairs("x-aikonos-list-truncated", "true"))
+		err = nil
 	}
 	if err != nil {
 		return nil, fileError("list", err)
