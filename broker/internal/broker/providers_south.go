@@ -175,8 +175,37 @@ func (s *SandboxService) EmitLlmUsage(ctx context.Context, req *brokerv1.EmitLlm
 	if req.TenantId == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id required")
 	}
+	if err := validateLlmUsage(req); err != nil {
+		return nil, err
+	}
 	s.deps.recordLlmUsage(ctx, req)
 	return &brokerv1.EmitLlmUsageResponse{}, nil
+}
+
+// Per-call usage bounds (F27): far above any real call, low enough that
+// token × price and cost × 1e6 cannot overflow int64.
+const (
+	maxUsageTokens   = 1_000_000_000
+	maxUsageCostUSD  = 1_000_000
+	maxUsageQuantity = 1_000_000_000
+)
+
+// validateLlmUsage rejects a usage report that would lower or corrupt the
+// spend meter: a negative, non-finite or out-of-range token count, quantity
+// or cost.
+func validateLlmUsage(req *brokerv1.EmitLlmUsageRequest) error {
+	for _, n := range []int64{req.TokensIn, req.TokensOut, req.CacheRead, req.CacheWrite} {
+		if n < 0 || n > maxUsageTokens {
+			return status.Errorf(codes.InvalidArgument, "token counts must be within 0..%d", maxUsageTokens)
+		}
+	}
+	if !(req.Cost >= 0 && req.Cost <= maxUsageCostUSD) { // also false for NaN
+		return status.Errorf(codes.InvalidArgument, "cost must be within 0..%d", maxUsageCostUSD)
+	}
+	if !(req.Quantity >= 0 && req.Quantity <= maxUsageQuantity) {
+		return status.Errorf(codes.InvalidArgument, "quantity must be within 0..%d", maxUsageQuantity)
+	}
+	return nil
 }
 
 // recordLlmUsage is the single accounting path for a completed billable LLM
@@ -245,7 +274,8 @@ func (d Deps) resolveCostMicros(ctx context.Context, req *brokerv1.EmitLlmUsageR
 			d.Logger.Debug("resolveCostMicros: provider lookup failed, recording cost 0", zap.String("provider", req.Provider), zap.Error(err))
 		}
 	}
-	costMicros := costMicrosFor(req, provider)
+	// Never below zero: a negative cost would lower the cap meter (F27).
+	costMicros := max(costMicrosFor(req, provider), 0)
 	// Tokens burned at zero cost means the provider carries no per-token pricing
 	// (migration 042's default) — its spend stays invisible to caps forever, by
 	// config rather than by accident. Say so once instead of accruing $0 silently.

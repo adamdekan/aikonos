@@ -114,8 +114,9 @@ func TestDecidePlan_AllowAndInputShape(t *testing.T) {
 		t.Fatal("request had no input")
 	}
 	planIn, _ := input["plan"].(map[string]any)
-	if planIn["has_dlp_attestation"] != true {
-		t.Errorf("plan.has_dlp_attestation not passed through: %v", planIn["has_dlp_attestation"])
+	// M-08: the plan's own DLP claim is never trusted.
+	if planIn["has_dlp_attestation"] != false {
+		t.Errorf("plan.has_dlp_attestation = %v, want false whatever the plan claims", planIn["has_dlp_attestation"])
 	}
 	steps, _ := planIn["steps"].([]any)
 	if len(steps) != 1 {

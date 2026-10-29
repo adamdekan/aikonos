@@ -43,6 +43,9 @@ func TestGetAgentSpec_Found(t *testing.T) {
 			LLMModel:     "anthropic/claude-sonnet-4.6",
 			ApprovalMode: "needs_approval",
 			Skills:       []string{"web.fetch"},
+			// G4: the provider restriction reaches the gateway.
+			AllowedProviders:  []string{"eu-provider"},
+			PreferredProvider: "eu-provider",
 		}},
 	}
 	svc := buildAgentSpecSvc(t, store)
@@ -57,6 +60,9 @@ func TestGetAgentSpec_Found(t *testing.T) {
 	}
 	if !resp.Found {
 		t.Fatal("want found=true, got false")
+	}
+	if len(resp.AllowedProviders) != 1 || resp.AllowedProviders[0] != "eu-provider" || resp.PreferredProvider != "eu-provider" {
+		t.Errorf("providers = %v / %q, want [eu-provider] / eu-provider", resp.AllowedProviders, resp.PreferredProvider)
 	}
 	if resp.Name != "my-agent" {
 		t.Errorf("name = %q, want %q", resp.Name, "my-agent")

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/adamdekan/aikonos/broker/internal/audit"
 	"github.com/adamdekan/aikonos/broker/internal/db"
@@ -414,3 +417,29 @@ func TestEmitLlmUsage_UnresolvableProviderAccumulatesZeroCost(t *testing.T) {
 	}
 }
 
+
+// TestEmitLlmUsage_RejectsMeterLoweringUsage (F27): a negative, non-finite or
+// out-of-range report is refused and never reaches the spend meter.
+func TestEmitLlmUsage_RejectsMeterLoweringUsage(t *testing.T) {
+	counters := newFakeSpendCounterStore()
+	svc := newSouthSvcWithCounters(t, newFakeLlmProviderStore(), counters)
+	for name, req := range map[string]*brokerv1.EmitLlmUsageRequest{
+		"negative tokens":   {TokensIn: -9_000_000_000_000},
+		"negative cache":    {CacheRead: -1},
+		"huge tokens":       {TokensOut: maxUsageTokens + 1},
+		"negative cost":     {Cost: -5},
+		"NaN cost":          {Cost: math.NaN()},
+		"infinite cost":     {Cost: math.Inf(1)},
+		"negative quantity": {Quantity: -1},
+	} {
+		req.TenantId, req.Provider, req.Model = testTenant, "openrouter", "m"
+		if _, err := svc.EmitLlmUsage(gatewayCtx(testGateway), req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: want InvalidArgument, got %v", name, err)
+		}
+	}
+	counters.mu.Lock()
+	defer counters.mu.Unlock()
+	if len(counters.accumulateCalls) != 0 {
+		t.Fatalf("rejected usage reached the meter: %+v", counters.accumulateCalls)
+	}
+}

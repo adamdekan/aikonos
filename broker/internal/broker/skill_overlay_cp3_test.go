@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -218,6 +219,48 @@ func TestOverlayLoader_InvalidateForcesReload(t *testing.T) {
 
 	if n := store.calls.Load(); n != 2 {
 		t.Errorf("expected 2 DB reads after invalidate, got %d", n)
+	}
+}
+
+// overlayFuncStore answers ListByTenant with fn, for the F25 race and error
+// cases below.
+type overlayFuncStore func() ([]db.SkillOverlay, error)
+
+func (f overlayFuncStore) ListByTenant(context.Context, string) ([]db.SkillOverlay, error) {
+	return f()
+}
+
+// F25: a load error fails closed and caches nothing; a disable saved while a
+// load is reading is never lost to that load's stale rows.
+func TestOverlayLoader_FailsClosedAndNeverServesStaleEnable(t *testing.T) {
+	ctx := context.Background()
+	row := func(enabled bool) []db.SkillOverlay {
+		return []db.SkillOverlay{{ToolID: "doc.write", ExecutorKind: "builtin", Enabled: enabled, EffectClass: "write_local"}}
+	}
+
+	reg := newTestToolRegistry()
+	loader := newSkillOverlayLoader(reg, overlayFuncStore(func() ([]db.SkillOverlay, error) { return nil, errors.New("db down") }))
+	if err := loader.ensureLoaded(ctx, testTenantUUID, zap.NewNop()); err == nil {
+		t.Fatal("a store error must fail closed")
+	}
+
+	reg = newTestToolRegistry()
+	var loader2 *skillOverlayLoader
+	reads := 0
+	loader2 = newSkillOverlayLoader(reg, overlayFuncStore(func() ([]db.SkillOverlay, error) {
+		reads++
+		if reads == 1 {
+			// The admin disables the tool while this read is in flight.
+			loader2.invalidate(testTenantUUID)
+			return row(true), nil
+		}
+		return row(false), nil
+	}))
+	if err := loader2.ensureLoaded(ctx, testTenantUUID, zap.NewNop()); err != nil {
+		t.Fatalf("ensureLoaded: %v", err)
+	}
+	if enabled, known := reg.IsEnabled(testTenantUUID, "doc.write"); !known || enabled {
+		t.Fatalf("doc.write enabled=%v known=%v after a racing disable, want disabled", enabled, known)
 	}
 }
 

@@ -282,3 +282,31 @@ func TestRouteStep_UnreadableSettingsFailClosed(t *testing.T) {
 		})
 	}
 }
+
+// queryCapture records the ToolQuery routeStep sends to OPA.
+type queryCapture struct{ q policy.ToolQuery }
+
+func (c *queryCapture) DecideToolCall(_ context.Context, q policy.ToolQuery) (*policy.Decision, error) {
+	c.q = q
+	return &policy.Decision{Allow: true}, nil
+}
+
+// TestRouteStep_NoSelfDerivedSensitivity (M-08): the exfil rule's inputs are
+// never the step's own class or a client claim — a sensitive READ_ONLY step
+// reaches OPA with reads_sensitive and has_dlp_attestation both false until
+// the task-scoped flag exists.
+func TestRouteStep_NoSelfDerivedSensitivity(t *testing.T) {
+	for _, ec := range []planv1.EffectClass{planv1.EffectClass_READ_ONLY, planv1.EffectClass_WRITE_EXTERNAL} {
+		eng := &queryCapture{}
+		_, tr, err := routeStep(context.Background(), routeStepInput{
+			Engine: eng, Reg: newTestToolRegistry(), Cfg: newFakeConfigStore(),
+			ToolID: "doc.write", TenantID: testTenantUUID, EffectClass: ec,
+		})
+		if err != nil {
+			t.Fatalf("%s: routeStep: %v", ec, err)
+		}
+		if eng.q.ReadsSensitive || eng.q.HasDLPAttestation || tr.ReadsSensitive {
+			t.Errorf("%s: reads_sensitive=%v dlp=%v, want both false", ec, eng.q.ReadsSensitive, eng.q.HasDLPAttestation)
+		}
+	}
+}

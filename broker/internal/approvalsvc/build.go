@@ -109,16 +109,17 @@ func Plan(ctx context.Context, in BuildInput) (Gate, error) {
 
 	fga := in.Policy != nil && in.Policy.FGAEnabled()
 	approverSet := []string{in.OwnerUserID}
+	seen := map[string]bool{} // groups already expanded, across every read below
 	if fga {
-		if users := readUsers(ctx, in, "approver", "task:"+in.TaskID); len(users) > 0 {
+		if users := readUsers(ctx, in, "approver", "task:"+in.TaskID, seen, 0); len(users) > 0 {
 			approverSet = users
 		}
 	}
 
 	if requiresN >= 2 {
 		if fga && in.FGATenant != "" {
-			approverSet = append(approverSet, readUsers(ctx, in, "approver", in.FGATenant)...)
-			approverSet = append(approverSet, readUsers(ctx, in, "admin", in.FGATenant)...)
+			approverSet = append(approverSet, readUsers(ctx, in, "approver", in.FGATenant, seen, 0)...)
+			approverSet = append(approverSet, readUsers(ctx, in, "admin", in.FGATenant, seen, 0)...)
 		}
 		eligible := make([]string, 0, len(approverSet))
 		for _, a := range approverSet {
@@ -170,11 +171,15 @@ func Plan(ctx context.Context, in BuildInput) (Gate, error) {
 	}, nil
 }
 
-// readUsers returns the user ids holding relation on object, expanding a
-// group#member tuple one level. A read error is logged and yields nothing,
-// so it can only shrink the approver set.
-// ponytail: one level of group nesting; recurse if nested approver groups appear.
-func readUsers(ctx context.Context, in BuildInput, relation, object string) []string {
+// maxApproverGroupDepth bounds group#member expansion in readUsers (F240).
+const maxApproverGroupDepth = 5
+
+// readUsers returns the user ids holding relation on object, expanding
+// group#member tuples through nested groups. Each group is expanded once
+// (seen) and at most maxApproverGroupDepth deep, so a cycle or a deep nest
+// cannot loop. A read error is logged and yields nothing, so it can only
+// shrink the approver set.
+func readUsers(ctx context.Context, in BuildInput, relation, object string, seen map[string]bool, depth int) []string {
 	rels, err := in.Policy.ReadTuples(ctx, policy.ReadFilter{Relation: relation, Object: object})
 	if err != nil {
 		in.Logger.Warn("approvalsvc: ReadTuples for approver set failed",
@@ -185,8 +190,9 @@ func readUsers(ctx context.Context, in BuildInput, relation, object string) []st
 	for _, r := range rels {
 		if id, ok := strings.CutPrefix(r.User, "user:"); ok {
 			out = append(out, id)
-		} else if group, ok := strings.CutSuffix(r.User, "#member"); ok {
-			out = append(out, readUsers(ctx, in, "member", group)...)
+		} else if group, ok := strings.CutSuffix(r.User, "#member"); ok && !seen[group] && depth < maxApproverGroupDepth {
+			seen[group] = true
+			out = append(out, readUsers(ctx, in, "member", group, seen, depth+1)...)
 		}
 	}
 	return out

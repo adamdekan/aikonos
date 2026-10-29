@@ -48,13 +48,22 @@ func (s *BrokerService) TestLlmProvider(ctx context.Context, req *brokerv1.TestL
 		return nil, err
 	}
 
+	traceID := span.SpanContext().TraceID().String()
+
 	// Resolve the key: prefer the (unsaved) key from the request; otherwise fall
-	// back to the stored Vault key for an existing provider (blank-on-edit path).
+	// back to the stored Vault key for an existing provider (blank-on-edit
+	// path) — only when the request targets the saved row's destination, so
+	// the write-only key cannot be sent to an admin-chosen host (M-14).
 	key := req.ApiKey
 	if key == "" && s.deps.Secrets != nil {
-		stored, ok, kerr := s.deps.Secrets.ReadProviderKey(ctx, tenant, p.Id)
-		if kerr == nil && ok {
-			key = stored
+		row, found, same := s.storedKeyTarget(ctx, tenant, p)
+		if found && row.HasKey && !same {
+			return nil, s.refuseStoredKeyRetarget(ctx, traceID, tenant, user, p.Id)
+		}
+		if found && same {
+			if stored, ok, kerr := s.deps.Secrets.ReadProviderKey(ctx, tenant, p.Id); kerr == nil && ok {
+				key = stored
+			}
 		}
 	}
 	if key == "" {
@@ -81,8 +90,6 @@ func (s *BrokerService) TestLlmProvider(ctx context.Context, req *brokerv1.TestL
 	if err := toolproxy.ValidatePublicURL(spec.url, allowPrivate); err != nil {
 		return &brokerv1.TestLlmProviderResponse{Ok: false, Error: err.Error()}, nil
 	}
-
-	traceID := span.SpanContext().TraceID().String()
 
 	// The probe spends real provider money and an admin can drive it in a loop,
 	// so it passes the same rate-limit + spend-cap gate as any model turn. No

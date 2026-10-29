@@ -81,7 +81,7 @@ func (s *BrokerService) SetRateLimitPolicy(ctx context.Context, req *brokerv1.Se
 
 	// Hot-reload the in-process limiter with the updated policy set.
 	// Non-fatal: policy is persisted even if the reload fails.
-	if err := s.reloadRateLimitPolicies(ctx, tenant); err != nil {
+	if err := s.reloadRateLimitPolicies(ctx); err != nil {
 		s.deps.Logger.Warn("rate-limit: failed to reload limiter after policy change; limiter may be stale", zap.Error(err))
 	}
 
@@ -103,16 +103,18 @@ func (s *BrokerService) DeleteRateLimitPolicy(ctx context.Context, req *brokerv1
 		return nil, status.Errorf(codes.Internal, "delete rate limit policy: %v", err)
 	}
 	if s.deps.RateLimiter != nil {
-		if err := s.reloadRateLimitPolicies(ctx, tenant); err != nil {
+		if err := s.reloadRateLimitPolicies(ctx); err != nil {
 			s.deps.Logger.Warn("rate-limit: failed to reload limiter after policy change; limiter may be stale", zap.Error(err))
 		}
 	}
 	return &brokerv1.DeleteRateLimitPolicyResponse{}, nil
 }
 
-// reloadRateLimitPolicies fetches all policies from DB and hot-reloads the limiter.
-func (s *BrokerService) reloadRateLimitPolicies(ctx context.Context, tenant string) error {
-	rows, err := s.deps.RateLimitPolicies.List(ctx, tenant)
+// reloadRateLimitPolicies fetches every tenant's policies from DB and
+// hot-reloads the limiter. SetPolicies replaces the whole cross-tenant set, so
+// a tenant-scoped List here would drop every other tenant's caps (F21).
+func (s *BrokerService) reloadRateLimitPolicies(ctx context.Context) error {
+	rows, err := s.deps.RateLimitPolicies.ListAll(ctx)
 	if err != nil {
 		return err
 	}

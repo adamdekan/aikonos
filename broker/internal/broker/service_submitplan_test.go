@@ -629,3 +629,24 @@ func TestInvokeTool_SubmitPlanTokenRoundTrip(t *testing.T) {
 		t.Fatalf("handler did not run as the task: %+v", got)
 	}
 }
+
+// TestSubmitPlan_StepCap (F124): a plan over maxPlanSteps is refused before
+// OPA sees it and before the task moves.
+func TestSubmitPlan_StepCap(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	pol := &actorCapturePolicy{fakePolicyEngine: fakePolicyEngine{planAllow: true}}
+	svc := newSandboxSvcForPlan(taskStore, pol, nil)
+	steps := make([]*planv1.PlanStep, maxPlanSteps+1)
+	for i := range steps {
+		steps[i] = makeStep(int32(i+1), "doc.read", nil)
+	}
+	_, err := svc.SubmitPlan(peerCtx(testGWSpiffeID), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, steps),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want InvalidArgument, got %v", err)
+	}
+	if pol.actor != "" || len(taskStore.transitions) != 0 {
+		t.Fatalf("an oversized plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
+	}
+}

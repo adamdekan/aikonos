@@ -208,6 +208,26 @@ func TestBuild_ThresholdAndSeparationOfDuty(t *testing.T) {
 			wantApprovers: []string{"bob@example.com", "carol@example.com", "admin@example.com"},
 		},
 		{
+			// F240: nested approver groups that form a cycle (ops ⊂ sec ⊂ ops,
+			// and ops ⊂ ops) expand each group once and return promptly.
+			name:    "cyclic_approver_groups_terminate",
+			outcome: planv1.ValidationOutcome_NEEDS_STEP_UP,
+			cfgN:    1,
+			policy: &fakeAccessPolicy{
+				enabled: true,
+				tuples: []policy.Relation{
+					{User: "group:ops#member", Relation: "approver", Object: "tenant:dev"},
+					{User: "group:ops#member", Relation: "member", Object: "group:ops"},
+					{User: "group:sec#member", Relation: "member", Object: "group:ops"},
+					{User: "group:ops#member", Relation: "member", Object: "group:sec"},
+					{User: "user:bob@example.com", Relation: "member", Object: "group:ops"},
+					{User: "user:carol@example.com", Relation: "member", Object: "group:sec"},
+				},
+			},
+			wantRequiresN: 2,
+			wantApprovers: []string{"bob@example.com", "carol@example.com"},
+		},
+		{
 			// A candidate FGA can_approve refuses is not eligible: one left of 2.
 			name:    "can_approve_filters_candidates",
 			outcome: planv1.ValidationOutcome_NEEDS_STEP_UP,

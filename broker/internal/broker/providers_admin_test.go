@@ -504,6 +504,37 @@ func TestUpsertLlmProvider_WritesKeyToSecretsAndSetsHasKey(t *testing.T) {
 
 // ── UpsertLlmProvider carries vision fields through ───────────────────────────
 
+// TestUpsertLlmProvider_StoredKeyNotRetargeted (M-14): moving a keyed
+// provider to another endpoint needs the key re-entered; a blank key would
+// otherwise carry the stored key to the new host.
+func TestUpsertLlmProvider_StoredKeyNotRetargeted(t *testing.T) {
+	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
+	srv := f.server(t)
+	defer srv.Close()
+	deps := testProviderDeps(t, srv.URL, nil)
+	store := newFakeLlmProviderStore()
+	store.rows[testTenantUUID+"/openrouter"] = fakeLlmProviderRow{id: "openrouter", endpoint: "https://openrouter.ai/api/v1", api: "openai-completions", hasKey: true}
+	deps.Providers = store
+	svc := NewBrokerService(deps)
+	ctx := ctxWithIdentity(testTenantUUID, "admin@example.com")
+
+	p := validProvider()
+	p.Endpoint = "https://attacker.example/v1"
+	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("blank key with a new endpoint: want InvalidArgument, got %v", err)
+	}
+	if len(store.upserts) != 0 {
+		t.Fatalf("refused upsert was written: %+v", store.upserts)
+	}
+	// Same destination keeps the stored key; a new key may move it.
+	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: validProvider()}); err != nil {
+		t.Fatalf("unchanged destination: %v", err)
+	}
+	if _, err := svc.UpsertLlmProvider(ctx, &brokerv1.UpsertLlmProviderRequest{Provider: p, ApiKey: "sk-new"}); err != nil {
+		t.Fatalf("new endpoint with a new key: %v", err)
+	}
+}
+
 func TestUpsertLlmProvider_CarriesVisionCapableThrough(t *testing.T) {
 	f := &fakeFGA{admins: map[string]bool{"user:admin@example.com": true}}
 	srv := f.server(t)

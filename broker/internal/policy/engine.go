@@ -509,20 +509,19 @@ func (e *Engine) ReadTuples(ctx context.Context, f ReadFilter) ([]Relation, erro
 	return out, nil
 }
 
-// ListUserGroups returns the group names a user is a direct member of (the
-// `member` relation on group objects), for network-rule group scoping. Disabled
+// ListUserGroups returns the group names a user is a member of (the `member`
+// relation on group objects), for network-rule group scoping. Resolved by
+// OpenFGA ListObjects, so membership through a nested group (group#member)
+// counts as the model says it does (F238); an error fails closed. Disabled
 // FGA → nil (group-scoped rules simply don't match).
 func (e *Engine) ListUserGroups(ctx context.Context, user string) ([]string, error) {
-	if !e.fga.enabled() {
-		return nil, nil
-	}
-	rels, err := e.ReadTuples(ctx, ReadFilter{User: "user:" + user, Relation: "member", Object: "group:"})
+	refs, err := e.ListObjects(ctx, "user:"+user, "member", "group")
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, r := range rels {
-		if name, ok := strings.CutPrefix(r.Object, "group:"); ok && name != "" {
+	for _, r := range refs {
+		if name, ok := strings.CutPrefix(r, "group:"); ok && name != "" {
 			out = append(out, name)
 		}
 	}
@@ -595,9 +594,11 @@ func buildPlanInput(plan *planv1.Plan, pctx PlanContext) map[string]any {
 	}
 	return map[string]any{
 		"plan": map[string]any{
-			"plan_id":             plan.PlanId,
-			"steps":               steps,
-			"has_dlp_attestation": plan.HasDlpAttestation,
+			"plan_id": plan.PlanId,
+			"steps":   steps,
+			// M-08: never the plan's own claim — it would switch the exfil rule
+			// off. TODO(M-08): a broker-verified DLP stage sets this.
+			"has_dlp_attestation": false,
 		},
 		"task": map[string]any{
 			"cost_budget":          pctx.CostBudget,

@@ -165,41 +165,7 @@ func (c *fgaClient) check(ctx context.Context, user, relation, object string) (b
 // later Check calls resolve. Writing a tuple that already exists is treated as
 // success — re-creation must be idempotent.
 func (c *fgaClient) write(ctx context.Context, tuples []fgaTupleKey) error {
-	body, err := json.Marshal(fgaWriteRequest{Writes: fgaTupleKeys{TupleKeys: tuples}})
-	if err != nil {
-		return fmt.Errorf("marshal fga write: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/stores/%s/write", c.endpoint, c.storeID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build fga write request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fga write request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		return nil
-	}
-	// OpenFGA returns 400 with code "write_failed_due_to_invalid_input" when a
-	// tuple already exists; that's benign for our idempotent create path.
-	if resp.StatusCode == http.StatusBadRequest {
-		var e struct {
-			Code string `json:"code"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
-			c.logger.Warn("fga: decode write response body", zap.Error(err))
-		}
-		if strings.Contains(e.Code, "already_exists") || strings.Contains(e.Code, "write_failed") {
-			return nil
-		}
-		return fmt.Errorf("fga write rejected: %s", e.Code)
-	}
-	return fmt.Errorf("fga write returned status %d", resp.StatusCode)
+	return c.writeTuples(ctx, tuples, false)
 }
 
 type fgaReadRequest struct {
@@ -321,38 +287,67 @@ type fgaDeleteRequest struct {
 // Deleting a tuple that doesn't exist is treated as success — revoke must be
 // idempotent.
 func (c *fgaClient) delete(ctx context.Context, tuples []fgaTupleKey) error {
-	body, err := json.Marshal(fgaDeleteRequest{Deletes: fgaTupleKeys{TupleKeys: tuples}})
+	return c.writeTuples(ctx, tuples, true)
+}
+
+// writeTuples sends one OpenFGA Write of tuples as writes or deletes.
+// OpenFGA rejects the whole atomic request with a 400 (code
+// write_failed_due_to_invalid_input) when any tuple already exists (write) or
+// is absent (delete) — and with the same code for invalid input such as an
+// unknown relation. So a 400 is success only for a single tuple whose message
+// says it was already applied; a rejected batch is retried tuple by tuple, and
+// any other 400 is an error (F239), never a silently skipped grant or revoke.
+// ponytail: the message text is the only discriminator on OpenFGA v1.5.3;
+// send on_duplicate/on_missing "ignore" once the image supports them.
+func (c *fgaClient) writeTuples(ctx context.Context, tuples []fgaTupleKey, del bool) error {
+	op, req := "write", any(fgaWriteRequest{Writes: fgaTupleKeys{TupleKeys: tuples}})
+	if del {
+		op, req = "delete", fgaDeleteRequest{Deletes: fgaTupleKeys{TupleKeys: tuples}}
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshal fga delete: %w", err)
+		return fmt.Errorf("marshal fga %s: %w", op, err)
 	}
 
 	url := fmt.Sprintf("%s/stores/%s/write", c.endpoint, c.storeID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build fga delete request: %w", err)
+		return fmt.Errorf("build fga %s request: %w", op, err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("fga delete request: %w", err)
+		return fmt.Errorf("fga %s request: %w", op, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}
-	// OpenFGA returns 400 when the tuple is absent; benign for idempotent revoke.
-	if resp.StatusCode == http.StatusBadRequest {
-		var e struct {
-			Code string `json:"code"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
-			c.logger.Warn("fga: decode delete response body", zap.Error(err))
-		}
-		if strings.Contains(e.Code, "not_found") || strings.Contains(e.Code, "write_failed") || strings.Contains(e.Code, "invalid_input") {
-			return nil
-		}
-		return fmt.Errorf("fga delete rejected: %s", e.Code)
+	if resp.StatusCode != http.StatusBadRequest {
+		return fmt.Errorf("fga %s returned status %d", op, resp.StatusCode)
 	}
-	return fmt.Errorf("fga delete returned status %d", resp.StatusCode)
+	var e struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		c.logger.Warn("fga: decode "+op+" response body", zap.Error(err))
+	}
+	if len(tuples) > 1 {
+		for _, t := range tuples {
+			if err := c.writeTuples(ctx, []fgaTupleKey{t}, del); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	applied := "already exist"
+	if del {
+		applied = "not exist"
+	}
+	if strings.Contains(e.Message, applied) {
+		return nil
+	}
+	return fmt.Errorf("fga %s rejected: %s %s", op, e.Code, e.Message)
 }
