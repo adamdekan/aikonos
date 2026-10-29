@@ -3,7 +3,7 @@
 // Proxies API + AG-UI + audit-stream paths to the agent-gateway / observability
 // service, forwarding the Authorization header from the browser.
 //
-//   GET  /healthz
+//   GET  /healthz           → liveness only, no upstream details
 //   GET  /runtime-config.js → deployment settings for the SPA (from env)
 //   GET  /desktop.json      → sign-in and release settings for the Windows app
 //   ALL  /api/*             → gateway (strip /api prefix)  — JSON, buffered OK
@@ -65,6 +65,60 @@ export const DESKTOP_ENV = {
 
 export const DEFAULT_DESKTOP_CLIENT = "aikonos-desktop";
 
+// Where the SPA signs in: the runtime authority, else the SPA's own default
+// (auth/oidc.js). A deployment that bakes VITE_OIDC_AUTHORITY into the bundle
+// instead must also set AIKONOS_WEBUI_OIDC_AUTHORITY, or the CSP below blocks
+// its identity provider.
+const DEFAULT_OIDC_ORIGIN = "http://localhost:18080";
+
+function oidcOrigin(env) {
+  const authority = runtimeConfig(env).oidc.authority;
+  if (!authority) return DEFAULT_OIDC_ORIGIN;
+  try {
+    return new URL(authority).origin;
+  } catch {
+    return null; // not a URL: the SPA cannot sign in with it either
+  }
+}
+
+// M-26: browser-side backstop for a markup or dependency gap in the SPA. No
+// inline or third-party script, no remote images (a rendered markdown image
+// would leak data with zero clicks), no network or frames except this origin
+// and the identity provider (discovery, token, silent renew). Inline styles
+// stay: index.html's @font-face block and the markdown renderer need them.
+export function securityHeaders(env = process.env) {
+  const idp = oidcOrigin(env);
+  const withIdp = (src) => (idp ? `${src} ${idp}` : src);
+  const csp = (frameAncestors) => [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    withIdp("connect-src 'self'"),
+    withIdp("frame-src 'self'"),
+    `frame-ancestors ${frameAncestors}`,
+    "form-action 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+  ].join("; ");
+  const common = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
+  return {
+    page: { ...common, "content-security-policy": csp("'none'"), "x-frame-options": "DENY" },
+    // oidc-client-ts silent renew (no refresh token) lands the IdP's answer
+    // on the redirect URI inside a hidden iframe of this same origin.
+    callback: { ...common, "content-security-policy": csp("'self'"), "x-frame-options": "SAMEORIGIN" },
+    callbackPath: callbackPath(env),
+  };
+}
+
+function callbackPath(env) {
+  try {
+    return new URL(runtimeConfig(env).oidc.redirectUri).pathname;
+  } catch {
+    return "/auth/callback"; // unset: the SPA's default (auth/oidc.js)
+  }
+}
+
 export function desktopConfig(env = process.env) {
   const read = (name) => (env[name] ?? "").trim();
   const oidc = {};
@@ -118,7 +172,13 @@ export async function buildApp({
     app.register(fstatic.default, { root: distDir });
   }
 
-  app.get("/healthz", async () => ({ ok: true, gateway: GATEWAY_URL, observability: OBSERVABILITY_URL || null }));
+  const headers = securityHeaders(env);
+  app.addHook("onSend", async (req, reply) => {
+    reply.headers(req.url.split("?")[0] === headers.callbackPath ? headers.callback : headers.page);
+  });
+
+  // L-28: unauthenticated, so it names no internal service.
+  app.get("/healthz", async () => ({ ok: true }));
 
   // Loaded by a classic <script> in index.html, which runs before the deferred
   // app bundle. JSON.stringify output is a valid JS literal, so no value can
@@ -156,7 +216,7 @@ export async function buildApp({
         raw.write(value);
         pump();
       }).catch((err) => {
-        console.error("SSE pump error:", err);
+        if (!raw.destroyed) console.error("SSE pump error:", err);
         // Cancel via the reader, not upstream.body: getReader() locked the stream,
         // so body.cancel() throws ERR_INVALID_STATE and crashes the process.
         reader.cancel().catch(() => {});
@@ -177,9 +237,42 @@ export async function buildApp({
     return true;
   }
 
+  // L-27: an upstream request the browser's connection owns. Aborted when that
+  // connection closes (Stop, tab closed), while the upstream is still sending
+  // headers or mid-stream: the abort closes the gateway connection, which is
+  // what aborts the run there.
+  function clientSignal(reply) {
+    const ac = new AbortController();
+    reply.raw.on("close", () => ac.abort());
+    return ac.signal;
+  }
+
+  // L-28: every proxied route needs a bearer, so an anonymous client is turned
+  // away before its body (up to bodyLimit) is read and forwarded.
+  // Same test and answer as the gateway's requireUser.
+  function hasBearer(req) {
+    return (req.headers["authorization"] ?? "").startsWith("Bearer ");
+  }
+  async function requireBearer(req, reply) {
+    if (!hasBearer(req)) reply.code(401).send({ error: "Authorization: Bearer <token> required" });
+  }
+
+  // Upstream failure reply. The error itself is logged, never sent: it names
+  // internal hosts. Nothing is sent when the browser already left.
+  function sendUnreachable(reply, what, err) {
+    if (reply.raw.destroyed) return;
+    console.error(`${what} request failed:`, err);
+    if (err?.name === "TimeoutError") reply.code(504).send({ error: `${what} timed out` });
+    else reply.code(502).send({ error: `${what} unreachable` });
+  }
+
+  // Buffered /api/* calls are bounded so a hung upstream cannot hold sockets
+  // forever. Generous: some are LLM-backed or carry a 14 MiB upload.
+  const API_TIMEOUT_MS = 5 * 60 * 1000;
+
   // /agui — forward POST to gateway, stream SSE response back.
   // The Authorization header from the browser is forwarded verbatim.
-  app.post("/agui", async (req, reply) => {
+  app.post("/agui", { onRequest: requireBearer }, async (req, reply) => {
     const headers = { "content-type": "application/json" };
     if (req.headers["authorization"]) headers["authorization"] = req.headers["authorization"];
     // Copy accept header if present (AG-UI protocol).
@@ -190,12 +283,13 @@ export async function buildApp({
         method: "POST",
         headers,
         body: JSON.stringify(req.body),
+        signal: clientSignal(reply),
       });
       if (await sendUpstreamError(upstream, reply)) return;
       reply.hijack();
       pipeSSE(upstream, reply.raw);
     } catch (err) {
-      reply.code(502).send({ error: `gateway unreachable: ${String(err)}` });
+      sendUnreachable(reply, "gateway", err);
     }
   });
 
@@ -207,6 +301,8 @@ export async function buildApp({
       reply.code(501).send({ error: "OBSERVABILITY_URL not configured" });
       return;
     }
+    // After the 501: the Audit view probes without a token to detect it.
+    if (!hasBearer(req)) return requireBearer(req, reply);
     const headers = { accept: "text/event-stream" };
     if (req.headers["authorization"]) headers["authorization"] = req.headers["authorization"];
     // Forward the request query string verbatim (F44: ?tenant= scoping).
@@ -215,12 +311,13 @@ export async function buildApp({
       const upstream = await fetch(`${OBSERVABILITY_URL}/api/audit/stream${qs}`, {
         method: "GET",
         headers,
+        signal: clientSignal(reply),
       });
       if (await sendUpstreamError(upstream, reply)) return;
       reply.hijack();
       pipeSSE(upstream, reply.raw);
     } catch (err) {
-      reply.code(502).send({ error: `observability unreachable: ${String(err)}` });
+      sendUnreachable(reply, "observability", err);
     }
   });
 
@@ -228,7 +325,7 @@ export async function buildApp({
   // with SSE (live per-step progress), which the buffering /api/* handler below
   // would swallow — pipe it unbuffered like /agui. Without ?stream=1 it is an
   // ordinary buffered JSON proxy (the blocking run path), byte-identical to /api/*.
-  app.post("/api/workflows/:lineageId/run", async (req, reply) => {
+  app.post("/api/workflows/:lineageId/run", { onRequest: requireBearer }, async (req, reply) => {
     const streaming = req.query?.stream != null && req.query.stream !== "";
     const path = req.url.replace(/^\/api/, "");
     const headers = { "content-type": "application/json" };
@@ -239,6 +336,7 @@ export async function buildApp({
         method: "POST",
         headers,
         body: JSON.stringify(req.body ?? {}),
+        signal: clientSignal(reply),
       });
       if (streaming) {
         if (await sendUpstreamError(upstream, reply)) return;
@@ -250,17 +348,17 @@ export async function buildApp({
       const contentType = upstream.headers.get("content-type") ?? "application/json";
       reply.code(upstream.status).header("content-type", contentType).send(text);
     } catch (err) {
-      reply.code(502).send({ error: `gateway unreachable: ${String(err)}` });
+      sendUnreachable(reply, "gateway", err);
     }
   });
 
   // /api/* — forward to gateway, strip /api prefix, forward Authorization.
-  app.all("/api/*", async (req, reply) => {
+  app.all("/api/*", { onRequest: requireBearer }, async (req, reply) => {
     const path = req.url.replace(/^\/api/, "");
     const target = GATEWAY_URL + path;
     const headers = {};
     if (req.headers["authorization"]) headers["authorization"] = req.headers["authorization"];
-    const init = { method: req.method, headers };
+    const init = { method: req.method, headers, signal: AbortSignal.timeout(API_TIMEOUT_MS) };
     // Only tag the upstream request as JSON when a body is actually forwarded.
     // A body-less request (e.g. DELETE) sent with content-type: application/json
     // and an empty body makes the gateway's Fastify reject it with 400
@@ -291,7 +389,7 @@ export async function buildApp({
       }
       reply.send(text);
     } catch (err) {
-      reply.code(502).send({ error: `gateway unreachable: ${String(err)}` });
+      sendUnreachable(reply, "gateway", err);
     }
   });
 

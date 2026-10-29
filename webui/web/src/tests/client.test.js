@@ -3,10 +3,10 @@ import { createPinia, setActivePinia } from "pinia";
 
 // Hoisted mock — vi.mock is hoisted to the top of the module by vitest.
 const mockGetAccessToken = vi.fn();
-const mockLogin = vi.fn();
+const mockEndSession = vi.fn();
 vi.mock("../auth/oidc.js", () => ({
   getAccessToken: mockGetAccessToken,
-  login: mockLogin,
+  endSession: mockEndSession,
 }));
 
 describe("api/client.js", () => {
@@ -171,25 +171,25 @@ describe("api/client.js", () => {
 
   it("401 (session revoked) sends the user back to sign-in, returning to this page", async () => {
     sessionStorage.clear();
-    mockLogin.mockReset();
+    mockEndSession.mockReset();
     window.history.replaceState(null, "", "/inbox?approval=t1");
     fetchMock.mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: "session revoked; sign in again" }) });
     const { get } = await loadClient();
     await expect(get("/agents")).rejects.toMatchObject({ status: 401 });
-    expect(mockLogin).toHaveBeenCalledWith("/inbox?approval=t1");
+    expect(mockEndSession).toHaveBeenCalledWith("/inbox?approval=t1");
 
     // A second 401 within a minute does not loop through the IdP again.
     await expect(get("/agents")).rejects.toMatchObject({ status: 401 });
-    expect(mockLogin).toHaveBeenCalledTimes(1);
+    expect(mockEndSession).toHaveBeenCalledTimes(1);
   });
 
   it("a step_up_required 401 is left to the approval UI (no sign-in redirect)", async () => {
     sessionStorage.clear();
-    mockLogin.mockReset();
+    mockEndSession.mockReset();
     fetchMock.mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: "step_up_required", acr: "mfa" }) });
     const { post } = await loadClient();
     await expect(post("/approve")).rejects.toMatchObject({ status: 401 });
-    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockEndSession).not.toHaveBeenCalled();
   });
 
   it("403 'user is blocked' raises the global account-blocked flag", async () => {

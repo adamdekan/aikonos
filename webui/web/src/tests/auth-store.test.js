@@ -76,12 +76,13 @@ describe("store/user.js", () => {
     expect(store.user).toBe("");
   });
 
-  it("does NOT write anything to localStorage", async () => {
+  // The only write is the chat history's owner (L-26): no token, no profile.
+  it("writes nothing to localStorage but the chat history's owner subject", async () => {
     setActivePinia(createPinia());
     const { useUserStore } = await importFresh();
     const store = useUserStore();
     const setSpy = vi.spyOn(Storage.prototype, "setItem");
     store.setFromProfile({ email: "alice@example.com", sub: "sub-alice" });
-    expect(setSpy).not.toHaveBeenCalled();
+    expect(setSpy.mock.calls).toEqual([["aikonos.chatSessions.owner", "sub-alice"]]);
   });
 });

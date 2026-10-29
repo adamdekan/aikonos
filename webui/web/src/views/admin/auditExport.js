@@ -11,15 +11,19 @@ export function toJson(events) {
 }
 
 /**
- * CSV-escape a single field value.
- * Wraps in quotes if the value contains a comma, double-quote, or newline;
- * doubles any interior double-quotes.
+ * CSV-escape a single field value. Shared by every CSV export.
+ * A value a spreadsheet would run as a formula (leading =, +, -, @, tab or
+ * CR) gets a leading apostrophe first: names, emails and resource refs are
+ * member-controlled, and the export is opened by an admin.
+ * Then wraps in quotes if the value contains a comma, double-quote, or
+ * newline; doubles any interior double-quotes.
  * @param {string} value
  * @returns {string}
  */
-function csvEscape(value) {
-  const s = String(value ?? "");
-  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+export function csvEscape(value) {
+  let s = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
     return '"' + s.replaceAll('"', '""') + '"';
   }
   return s;

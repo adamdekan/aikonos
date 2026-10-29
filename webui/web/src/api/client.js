@@ -3,7 +3,7 @@
 // throwing.
 
 import { ref } from "vue";
-import { getAccessToken, login } from "../auth/oidc.js";
+import { getAccessToken, endSession } from "../auth/oidc.js";
 
 // Set once the broker refuses this user as blocked (AG-06); App.vue shows a
 // global banner instead of each view rendering an empty or misleading state.
@@ -26,7 +26,7 @@ export function noteAuthFailure(status, error) {
   } catch {
     /* storage unavailable: redirect anyway */
   }
-  login(window.location.pathname + window.location.search);
+  endSession(window.location.pathname + window.location.search);
 }
 
 // Passthrough paths that must not be prefixed with /api.

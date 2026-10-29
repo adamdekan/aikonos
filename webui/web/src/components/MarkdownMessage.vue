@@ -5,11 +5,24 @@ import "vue-stream-markdown/index.css";
 defineProps({
   text: { type: String, default: "" },
 });
+
+// The text is model output, which prompt-injected content can steer. No image
+// is fetched (a remote image leaks data with zero clicks), no ```html fence
+// runs in a scripted iframe and no mermaid previewer renders; links keep the
+// library's safe schemes only (no custom app handlers) and still ask before
+// opening.
+const hardenOptions = { allowedImagePrefixes: [], allowDataImages: false, allowedProtocols: [] };
+const mermaidOptions = { config: { securityLevel: "strict" } };
 </script>
 
 <template>
   <div class="markdown-message">
-    <Markdown :content="text" />
+    <Markdown
+      :content="text"
+      :harden-options="hardenOptions"
+      :previewers="false"
+      :mermaid-options="mermaidOptions"
+    />
   </div>
 </template>
 

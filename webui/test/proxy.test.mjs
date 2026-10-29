@@ -6,7 +6,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, request } from "node:http";
 import { buildApp } from "../server.mjs";
+
+// The real fetch, for the one test that talks to a live upstream.
+const realFetch = globalThis.fetch;
+
+// Every proxied route needs a bearer (L-28); the tests send this one.
+const AUTH = { authorization: "Bearer test-token" };
 
 // Build a test app: no static serving (distDir nonexistent), injected gateway URL.
 async function makeApp(fetchStub) {
@@ -32,15 +39,15 @@ function captureFetch(captured, { status = 200, body = '{"upstream":"ok"}', cont
   };
 }
 
-test("GET /healthz returns ok with gateway URL", async (t) => {
+// L-28: /healthz is unauthenticated, so it names no internal service.
+test("GET /healthz returns ok and no upstream URLs", async (t) => {
   const app = await makeApp(captureFetch({}));
   t.after(() => app.close());
 
   const res = await app.inject({ method: "GET", url: "/healthz" });
   assert.equal(res.statusCode, 200);
-  const b = JSON.parse(res.payload);
-  assert.equal(b.ok, true);
-  assert.equal(b.gateway, "http://mock-gateway");
+  assert.deepEqual(JSON.parse(res.payload), { ok: true });
+  assert.ok(!res.payload.includes("mock-gateway"), res.payload);
 });
 
 test("GET /api/sessions strips /api prefix and proxies to gateway", async (t) => {
@@ -48,7 +55,7 @@ test("GET /api/sessions strips /api prefix and proxies to gateway", async (t) =>
   const app = await makeApp(captureFetch(req));
   t.after(() => app.close());
 
-  await app.inject({ method: "GET", url: "/api/sessions" });
+  await app.inject({ method: "GET", url: "/api/sessions", headers: AUTH });
   assert.equal(req.url, "http://mock-gateway/sessions");
   assert.equal(req.method, "GET");
 });
@@ -61,7 +68,7 @@ test("POST /api/foo with JSON body forwards application/json and JSON-encoded bo
   await app.inject({
     method: "POST",
     url: "/api/sessions",
-    headers: { "content-type": "application/json" },
+    headers: { ...AUTH, "content-type": "application/json" },
     payload: JSON.stringify({ prompt: "hello" }),
   });
   assert.equal(req.headers["content-type"], "application/json");
@@ -77,7 +84,7 @@ test("POST /api/admin/skills/upload with text/markdown forwards body verbatim (n
   const res = await app.inject({
     method: "POST",
     url: "/api/admin/skills/upload",
-    headers: { "content-type": "text/markdown" },
+    headers: { ...AUTH, "content-type": "text/markdown" },
     payload: mdBody,
   });
   // 415 would mean the content-type parser wasn't registered
@@ -95,7 +102,7 @@ test("PUT /api/admin/skill-bundles/abc with application/zip forwards binary body
   await app.inject({
     method: "PUT",
     url: "/api/admin/skill-bundles/abc",
-    headers: { "content-type": "application/zip" },
+    headers: { ...AUTH, "content-type": "application/zip" },
     payload: zipBytes,
   });
   assert.equal(req.headers["content-type"], "application/zip");
@@ -107,19 +114,68 @@ test("DELETE /api/agents/abc sends no body and no content-type upstream", async 
   const app = await makeApp(captureFetch(req));
   t.after(() => app.close());
 
-  await app.inject({ method: "DELETE", url: "/api/agents/abc" });
+  await app.inject({ method: "DELETE", url: "/api/agents/abc", headers: AUTH });
   assert.equal(req.body, undefined, "DELETE should not forward a body");
   assert.equal(req.headers["content-type"], undefined, "DELETE should not set content-type");
 });
 
-test("gateway fetch error returns 502 with error message", async (t) => {
-  const app = await makeApp(async () => { throw new Error("ECONNREFUSED"); });
+// L-28: the cause (it names internal hosts) goes to the log, not the browser.
+test("gateway fetch error returns a generic 502", async (t) => {
+  const app = await makeApp(async () => { throw new Error("connect ECONNREFUSED agent-gateway.internal:8080"); });
   t.after(() => app.close());
 
-  const res = await app.inject({ method: "GET", url: "/api/status" });
+  const res = await app.inject({ method: "GET", url: "/api/status", headers: AUTH });
   assert.equal(res.statusCode, 502);
-  const b = JSON.parse(res.payload);
-  assert.ok(b.error.startsWith("gateway unreachable:"), `unexpected error: ${b.error}`);
+  assert.deepEqual(JSON.parse(res.payload), { error: "gateway unreachable" });
+});
+
+test("a gateway that does not answer in time gets a 504", async (t) => {
+  const app = await makeApp(async () => { throw new DOMException("timed out", "TimeoutError"); });
+  t.after(() => app.close());
+
+  const res = await app.inject({ method: "GET", url: "/api/status", headers: AUTH });
+  assert.equal(res.statusCode, 504);
+});
+
+test("buffered /api/* fetches carry a timeout signal", async (t) => {
+  let signal;
+  const app = await makeApp(async (_url, init) => {
+    signal = init.signal;
+    return { status: 200, headers: { get: () => null }, text: async () => "{}" };
+  });
+  t.after(() => app.close());
+
+  await app.inject({ method: "GET", url: "/api/status", headers: AUTH });
+  assert.ok(signal instanceof AbortSignal);
+});
+
+// L-28: an anonymous client is refused before its body is read or forwarded.
+test("proxied routes refuse a request without a bearer and never call upstream", async (t) => {
+  let called = false;
+  const app = await makeApp(async () => { called = true; throw new Error("must not be called"); });
+  t.after(() => app.close());
+
+  for (const [method, url] of [["POST", "/api/files"], ["GET", "/api/me"], ["POST", "/agui"], ["POST", "/api/workflows/l1/run?stream=1"]]) {
+    const res = await app.inject({
+      method, url,
+      headers: { "content-type": "application/json", authorization: "Basic eDp5" },
+      payload: method === "POST" ? JSON.stringify({ big: "x".repeat(1024) }) : undefined,
+    });
+    assert.equal(res.statusCode, 401, `${method} ${url}`);
+  }
+  assert.equal(called, false);
+});
+
+test("GET /audit/stream without a bearer: 501 when unconfigured (the Audit view's probe), else 401", async (t) => {
+  const bare = await buildApp({ observabilityUrl: "", distDir: "/nonexistent" });
+  await bare.ready();
+  t.after(() => bare.close());
+  assert.equal((await bare.inject({ method: "GET", url: "/audit/stream" })).statusCode, 501);
+
+  const app = await buildApp({ observabilityUrl: "http://mock-observability", distDir: "/nonexistent" });
+  await app.ready();
+  t.after(() => app.close());
+  assert.equal((await app.inject({ method: "GET", url: "/audit/stream" })).statusCode, 401);
 });
 
 test("GET /audit/stream?tenant=t1 forwards the query string to the observability upstream", async (t) => {
@@ -135,7 +191,7 @@ test("GET /audit/stream?tenant=t1 forwards the query string to the observability
   await app.ready();
   t.after(() => app.close());
 
-  await app.inject({ method: "GET", url: "/audit/stream?tenant=t1" });
+  await app.inject({ method: "GET", url: "/audit/stream?tenant=t1", headers: AUTH });
   assert.equal(req.url, "http://mock-observability/api/audit/stream?tenant=t1");
 });
 
@@ -159,7 +215,7 @@ test("POST /api/workflows/:id/run?stream=1 pipes SSE (forwards stream param + ac
   const res = await app.inject({
     method: "POST",
     url: "/api/workflows/l1/run?stream=1",
-    headers: { "content-type": "application/json" },
+    headers: { ...AUTH, "content-type": "application/json" },
     payload: JSON.stringify({ inputs: { q: "x" } }),
   });
   assert.equal(req.url, "http://mock-gateway/workflows/l1/run?stream=1");
@@ -176,7 +232,7 @@ test("POST /api/workflows/:id/run without stream buffers JSON like /api/*", asyn
   const res = await app.inject({
     method: "POST",
     url: "/api/workflows/l1/run",
-    headers: { "content-type": "application/json" },
+    headers: { ...AUTH, "content-type": "application/json" },
     payload: JSON.stringify({ inputs: {} }),
   });
   assert.equal(req.url, "http://mock-gateway/workflows/l1/run");
@@ -207,7 +263,7 @@ test("/api/* response forwards the upstream content-type verbatim (CP4)", async 
   await app.ready();
   t.after(() => app.close());
 
-  const res = await app.inject({ method: "GET", url: "/api/access-control/export" });
+  const res = await app.inject({ method: "GET", url: "/api/access-control/export", headers: AUTH });
   assert.equal(res.headers["content-type"], "text/csv");
 });
 
@@ -221,7 +277,7 @@ test("/api/* response falls back to application/json when upstream omits content
   await app.ready();
   t.after(() => app.close());
 
-  const res = await app.inject({ method: "GET", url: "/api/status" });
+  const res = await app.inject({ method: "GET", url: "/api/status", headers: AUTH });
   // Fastify appends "; charset=utf-8" to a bare application/json content-type header
   // on send() — pre-existing behavior, unrelated to the CP4 passthrough fix.
   assert.ok(res.headers["content-type"].startsWith("application/json"), res.headers["content-type"]);
@@ -386,7 +442,7 @@ test("POST /agui passes a gateway refusal through with its status and body, not 
   const res = await app.inject({
     method: "POST",
     url: "/agui",
-    headers: { "content-type": "application/json", "x-aikonos-agent": "a1" },
+    headers: { ...AUTH, "content-type": "application/json", "x-aikonos-agent": "a1" },
     payload: JSON.stringify({ prompt: "hi" }),
   });
   assert.equal(res.statusCode, 403);
@@ -399,7 +455,7 @@ test("POST /api/workflows/:id/run?stream=1 passes a 401 through instead of strea
   const app = await makeApp(captureFetch({}, { status: 401, body: '{"error":"session revoked; sign in again"}' }));
   t.after(() => app.close());
 
-  const res = await app.inject({ method: "POST", url: "/api/workflows/l1/run?stream=1", payload: {} });
+  const res = await app.inject({ method: "POST", url: "/api/workflows/l1/run?stream=1", headers: AUTH, payload: {} });
   assert.equal(res.statusCode, 401);
   assert.match(res.payload, /session revoked/);
 });
@@ -414,7 +470,97 @@ test("/api/* forwards content-disposition and cache-control (AG-14 export)", asy
   await app.ready();
   t.after(() => app.close());
 
-  const res = await app.inject({ method: "GET", url: "/api/admin/agents/inventory?format=csv" });
+  const res = await app.inject({ method: "GET", url: "/api/admin/agents/inventory?format=csv", headers: AUTH });
   assert.equal(res.headers["cache-control"], "no-store");
   assert.equal(res.headers["content-disposition"], 'attachment; filename="x.csv"');
+});
+
+// M-26: every response carries the browser-side backstop headers.
+test("security headers on the SPA, /runtime-config.js and /api/*", async (t) => {
+  const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
+  globalThis.fetch = captureFetch({});
+  const app = await buildApp({
+    gatewayUrl: "http://mock-gateway",
+    distDir: dist,
+    env: { AIKONOS_WEBUI_OIDC_AUTHORITY: "https://login.example.com/tenant/v2.0" },
+  });
+  await app.ready();
+  t.after(() => app.close());
+
+  for (const [url, headers] of [["/", {}], ["/chat", {}], ["/runtime-config.js", {}], ["/api/me", AUTH], ["/api/me", {}]]) {
+    const res = await app.inject({ method: "GET", url, headers });
+    const csp = res.headers["content-security-policy"] ?? "";
+    assert.match(csp, /default-src 'self'/, url);
+    assert.match(csp, /script-src 'self';/, url);
+    assert.match(csp, /img-src 'self' data:;/, url);
+    assert.match(csp, /connect-src 'self' https:\/\/login\.example\.com;/, url);
+    assert.match(csp, /frame-ancestors 'none'/, url);
+    assert.match(csp, /object-src 'none'/, url);
+    assert.match(csp, /base-uri 'none'/, url);
+    assert.equal(res.headers["x-frame-options"], "DENY", url);
+    assert.equal(res.headers["x-content-type-options"], "nosniff", url);
+    assert.equal(res.headers["referrer-policy"], "no-referrer", url);
+  }
+});
+
+test("only /auth/callback may be framed, by this origin (silent renew)", async (t) => {
+  const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
+  const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: dist, env: {} });
+  await app.ready();
+  t.after(() => app.close());
+
+  const res = await app.inject({ method: "GET", url: "/auth/callback?code=c&state=s" });
+  assert.match(res.headers["content-security-policy"], /frame-ancestors 'self'/);
+  assert.equal(res.headers["x-frame-options"], "SAMEORIGIN");
+  // No runtime authority: the SPA's own default identity provider is allowed.
+  assert.match(res.headers["content-security-policy"], /connect-src 'self' http:\/\/localhost:18080;/);
+});
+
+// L-27: Stop or a closed tab must reach the gateway, which aborts the run only
+// when its own connection closes.
+test("a browser that disconnects from /agui closes the upstream connection", async (t) => {
+  let upstreamClosed;
+  const closed = new Promise((r) => (upstreamClosed = r));
+  const gateway = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: {}\n\n");
+    res.on("close", upstreamClosed);
+  });
+  await new Promise((r) => gateway.listen(0, "127.0.0.1", r));
+  // closeAllConnections: a failing run must not hang on the held stream.
+  t.after(() => { gateway.closeAllConnections(); gateway.close(); });
+
+  globalThis.fetch = realFetch;
+  const app = await buildApp({ gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, distDir: "/nonexistent" });
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  t.after(() => app.close());
+
+  const req = request({
+    host: "127.0.0.1", port: app.server.address().port, path: "/agui", method: "POST",
+    headers: { ...AUTH, "content-type": "application/json" },
+  });
+  req.on("error", () => {});
+  req.end("{}");
+  const res = await new Promise((r) => req.on("response", r));
+  await new Promise((r) => res.once("data", r));
+  req.destroy(); // the browser goes away
+
+  await Promise.race([closed, new Promise((_, rej) => setTimeout(() => rej(new Error("upstream stayed open")), 2000))]);
+});
+
+test("a configured redirect URI is the page silent renew may frame", async (t) => {
+  const app = await buildApp({
+    gatewayUrl: "http://mock-gateway",
+    distDir: "/nonexistent",
+    env: { AIKONOS_WEBUI_OIDC_REDIRECT_URI: "https://console.example.com/signin/cb" },
+  });
+  await app.ready();
+  t.after(() => app.close());
+
+  assert.equal((await app.inject({ method: "GET", url: "/signin/cb?code=c" })).headers["x-frame-options"], "SAMEORIGIN");
+  assert.equal((await app.inject({ method: "GET", url: "/auth/callback" })).headers["x-frame-options"], "DENY");
 });

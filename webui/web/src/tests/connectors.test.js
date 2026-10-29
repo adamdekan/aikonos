@@ -185,3 +185,19 @@ describe("Connections.vue MCP servers", () => {
     expect(connApiView.revokeConnector).toHaveBeenCalledWith("mcp-m1");
   });
 });
+
+describe("ConnectCallback.vue", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // I-05: the one-time code and state do not stay in the URL.
+  it("completes the exchange with the code and state, then drops them from the URL", async () => {
+    connApiView.completeConnectorAuth.mockResolvedValue({ connectorId: "c1" });
+    const router = makeRouter();
+    await router.push("/connect/callback?code=abc&state=xyz");
+    const w = mount(ConnectCallback, { global: { plugins: [router] } });
+    await flushPromises();
+    expect(connApiView.completeConnectorAuth).toHaveBeenCalledWith("abc", "xyz");
+    expect(router.currentRoute.value.fullPath).toBe("/connect/callback");
+    expect(w.find("[data-testid='callback-success']").exists()).toBe(true);
+  });
+});

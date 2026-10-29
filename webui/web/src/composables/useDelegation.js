@@ -1,11 +1,12 @@
-import { ref, watch, onUnmounted } from "vue";
+import { ref } from "vue";
 import { delegate } from "../api/inbox.js";
 import { stripMention } from "../lib/mention.js";
 import { useToast } from "../components/ui/useToast.js";
 
-// Delegation confirm modal: @-mention delegation flow (confirm/cancel) plus the
-// Enter-confirms-modal keydown listener, scoped to pendingDelegation so it never
-// interferes with other modals (e.g. the soul-editor textarea).
+// Delegation confirm modal: @-mention delegation flow (confirm/cancel).
+// F212: no document-wide Enter shortcut. Only the focused Confirm button
+// confirms (the browser turns Enter on it into a click), so Enter on Cancel,
+// or the still-held Enter that opened the modal, never delegates.
 //
 // draft: ref<string> — the composer draft, restored/cleared around delegation.
 // addUser: fn(text) — appends a user message bubble (owned by useAguiRun).
@@ -54,37 +55,6 @@ export function useDelegation({ draft, addUser, messages, persist }) {
     pendingDelegation.value = null;
     if (pending) draft.value = pending.text;
   }
-
-  // Enter confirms the delegate modal while it is open. The listener is added
-  // only when pendingDelegation is set so it never interferes with other modals
-  // (e.g. the soul-editor modal, which has a textarea where Enter must insert a newline).
-  function _onDelegateKeydown(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      confirmDelegate();
-    }
-  }
-
-  // Non-immediate (default) watch is correct: this runs inside setup() before any
-  // user gesture can set pendingDelegation, so there is never a value to handle at
-  // registration time — the listener is only ever needed after an interactive submit.
-  //
-  // truthy→truthy edge: if the user submits a second delegation while one is already
-  // pending (rapid re-submit), val is truthy both before and after the callback fires,
-  // so addEventListener is called again on an already-registered listener — the browser
-  // deduplicates identical (type, listener, options) tuples, leaving exactly one active
-  // listener, which is correct (the modal is still open).
-  watch(pendingDelegation, (val) => {
-    if (val) {
-      document.addEventListener("keydown", _onDelegateKeydown);
-    } else {
-      document.removeEventListener("keydown", _onDelegateKeydown);
-    }
-  });
-
-  onUnmounted(() => {
-    document.removeEventListener("keydown", _onDelegateKeydown);
-  });
 
   return {
     pendingDelegation,

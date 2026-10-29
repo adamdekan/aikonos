@@ -14,6 +14,8 @@ const connectorId = ref("");
 onMounted(async () => {
   const code  = route.query.code  ?? "";
   const state = route.query.state ?? "";
+  // I-05: the code and state leave the URL (history, tab restore) at once.
+  router.replace({ path: route.path });
   try {
     const data = await completeConnectorAuth(code, state);
     connectorId.value = data.connectorId ?? "";
