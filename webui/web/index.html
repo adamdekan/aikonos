@@ -26,23 +26,7 @@
     }
   </style>
   <title>aikonOS</title>
-  <script>
-    (function () {
-      var theme = "dark";
-      try {
-        var stored = localStorage.getItem("aikonos.theme");
-        if (stored === "dark" || stored === "light") {
-          theme = stored;
-        } else if (
-          window.matchMedia &&
-          window.matchMedia("(prefers-color-scheme: light)").matches
-        ) {
-          theme = "light";
-        }
-      } catch (_) {}
-      document.documentElement.setAttribute("data-theme", theme);
-    })();
-  </script>
+  <script src="/theme-init.js"></script>
   <!-- Deployment settings (OIDC), served by server.mjs from the container's
        environment so one image serves any identity provider. A classic script
        runs before the deferred app module, so auth/oidc.js sees the values when
