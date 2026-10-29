@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use aikonos_client::Connection;
-use aikonos_client::api::schedules::{DEFAULT_APPROVED_TOOLS, Schedule, ScheduleSpec};
+use aikonos_client::api::schedules::{Schedule, ScheduleSpec, initial_approved_tools};
 use aikonos_client::cron;
 use chrono::{Local, NaiveDateTime, TimeZone as _};
 use gpui_kit::component::WindowExt as _;
@@ -89,9 +89,7 @@ impl ScheduleForm {
             once,
             recurrence,
             run_at,
-            approved_tools: schedule
-                .map(|s| s.approved_tools.clone())
-                .unwrap_or_else(|| DEFAULT_APPROVED_TOOLS.iter().map(|t| (*t).to_owned()).collect()),
+            approved_tools: initial_approved_tools(schedule),
             workflow: schedule.is_some_and(Schedule::runs_workflow),
             _subscription: subscription,
         }

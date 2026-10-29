@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useChatStore, CHAT_STORAGE_KEY, CHAT_OWNER_KEY } from "../store/chat.js";
+import { useChatStore, CHAT_STORAGE_KEY } from "../store/chat.js";
 import { useUserStore } from "../store/user.js";
 import { usePrefsStore } from "../store/prefs.js";
 
@@ -8,6 +8,7 @@ describe("store/chat.js", () => {
   beforeEach(() => {
     localStorage.clear();
     setActivePinia(createPinia());
+    useChatStore().bindOwner("sub-test"); // signed in: buffers persist (L-26)
   });
 
   afterEach(() => {
@@ -43,7 +44,7 @@ describe("store/chat.js", () => {
     store.persist();
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     expect(raw).toBeTruthy();
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw).buffers;
     // No old user::agentId keys must exist
     const hasColonColon = Object.keys(parsed).some(k => k.includes("::"));
     expect(hasColonColon).toBe(false);
@@ -57,7 +58,7 @@ describe("store/chat.js", () => {
     store.setActiveSession("session-abc");
     const buf = store.currentBuffer();
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(parsed["session-abc"]).toBeDefined();
     expect(parsed["session-abc"].threadId).toBe(buf.threadId);
   });
@@ -102,7 +103,7 @@ describe("store/chat.js", () => {
     store.reset();
 
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw).buffers;
     expect(parsed["draft"]).toBeDefined();
     expect(parsed["draft"].messages).toEqual([]);
     // No :: keys
@@ -118,7 +119,7 @@ describe("store/chat.js", () => {
     store.clearActiveSession();
     store.reset();
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     // Only "draft" should remain (active is null, so no active buffer to keep)
     expect(Object.keys(parsed)).toEqual(["draft"]);
   });
@@ -138,7 +139,7 @@ describe("store/chat.js", () => {
     const store = useChatStore();
     store.hydrateBuffer("sid-99", { threadId: "t99", messages: [] });
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(parsed["sid-99"]).toBeDefined();
     expect(Object.keys(parsed).some(k => k.includes("::"))).toBe(false);
   });
@@ -150,7 +151,7 @@ describe("store/chat.js", () => {
     // Now hydrate a new session
     store.hydrateBuffer("S-new", { threadId: "t-new", messages: [] });
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     // S-old should be pruned; S-new and "draft" may be present
     expect(parsed["S-old"]).toBeUndefined();
     expect(parsed["S-new"]).toBeDefined();
@@ -186,7 +187,7 @@ describe("store/chat.js", () => {
     store.currentBuffer(); // create draft
     store.promoteDraft("S-real");
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(parsed["S-real"]).toBeDefined();
     // draft buffer should be removed after promote (only active is retained)
     expect(parsed["draft"]).toBeUndefined();
@@ -216,7 +217,7 @@ describe("store/chat.js", () => {
     store.hydrateBuffer("S3", { threadId: "t3", messages: [] });
     store.persist();
 
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(Object.keys(parsed).length).toBeLessThanOrEqual(2);
   });
 
@@ -227,7 +228,7 @@ describe("store/chat.js", () => {
     // Hydrate an active session
     store.hydrateBuffer("S1", { threadId: "t1", messages: [] });
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     // active "S1" stays; "draft" may also stay — total ≤ 2
     expect(Object.keys(parsed).length).toBeLessThanOrEqual(2);
   });
@@ -252,7 +253,7 @@ describe("store/chat.js", () => {
     const newSchema = {
       "session-xyz": { threadId: "existing-tid", messages: [{ role: "user", text: "restored" }] },
     };
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(newSchema));
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ owner: "sub-test", buffers: newSchema }));
     setActivePinia(createPinia());
     const store = useChatStore();
     store.setActiveSession("session-xyz");
@@ -270,7 +271,7 @@ describe("store/chat.js", () => {
     store.persist();
 
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw).buffers;
     expect(parsed["draft"].messages).toEqual([{ role: "user", text: "hello" }]);
   });
 
@@ -313,7 +314,7 @@ describe("store/chat.js", () => {
     expect(buf.messages[0].tools[0].result).toBe(bigResult);
 
     // Serialized copy carries the stub, not the full payload.
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     const storedResult = parsed["draft"].messages[0].tools[0].result;
     expect(storedResult).not.toBe(bigResult);
     expect(JSON.parse(storedResult)).toEqual({
@@ -332,7 +333,7 @@ describe("store/chat.js", () => {
     });
     store.persist();
 
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(parsed["draft"].messages[0].tools[0].result).toBe("small result");
   });
 
@@ -346,7 +347,7 @@ describe("store/chat.js", () => {
 
     expect(buf.messages.length).toBe(35);
 
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     const storedMessages = parsed["draft"].messages;
     expect(storedMessages.length).toBe(30);
     expect(storedMessages[0].text).toBe("msg-5");
@@ -383,7 +384,7 @@ describe("store/chat.js", () => {
     store.persist();
 
     expect(buf.messages.length).toBe(15);
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     const storedMessages = parsed["draft"].messages;
     expect(storedMessages.length).toBe(10);
     expect(storedMessages[0].text).toBe("msg-5");
@@ -422,7 +423,7 @@ describe("store/chat.js", () => {
     store.clearActiveSession();
     const buf = store.currentBuffer();
     store.persist();
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     expect(parsed["draft"]).toBeDefined();
   });
 
@@ -442,7 +443,7 @@ describe("store/chat.js", () => {
     buf.messages.push({ role: "assistant", text: "done", tools: [], error: null });
     store.persist();
 
-    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY)).buffers;
     const stored = parsed["draft"].messages;
     const skillsMsg = stored.find((m) => m.role === "skills");
     expect(skillsMsg).toEqual(buf.messages[1]);
@@ -473,7 +474,7 @@ describe("store/chat.js", () => {
     const userAData = {
       draft: { threadId: "tid-user-a", messages: [{ role: "user", text: "user A secret" }] },
     };
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(userAData));
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({ owner: "sub-a", buffers: userAData }));
 
     // Re-init stores so chat store loads user A's draft from storage.
     setActivePinia(createPinia());
@@ -496,10 +497,13 @@ describe("store/chat.js", () => {
   });
 
   // ── L-26: buffers belong to one OIDC subject ─────────────────────────────────
+  const stored = () => JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) ?? "null");
+
   it("a different subject signing in on the same browser gets none of the stored history", () => {
+    setActivePinia(createPinia());
     useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
     useChatStore().hydrateBuffer("S1", { threadId: "t1", messages: [{ role: "user", text: "A secret" }] });
-    expect(localStorage.getItem(CHAT_OWNER_KEY)).toBe("sub-a");
+    expect(stored().owner).toBe("sub-a");
 
     // A's token expired without sign-out; B signs in after a reload.
     setActivePinia(createPinia());
@@ -508,10 +512,11 @@ describe("store/chat.js", () => {
     expect(localStorage.getItem(CHAT_STORAGE_KEY) ?? "").not.toContain("A secret");
     chat.setActiveSession("S1");
     expect(chat.currentBuffer().messages.length).toBe(0);
-    expect(localStorage.getItem(CHAT_OWNER_KEY)).toBe("sub-b");
+    expect(stored().owner).toBe("sub-b");
   });
 
   it("the same subject keeps its history across a reload; unowned history is dropped", () => {
+    setActivePinia(createPinia());
     useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
     useChatStore().hydrateBuffer("S1", { threadId: "t1", messages: [{ role: "user", text: "mine" }] });
     setActivePinia(createPinia());
@@ -520,10 +525,49 @@ describe("store/chat.js", () => {
     chat.setActiveSession("S1");
     expect(chat.currentBuffer().messages[0].text).toBe("mine");
 
-    localStorage.removeItem(CHAT_OWNER_KEY); // as an older build left it
+    // An older build stored the bare buffer map, with no owner.
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(stored().buffers));
     setActivePinia(createPinia());
     useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
     useChatStore().setActiveSession("S1");
     expect(useChatStore().currentBuffer().messages.length).toBe(0);
+  });
+
+  // Two tabs share localStorage: tab 1 is still signed in as A when tab 2
+  // signs in as B. A's later writes must not reach B, and A's sign-out must
+  // not wipe B's history.
+  it("another tab's writes stay bound to their own subject", () => {
+    const tabA = createPinia();
+    setActivePinia(tabA);
+    useUserStore().setFromProfile({ email: "a@example.com", sub: "sub-a" });
+    const chatA = useChatStore();
+
+    setActivePinia(createPinia());
+    useUserStore().setFromProfile({ email: "b@example.com", sub: "sub-b" });
+    useChatStore().hydrateBuffer("SB", { threadId: "tb", messages: [{ role: "user", text: "B note" }] });
+
+    // A sends a message in tab 1; B reloads.
+    setActivePinia(tabA);
+    chatA.hydrateBuffer("SA", { threadId: "ta", messages: [{ role: "user", text: "A secret" }] });
+    setActivePinia(createPinia());
+    useUserStore().setFromProfile({ email: "b@example.com", sub: "sub-b" });
+    const chatB = useChatStore();
+    chatB.setActiveSession("SA");
+    expect(chatB.currentBuffer().messages.length).toBe(0);
+
+    // B writes again, then A's session ends in tab 1.
+    chatB.hydrateBuffer("SB", { threadId: "tb", messages: [{ role: "user", text: "B note" }] });
+    setActivePinia(tabA);
+    chatA.clearAll();
+    expect(stored().owner).toBe("sub-b");
+    expect(stored().buffers.SB.messages[0].text).toBe("B note");
+  });
+
+  it("persists nothing while no subject is bound", () => {
+    setActivePinia(createPinia());
+    const chat = useChatStore();
+    chat.currentBuffer().messages.push({ role: "user", text: "x" });
+    chat.persist();
+    expect(localStorage.getItem(CHAT_STORAGE_KEY)).toBeNull();
   });
 });

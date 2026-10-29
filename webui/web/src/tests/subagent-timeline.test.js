@@ -259,12 +259,13 @@ describe("Chat.vue — aikonos.subagent.* timeline", () => {
         ["onFinished"],
       ])
     );
+    useChatStore().bindOwner("sub-test"); // signed in: buffers persist (L-26)
     const w = await mountChat();
     await send(w, "fan out please");
 
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     expect(raw).toBeTruthy();
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw).buffers;
     const key = Object.keys(parsed)[0];
     const buf = parsed[key];
     const subagentMsg = buf.messages.find((m) => m.role === "subagents");

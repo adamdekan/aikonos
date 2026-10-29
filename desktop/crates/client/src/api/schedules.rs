@@ -7,9 +7,12 @@ use super::encode;
 use crate::connection::Connection;
 use crate::error::ApiResult;
 
-/// The tools a schedule created in the web console may run unattended
-/// (views/Schedules.vue).
-pub const DEFAULT_APPROVED_TOOLS: [&str; 3] = ["web.fetch", "doc.read", "doc.write"];
+/// The standing pre-approvals a schedule form starts with. A new schedule has
+/// none: consent for unattended tool calls is never implied (L-25). An edit
+/// resends the stored list, because an absent one would clear it.
+pub fn initial_approved_tools(schedule: Option<&Schedule>) -> Vec<String> {
+    schedule.map(|s| s.approved_tools.clone()).unwrap_or_default()
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +148,13 @@ mod tests {
         assert!(schedule.is_paused());
         assert!(!schedule.is_once());
         assert!(!schedule.runs_workflow());
+        // An edit keeps what the user stored.
+        assert_eq!(initial_approved_tools(Some(schedule)), vec!["web.fetch".to_owned()]);
+    }
+
+    #[test]
+    fn a_new_schedule_carries_no_pre_approvals() {
+        assert!(initial_approved_tools(None).is_empty());
     }
 
     #[test]

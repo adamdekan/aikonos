@@ -13,6 +13,9 @@ defineProps({
 // opening.
 const hardenOptions = { allowedImagePrefixes: [], allowDataImages: false, allowedProtocols: [] };
 const mermaidOptions = { config: { securityLevel: "strict" } };
+// No table download: the library writes model-chosen cells to CSV/TSV with no
+// formula neutralisation, so a cell like =HYPERLINK(...) would run in Excel (F73).
+const controls = { table: { download: false } };
 </script>
 
 <template>
@@ -22,6 +25,7 @@ const mermaidOptions = { config: { securityLevel: "strict" } };
       :harden-options="hardenOptions"
       :previewers="false"
       :mermaid-options="mermaidOptions"
+      :controls="controls"
     />
   </div>
 </template>

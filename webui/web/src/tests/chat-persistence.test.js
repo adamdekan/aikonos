@@ -72,6 +72,7 @@ describe("Chat.vue — per-session buffer persistence", () => {
       simulateStream(handlers, [["onRunStarted"], ["onText", "reply"], ["onFinished"]])
     );
 
+    useChatStore().bindOwner("sub-test"); // signed in: buffers persist (L-26)
     await router.push("/chat");
     const w = mount(Chat, { global: { plugins: [router] } });
     await flushPromises();
@@ -89,7 +90,7 @@ describe("Chat.vue — per-session buffer persistence", () => {
     // localStorage must be persisted with no '::' keys (new schema only)
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     expect(raw).toBeTruthy();
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw).buffers;
     const hasColonColon = Object.keys(parsed).some(k => k.includes("::"));
     expect(hasColonColon).toBe(false);
   });

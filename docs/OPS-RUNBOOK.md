@@ -109,6 +109,26 @@ settings (0.7.5)".
 - **Host ports.** The azure and onprem overlays publish nothing but Traefik
   80/443 and Grafana on `127.0.0.1:3030`; reach OpenFGA with
   `docker compose run --rm fga-cli`.
+- **Scheduled-run pre-approvals.** New schedules carry no standing
+  pre-approval unless the user ticks one. Schedules created earlier from the
+  web console or the Windows app silently got `web.fetch`, `doc.read` and
+  `doc.write`, which still let gated calls of those tools run unattended. The
+  web console shows them on each row and lets the owner untick them in the edit
+  form. To find them:
+
+  ```bash
+  docker compose exec -T postgres psql -U aikonos -d aikonos <<'SQL'
+  SELECT scheduled_run_id, tenant_id, owner_user_id, state, created_at
+  FROM scheduled_runs
+  WHERE approved_tools @> '["web.fetch","doc.read","doc.write"]'::jsonb
+    AND approved_tools <@ '["web.fetch","doc.read","doc.write"]'::jsonb;
+  SQL
+  ```
+
+  To clear them instead, run the same `WHERE` as
+  `UPDATE scheduled_runs SET approved_tools = '[]'::jsonb, updated_at = now() WHERE …`
+  and tell the owners; a gated call in those runs then waits for a human, and
+  an owner who wants it unattended ticks the tool again.
 - **Windows app.** The app refuses a plain-http server that is not on the PC,
   and an http identity provider, unless `AIKONOS_DESKTOP_ALLOW_HTTP=1` is set on
   that PC ([16-desktop-client.md](16-desktop-client.md)).
