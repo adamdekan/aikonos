@@ -24,7 +24,7 @@ func newSandboxSvc(t *testing.T) (*SandboxService, *capability.Minter) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	return NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")}), m
+	return NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, Tasks: executingTaskStore("")}), m
 }
 
 func mintFor(t *testing.T, m *capability.Minter, scopes ...string) string {
@@ -38,7 +38,8 @@ func mintFor(t *testing.T, m *capability.Minter, scopes ...string) string {
 
 func TestInvokeTool_RequiresCapabilityToken(t *testing.T) {
 	svc, _ := newSandboxSvc(t)
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "siem.query",
 	})
 	if status.Code(err) != codes.PermissionDenied {
@@ -48,7 +49,8 @@ func TestInvokeTool_RequiresCapabilityToken(t *testing.T) {
 
 func TestInvokeTool_MalformedToken(t *testing.T) {
 	svc, _ := newSandboxSvc(t)
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "siem.query", CapabilityToken: "!!!not-base64!!!",
 	})
 	if status.Code(err) != codes.InvalidArgument {
@@ -61,7 +63,8 @@ func TestInvokeTool_GrantedScopeButNoProxyConfigured(t *testing.T) {
 	// toolregistry maps siem.query → siem:read, so the token must grant that scope.
 	tok := mintFor(t, m, "siem:read", "slack:write")
 
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "siem.query", CapabilityToken: tok,
 	})
 	if err != nil {
@@ -82,11 +85,12 @@ func TestInvokeTool_RoutesToProxyOnSuccess(t *testing.T) {
 	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
 		return map[string]any{"status_code": 200, "url": req.Args["url"]}, 7, nil
 	})
-	svc := NewSandboxService(Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: executingTaskStore("")})
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: executingTaskStore("")})
 
 	tok := mintFor(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	})
 	if err != nil {
@@ -107,7 +111,8 @@ func TestInvokeTool_UngrantedScopeDenied(t *testing.T) {
 	svc, m := newSandboxSvc(t)
 	tok := mintFor(t, m, "doc:write") // does not grant siem:read (what siem.query needs)
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "siem.query", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.PermissionDenied {
@@ -119,7 +124,8 @@ func TestInvokeTool_UnknownToolDenied(t *testing.T) {
 	svc, m := newSandboxSvc(t)
 	tok := mintFor(t, m, "siem:read")
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "totally.unregistered", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.PermissionDenied {
@@ -133,7 +139,8 @@ func TestInvokeTool_ForeignTokenDenied(t *testing.T) {
 	other, _ := capability.GenerateMinter()
 	tok := mintFor(t, other, "siem.query")
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "siem.query", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.PermissionDenied {

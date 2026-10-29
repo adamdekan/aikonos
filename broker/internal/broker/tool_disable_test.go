@@ -35,7 +35,7 @@ func TestInvokeTool_DisabledTool_EmitsDenyAndReturnsPermissionDenied(t *testing.
 	cfg := newFakeConfigStore()
 	cfg.values[testTenantUUID+":disabled_tools"] = "web.fetch"
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:   zap.NewNop(),
 		Audit:    em,
 		TenantID: "aikonos-dev",
@@ -43,7 +43,8 @@ func TestInvokeTool_DisabledTool_EmitsDenyAndReturnsPermissionDenied(t *testing.
 		Tasks:    executingTaskStore("alice@example.com"),
 	})
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:   "1",
 		TaskId:   "task-disabled-1",
 		ToolId:   "web.fetch",
 		TenantId: testTenantUUID,
@@ -86,7 +87,7 @@ func TestInvokeTool_EmptyDisabledTools_DoesNotDeny(t *testing.T) {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:     zap.NewNop(),
 		TenantID:   "aikonos-dev",
 		Config:     cfg,
@@ -96,7 +97,8 @@ func TestInvokeTool_EmptyDisabledTools_DoesNotDeny(t *testing.T) {
 
 	// No capability token → capability gate fires "capability token required",
 	// not the disable check.
-	_, callErr := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, callErr := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:   "1",
 		TaskId:   "task-notdisabled-1",
 		ToolId:   "web.fetch",
 		TenantId: testTenantUUID,
@@ -115,7 +117,7 @@ func TestInvokeTool_EmptyDisabledTools_DoesNotDeny(t *testing.T) {
 // TestInvokeTool_NilConfig_NoPanic ensures a nil Deps.Config does not panic.
 // nopConfig returns "" → ParseList returns nil → nothing disabled.
 func TestInvokeTool_NilConfig_NoPanic(t *testing.T) {
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:   zap.NewNop(),
 		TenantID: "aikonos-dev",
 		Tasks:    executingTaskStore("alice@example.com"),
@@ -129,7 +131,8 @@ func TestInvokeTool_NilConfig_NoPanic(t *testing.T) {
 	}()
 
 	// Ignore error — just ensure no panic from the nil Config path.
-	_, _ = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, _ = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:   "1",
 		TaskId:   "task-nilcfg-1",
 		ToolId:   "web.fetch",
 		TenantId: testTenantUUID,
@@ -168,7 +171,7 @@ func TestSubmitPlan_DisabledTool_DeniesStep(t *testing.T) {
 	}
 	t.Cleanup(sub.Unsubscribe)
 
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -176,7 +179,7 @@ func TestSubmitPlan_DisabledTool_DeniesStep(t *testing.T) {
 		Config:  cfg,
 	}, policy: pol}
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})
@@ -219,7 +222,7 @@ func TestInvokeTool_UnreadableDisabledTools_FailsClosed(t *testing.T) {
 	cfg := newFakeConfigStore()
 	cfg.readErr = map[string]error{"disabled_tools": errors.New("db down")}
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:   zap.NewNop(),
 		Audit:    em,
 		TenantID: "aikonos-dev",
@@ -227,7 +230,8 @@ func TestInvokeTool_UnreadableDisabledTools_FailsClosed(t *testing.T) {
 		Tasks:    executingTaskStore("alice@example.com"),
 	})
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:   "1",
 		TaskId:   "task-unreadable-1",
 		ToolId:   "web.fetch",
 		TenantId: testTenantUUID,
@@ -262,7 +266,7 @@ func TestSubmitPlan_UnreadableSettings_FailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEmitter: %v", err)
 	}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		DevMode: true,
 		Logger:  zap.NewNop(),
 		Audit:   em,
@@ -270,7 +274,7 @@ func TestSubmitPlan_UnreadableSettings_FailsClosed(t *testing.T) {
 		Config:  cfg,
 	}, policy: pol}
 
-	_, err = svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	_, err = svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "doc.write", nil)}),
 	})

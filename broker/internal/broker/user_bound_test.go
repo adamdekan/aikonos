@@ -56,11 +56,11 @@ func submitUserBound(t *testing.T, owner, toolID, mode string, serviceAgent bool
 	}}
 	sp := &fakeSkillPolicy{enabled: true, granted: false}
 	em, sub := buildAuditBus(t, testTenantUUID)
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Audit: em, Tasks: &fakeTaskStore{task: task},
 		Agents: agents, Config: userBoundCfg(mode), DevMode: true,
 	}, policy: allowPol(), skillPolicy: sp}
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, toolID, nil)}),
 	})
@@ -129,7 +129,7 @@ func TestUserBound_Plan_Mcp_ChecksConnectorGrant(t *testing.T) {
 func TestUserBound_Plan_PersonalMcp_ChecksConnectorNotSkill(t *testing.T) {
 	sp := &fakeSkillPolicy{enabled: true, granted: true}
 	svc := newSvcWithSkillPolicy(personalTask(), allowPol(), sp)
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "mcp:"+ubConn+":echo", nil)}),
 	})
@@ -199,7 +199,7 @@ func invokeUserBound(t *testing.T, owner, mode string, userGrant, serviceAgent b
 	repo := &fakeMcpRepo{conns: []*db.McpConnection{{ID: uuid.MustParse(ubConn), TenantID: uuid.MustParse(testTenantUUID), URL: mcpSrv.URL, AuthType: "none"}}}
 	tasks := executingTaskStore(owner)
 	tasks.task.AgentID = &agentID
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Capability: m, Policy: eng, Audit: em,
 		ToolProxy: toolproxy.New(toolproxy.Config{McpConnections: repo, AllowMcpPrivate: true}, zap.NewNop()),
 		Mcp:       McpDeps{Connections: repo}, TenantID: "aikonos-dev", Tasks: tasks,
@@ -210,7 +210,8 @@ func invokeUserBound(t *testing.T, owner, mode string, userGrant, serviceAgent b
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-ub-1", ToolId: fmt.Sprintf("mcp:%s:echo", ubConn),
 		CapabilityToken: base64.StdEncoding.EncodeToString(raw), TenantId: testTenantUUID,
 	})

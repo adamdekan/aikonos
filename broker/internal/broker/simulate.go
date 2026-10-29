@@ -74,11 +74,13 @@ func (s *BrokerService) SimulatePolicy(ctx context.Context, req *brokerv1.Simula
 	// with no sandbox identity / no DLP attestation, the conservative
 	// (stricter) default.
 	//
-	// C2: reads_sensitive is derived from EffectClass whenever ToolId names a
-	// known registry tool (same as enforcement); the explicit ReadsSensitive
-	// knob is honored only for a pure-hypothetical (unknown) tool id.
+	// C2: reads_sensitive takes the enforcement value whenever ToolId names a
+	// known registry tool; the explicit ReadsSensitive knob is honored only
+	// for a pure-hypothetical (unknown) tool id.
 	if s.deps.OverlayLoader != nil {
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger)
+		if err := s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger); err != nil {
+			return nil, status.Error(codes.Unavailable, "tenant skill settings could not be read; retry")
+		}
 	}
 	sensitivityKnob := req.ReadsSensitive
 	dec, rtrace, err := routeStep(ctx, routeStepInput{

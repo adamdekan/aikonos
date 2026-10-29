@@ -6,6 +6,8 @@ package broker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	"go.uber.org/zap"
@@ -32,35 +34,67 @@ type skillOverlayMutStore interface {
 
 // skillOverlayLoader lazy-loads each tenant's overlay exactly once, caching the
 // result in the CP2 registry via SetTenantOverlay. Subsequent calls for the
-// same tenant are no-ops. invalidate(tenant) clears the flag so the next
-// ensureLoaded re-reads from the store (called after every mutation in CP4).
+// same tenant are no-ops. invalidate(tenant) bumps the tenant's generation so
+// the next ensureLoaded re-reads from the store (called after every mutation
+// in CP4); a load that read before the bump is never cached (F25).
 type skillOverlayLoader struct {
-	reg     *toolregistry.Registry
-	store   skillOverlayStore
-	loaded  sync.Map // tenant → struct{} sentinel
+	reg   *toolregistry.Registry
+	store skillOverlayStore
+
+	mu     sync.Mutex
+	gen    map[string]uint64 // tenant → generation, bumped by invalidate
+	loaded map[string]uint64 // tenant → generation the cached overlay was read at
 }
 
 // newSkillOverlayLoader constructs a loader bound to reg and store.
 func newSkillOverlayLoader(reg *toolregistry.Registry, store skillOverlayStore) *skillOverlayLoader {
-	return &skillOverlayLoader{reg: reg, store: store}
+	return &skillOverlayLoader{reg: reg, store: store, gen: map[string]uint64{}, loaded: map[string]uint64{}}
 }
 
-// ensureLoaded loads the tenant overlay from the store if not already cached.
-// On store error it logs and leaves the cache as-is (last-good / empty is safe
-// per I7 — un-curated tools keep their existing behaviour). Never panics.
-func (l *skillOverlayLoader) ensureLoaded(ctx context.Context, tenant string, log *zap.Logger) {
-	if _, ok := l.loaded.Load(tenant); ok {
-		return
+// overlayLoadAttempts bounds re-reads when invalidations keep racing a load.
+const overlayLoadAttempts = 3
+
+// ensureLoaded loads the tenant overlay from the store unless the cached copy
+// is current. It fails closed (F25): a store error, or invalidations racing
+// every attempt, returns an error and leaves the tenant unloaded — the
+// overlay may hold an admin's disable, so callers on the enforcement path
+// deny rather than serve a stale or empty overlay. Never panics.
+// ponytail: invalidate is per process; a multi-replica broker needs a TTL or
+// cross-replica invalidation (version column / LISTEN) to see another
+// replica's change.
+func (l *skillOverlayLoader) ensureLoaded(ctx context.Context, tenant string, log *zap.Logger) error {
+	l.mu.Lock()
+	g := l.gen[tenant]
+	lg, ok := l.loaded[tenant]
+	l.mu.Unlock()
+	if ok && lg == g {
+		return nil
 	}
-	rows, err := l.store.ListByTenant(ctx, tenant)
-	if err != nil {
-		if log != nil {
-			log.Warn("skillOverlayLoader: load failed — retaining last-good cache",
-				zap.String("tenant", tenant), zap.Error(err))
+	for range overlayLoadAttempts {
+		rows, err := l.store.ListByTenant(ctx, tenant)
+		if err != nil {
+			if log != nil {
+				log.Warn("skillOverlayLoader: load failed — failing closed",
+					zap.String("tenant", tenant), zap.Error(err))
+			}
+			return fmt.Errorf("load skill overlay: %w", err)
 		}
-		// Do NOT mark as loaded so the next call retries.
-		return
+		overlayRows := overlayRowsFrom(tenant, rows, log)
+		l.mu.Lock()
+		if l.gen[tenant] == g {
+			l.reg.SetTenantOverlay(tenant, overlayRows)
+			l.loaded[tenant] = g
+			l.mu.Unlock()
+			return nil
+		}
+		g = l.gen[tenant] // invalidated mid-read: what we read may be stale
+		l.mu.Unlock()
 	}
+	return errors.New("load skill overlay: changed during every attempt")
+}
+
+// overlayRowsFrom converts stored rows to registry overlay rows.
+func overlayRowsFrom(tenant string, rows []db.SkillOverlay, log *zap.Logger) []toolregistry.OverlayRow {
 
 	overlayRows := make([]toolregistry.OverlayRow, 0, len(rows))
 	for _, r := range rows {
@@ -88,12 +122,14 @@ func (l *skillOverlayLoader) ensureLoaded(ctx context.Context, tenant string, lo
 			ExecutorKind: r.ExecutorKind,
 		})
 	}
-	l.reg.SetTenantOverlay(tenant, overlayRows)
-	l.loaded.Store(tenant, struct{}{})
+	return overlayRows
 }
 
-// invalidate clears the loaded flag for tenant so the next ensureLoaded
-// re-reads from the store. Called after every UpsertSkill / DeleteSkill.
+// invalidate bumps the tenant's generation so the next ensureLoaded re-reads
+// from the store and an in-flight load is not cached. Called after every
+// UpsertSkill / DeleteSkill.
 func (l *skillOverlayLoader) invalidate(tenant string) {
-	l.loaded.Delete(tenant)
+	l.mu.Lock()
+	l.gen[tenant]++
+	l.mu.Unlock()
 }

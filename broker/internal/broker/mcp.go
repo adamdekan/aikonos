@@ -413,7 +413,7 @@ func (s *BrokerService) ListMcpServerTools(ctx context.Context, req *brokerv1.Li
 	// at. An enabled tenant overlay row is the admin's confirmation; anything
 	// else reports the unconfirmed floor.
 	if s.deps.OverlayLoader != nil {
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger)
+		_ = s.deps.OverlayLoader.ensureLoaded(ctx, tenant, s.deps.Logger) // display only; enforcement fails closed
 	}
 	reg := s.toolReg()
 	out := make([]*brokerv1.McpToolSchema, 0, len(tools))

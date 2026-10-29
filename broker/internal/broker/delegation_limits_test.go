@@ -99,12 +99,12 @@ func TestSubmitPlan_DelegationScope(t *testing.T) {
 		tasks.task.EnvelopeID = &envID
 		tasks.task.DelegatedScopes = []string{"siem:read"}
 		audit := &capturingAudit{}
-		return &SandboxService{deps: Deps{Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true},
+		return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Audit: audit, Tasks: tasks, DevMode: true},
 			policy: &fakePolicyEngine{planAllow: true, toolDec: &policy.Decision{Allow: true}}}, audit
 	}
 
 	svc, audit := newSvc()
-	res, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "slack.post", nil)}),
 	})
 	if err != nil || res.Outcome != planv1.ValidationOutcome_DENIED {
@@ -119,7 +119,7 @@ func TestSubmitPlan_DelegationScope(t *testing.T) {
 	}
 
 	svc, _ = newSvc()
-	res, err = svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	res, err = svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, []*planv1.PlanStep{makeStep(1, "siem.query", nil)}),
 	})
 	if err != nil || res.Outcome == planv1.ValidationOutcome_DENIED {

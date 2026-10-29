@@ -71,16 +71,19 @@ func buildAuditBus(t *testing.T, tenantID string) (*audit.Emitter, notify.Subscr
 // calling InvokeTool with an unregistered tool_id emits a DENY audit event of
 // type "aikonos.broker.tool.denied" AND still returns codes.PermissionDenied.
 // The unknown-tool check runs before the capability gate, so no token needed.
+// No task is bound yet, so the event is the broker's own tenant with no actor;
+// the request's tenant, user and tool id are only claims in context (F194).
 func TestInvokeTool_UnknownTool_EmitsDenyAndReturnsPermissionDenied(t *testing.T) {
-	em, sub := buildAuditBus(t, testTenantUUID)
+	em, sub := buildAuditBus(t, "aikonos-dev")
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:   zap.NewNop(),
 		Audit:    em,
 		TenantID: "aikonos-dev",
 	})
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:   "1",
 		TaskId:   "task-unknown-1",
 		ToolId:   "totally.unknown.tool",
 		TenantId: testTenantUUID,
@@ -94,14 +97,26 @@ func TestInvokeTool_UnknownTool_EmitsDenyAndReturnsPermissionDenied(t *testing.T
 	if ev.Decision != auditv1.PolicyDecision_DENY {
 		t.Errorf("Decision = %v, want DENY", ev.Decision)
 	}
-	if ev.ResourceRef != "aikonos:tool:totally.unknown.tool" {
-		t.Errorf("ResourceRef = %q, want %q", ev.ResourceRef, "aikonos:tool:totally.unknown.tool")
+	if ev.ResourceRef != "aikonos:tool:unknown" {
+		t.Errorf("ResourceRef = %q, want %q", ev.ResourceRef, "aikonos:tool:unknown")
+	}
+	if ev.TenantId != "aikonos-dev" || ev.ActorUserId != "" {
+		t.Errorf("tenant/actor = %q/%q, want the broker tenant and no actor", ev.TenantId, ev.ActorUserId)
 	}
 	if ev.Context == nil {
 		t.Fatal("Context must not be nil")
 	}
 	if reason := ev.Context.Fields["reason"].GetStringValue(); reason != "unknown_tool" {
 		t.Errorf("context.reason = %q, want %q", reason, "unknown_tool")
+	}
+	for k, want := range map[string]string{
+		"claimed_tenant_id": testTenantUUID,
+		"claimed_user_id":   "alice@example.com",
+		"claimed_tool_id":   "totally.unknown.tool",
+	} {
+		if got := ev.Context.Fields[k].GetStringValue(); got != want {
+			t.Errorf("context.%s = %q, want %q", k, got, want)
+		}
 	}
 	// No task row in scope yet: no on-behalf-of chain (AG-17).
 	if ev.ActorAgentId != "" || ev.Context.Fields["obo"] != nil {
@@ -161,7 +176,7 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 	agentID := uuid.New()
 	tasks := executingTaskStore("alice@example.com")
 	tasks.task.AgentID = &agentID
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  proxy,
@@ -177,7 +192,8 @@ func TestInvokeTool_MCPFGADenied_EmitsMcpAccessDeniedAndReturnsPermissionDenied(
 		t.Fatalf("Mint: %v", err)
 	}
 	tok := base64.StdEncoding.EncodeToString(raw)
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-mcp-deny-1",
 		ToolId:          fmt.Sprintf("mcp:%s:echo", connID),
 		CapabilityToken: tok,

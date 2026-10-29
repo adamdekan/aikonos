@@ -250,7 +250,8 @@ func TestInvokeTool_BlockAndRevocationEpoch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+				StepId: "1",
 				TaskId: "task-1", ToolId: "memory.write", CapabilityToken: base64.StdEncoding.EncodeToString(raw),
 				Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
 			})

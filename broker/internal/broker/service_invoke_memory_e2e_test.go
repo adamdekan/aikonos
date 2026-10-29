@@ -32,7 +32,7 @@ func TestInvokeTool_MemoryRoundTripThroughRealPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  toolproxy.New(toolproxy.Config{WorkspaceFS: workspacefs.New(root)}, zap.NewNop()),
@@ -40,7 +40,8 @@ func TestInvokeTool_MemoryRoundTripThroughRealPlugin(t *testing.T) {
 		Audit:      &fakeInvokeAudit{},
 	}}
 
-	res, err := svc.InvokeTool(ctx, &brokerv1.InvokeToolRequest{
+	res, err := svc.InvokeTool(asGateway(ctx), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", TenantId: "tenant-x", UserId: "user-1",
 		ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{
@@ -68,7 +69,8 @@ func TestInvokeTool_MemoryRoundTripThroughRealPlugin(t *testing.T) {
 		}
 	}
 
-	res, err = svc.InvokeTool(ctx, &brokerv1.InvokeToolRequest{
+	res, err = svc.InvokeTool(asGateway(ctx), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", TenantId: "tenant-x", UserId: "user-1",
 		ToolId: "memory.read", CapabilityToken: mintForScope(t, m, "memory:read"),
 		Args: memoryArgs(t, map[string]any{"scope": "user", "mode": "index"}),

@@ -16,12 +16,20 @@ package broker
 // reconstruct exactly what it needs (decision_trace notes, tool-denied/
 // skill-disabled audits, response gates).
 //
-// C2: reads_sensitive is derived server-side at the top of the pipeline —
-// effectclass.ReadsSensitive(EffectClass) — instead of trusting a client-sent
-// boolean. SubmitPlan never supplies SensitivityKnob (nil ⇒ always derive).
-// SimulatePolicy's what-if knob is honored only when ToolID does not resolve
-// to a known registry effect class (a pure hypothetical); a known tool id
-// always derives, matching the enforcement path.
+// C2/M-08: reads_sensitive is server-decided, never a client-sent boolean, and
+// is false on the enforcement path: the step's own class cannot say whether
+// the task read sensitive data earlier (a read class and an egress class are
+// never the same step, so deriving it here left the exfil rule unreachable
+// while looking active). DLP attestation is likewise never taken from the
+// plan. SubmitPlan never supplies SensitivityKnob. SimulatePolicy's what-if
+// knob is honored only when ToolID does not resolve to a known registry
+// effect class (a pure hypothetical); a known tool id gets the enforcement
+// value.
+//
+// TODO(M-08): feed ReadsSensitive from a task-scoped, broker-derived
+// sensitive_read_seen flag (set when a non-public READ_ONLY step runs on the
+// task, in SubmitPlan and InvokeTool) and HasDLPAttestation from a
+// broker-verified DLP stage.
 
 import (
 	"context"
@@ -50,13 +58,12 @@ type routeStepInput struct {
 	Cfg    Config
 	ACL    aclDecider
 
-	TenantID          string
-	UserID            string
-	ToolID            string
-	EffectClass       planv1.EffectClass // already resolved by the caller (SubmitPlan's Stricter-merged routingClass; SimulatePolicy's req.EffectClass, unchanged)
-	ActorSpiffeID     string
-	FGADecision       string
-	HasDLPAttestation bool
+	TenantID      string
+	UserID        string
+	ToolID        string
+	EffectClass   planv1.EffectClass // already resolved by the caller (SubmitPlan's Stricter-merged routingClass; SimulatePolicy's req.EffectClass, unchanged)
+	ActorSpiffeID string
+	FGADecision   string
 
 	// NetaclHost is the destination host to evaluate; "" skips the layer
 	// (SubmitPlan only extracts this for web.fetch steps; SimulatePolicy
@@ -79,10 +86,10 @@ type routeStepInput struct {
 // own audits / decision-trace notes / response gates without routeStep
 // having any side effects of its own.
 type routeTrace struct {
-	// SensitivityDerived is true whenever ReadsSensitive was derived from
-	// EffectClass (always true for SubmitPlan; true for SimulatePolicy
-	// whenever ToolID resolves to a known registry effect class). False only
-	// for the simulator's pure-hypothetical knob path.
+	// SensitivityDerived is true whenever ReadsSensitive is the server's value
+	// (always for SubmitPlan; for SimulatePolicy whenever ToolID resolves to a
+	// known registry effect class). False only for the simulator's
+	// pure-hypothetical knob path.
 	SensitivityDerived bool
 	ReadsSensitive     bool // the value actually fed to policy.ToolQuery
 
@@ -126,8 +133,7 @@ func (errRouteStepNilDecision) Error() string { return "policy evaluation return
 func routeStep(ctx context.Context, in routeStepInput) (*policy.Decision, routeTrace, error) {
 	var trace routeTrace
 
-	// C2: derive reads_sensitive from the effect class being routed.
-	trace.ReadsSensitive = effectclass.ReadsSensitive(in.EffectClass)
+	// C2/M-08: server-decided; false until the task-scoped flag exists.
 	trace.SensitivityDerived = true
 	if in.SensitivityKnob != nil {
 		if _, known := in.Reg.EffectClassForTenant(in.TenantID, in.ToolID); !known {
@@ -138,14 +144,13 @@ func routeStep(ctx context.Context, in routeStepInput) (*policy.Decision, routeT
 
 	// Layer 1 — OPA.
 	dec, err := in.Engine.DecideToolCall(ctx, policy.ToolQuery{
-		UserID:            in.UserID,
-		TenantID:          in.TenantID,
-		ToolID:            in.ToolID,
-		EffectClass:       in.EffectClass,
-		ActorSpiffeID:     in.ActorSpiffeID,
-		ReadsSensitive:    trace.ReadsSensitive,
-		HasDLPAttestation: in.HasDLPAttestation,
-		FGADecision:       in.FGADecision,
+		UserID:         in.UserID,
+		TenantID:       in.TenantID,
+		ToolID:         in.ToolID,
+		EffectClass:    in.EffectClass,
+		ActorSpiffeID:  in.ActorSpiffeID,
+		ReadsSensitive: trace.ReadsSensitive,
+		FGADecision:    in.FGADecision,
 	})
 	if err != nil {
 		return nil, trace, err

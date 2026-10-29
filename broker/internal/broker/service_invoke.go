@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -22,6 +26,7 @@ import (
 	"github.com/adamdekan/aikonos/broker/internal/toolregistry"
 	auditv1 "github.com/adamdekan/aikonos/gen/go/audit/v1"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
+	planv1 "github.com/adamdekan/aikonos/gen/go/plan/v1"
 )
 
 type oboTaskKey struct{}
@@ -80,6 +85,13 @@ func (e oboEmitter) Emit(ctx context.Context, ev *auditv1.AuditEvent) error {
 // or adds latency to the RPC. extras is merged into the context struct after the
 // standard fields (reason, scope, error) so callers can attach site-specific
 // context (e.g. agent, object) without duplicating the emit block.
+//
+// The event's tenant and actor are server-derived, never the request's: the
+// bound task row (withOBOTask) when there is one, else the broker's own tenant
+// and no actor. What the caller claimed goes into context only, cleaned, so a
+// forged tenant_id/user_id cannot put a signed denial under someone else's
+// name (F194). A tool id the registry does not know is likewise kept out of
+// the resource ref.
 func (s *SandboxService) emitToolDenied(ctx context.Context, req *brokerv1.InvokeToolRequest, scope, reason string, errDetail error, extras map[string]any) {
 	if s.deps.Audit == nil {
 		return
@@ -94,19 +106,58 @@ func (s *SandboxService) emitToolDenied(ctx context.Context, req *brokerv1.Invok
 	for k, v := range extras {
 		ctxFields[k] = v
 	}
+	task := oboTask(ctx)
+	tenant, actor := s.resolveTenant(ctx, ""), ""
+	if task != nil {
+		// Same tenant southTask bound: the row's, or the lookup tenant that
+		// found it when the row has none (a test double; the column is NOT NULL).
+		tenant, actor = s.resolveTenant(ctx, req.TenantId), task.OwnerUserID
+		if task.TenantID != uuid.Nil {
+			tenant = task.TenantID.String()
+		}
+	}
+	if req.TenantId != "" && req.TenantId != tenant {
+		ctxFields["claimed_tenant_id"] = claimedField(req.TenantId)
+	}
+	if req.UserId != "" && req.UserId != actor {
+		ctxFields["claimed_user_id"] = claimedField(req.UserId)
+	}
+	resource := "aikonos:tool:" + req.ToolId
+	if _, known := s.toolReg().RequiredScope(req.ToolId); !known {
+		resource = "aikonos:tool:unknown"
+		ctxFields["claimed_tool_id"] = claimedField(req.ToolId)
+	}
 	ctxStruct, _ := structpb.NewStruct(ctxFields)
 	if err := s.deps.Audit.Emit(ctx, withOBO(&auditv1.AuditEvent{
 		EventId:     ids.EventID(),
-		TenantId:    s.resolveTenant(ctx, req.TenantId),
+		TenantId:    tenant,
 		OccurredAt:  timestampNow(),
-		ActorUserId: req.UserId,
+		ActorUserId: actor,
 		EventType:   "aikonos.broker.tool.denied",
-		ResourceRef: "aikonos:tool:" + req.ToolId,
+		ResourceRef: resource,
 		Decision:    auditv1.PolicyDecision_DENY,
 		Context:     ctxStruct,
-	}, oboTask(ctx))); err != nil {
+	}, task)); err != nil {
 		audit.RecordEmitFailure(ctx, s.deps.Logger, err, "aikonos.broker.tool.denied")
 	}
+}
+
+// claimedFieldMax caps a caller-supplied value recorded in audit context.
+const claimedFieldMax = 256
+
+// claimedField makes a caller-supplied id safe to record as audit context:
+// control characters dropped, capped at claimedFieldMax bytes, valid UTF-8.
+func claimedField(v string) string {
+	v = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, v)
+	if len(v) > claimedFieldMax {
+		v = v[:claimedFieldMax]
+	}
+	return strings.ToValidUTF8(v, "")
 }
 
 // emitBudgetExceeded fires a aikonos.broker.task.budget_exceeded audit event
@@ -218,11 +269,47 @@ func (s *SandboxService) memoryGroupPreGate(ctx context.Context, req *brokerv1.I
 	return nil
 }
 
+// claimPlanStep consumes the plan step req names (step_id is the step's seq)
+// when it matches req's tool and args. It returns the denial reason, "" when
+// the step was claimed, or an error when the store could not be read.
+func (s *SandboxService) claimPlanStep(ctx context.Context, tenantID string, req *brokerv1.InvokeToolRequest) (string, error) {
+	seq, perr := strconv.ParseInt(strings.TrimSpace(req.StepId), 10, 16)
+	if perr != nil {
+		return "step_unbound", nil
+	}
+	hashes := []string{argsHash(req.Args)}
+	if len(req.Args.GetFields()) == 0 {
+		// No args: a plan step stored with none (nil → "") or with {} matches.
+		hashes = []string{"", argsHash(&structpb.Struct{})}
+	} else if hashes[0] == "" {
+		return "step_args_mismatch", nil // unhashable args never match a step stored without any
+	}
+	c, err := s.deps.Tasks.ClaimPlanStep(ctx, tenantID, req.TaskId, int32(seq), req.ToolId, hashes)
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		return "step_unbound", nil
+	case err != nil:
+		return "", err
+	case c.Claimed:
+		return "", nil
+	case c.ToolID != req.ToolId:
+		return "step_tool_mismatch", nil
+	case c.PolicyDecision == "" || c.PolicyDecision == string(db.PolicyDeny):
+		return "step_denied", nil
+	case !slices.Contains(hashes, c.ArgsHash):
+		return "step_args_mismatch", nil
+	}
+	return "step_consumed", nil
+}
+
 // InvokeTool executes a tool via the Tool Proxy after verifying the Biscuit
 // capability token grants the required scope; fails closed — an unknown tool,
 // disabled tool, invalid token, a missing agent_id on an mcp: tool, or an FGA
 // denial all return PermissionDenied before any side-effect is attempted.
 func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToolRequest) (*brokerv1.InvokeToolResponse, error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return nil, err
+	}
 	ctx, span := tracer.Start(ctx, "broker.tool.invoke")
 	defer span.End()
 
@@ -283,7 +370,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// task's bound agent. An unbound (legacy) task accepts no claim at all.
 	if reqAgent := strings.TrimPrefix(strings.TrimSpace(req.AgentId), "agent:"); reqAgent != "" && !strings.EqualFold(reqAgent, boundAgentID) {
 		s.emitToolDenied(ctx, req, scope, "agent_mismatch", nil, map[string]any{
-			"req_agent_id":   req.AgentId,
+			"req_agent_id":   claimedField(req.AgentId),
 			"bound_agent_id": boundAgentID,
 		})
 		return nil, status.Errorf(codes.PermissionDenied, "task %s not available to this caller", req.TaskId)
@@ -330,9 +417,13 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 
 	// Overlay disable check: tenant admin may disable a tool via the skill
 	// overlay (CP3). Runs after disabled_tools so both paths are additive.
-	// Only fires when a loader is wired and the tenant overlay is cached.
+	// Only fires when a loader is wired. An overlay that cannot be loaded
+	// fails closed: it may hold the admin's disable (F25).
 	if s.deps.OverlayLoader != nil {
-		s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger)
+		if oerr := s.deps.OverlayLoader.ensureLoaded(ctx, tenantID, s.deps.Logger); oerr != nil {
+			s.emitToolDenied(ctx, req, scope, "overlay_check_failed", oerr, nil)
+			return nil, status.Error(codes.Unavailable, "tenant skill settings could not be read")
+		}
 		if enabled, known := s.toolReg().IsEnabled(tenantID, req.ToolId); known && !enabled {
 			s.emitToolDenied(ctx, req, scope, "skill_disabled", nil, nil)
 			return nil, status.Errorf(codes.PermissionDenied, "tool %q is disabled", req.ToolId)
@@ -356,6 +447,12 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 				})
 				return nil, status.Errorf(codes.PermissionDenied, "tool %q effect class %s is disabled for this organization", req.ToolId, ec.String())
 			}
+		}
+		// A7 at token use: a connector tool spends the user's linked token, so
+		// the org allowlist applies to every call, not only to linking (G5).
+		if prov, ok := connectorForTool(req.ToolId); ok && !settings.ConnectorAllowed(string(prov)) {
+			s.emitToolDenied(ctx, req, scope, "connector_not_permitted", nil, map[string]any{"provider": string(prov)})
+			return nil, status.Errorf(codes.PermissionDenied, "connector %q is not permitted by your organization", prov)
 		}
 	}
 
@@ -447,8 +544,52 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// caller-supplied agent_id must not choose whose per-agent RPM bucket or
 	// behavioral baseline a call counts against.
 	effectiveAgentID := boundAgentID
-	// userBoundExempt is set when an mcp: call skipped the AG-02 user check.
+	// userBoundExempt is set when a call skipped the AG-02 user check.
 	var userBoundExempt string
+
+	// F188: the plan-time skill gates on a built-in tool hold per call, so an
+	// agent skill or user grant revoked after the token was minted denies the
+	// next call. Same gates as SubmitPlan: a named agent's Skills boundary
+	// (checkAgentSkills), then the subject's own can_invoke. An mcp: tool
+	// re-checks its agent and user connector grants in the branch below.
+	// Both fail closed.
+	agentBound := task.AgentID != nil && !isDefaultAgent(ctx, s.deps, tenantID, boundAgentID)
+	if !strings.HasPrefix(req.ToolId, "mcp:") {
+		if agentBound {
+			one := &planv1.Plan{Steps: []*planv1.PlanStep{{ToolId: req.ToolId}}}
+			if violation := s.checkAgentSkills(ctx, tenantID, boundAgentID, one, false); violation != "" {
+				s.emitToolDenied(ctx, req, scope, "agent_skill_revoked", nil, map[string]any{"violation": violation})
+				return nil, status.Errorf(codes.PermissionDenied, "tool %q is outside the agent's skill boundary", req.ToolId)
+			}
+		}
+		userCheck := !agentBound
+		if agentBound {
+			userBoundExempt = s.userBoundExemption(ctx, tenantID, task)
+			userCheck = userBoundExempt == ""
+		}
+		if userCheck {
+			if dec, rec := s.userSkillDecision(ctx, userID, req.ToolId); dec != "allow" {
+				mode := "enforce" // a personal task has no rollout mode
+				if agentBound {
+					mode = s.userBoundMode(ctx, tenantID)
+				}
+				fields := map[string]any{"user": "user:" + userID, "mode": mode}
+				var ferr error
+				if rec != nil && rec.Error != "" {
+					ferr = errors.New(rec.Error)
+				}
+				if mode == "enforce" {
+					s.emitToolDenied(ctx, req, scope, "skill_grant_revoked", ferr, fields)
+					return nil, status.Errorf(codes.PermissionDenied, "user is not granted tool %q", req.ToolId)
+				}
+				fields["reason"], fields["stage"], fields["tool_id"], fields["agent"] = "user_skill_would_deny", "invoke", req.ToolId, boundAgentID
+				if ferr != nil {
+					fields["error"] = ferr.Error()
+				}
+				s.emitUserBoundWouldDeny(ctx, tenantID, userID, req.ToolId, fields)
+			}
+		}
+	}
 
 	// Per-call RBAC for MCP tools: InvokeTool re-checks whether the calling
 	// agent is still permitted to access the connector. A revoked FGA grant
@@ -549,6 +690,20 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	var args map[string]any
 	if req.Args != nil {
 		args = req.Args.AsMap()
+	}
+
+	// H-03 step binding, last gate before the side effect so a denied call
+	// does not use up the step: the call must be the approved plan step named
+	// by step_id — same tool, same args (the hash SubmitPlan stored), not
+	// denied — and each step runs once. Capability scopes are per connector,
+	// so without this an approved read could drive another tool on it, or the
+	// same tool with other args. A store failure is Unavailable, no decision.
+	if reason, cerr := s.claimPlanStep(ctx, tenantID, req); cerr != nil {
+		s.deps.Logger.Error("InvokeTool: plan step claim failed", zap.String("task_id", req.TaskId), zap.Error(cerr))
+		return nil, status.Errorf(codes.Unavailable, "task %s could not be loaded; retry", req.TaskId)
+	} else if reason != "" {
+		s.emitToolDenied(ctx, req, scope, reason, nil, map[string]any{"step_id": claimedField(req.StepId)})
+		return nil, status.Errorf(codes.PermissionDenied, "call does not match an approved step of task %s", req.TaskId)
 	}
 
 	// Every gate has passed and the side-effect is about to run, so this is the
@@ -701,6 +856,9 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 }
 
 func (s *SandboxService) EmitStatus(ctx context.Context, req *brokerv1.EmitStatusRequest) (*brokerv1.EmitStatusResponse, error) {
+	if err := s.requireGatewayPeer(ctx); err != nil {
+		return nil, err
+	}
 	s.deps.Logger.Info("SandboxStatus",
 		zap.String("task_id", req.TaskId),
 		zap.String("status", req.Status.String()),

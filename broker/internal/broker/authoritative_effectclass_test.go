@@ -59,7 +59,7 @@ func TestSubmitPlan_FU2_AuthoritativeOverridesUnderdeclared(t *testing.T) {
 	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	svc := newSandboxSvcForPlan(taskStore, &opaLikePolicyEngine{}, nil)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			// Planner declares read_only, but slack.post is authoritatively write_external.
@@ -113,7 +113,7 @@ func TestSubmitPlan_FU2_CorrectlyDeclaredUnchanged(t *testing.T) {
 	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
 	svc := newSandboxSvcForPlan(taskStore, &opaLikePolicyEngine{}, nil)
 
-	result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 		TaskId: validTaskUUID(),
 		Plan: makePlan(testTenantUUID, []*planv1.PlanStep{
 			// doc.read is authoritatively read_only — correct declaration.
@@ -173,7 +173,7 @@ func TestSubmitPlan_AG08_McpFloor(t *testing.T) {
 					{ToolID: tool, Enabled: true, EffectClass: tc.confirmed, ExecutorKind: "mcp"},
 				})
 			}
-			result, err := svc.SubmitPlan(context.Background(), &brokerv1.SubmitPlanRequest{
+			result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
 				TaskId: validTaskUUID(),
 				Plan:   makePlan(testTenantUUID, []*planv1.PlanStep{makeStepWithClass(1, tool, planv1.EffectClass_READ_ONLY)}),
 			})

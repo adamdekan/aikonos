@@ -114,14 +114,15 @@ func TestInvokeTool_PreGateDeniesWhenBudgetExhausted(t *testing.T) {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 10, CostConsumed: 10}}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, Tasks: tasks}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, Tasks: tasks}}
 
 	// A garbage capability token would normally trip InvalidArgument first —
 	// using no token at all would trip "capability token required" instead of
 	// the budget gate. Use a validly-minted token so the pre-gate is the first
 	// thing that can deny.
 	tok := mintForScope(t, m, "web:read")
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.ResourceExhausted {
@@ -141,11 +142,12 @@ func TestInvokeTool_PostCallIncrementsCost(t *testing.T) {
 		return map[string]any{"status_code": 200}, 7, nil
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	})
 	if err != nil {
@@ -171,11 +173,12 @@ func TestInvokeTool_ZeroCostCallSkipsIncrement(t *testing.T) {
 		return map[string]any{"status_code": 200}, 0, nil
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -203,11 +206,12 @@ func TestInvokeTool_CrossingBudgetEmitsAuditEventAndStillSucceeds(t *testing.T) 
 		incrementErr: fmt.Errorf("cost budget exceeded: consumed=11 budget=10: %w", db.ErrBudgetExceeded),
 	}
 	aud := &fakeInvokeAudit{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	})
 	if err != nil {
@@ -253,11 +257,12 @@ func TestInvokeTool_IncrementCostOtherErrorDoesNotFailCall(t *testing.T) {
 		task:         &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0},
 		incrementErr: errors.New("transient db error"),
 	}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	})
 	if err != nil {
@@ -282,11 +287,12 @@ func TestInvokeTool_RecordsToolInvokeDuration(t *testing.T) {
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	tm := &fakeTaskMetrics{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, TaskMetrics: tm}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, TaskMetrics: tm}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, TenantId: "tenant-x",
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -311,11 +317,12 @@ func TestInvokeTool_NilTaskMetrics_NoPanic(t *testing.T) {
 		return map[string]any{"status_code": 200}, 0, nil
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -352,11 +359,12 @@ func TestInvokeTool_ObservesBaselineOnSuccessWithAgentID(t *testing.T) {
 	bound := uuid.New()
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0, AgentID: &bound}}
 	bl := &fakeBaselineRecorder{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl, Agents: &skilledAgents{skills: []string{"web.fetch"}}}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 		TenantId: "tenant-x", AgentId: bound.String(),
 	}); err != nil {
@@ -384,11 +392,12 @@ func TestInvokeTool_NoBaselineObserveWithoutAgentID(t *testing.T) {
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	bl := &fakeBaselineRecorder{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -407,10 +416,11 @@ func TestInvokeTool_NoBaselineObserveOnDenial(t *testing.T) {
 	}
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 10, CostConsumed: 10}}
 	bl := &fakeBaselineRecorder{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, Tasks: tasks, Baseline: bl}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, Tasks: tasks, Baseline: bl}}
 
 	tok := mintForScope(t, m, "web:read")
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok,
 	})
 	if status.Code(err) != codes.ResourceExhausted {
@@ -434,11 +444,12 @@ func TestInvokeTool_NoBaselineObserveOnToolFailure(t *testing.T) {
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	bl := &fakeBaselineRecorder{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Baseline: bl}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -478,11 +489,12 @@ func TestInvokeTool_EmitsResultFlaggedWhenInjectionFlagsPresent(t *testing.T) {
 	agentID := uuid.New()
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0, AgentID: &agentID}}
 	aud := &fakeInvokeAudit{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud, Agents: &skilledAgents{skills: []string{"web.fetch"}}}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"path": "in/report.docx"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, TenantId: "tenant-x",
 	})
 	if err != nil {
@@ -538,11 +550,12 @@ func TestInvokeTool_NoResultFlaggedWhenClean(t *testing.T) {
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	aud := &fakeInvokeAudit{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"path": "in/report.docx"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, TenantId: "tenant-x",
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -571,11 +584,12 @@ func TestInvokeTool_InvalidUTF8ResultIsToolFailureNotInternal(t *testing.T) {
 	})
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, CostConsumed: 0}}
 	aud := &fakeInvokeAudit{}
-	svc := &SandboxService{deps: Deps{Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
 	})
 	if err != nil {
@@ -626,13 +640,14 @@ func TestInvokeTool_ApprovedTaskTransitionsToExecuting(t *testing.T) {
 	tasks := &fakeInvokeToolTaskStore{
 		task: &db.Task{State: db.TaskStateApproved, CostBudget: 1000, CostConsumed: 0},
 	}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: &fakeInvokeAudit{},
 	}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, TenantId: "tenant-x",
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -660,13 +675,14 @@ func TestInvokeTool_NonApprovedTaskIsNotTransitioned(t *testing.T) {
 	tasks := &fakeInvokeToolTaskStore{
 		task: &db.Task{State: db.TaskStateExecuting, CostBudget: 1000, CostConsumed: 0},
 	}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: &fakeInvokeAudit{},
 	}}
 
 	tok := mintForScope(t, m, "web:read")
 	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args, TenantId: "tenant-x",
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
@@ -696,8 +712,9 @@ func newMemorySvc(t *testing.T, toolID string, tasks taskStore, got *toolproxy.R
 		return map[string]any{"ok": true}, 0, nil
 	})
 	aud := &fakeInvokeAudit{}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: aud,
+		Agents: &skilledAgents{skills: []string{toolID}},
 	}}
 	return svc, m, aud
 }
@@ -723,7 +740,8 @@ func TestInvokeTool_RequestAgentIDComesFromTaskRow(t *testing.T) {
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, AgentID: &bound}}
 	svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 
-	if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args:    memoryArgs(t, map[string]any{"scope": "agent", "id": "c1"}),
 		AgentId: "agent:" + bound.String(),
@@ -750,7 +768,8 @@ func TestInvokeTool_RequestAgentIDEmptyForPersonalTask(t *testing.T) {
 			svc, m, _ := newMemorySvc(t, "memory.write", tasks, &got)
 			svc.deps.Agents = agents
 
-			if _, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			if _, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+				StepId: "1",
 				TaskId: "task-1", TenantId: testTenantUUID, ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 				Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
 			}); err != nil {
@@ -773,7 +792,8 @@ func TestInvokeTool_MemoryGroupScope_MemberAllowed(t *testing.T) {
 	pol := &fakeSkillPolicy{enabled: true, granted: true}
 	svc.skillPolicy = pol
 
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "id": "c1"}),
 	})
@@ -783,8 +803,9 @@ func TestInvokeTool_MemoryGroupScope_MemberAllowed(t *testing.T) {
 	if !resp.Success {
 		t.Fatalf("expected success, got error %q", resp.Error)
 	}
-	if pol.checkFGACalls != 1 {
-		t.Fatalf("expected exactly one CheckFGA call, got %d", pol.checkFGACalls)
+	// The owner's can_invoke on the tool (F188), then the group membership.
+	if pol.checkFGACalls != 2 {
+		t.Fatalf("expected two CheckFGA calls, got %d", pol.checkFGACalls)
 	}
 	if pol.lastUser != "user:owner@example.com" || pol.lastRelation != "member" || pol.lastObject != "group:security-team" {
 		t.Fatalf("unexpected CheckFGA triple: (%q, %q, %q)", pol.lastUser, pol.lastRelation, pol.lastObject)
@@ -798,9 +819,10 @@ func TestInvokeTool_MemoryGroupScope_NonMemberDenied(t *testing.T) {
 	var got toolproxy.Request
 	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 100, OwnerUserID: "owner@example.com"}}
 	svc, m, aud := newMemorySvc(t, "memory.write", tasks, &got)
-	svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: false}
+	svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: false, byRelation: map[string]bool{"can_invoke": true}}
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "id": "c1"}),
 	})
@@ -829,7 +851,8 @@ func TestInvokeTool_MemoryGroupScope_CheckErrorDenied(t *testing.T) {
 	svc, m, _ := newMemorySvc(t, "memory.read", tasks, &got)
 	svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: true, err: errors.New("openfga unreachable")}
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.read", CapabilityToken: mintForScope(t, m, "memory:read"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "mode": "index"}),
 	})
@@ -850,15 +873,17 @@ func TestInvokeTool_MemoryGroupScope_MissingGroupIDDenied(t *testing.T) {
 	pol := &fakeSkillPolicy{enabled: true, granted: true}
 	svc.skillPolicy = pol
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "id": "c1"}),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("want PermissionDenied, got %v", err)
 	}
-	if pol.checkFGACalls != 0 {
-		t.Fatalf("expected no CheckFGA call without a group_id, got %d", pol.checkFGACalls)
+	// Only the owner's can_invoke on the tool (F188); no membership check.
+	if pol.checkFGACalls != 1 || pol.lastRelation == "member" {
+		t.Fatalf("expected no membership CheckFGA without a group_id, got %d calls (last %q)", pol.checkFGACalls, pol.lastRelation)
 	}
 }
 
@@ -872,7 +897,8 @@ func TestInvokeTool_MemoryGroupScope_TaskLoadFailureDenied(t *testing.T) {
 	pol := &fakeSkillPolicy{enabled: true, granted: true} // would allow if consulted
 	svc.skillPolicy = pol
 
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 		Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "id": "c1"}),
 	})
@@ -900,7 +926,8 @@ func TestInvokeTool_MemoryGroupScope_EmptyOwnerDenied(t *testing.T) {
 		pol := &fakeSkillPolicy{enabled: true, granted: true}
 		svc.skillPolicy = pol
 
-		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			StepId: "1",
 			TaskId: "task-1", ToolId: "memory.read", CapabilityToken: mintForScope(t, m, "memory:read"),
 			Args: memoryArgs(t, map[string]any{"scope": "group", "group_id": "security-team", "mode": "index"}),
 			// A caller-supplied user id must not substitute for the row's owner.
@@ -955,7 +982,8 @@ func TestInvokeTool_MemoryGroupPreGateSkipped(t *testing.T) {
 			pol := &fakeSkillPolicy{enabled: true, granted: false} // would deny if consulted
 			svc.skillPolicy = pol
 
-			resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+				StepId: "1",
 				TaskId: "task-1", ToolId: tc.toolID, CapabilityToken: mintForScope(t, m, tc.scope),
 				Args: memoryArgs(t, tc.args),
 			})
@@ -965,8 +993,10 @@ func TestInvokeTool_MemoryGroupPreGateSkipped(t *testing.T) {
 			if !resp.Success {
 				t.Fatalf("expected success, got error %q", resp.Error)
 			}
-			if pol.checkFGACalls != 0 {
-				t.Fatalf("expected no CheckFGA call, got %d", pol.checkFGACalls)
+			// The subject's can_invoke on the tool runs (F188); a membership
+			// check must not.
+			if pol.checkFGACalls > 1 || pol.lastRelation == "member" {
+				t.Fatalf("expected no membership CheckFGA, got %d calls (last %q)", pol.checkFGACalls, pol.lastRelation)
 			}
 		})
 	}
@@ -999,7 +1029,7 @@ func (f *fakeEmitStatusTaskStore) Transition(_ context.Context, _, _ string, fro
 }
 
 func newEmitStatusSvc(store *fakeEmitStatusTaskStore) *SandboxService {
-	return &SandboxService{deps: Deps{
+	return &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:   zap.NewNop(),
 		TenantID: "aikonos-dev",
 		Tasks:    store,
@@ -1011,7 +1041,7 @@ func newEmitStatusSvc(store *fakeEmitStatusTaskStore) *SandboxService {
 func TestEmitStatus_UnmappableStatus_ReturnsInvalidArgument(t *testing.T) {
 	svc := newEmitStatusSvc(&fakeEmitStatusTaskStore{})
 
-	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	_, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId: "task-1",
 		Status: brokerv1.TaskStatus_TASK_STATUS_UNSPECIFIED,
 	})
@@ -1025,7 +1055,7 @@ func TestEmitStatus_UnmappableStatus_ReturnsInvalidArgument(t *testing.T) {
 func TestEmitStatus_TaskNotFound_ReturnsNotFound(t *testing.T) {
 	svc := newEmitStatusSvc(&fakeEmitStatusTaskStore{getErr: db.ErrNotFound})
 
-	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	_, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId:   "missing-task",
 		TenantId: "tenant-1",
 		Status:   brokerv1.TaskStatus_COMPLETED,
@@ -1042,7 +1072,7 @@ func TestEmitStatus_TaskNotFound_ReturnsNotFound(t *testing.T) {
 func TestEmitStatus_TaskGetInfraError_ReturnsUnavailable(t *testing.T) {
 	svc := newEmitStatusSvc(&fakeEmitStatusTaskStore{getErr: errors.New("conn acquire failed")})
 
-	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	_, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId:   "task-1",
 		TenantId: "tenant-1",
 		Status:   brokerv1.TaskStatus_COMPLETED,
@@ -1061,7 +1091,7 @@ func TestEmitStatus_RejectedTransition_ReturnsFailedPrecondition(t *testing.T) {
 		transErr: errors.New("invalid transition COMPLETED -> EXECUTING"),
 	})
 
-	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	_, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId:   "task-1",
 		TenantId: "tenant-1",
 		Status:   brokerv1.TaskStatus_EXECUTING,
@@ -1079,7 +1109,7 @@ func TestEmitStatus_Success_TransitionsAndReturnsNoError(t *testing.T) {
 	}
 	svc := newEmitStatusSvc(store)
 
-	resp, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	resp, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId: "task-1",
 		// TenantId left empty deliberately to exercise the Deps.TenantID fallback.
 		Status: brokerv1.TaskStatus_COMPLETED,
@@ -1111,8 +1141,9 @@ func newBindingSvc(t *testing.T, tasks taskStore, got *toolproxy.Request) (*Sand
 		return map[string]any{"content": "ok"}, 1, nil
 	})
 	bl := &fakeBaselineRecorder{}
-	svc := &SandboxService{deps: Deps{
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks, Audit: &fakeInvokeAudit{}, Baseline: bl,
+		Agents: &skilledAgents{skills: []string{"web.fetch"}},
 	}}
 	return svc, mintForScope(t, m, "web:read"), bl
 }
@@ -1142,7 +1173,8 @@ func TestInvokeTool_Binding_UnknownTaskDenied(t *testing.T) {
 	} {
 		var got toolproxy.Request
 		svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{getErr: getErr}, &got)
-		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			StepId: "1",
 			TaskId: "task-x", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 			TenantId: bindTenantA, UserId: bindOwner,
 		})
@@ -1161,7 +1193,8 @@ func TestInvokeTool_Binding_UnknownTaskDenied(t *testing.T) {
 func TestInvokeTool_Binding_UserMismatchDenied(t *testing.T) {
 	var got toolproxy.Request
 	svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 		TenantId: bindTenantA, UserId: "victim@example.com",
 	})
@@ -1176,7 +1209,8 @@ func TestInvokeTool_Binding_UserMismatchDenied(t *testing.T) {
 func TestInvokeTool_Binding_TenantMismatchDenied(t *testing.T) {
 	var got toolproxy.Request
 	svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 		TenantId: bindTenantB, UserId: bindOwner,
 	})
@@ -1194,7 +1228,8 @@ func TestInvokeTool_Binding_AgentMismatchDenied(t *testing.T) {
 	bound := uuid.New()
 	var got toolproxy.Request
 	svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(&bound)}, &got)
-	_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 		TenantId: bindTenantA, UserId: bindOwner, AgentId: uuid.New().String(),
 	})
@@ -1216,7 +1251,8 @@ func TestInvokeTool_Binding_NonExecutableTaskFailedPrecondition(t *testing.T) {
 		tasks := &fakeInvokeToolTaskStore{task: task}
 		var got toolproxy.Request
 		svc, tok, _ := newBindingSvc(t, tasks, &got)
-		_, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			StepId: "1",
 			TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 			TenantId: bindTenantA, UserId: bindOwner,
 		})
@@ -1240,8 +1276,8 @@ func TestInvokeTool_Binding_RunsAsTaskOwner(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var got toolproxy.Request
 			svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(&bound)}, &got)
-			req.TaskId, req.ToolId, req.CapabilityToken, req.Args = "task-1", "web.fetch", tok, fetchArgs(t)
-			resp, err := svc.InvokeTool(context.Background(), req)
+			req.TaskId, req.StepId, req.ToolId, req.CapabilityToken, req.Args = "task-1", "1", "web.fetch", tok, fetchArgs(t)
+			resp, err := svc.InvokeTool(asGateway(context.Background()), req)
 			if err != nil || !resp.Success {
 				t.Fatalf("InvokeTool: resp=%v err=%v", resp, err)
 			}
@@ -1264,10 +1300,11 @@ func TestInvokeTool_Binding_UnboundTaskRefusesRequestAgent(t *testing.T) {
 	var got toolproxy.Request
 	svc, tok, bl := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
 	req := &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
 		TenantId: bindTenantA, UserId: bindOwner, AgentId: uuid.New().String(),
 	}
-	if _, err := svc.InvokeTool(context.Background(), req); status.Code(err) != codes.PermissionDenied {
+	if _, err := svc.InvokeTool(asGateway(context.Background()), req); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("unbound task with caller agent: want PermissionDenied, got %v", err)
 	}
 	if got.ToolID != "" || len(bl.calls) != 0 {
@@ -1330,7 +1367,8 @@ func TestInvokeTool_CapabilityTokenBinding(t *testing.T) {
 			}
 			clock = clock.Add(tc.advance)
 
-			resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+				StepId: "1",
 				TaskId: tc.taskID, ToolId: "web.fetch", Args: fetchArgs(t),
 				CapabilityToken: base64.StdEncoding.EncodeToString(raw),
 			})
@@ -1363,7 +1401,7 @@ func TestEmitStatus_ForeignTenantDenied(t *testing.T) {
 	store := &fakeEmitStatusTaskStore{task: &db.Task{TenantID: uuid.MustParse(bindTenantA), State: db.TaskStateExecuting}}
 	svc := newEmitStatusSvc(store)
 
-	_, err := svc.EmitStatus(context.Background(), &brokerv1.EmitStatusRequest{
+	_, err := svc.EmitStatus(asGateway(context.Background()), &brokerv1.EmitStatusRequest{
 		TaskId:   "task-1",
 		TenantId: bindTenantB,
 		Status:   brokerv1.TaskStatus_FAILED,
@@ -1394,7 +1432,8 @@ func oboMismatchCall(t *testing.T, mode string) (ran bool, err error) {
 	if merr != nil {
 		t.Fatalf("Mint: %v", merr)
 	}
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1",
 		TaskId: "task-1", ToolId: "memory.write", CapabilityToken: base64.StdEncoding.EncodeToString(raw),
 		Args: memoryArgs(t, map[string]any{"scope": "user", "id": "c1"}),
 	})
@@ -1421,4 +1460,40 @@ func TestInvokeTool_OBOMismatchEnforce(t *testing.T) {
 	if status.Code(err) != codes.PermissionDenied || ran {
 		t.Fatalf("enforce mode must deny before the tool runs: err=%v ran=%v", err, ran)
 	}
+}
+
+// TestInvokeTool_SkillGatesPerCall (F188): a built-in tool re-checks the
+// plan-time skill gates per call, so a grant revoked after the token was
+// minted denies the next call — the subject's can_invoke on a personal task,
+// the agent's Skills on a named-agent task.
+func TestInvokeTool_SkillGatesPerCall(t *testing.T) {
+	t.Run("user grant revoked", func(t *testing.T) {
+		var got toolproxy.Request
+		svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(nil)}, &got)
+		svc.skillPolicy = &fakeSkillPolicy{enabled: true, granted: false}
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			TaskId: "task-1", StepId: "1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		})
+		if status.Code(err) != codes.PermissionDenied || got.ToolID != "" {
+			t.Fatalf("want PermissionDenied before the handler, got %v", err)
+		}
+		if r := lastDenyReason(svc); r != "skill_grant_revoked" {
+			t.Fatalf("reason = %q, want skill_grant_revoked", r)
+		}
+	})
+	t.Run("agent skill removed", func(t *testing.T) {
+		agent := uuid.New()
+		var got toolproxy.Request
+		svc, tok, _ := newBindingSvc(t, &fakeInvokeToolTaskStore{task: boundTask(&agent)}, &got)
+		svc.deps.Agents = &skilledAgents{skills: []string{"memory.read"}}
+		_, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+			TaskId: "task-1", StepId: "1", ToolId: "web.fetch", CapabilityToken: tok, Args: fetchArgs(t),
+		})
+		if status.Code(err) != codes.PermissionDenied || got.ToolID != "" {
+			t.Fatalf("want PermissionDenied before the handler, got %v", err)
+		}
+		if r := lastDenyReason(svc); r != "agent_skill_revoked" {
+			t.Fatalf("reason = %q, want agent_skill_revoked", r)
+		}
+	})
 }

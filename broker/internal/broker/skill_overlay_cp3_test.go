@@ -241,7 +241,7 @@ func TestInvokeTool_OverlayDisabledRowDenies(t *testing.T) {
 	loader := newSkillOverlayLoader(reg, store)
 	loader.ensureLoaded(context.Background(), testTenantUUID, zap.NewNop())
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:        zap.NewNop(),
 		Capability:    m,
 		ToolRegistry:  reg,
@@ -252,7 +252,8 @@ func TestInvokeTool_OverlayDisabledRowDenies(t *testing.T) {
 	})
 
 	tok := mintFor(t, m, "doc:write")
-	_, err = svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-1",
 		ToolId:          "doc.write",
 		TenantId:        testTenantUUID,
@@ -278,7 +279,7 @@ func TestInvokeTool_NoCuratedRowAllowsThrough(t *testing.T) {
 	loader := newSkillOverlayLoader(reg, store)
 	loader.ensureLoaded(context.Background(), testTenantUUID, zap.NewNop())
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:        zap.NewNop(),
 		Capability:    m,
 		ToolProxy:     proxy,
@@ -290,7 +291,8 @@ func TestInvokeTool_NoCuratedRowAllowsThrough(t *testing.T) {
 	})
 
 	tok := mintFor(t, m, "doc:write")
-	resp, err := svc.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+	resp, err := svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId:          "1",
 		TaskId:          "task-1",
 		ToolId:          "doc.write",
 		TenantId:        testTenantUUID,
@@ -349,7 +351,7 @@ func TestSubmitPlan_UncuratedStepAllowed(t *testing.T) {
 		toolDec:   &policy.Decision{Allow: true},
 	}
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:        zap.NewNop(),
 		ToolRegistry:  reg,
 		SkillOverlay:  store,
@@ -361,7 +363,7 @@ func TestSubmitPlan_UncuratedStepAllowed(t *testing.T) {
 	})
 	svc.policy = pol
 
-	result, err := svc.SubmitPlan(context.Background(), cp3SubmitPlanReq(testTenantUUID, "doc.write"))
+	result, err := svc.SubmitPlan(asGateway(context.Background()), cp3SubmitPlanReq(testTenantUUID, "doc.write"))
 	if err != nil {
 		t.Fatalf("SubmitPlan: %v", err)
 	}
@@ -390,7 +392,7 @@ func TestSubmitPlan_OverlayDisabledStepDenied(t *testing.T) {
 		toolDec:   &policy.Decision{Allow: true},
 	}
 
-	svc := NewSandboxService(Deps{
+	svc := NewSandboxService(Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:        zap.NewNop(),
 		ToolRegistry:  reg,
 		SkillOverlay:  store,
@@ -402,7 +404,7 @@ func TestSubmitPlan_OverlayDisabledStepDenied(t *testing.T) {
 	})
 	svc.policy = pol
 
-	result, err := svc.SubmitPlan(context.Background(), cp3SubmitPlanReq(testTenantUUID, "doc.write"))
+	result, err := svc.SubmitPlan(asGateway(context.Background()), cp3SubmitPlanReq(testTenantUUID, "doc.write"))
 	if err != nil {
 		t.Fatalf("SubmitPlan: %v", err)
 	}

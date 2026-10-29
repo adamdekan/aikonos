@@ -41,6 +41,7 @@ type taskStore interface {
 	Create(ctx context.Context, t *db.Task) error
 	IncrementCost(ctx context.Context, tenantID, taskID string, units int64) error
 	InsertPlanSteps(ctx context.Context, tenantID string, steps []db.PlanStepRecord) error
+	ClaimPlanStep(ctx context.Context, tenantID, taskID string, seq int32, toolID string, argsHashes []string) (db.PlanStepClaim, error)
 	CreateApprovalRequest(ctx context.Context, ar *db.ApprovalRequest) (uuid.UUID, error)
 	ListMintableSteps(ctx context.Context, tenantID, taskID string) ([]db.ExecutableStep, error)
 	GetPlanStepTraces(ctx context.Context, tenantID, taskID string) ([]db.PlanStepTrace, error)

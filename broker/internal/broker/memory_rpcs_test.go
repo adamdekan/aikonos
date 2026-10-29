@@ -628,7 +628,7 @@ func TestVerifyMemoryConcept_SerializesWithConcurrentToolWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMinter: %v", err)
 	}
-	south := &SandboxService{deps: Deps{
+	south := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID,
 		Logger:     zap.NewNop(),
 		Capability: m,
 		ToolProxy:  toolproxy.New(toolproxy.Config{WorkspaceFS: workspacefs.New(root)}, zap.NewNop()),
@@ -648,7 +648,8 @@ func TestVerifyMemoryConcept_SerializesWithConcurrentToolWrite(t *testing.T) {
 	for i := range writers {
 		go func() {
 			defer wg.Done()
-			res, err := south.InvokeTool(context.Background(), &brokerv1.InvokeToolRequest{
+			res, err := south.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+				StepId: "1",
 				TaskId: "task-1", TenantId: testTenantUUID, UserId: memUser,
 				ToolId: "memory.write", CapabilityToken: mintForScope(t, m, "memory:write"),
 				Args: memoryArgs(t, map[string]any{

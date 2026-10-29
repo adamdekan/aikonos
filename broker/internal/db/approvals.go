@@ -121,13 +121,22 @@ func (r *TaskRepo) InsertPlanSteps(ctx context.Context, tenantID string, steps [
 				state = EXCLUDED.state,
 				args_json = EXCLUDED.args_json,
 				policy_reason = EXCLUDED.policy_reason,
-				decision_trace = EXCLUDED.decision_trace`,
+				decision_trace = EXCLUDED.decision_trace,
+				consumed_at = NULL`,
 				s.TaskID, s.TenantID, s.Seq, s.ToolID, s.ArgsHash,
 				s.EffectClass, s.Justification, s.EstimatedCost,
 				string(s.PolicyDecision), s.PolicyRuleID, stepStateFor(s.PolicyDecision), argsJSON,
 				s.PolicyReason, traceJSON,
 			)
 		}
+
+		// A replan drops the earlier plan's other seqs, so InvokeTool's step
+		// binding (ClaimPlanStep) can only match a step of the current plan.
+		seqs := make([]int32, len(steps))
+		for i, s := range steps {
+			seqs[i] = s.Seq
+		}
+		batch.Queue(`DELETE FROM plan_steps WHERE task_id = $1 AND seq <> ALL($2::int[])`, steps[0].TaskID, seqs)
 
 		br := conn.SendBatch(ctx, batch)
 		defer br.Close()
@@ -136,7 +145,60 @@ func (r *TaskRepo) InsertPlanSteps(ctx context.Context, tenantID string, steps [
 				return fmt.Errorf("insert plan step: %w", err)
 			}
 		}
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("drop stale plan steps: %w", err)
+		}
 		return nil
+	})
+}
+
+// PlanStepClaim is what ClaimPlanStep found for (task, seq): the stored step
+// as it was before the call, and whether this call consumed it.
+type PlanStepClaim struct {
+	ToolID         string
+	ArgsHash       string
+	PolicyDecision string
+	// WasConsumed is true when an earlier call had already run the step.
+	WasConsumed bool
+	// Claimed is true only when this call matched and consumed the step.
+	Claimed bool
+}
+
+// ClaimPlanStep binds one InvokeTool call to its plan step (H-03): it marks
+// the (task, seq) step consumed only when its tool is toolID, its args_hash is
+// one of argsHashes and the policy did not deny it, and only if no earlier
+// call consumed it. The update re-checks consumed_at under the row lock, so
+// two concurrent calls cannot both claim the step. A missing step is
+// ErrNotFound; otherwise the stored fields come back so the caller can name
+// the mismatch.
+func (r *TaskRepo) ClaimPlanStep(ctx context.Context, tenantID, taskID string, seq int32, toolID string, argsHashes []string) (PlanStepClaim, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (PlanStepClaim, error) {
+		var c PlanStepClaim
+		err := conn.QueryRow(ctx, `
+		WITH s AS (
+			SELECT step_id, tool_id, COALESCE(args_hash, '') AS args_hash,
+			       COALESCE(policy_decision, '') AS policy_decision,
+			       consumed_at IS NOT NULL AS consumed
+			FROM plan_steps
+			WHERE task_id = $1 AND seq = $2
+		), c AS (
+			UPDATE plan_steps p SET consumed_at = NOW()
+			FROM s
+			WHERE p.step_id = s.step_id AND p.consumed_at IS NULL
+			  AND s.tool_id = $3 AND s.args_hash = ANY($4::text[])
+			  AND s.policy_decision IN ('ALLOW','APPROVAL_REQUIRED','STEP_UP_REQUIRED')
+			RETURNING p.step_id
+		)
+		SELECT s.tool_id, s.args_hash, s.policy_decision, s.consumed, EXISTS (SELECT 1 FROM c)
+		FROM s`, taskID, seq, toolID, argsHashes).
+			Scan(&c.ToolID, &c.ArgsHash, &c.PolicyDecision, &c.WasConsumed, &c.Claimed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c, ErrNotFound
+		}
+		if err != nil {
+			return c, fmt.Errorf("claim plan step: %w", err)
+		}
+		return c, nil
 	})
 }
 

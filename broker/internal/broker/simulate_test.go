@@ -93,6 +93,10 @@ func (n *noopTaskStore) InsertPlanSteps(_ context.Context, _ string, _ []db.Plan
 	n.t.Fatalf("SimulatePolicy must not touch the task store: InsertPlanSteps")
 	return nil
 }
+func (n *noopTaskStore) ClaimPlanStep(_ context.Context, _, _ string, _ int32, _ string, _ []string) (db.PlanStepClaim, error) {
+	n.t.Fatalf("SimulatePolicy must not touch the task store: ClaimPlanStep")
+	return db.PlanStepClaim{}, nil
+}
 func (n *noopTaskStore) CreateApprovalRequest(_ context.Context, _ *db.ApprovalRequest) (uuid.UUID, error) {
 	n.t.Fatalf("SimulatePolicy must not touch the task store: CreateApprovalRequest")
 	return uuid.UUID{}, nil

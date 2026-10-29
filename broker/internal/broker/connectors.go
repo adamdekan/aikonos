@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,16 +150,8 @@ func (s *BrokerService) BeginConnectorAuth(ctx context.Context, req *brokerv1.Be
 	if prov == connector.ProviderOneDrive && s.oneDriveManaged(ctx, tenant) {
 		return nil, status.Error(codes.FailedPrecondition, "OneDrive is managed by your organization")
 	}
-	// A7: org connector-install allowlist. Fail closed on a settings read error;
-	// no-op when the repo is unconfigured or the allowlist is disabled.
-	if s.deps.OrgSettings != nil {
-		settings, serr := s.deps.OrgSettings.Get(ctx, tenant)
-		if serr != nil {
-			return nil, status.Errorf(codes.Internal, "org settings read: %v", serr)
-		}
-		if !settings.ConnectorAllowed(string(prov)) {
-			return nil, status.Errorf(codes.PermissionDenied, "connector %q is not permitted by your organization", prov)
-		}
+	if err := s.requireConnectorAllowed(ctx, span.SpanContext().TraceID().String(), tenant, user, prov); err != nil {
+		return nil, err
 	}
 	if !s.deps.OAuth.Configured(prov) {
 		return nil, status.Errorf(codes.FailedPrecondition, "provider %q not configured", prov)
@@ -220,6 +213,10 @@ func (s *BrokerService) CompleteConnectorAuth(ctx context.Context, req *brokerv1
 	}
 	if connID, ok := connector.McpConnectionID(pending.Provider); ok {
 		return s.completeMcpAuth(ctx, traceID, tenant, user, connID, pending, req.Code)
+	}
+	// A flow begun before the admin narrowed the allowlist must not complete.
+	if err := s.requireConnectorAllowed(ctx, traceID, tenant, user, pending.Provider); err != nil {
+		return nil, err
 	}
 
 	tok, err := s.deps.OAuth.Exchange(ctx, pending.Provider, pending.Scopes, req.Code, pending.Verifier)
@@ -371,6 +368,34 @@ func (s *BrokerService) RevokeConnector(ctx context.Context, req *brokerv1.Revok
 	s.emitConnectorAudit(ctx, span.SpanContext().TraceID().String(), tenant, user,
 		"aikonos.broker.connector.revoked", auditv1.PolicyDecision_ALLOW)
 	return &brokerv1.RevokeConnectorResponse{Success: true}, nil
+}
+
+// requireConnectorAllowed is the A7 org connector allowlist check for linking
+// a provider (Begin and Complete; InvokeTool re-checks it per connector tool
+// call). Fails closed on a settings read error; no-op when the repo is
+// unconfigured or the allowlist is disabled. A refusal is audited.
+func (s *BrokerService) requireConnectorAllowed(ctx context.Context, traceID, tenant, user string, prov connector.Provider) error {
+	if s.deps.OrgSettings == nil {
+		return nil
+	}
+	settings, serr := s.deps.OrgSettings.Get(ctx, tenant)
+	if serr != nil {
+		return status.Errorf(codes.Internal, "org settings read: %v", serr)
+	}
+	if !settings.ConnectorAllowed(string(prov)) {
+		s.emitConnectorAudit(ctx, traceID, tenant, user,
+			"aikonos.broker.connector.denied", auditv1.PolicyDecision_DENY)
+		return status.Errorf(codes.PermissionDenied, "connector %q is not permitted by your organization", prov)
+	}
+	return nil
+}
+
+// connectorForTool names the connector provider whose linked user token a
+// built-in tool spends ("gdrive.read" → google_drive), for the A7 allowlist
+// at tool use.
+func connectorForTool(toolID string) (connector.Provider, bool) {
+	connID, _, _ := strings.Cut(toolID, ".")
+	return providerFromConnectorID(connID)
 }
 
 func (s *BrokerService) emitConnectorAudit(ctx context.Context, traceID, tenant, actor, eventType string, decision auditv1.PolicyDecision) {
