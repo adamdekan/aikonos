@@ -4,10 +4,19 @@
 // *.edit ops at real OOXML instead of guessing.
 import { join } from 'node:path';
 import { HandlerInputError, readJobJson, runFixedPythonScript, writeJobFile } from './run-script.js';
+import { MAX_REGEX_LENGTH } from './zip-edit.js';
 
 export async function runXmlQuery({ jobDir, spawn, inputPath, params }) {
   if (typeof params.member !== 'string' || !params.member) {
     throw new HandlerInputError('params.member (archive member name) is required for format:"xml"');
+  }
+  if (params.pattern != null && (typeof params.pattern !== 'string' || params.pattern.length > MAX_REGEX_LENGTH)) {
+    throw new HandlerInputError(`params.pattern must be a regex string of at most ${MAX_REGEX_LENGTH} characters`);
+  }
+  for (const key of ['context_chars', 'echo_cap']) {
+    if (params[key] != null && !(Number.isInteger(params[key]) && params[key] >= 0)) {
+      throw new HandlerInputError(`params.${key} must be a non-negative integer`);
+    }
   }
 
   const queryParams = {

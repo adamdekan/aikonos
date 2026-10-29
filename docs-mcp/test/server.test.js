@@ -15,7 +15,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createApp } from '../src/server.js';
@@ -267,4 +267,72 @@ test('wire-compat: bare tools/call list_docs without initialize returns successf
   // Must be a successful result, not a protocol error or session-required error.
   assert.ok(resp.result, `stateless tools/call failed — SDK may now require initialize: ${JSON.stringify(resp)}`);
   assert.ok(!resp.result.isError, `unexpected isError: ${JSON.stringify(resp.result)}`);
+});
+
+// ---------------------------------------------------------------------------
+// M-33 / F85: DNS rebinding and cross-origin browser requests are refused.
+// ---------------------------------------------------------------------------
+
+function rawPost(headers, body) {
+  // fetch() will not let a caller set Host, so drive node:http directly.
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      `${baseUrl}/mcp`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          ...headers,
+        },
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (c) => (text += c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }));
+      },
+    );
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+test('POST /mcp with a foreign Host header is refused 403 (DNS rebinding)', async () => {
+  const res = await rawPost(
+    { Host: 'evil.example:8060' },
+    rpc('tools/call', { name: 'read_doc', arguments: { path: 'README.md' } }),
+  );
+  assert.equal(res.status, 403);
+  assert.ok(!res.text.includes('# '), 'no document content may leak');
+});
+
+test('POST /mcp with the mesh service Host is accepted', async () => {
+  const res = await rawPost({ Host: 'aikonos-docs-mcp:8060' }, rpc('tools/list', {}));
+  assert.equal(res.status, 200);
+});
+
+test('POST /mcp with a browser Origin header is refused 403', async () => {
+  const res = await rawPost({ Origin: 'http://localhost:3000' }, rpc('tools/list', {}));
+  assert.equal(res.status, 403);
+});
+
+test('responses carry no X-Powered-By header', async () => {
+  const res = await fetch(`${baseUrl}/healthz`);
+  assert.equal(res.headers.get('x-powered-by'), null);
+});
+
+// L-32 / F86: an oversized query is rejected by the schema, not scanned.
+test('tools/call search_docs with an over-long query returns an error', async () => {
+  const resp = await mcpPost(
+    rpc('tools/call', { name: 'search_docs', arguments: { query: 'a '.repeat(5000) } }),
+  );
+  const failed = resp.error || resp.result?.isError;
+  assert.ok(failed, `expected a validation error, got: ${JSON.stringify(resp).slice(0, 300)}`);
+});
+
+test('tools/call list_docs pages with offset/limit', async () => {
+  const resp = await mcpPost(rpc('tools/call', { name: 'list_docs', arguments: { limit: 1 } }));
+  const text = resp.result.content[0].text;
+  assert.equal(text.split('\n')[0].includes(' — '), true);
+  assert.match(text, /call again with offset 1/);
 });

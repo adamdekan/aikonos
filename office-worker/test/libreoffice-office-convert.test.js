@@ -46,11 +46,10 @@ test('libreoffice: office.convert converts docx to pdf', async (t) => {
   const { baseUrl, close } = await startServer();
   try {
     const createScript = `
-import { Document, Packer, Paragraph, TextRun } from 'docx';
-import { writeFileSync } from 'node:fs';
+const { Document, Packer, Paragraph, TextRun } = require('docx');
+const { writeFileSync } = require('node:fs');
 const doc = new Document({ sections: [{ children: [new Paragraph({ children: [new TextRun('hello')] })] }] });
-const buffer = await Packer.toBuffer(doc);
-writeFileSync('output.docx', buffer);
+Packer.toBuffer(doc).then((buffer) => writeFileSync('output.docx', buffer));
 `;
     const { contentType: cType, body: cBody } = buildMultipartRequest([], {
       script: createScript,

@@ -163,6 +163,10 @@ export async function readDoc(root, relPath) {
 
 const SNIPPET_MAX_CHARS = 400;
 const SNIPPET_LINES = 3;
+// Every token is one indexOf pass over the whole corpus, synchronously on the
+// only event loop — so both the query and its distinct tokens are capped.
+export const MAX_QUERY_LENGTH = 256;
+export const MAX_QUERY_TOKENS = 10;
 
 /**
  * Search the corpus for `query` and return ranked results.
@@ -175,6 +179,8 @@ const SNIPPET_LINES = 3;
  * Limit is clamped to [1, 20].
  * Files with score 0 are excluded.
  * Empty query (no non-space tokens) → [].
+ * The query is cut to MAX_QUERY_LENGTH chars and its first MAX_QUERY_TOKENS
+ * distinct tokens are used.
  *
  * @param {string} root   Absolute corpus root.
  * @param {string} query  Free-text query string.
@@ -184,10 +190,15 @@ const SNIPPET_LINES = 3;
 export async function searchDocs(root, query, limit) {
   const clampedLimit = Math.max(1, Math.min(20, limit ?? 8));
 
-  const tokens = query
-    .split(/\s+/)
-    .map(t => t.toLowerCase())
-    .filter(t => t.length > 0);
+  const tokens = [
+    ...new Set(
+      query
+        .slice(0, MAX_QUERY_LENGTH)
+        .split(/\s+/)
+        .map(t => t.toLowerCase())
+        .filter(t => t.length > 0),
+    ),
+  ].slice(0, MAX_QUERY_TOKENS);
 
   if (tokens.length === 0) return [];
 

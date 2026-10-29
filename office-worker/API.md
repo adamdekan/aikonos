@@ -1,7 +1,11 @@
 # office-worker wire contract
 
-Internal HTTP API, `office` network only (no auth — the network boundary is
-the control). Checkpoint 4's Go
+Internal HTTP API, `office` network only. Every route except `/healthz`
+requires the header `X-Aikonos-Office-Token` to equal the worker's
+`AIKONOS_OFFICE_WORKER_TOKEN` (the broker sends the same env value); a
+missing or wrong token is a `401`, checked before the body is read. The
+worker refuses to start with the token unset unless `AIKONOS_DEV_MODE=true`.
+Checkpoint 4's Go
 toolproxy client is written against this file; anything here is pinned by
 this service's own tests (`test/*.test.js`).
 
@@ -9,7 +13,7 @@ this service's own tests (`test/*.test.js`).
 
 | Route | Notes |
 |---|---|
-| `GET /healthz` | Always 200 `{"ok":true}`. Compose healthcheck + `compose:verify`. |
+| `GET /healthz` | Always 200 `{"ok":true}`, no token needed. Compose healthcheck + `compose:verify`. |
 | `POST /v1/<format>/<op>` | One route per tool op, 15 total (see table below). |
 
 ### Ops
@@ -39,8 +43,10 @@ A non-`POST`/non-matching path also returns `404`.
   cap the broker enforces (`workspacefs.MaxFileBytes`), checked against every
   output artifact before the response is built.
 
-Malformed `params` JSON, or a request the multipart parser rejects, returns
-`400` `{"error": "..."}`.
+Malformed `params` JSON, `params` that is not a JSON object, or a request the
+multipart parser rejects, returns `400` `{"error": "..."}`. The whole body
+must arrive within 30 s or the connection is dropped (`408`); it is read
+**before** a job slot is taken, so a slow sender never holds one.
 
 ## Response shape
 
@@ -54,11 +60,14 @@ multipart, never partial output parts.
 
 | Status | Meaning |
 |---|---|
-| `400` | Malformed request (bad multipart, invalid `params` JSON). |
+| `400` | Malformed request (bad multipart, invalid `params` JSON or a param value outside its allowlist/range). |
+| `401` | Missing or wrong `X-Aikonos-Office-Token`. |
 | `404` | Unknown route / unknown op. |
+| `408` | The request body did not arrive within 30 s. |
 | `413` | An ingress cap was exceeded (see "Ingress caps"), or an output artifact exceeded `max_output_bytes`. Error names the offending part and the cap. |
 | `500` | Handler error / unexpected failure. |
 | `501` | Op is in the route table but not yet implemented. |
+| `503` | Every job slot is busy and the wait queue (2 × `OFFICE_MAX_CONCURRENCY`) is full; retry later. |
 | `504` | Job exceeded its wall-clock timeout; any subprocess (group) the handler spawned was killed. |
 
 ## Ingress caps
@@ -81,24 +90,34 @@ substituted by `compose.yaml` — using them means editing the service's
 mirrored across `scripts/check-env-drift.sh`'s three `.env` templates for a
 knob no deployment has needed to move.
 
-The broker's cap covers the **compressed** input only, so these bound the
-decompression work a job can be handed. Per-job memory is bounded separately:
-model-authored node scripts run under `--max-old-space-size`
-(`OFFICE_NODE_MAX_OLD_SPACE_MB`, default 256, same not-in-compose caveat). The
-bound that matters is the aggregate — that default × `OFFICE_MAX_CONCURRENCY`
-(4) is 1 GiB against the container's 2g `mem_limit`, leaving headroom for the
-worker itself and any concurrent python/LibreOffice job. Raise either knob only
-after re-checking the product. The python interpreter has no equivalent
-address-space bound — it stays bounded by the job timeout and the container
-limit.
+The broker's cap covers the **compressed** input only. The fixed zip helpers
+(`docx/pptx.edit`, `format:"xml"` extract) therefore refuse any archive member
+over 50 MiB uncompressed, an archive over 200 MiB uncompressed, and an edit
+that would grow a member past 50 M characters; `xlsx.extract` clamps `range`
+to the sheet's used area and refuses more than 1 M cells; `pptx.thumbnail`
+clamps `dpi` to [50, 300] and `max_pages` to [1, 50].
+
+Model-authored scripts (`*.create`, `xlsx.edit`) run under `prlimit`:
+`RLIMIT_AS` of `OFFICE_SCRIPT_MAX_AS_MB` (default 1024) for python, and that
+plus the V8 heap for node, which also gets `--max-old-space-size`
+(`OFFICE_NODE_MAX_OLD_SPACE_MB`, default 256; it bounds the JS heap only —
+Buffers live outside it, which is why the address-space limit is the real
+bound); `RLIMIT_FSIZE` of 64 MiB per file written; `RLIMIT_NPROC` as a
+fork-bomb backstop (it counts the uid's tasks container-wide, so compose's
+`pids_limit` is the real bound). Same not-in-compose caveat for both knobs.
+These are **per job**: `OFFICE_MAX_CONCURRENCY` jobs at their limits can still
+sum past the container's 2g `mem_limit`, which stays the backstop, and the
+512 MiB `/tmp` tmpfs is shared by every job (no per-job disk quota). Each
+captured stdout/stderr stream keeps only its last 16 KiB.
 
 ## Size-cap semantics
 
 Before any success response is built, every output artifact's byte length is
 checked against the request's `params.max_output_bytes`. The **first**
 oversize artifact fails the **whole** job with a single `413` error — no
-partial multipart response, no output parts at all reach the caller. A falsy
-`max_output_bytes` (absent/0) skips the check.
+partial multipart response, no output parts at all reach the caller. An
+absent `max_output_bytes` applies the server default (50 MiB); any other
+non-positive or non-numeric value is a `400`.
 
 ## Timeout semantics
 
@@ -112,18 +131,36 @@ process group (not just the immediate child) — a handler that shells out
 **must** use the `spawn` passed into it, not `node:child_process` directly, or
 timeout-kill won't reach grandchild processes.
 
+When a job ends — success, error or timeout — the runner also kills every
+process it left behind. Each spawned process carries a random
+`AIKONOS_JOB_ID` in its (otherwise minimal: `PATH`, `HOME`, `LANG`, `LC_ALL`,
+`TZ`, `TMPDIR`) environment; after the tracked process groups are killed, the
+runner scans `/proc` and SIGKILLs any process whose environment still carries
+that id, which catches `setsid`/`nohup` escapes from the group.
+
 ## Concurrency
 
 `OFFICE_MAX_CONCURRENCY` (env, default `4`) bounds in-flight jobs; requests
-beyond the cap queue FIFO and are served as slots free up. No `503` — a
-request simply waits.
+beyond the cap queue FIFO and are served as slots free up. At most
+2 × `OFFICE_MAX_CONCURRENCY` requests wait; past that a request gets `503`.
+The server accepts at most running + queued + 2 connections at once.
 
 ## Job isolation
 
 Each request gets a fresh, uniquely-named directory under `/tmp` (the
 container's `read_only:true` + tmpfs `/tmp` filesystem contract), passed to
 the op handler as `jobDir`. The directory is always removed after the
-request — on success, on handler error, and on timeout.
+request — on success, on handler error, and on timeout. Output files are
+read with `O_NOFOLLOW` and must resolve (by real path) inside the job
+directory, so a script cannot return a symlink to another job's file.
+
+**Residual (shared uid):** every job, and every model-authored script, runs as
+the same uid in one container. The job dir's `0700` mode keeps other uids
+out but not a concurrent job's script, which can read or overwrite another
+in-flight job's files while both run. The post-job sweep stops a script from
+persisting into later jobs, but a process that rewrites its own environment
+before the sweep (`exec env -i ...`) escapes it. A per-job sandbox (PID and
+mount namespace, e.g. bwrap/nsjail, or gVisor) is the fix.
 
 ## Checkpoint 2: script-runtime ops
 
@@ -152,7 +189,9 @@ Request: `file` part (the archive) + `params: { "ops": [{ "member": string,
 "find": string, "replace": string, "regex"?: boolean }], "output_filename"?:
 string }`. Each op replaces `find` in the named archive member (literal
 substring by default, `regex: true` treats `find` as a Python regex, `re.sub`
-with `DOTALL`). Applied via a fixed helper (`src/scripts/zip_edit.py`, python
+with `DOTALL`). At most 200 ops, and a regex `find` of at most 1024 chars
+(Python `re` has no timeout; backtracking is bounded by the job timeout).
+Applied via a fixed helper (`src/scripts/zip_edit.py`, python
 stdlib `zipfile` — no new node zip dependency), which re-validates the
 repacked archive's integrity (`ZipFile.testzip()`) before it's returned. A
 `member` absent from the archive currently surfaces as a `500` (the fixed
@@ -164,14 +203,15 @@ Response: `file` part + `result: { filename, size }`.
 
 Request: `file` part + `params`. Two modes:
 
-- **Default (markdown):** `params: { "track_changes"?: "all" }` — pandoc
-  `-f docx -t markdown`, passing `--track-changes=all` through when given.
+- **Default (markdown):** `params: { "track_changes"?: "accept"|"reject"|"all" }`
+  — pandoc `-f docx -t markdown`, passing `--track-changes=<value>` through
+  when given; any other value is a `400`.
   Response: no file parts, `result: { content: "<markdown>" }`.
 - **`format: "xml"`:** `params: { "format": "xml", "member": string
-  (required, e.g. "word/document.xml"), "pattern"?: string (Python regex),
-  "context_chars"?: number (default 200), "echo_cap"?: number (default 20000
-  chars) }`. Without `pattern`, returns the member's content truncated to
-  `echo_cap`. With `pattern`, returns each match with `context_chars` of
+  (required, e.g. "word/document.xml"), "pattern"?: string (Python regex,
+  at most 1024 chars), "context_chars"?: non-negative integer (default 200),
+  "echo_cap"?: non-negative integer (default 20000 chars) }`. Without
+  `pattern`, returns the member's content truncated to `echo_cap`. With `pattern`, returns each match with `context_chars` of
   surrounding context, accumulating until `echo_cap` would be exceeded (then
   stops, `truncated: true`) — the full member is never returned for a large
   file. Response: no file parts, `result: { member, member_length,
@@ -248,7 +288,10 @@ never lets a caller forget the hardening: every job gets its own throwaway
 `-env:UserInstallation` profile under the job dir (isolated from any shared
 profile), pre-seeded with a `registrymodifications.xcu` that pins
 `MacroSecurityLevel` to `3` ("Very high" — no macro executes, not even a
-signed one). Verified empirically (LibreOffice 7.4.7.2, via a
+signed one), disables macro execution outright (`DisableMacrosExecution`),
+DDE and embedded OLE (`DisableActiveContent`), blocks links from untrusted
+locations (`BlockUntrustedRefererLinks`), and sets link updates on load to
+never in Calc and Writer (`Content/Update/Link`). Verified empirically (LibreOffice 7.4.7.2, via a
 soffice-equipped Docker build of this service's own Dockerfile) that
 `soffice --convert-to` batch conversion already refuses to execute a
 document's embedded macro unconditionally regardless of this setting — the
@@ -298,14 +341,18 @@ Request: `params: { "op": "merge"|"split"|"rotate"|"decrypt"|"fill-forms",
 - **`merge`**: one or more `file` parts, combined in request order via
   `qpdf --empty --pages`. `params: { output_filename? }`.
 - **`split`**: one `file` part + `params: { ranges: [{ pages: string (a
-  qpdf page-range expression, e.g. "1-2"), output_filename? }] }` — one
-  output file per range, via `qpdf --pages`.
+  qpdf page-range expression, e.g. "1-2"), output_filename? }] }` (at most
+  50 ranges) — one output file per range, via `qpdf --pages`.
 - **`rotate`**: one `file` part + `params: { angle: 90|180|270|-90|-180|-270,
   pages?: string (qpdf range, default "1-z" = all), output_filename? }`, via
-  `qpdf --rotate`.
+  `qpdf --rotate`. Every `pages` value must match the allowlisted qpdf range
+  syntax (`n`, `rN`, `z`, `a-b`, optional `:even`/`:odd`, comma-separated, at
+  most 256 chars) or the op is a `400` — a value reaching qpdf's argv
+  starting with `@` would otherwise be read as an argument file.
 - **`decrypt`**: one `file` part + `params: { password: string
-  (required) }`, via `qpdf --password=... --decrypt`. A wrong password is a
-  `500`.
+  (required, no line breaks) }`, via `qpdf --password-file=<job file>
+  --decrypt` (never argv, which other processes can read). A wrong password
+  is a `500`.
 - **`fill-forms`**: one `file` part + `params: { fields: { <name>: <value>,
   ... } }` — AcroForm field values, applied via the fixed helper
   `src/scripts/pdf_fill_forms.py` (pypdf

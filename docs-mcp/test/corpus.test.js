@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { listDocs, readDoc, searchDocs, CorpusError } from '../src/corpus.js';
+import { listDocs, readDoc, searchDocs, CorpusError, MAX_QUERY_TOKENS } from '../src/corpus.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, 'fixtures/corpus');
@@ -178,5 +178,15 @@ describe('searchDocs', () => {
       assert.ok('snippet' in r, 'result must have snippet');
       assert.ok(typeof r.score === 'number' && r.score > 0);
     }
+  });
+});
+
+describe('searchDocs query bounds (L-32)', () => {
+  it('uses at most MAX_QUERY_TOKENS distinct tokens', async () => {
+    // Thousands of 1-char tokens must not mean thousands of corpus passes;
+    // only the first MAX_QUERY_TOKENS distinct ones count.
+    const many = Array.from({ length: 5000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join(' ');
+    const capped = Array.from({ length: MAX_QUERY_TOKENS }, (_, i) => String.fromCharCode(97 + i)).join(' ');
+    assert.deepEqual(await searchDocs(FIXTURE, many, 20), await searchDocs(FIXTURE, capped, 20));
   });
 });

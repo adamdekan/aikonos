@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   parseMultipart,
   buildMultipartResponse,
@@ -24,6 +25,57 @@ function sendJson(res, status, body) {
 // OFFICE_WORKER_URL, so a 4th env var here would drift from check-env-drift.sh.
 const SOFFICE_TIMEOUT_MS = 180000;
 
+// The request body is read in full before a job slot is taken, so a client
+// that drips (or never sends) its body cannot hold a slot; it gets this long
+// to deliver it. Same not-an-env-var reasoning as SOFFICE_TIMEOUT_MS.
+const BODY_TIMEOUT_MS = 30000;
+
+// Shared secret the broker sends (X-Aikonos-Office-Token). The worker runs
+// model-authored scripts, so the internal `office` network is not the only
+// thing standing between a co-located container and code execution here.
+export const TOKEN_HEADER = 'x-aikonos-office-token';
+export const TOKEN_ENV = 'AIKONOS_OFFICE_WORKER_TOKEN';
+
+// Fails closed: a worker without a token would accept every caller on its
+// network. AIKONOS_DEV_MODE=true is the explicit escape hatch (local dev,
+// tests), matching the broker's own devModeGuard.
+export function assertTokenConfigured(env = process.env) {
+  if (!env[TOKEN_ENV] && env.AIKONOS_DEV_MODE !== 'true') {
+    throw new Error(
+      `refusing to start: ${TOKEN_ENV} is unset and AIKONOS_DEV_MODE!=true; ` +
+        `set the shared secret (the broker sends the same value) or AIKONOS_DEV_MODE=true (dev only)`
+    );
+  }
+}
+
+// Hashing both sides first gives timingSafeEqual equal-length inputs, so the
+// comparison leaks neither the token's bytes nor its length.
+function tokenMatches(presented, expected) {
+  if (typeof presented !== 'string') return false;
+  const a = createHash('sha256').update(presented).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
+class BodyTimeoutError extends Error {
+  constructor(ms) {
+    super(`request body not received within ${ms}ms`);
+    this.name = 'BodyTimeoutError';
+    this.statusCode = 408;
+  }
+}
+
+function parseWithTimeout(req, uploadLimits, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      req.destroy();
+      reject(new BodyTimeoutError(ms));
+    }, ms);
+  });
+  return Promise.race([parseMultipart(req, uploadLimits), timeout]).finally(() => clearTimeout(timer));
+}
+
 // createServer wires the route table + per-job lifecycle. Config is read at
 // call time (not module load) so tests can override env-derived defaults.
 export function createServer({
@@ -32,22 +84,50 @@ export function createServer({
   maxConcurrency = Number(process.env.OFFICE_MAX_CONCURRENCY) || 4,
   maxUploadBytes = Number(process.env.OFFICE_MAX_UPLOAD_BYTES) || DEFAULT_MAX_UPLOAD_BYTES,
   maxUploadFiles = Number(process.env.OFFICE_MAX_UPLOAD_FILES) || DEFAULT_MAX_UPLOAD_FILES,
+  // ponytail: 2x concurrency waiting is already past the broker's own
+  // client timeout at the default job timeout; a deeper queue only holds
+  // memory for requests nobody is still waiting on.
+  maxQueue = maxConcurrency * 2,
+  bodyTimeoutMs = BODY_TIMEOUT_MS,
+  token = process.env[TOKEN_ENV] || '',
 } = {}) {
-  const semaphore = createSemaphore(maxConcurrency);
+  const semaphore = createSemaphore(maxConcurrency, maxQueue);
   const uploadLimits = { maxUploadBytes, maxUploadFiles };
+  const ctx = { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits, bodyTimeoutMs, token };
 
-  return http.createServer((req, res) => {
-    handleRequest(req, res, { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits }).catch((err) => {
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res, ctx).catch((err) => {
       if (!res.headersSent) sendJson(res, 500, { error: err.message });
     });
   });
+  // Bodies are now buffered before a slot is taken, so the connection count is
+  // what bounds that buffering: running + queued jobs, plus room for
+  // /healthz.
+  server.maxConnections = maxConcurrency + maxQueue + 2;
+  // requestTimeout covers receiving the request only (a long job's response
+  // is not cut off); headersTimeout must not exceed it.
+  server.requestTimeout = bodyTimeoutMs * 2;
+  server.headersTimeout = Math.min(10000, server.requestTimeout);
+  return server;
 }
 
-async function handleRequest(req, res, { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits }) {
+async function handleRequest(req, res, ctx) {
+  const { jobTimeoutMs, sofficeTimeoutMs, semaphore, uploadLimits, bodyTimeoutMs, token } = ctx;
   const url = new URL(req.url, 'http://office-worker');
 
+  // Unauthenticated: the compose healthcheck probes it without the secret.
   if (req.method === 'GET' && url.pathname === '/healthz') {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // Before routing, parsing or a slot: an unauthenticated caller learns
+  // nothing and costs nothing.
+  if (token && !tokenMatches(req.headers[TOKEN_HEADER], token)) {
+    console.warn(
+      `office-worker: denied ${req.method} ${url.pathname} from ${req.socket.remoteAddress}: missing or wrong ${TOKEN_HEADER}`
+    );
+    sendJson(res, 401, { error: 'unauthorized' });
     return;
   }
 
@@ -70,9 +150,16 @@ async function handleRequest(req, res, { jobTimeoutMs, sofficeTimeoutMs, semapho
     return;
   }
 
-  await semaphore.acquire();
+  let parsed;
   try {
-    const { files, params } = await parseMultipart(req, uploadLimits);
+    parsed = await parseWithTimeout(req, uploadLimits, bodyTimeoutMs);
+    await semaphore.acquire();
+  } catch (err) {
+    sendJson(res, err.statusCode || 500, { error: err.message });
+    return;
+  }
+  try {
+    const { files, params } = parsed;
     const timeoutMs = SOFFICE_OPS.has(opKey) ? sofficeTimeoutMs : jobTimeoutMs;
     const runner = createJobRunner({ timeoutMs });
 

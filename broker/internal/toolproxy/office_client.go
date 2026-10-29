@@ -5,8 +5,9 @@
 // /v1/<format>/<op> with file parts + a "params" JSON field, response is
 // either a multipart file+result payload (200) or plain {"error":...} JSON
 // (4xx/5xx). Mirrors connector_token.go's doRequest shape (injectable client,
-// timeout, bounded response read) — the worker holds no credentials, so the
-// office network boundary (not auth) is the control here.
+// timeout, bounded response read). The worker holds no credentials; the
+// office network boundary plus a shared secret (X-Aikonos-Office-Token, from
+// AIKONOS_OFFICE_WORKER_TOKEN on both sides) are the controls here.
 package toolproxy
 
 import (
@@ -18,6 +19,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +35,23 @@ const defaultOfficeTimeout = 200 * time.Second
 // defensive backstop against a misbehaving worker, not the enforcement point.
 const officeMaxResponseBytes = workspacefs.MaxFileBytes + 1<<20 // +1 MiB slack for the JSON result part
 
+// officeMaxResponseParts and officeMaxResponseTotalBytes bound a whole
+// response, which is held in memory until the handler writes it out: the
+// per-part cap alone lets a misbehaving worker stream parts until the broker
+// (every tenant's calls) is OOM-killed. The worker emits at most 50 file
+// parts (pptx.thumbnail max_pages, pdf.transform split ranges) plus result.
+const (
+	officeMaxResponseParts      = 64
+	officeMaxResponseTotalBytes = 8 * officeMaxResponseBytes
+)
+
+// officeTokenEnv is the shared secret office-worker requires on every job
+// request (office-worker/API.md); the broker reads the same variable.
+const (
+	officeTokenEnv    = "AIKONOS_OFFICE_WORKER_TOKEN"
+	officeTokenHeader = "X-Aikonos-Office-Token"
+)
+
 // officeAvailable reports whether cfg carries a worker URL. Every office
 // plugin's Available(cfg) delegates here — a deployment without office-worker
 // degrades cleanly (the plugins simply don't register, mirroring web_fetch's
@@ -43,6 +62,7 @@ func officeAvailable(cfg Config) bool { return cfg.OfficeWorkerURL != "" }
 type officeClient struct {
 	baseURL string
 	client  *http.Client
+	token   string
 }
 
 func newOfficeClient(cfg Config) *officeClient {
@@ -54,7 +74,11 @@ func newOfficeClient(cfg Config) *officeClient {
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
-	return &officeClient{baseURL: strings.TrimRight(cfg.OfficeWorkerURL, "/"), client: client}
+	return &officeClient{
+		baseURL: strings.TrimRight(cfg.OfficeWorkerURL, "/"),
+		client:  client,
+		token:   os.Getenv(officeTokenEnv),
+	}
 }
 
 // officeFile is one multipart file part, in a request or a response.
@@ -90,6 +114,9 @@ func (c *officeClient) call(ctx context.Context, route string, files []officeFil
 		return nil, fmt.Errorf("office-worker: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", contentType)
+	if c.token != "" {
+		httpReq.Header.Set(officeTokenHeader, c.token)
+	}
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
@@ -159,14 +186,19 @@ func parseOfficeMultipartResponse(resp *http.Response) (*officeResult, error) {
 	}
 
 	out := &officeResult{}
-	mr := multipart.NewReader(resp.Body, boundary)
-	for {
+	body := http.MaxBytesReader(nil, resp.Body, officeMaxResponseTotalBytes)
+	mr := multipart.NewReader(body, boundary)
+	for parts := 0; ; parts++ {
 		part, err := mr.NextPart()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, fmt.Errorf("office-worker: reading response part: %w", err)
+		}
+		if parts >= officeMaxResponseParts {
+			part.Close()
+			return nil, fmt.Errorf("office-worker: response exceeds %d parts", officeMaxResponseParts)
 		}
 		data, rerr := io.ReadAll(io.LimitReader(part, officeMaxResponseBytes+1))
 		name := part.FormName()

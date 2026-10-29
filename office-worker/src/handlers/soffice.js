@@ -27,6 +27,16 @@
 // round-trips through `--convert-to xlsx` under this profile with the cached
 // value rewritten to the literal string "#DIV/0!"). Harmless no-op for the
 // other two ops.
+//
+// External content: the profile also stops a document from pulling in
+// anything outside itself while it loads — link updates off in Calc
+// (Content/Update/Link 1 = never) and Writer (2 = never), DDE and embedded
+// OLE off (DisableActiveContent), links from untrusted locations blocked
+// (BlockUntrustedRefererLinks), and macro execution off outright on top of
+// the security level. Keys and enum values checked against the image's
+// LibreOffice 25.2 registry schema (share/registry/main.xcd). WEBSERVICE()
+// is already limited to http(s) by LibreOffice itself, and the office
+// network has no egress.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runCommand } from './run-script.js';
@@ -37,6 +47,15 @@ const REGISTRY_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:registry xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
  <item oor:path="/org.openoffice.Office.Common/Security/Scripting">
   <prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>
+  <prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>
+  <prop oor:name="DisableActiveContent" oor:op="fuse"><value>true</value></prop>
+  <prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop>
+ </item>
+ <item oor:path="/org.openoffice.Office.Calc/Content/Update">
+  <prop oor:name="Link" oor:op="fuse"><value>1</value></prop>
+ </item>
+ <item oor:path="/org.openoffice.Office.Writer/Content/Update">
+  <prop oor:name="Link" oor:op="fuse"><value>2</value></prop>
  </item>
  <item oor:path="/org.openoffice.Office.Calc/Formula/Load">
   <prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>2</value></prop>

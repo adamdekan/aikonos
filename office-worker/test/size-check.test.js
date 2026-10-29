@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkOutputSizes, OutputTooLargeError } from '../src/size-check.js';
+import { checkOutputSizes, OutputTooLargeError, DEFAULT_MAX_OUTPUT_BYTES } from '../src/size-check.js';
 
 test('checkOutputSizes passes when every output is under the cap', () => {
   assert.doesNotThrow(() =>
@@ -8,9 +8,15 @@ test('checkOutputSizes passes when every output is under the cap', () => {
   );
 });
 
-test('checkOutputSizes is a no-op when no cap is supplied', () => {
+// F82 (M-32): an absent cap used to mean "no cap"; the server default now
+// applies so no output is ever unbounded.
+test('checkOutputSizes applies the server default when no cap is supplied', () => {
   assert.doesNotThrow(() =>
     checkOutputSizes([{ filename: 'a.docx', buffer: Buffer.alloc(1_000_000) }], undefined)
+  );
+  assert.throws(
+    () => checkOutputSizes([{ filename: 'big.docx', buffer: Buffer.alloc(DEFAULT_MAX_OUTPUT_BYTES + 1) }], undefined),
+    OutputTooLargeError
   );
 });
 

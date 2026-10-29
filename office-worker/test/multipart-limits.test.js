@@ -118,7 +118,7 @@ test('more form fields than the fields cap fails with 413', async () => {
   });
 });
 
-test('runNodeScript spawns node with the per-job heap ceiling ahead of the script path', async () => {
+test('runNodeScript spawns node under prlimit with the per-job heap ceiling ahead of the script path', async () => {
   const jobDir = await mkdtemp(join(tmpdir(), 'office-worker-test-'));
   const received = [];
   const spawn = (cmd, args, opts) => {
@@ -134,14 +134,22 @@ test('runNodeScript spawns node with the per-job heap ceiling ahead of the scrip
     await runNodeScript({ jobDir, spawn, script: 'console.log(1)', args: ['out.docx'] });
 
     assert.equal(received.length, 1);
-    const { args } = received[0];
+    const { cmd, args: wrapped } = received[0];
+    // The interpreter runs under prlimit (RLIMIT_AS etc.): the V8 heap flag
+    // alone does not bound Buffers.
+    assert.equal(cmd, 'prlimit');
+    assert.ok(wrapped.some((a) => a.startsWith('--as=')), 'an address-space limit must be set');
+    const sep = wrapped.indexOf('--');
+    assert.equal(wrapped[sep + 1], process.execPath);
+    const args = wrapped.slice(sep + 2);
     assert.equal(
       args[0],
       `--max-old-space-size=${NODE_MAX_OLD_SPACE_MB}`,
       'the V8 flag must precede the script path or node treats it as a script argument'
     );
-    assert.equal(args[1], join(jobDir, 'script.cjs'));
-    assert.deepEqual(args.slice(2), ['out.docx'], 'caller args still follow the script path');
+    const script = args.indexOf(join(jobDir, 'script.cjs'));
+    assert.ok(script > 0, 'the script path follows the node flags');
+    assert.deepEqual(args.slice(script + 1), ['out.docx'], 'caller args still follow the script path');
   } finally {
     await rm(jobDir, { recursive: true, force: true });
   }

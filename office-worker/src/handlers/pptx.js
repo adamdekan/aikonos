@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { registerHandler } from '../ops.js';
 import { JPEG_MIME, PPTX_MIME } from './mime.js';
@@ -19,6 +19,15 @@ const DEFAULT_OUTPUT = 'output.pptx';
 const MARKITDOWN = join(VENV_BIN_DIR, 'markitdown');
 const DEFAULT_THUMBNAIL_DPI = 150;
 const DEFAULT_MAX_PAGES = 20;
+
+// dpi and max_pages multiply into pdftoppm's memory and output size, so an
+// absent value takes the default, a non-integer is a 400, and an integer is
+// clamped into [min, max].
+function clampInt(value, fallback, min, max, name) {
+  if (value === undefined || value === null) return fallback;
+  if (!Number.isInteger(value)) throw new HandlerInputError(`params.${name} must be an integer`);
+  return Math.min(max, Math.max(min, value));
+}
 
 registerHandler('pptx/create', async ({ jobDir, params, spawn }) => {
   if (!params.script) throw new HandlerInputError('params.script (pptxgenjs source) is required');
@@ -59,8 +68,8 @@ registerHandler('pptx/extract', async ({ jobDir, files, params, spawn }) => {
 registerHandler('pptx/thumbnail', async ({ jobDir, files, params, spawn }) => {
   const input = files.find((f) => f.fieldname === 'file');
   if (!input) throw new HandlerInputError('a "file" part is required');
-  const dpi = params.dpi || DEFAULT_THUMBNAIL_DPI;
-  const maxPages = params.max_pages || DEFAULT_MAX_PAGES;
+  const dpi = clampInt(params.dpi, DEFAULT_THUMBNAIL_DPI, 50, 300, 'dpi');
+  const maxPages = clampInt(params.max_pages, DEFAULT_MAX_PAGES, 1, 50, 'max_pages');
 
   const inputPath = await writeJobFile(jobDir, 'input.pptx', input.buffer);
   const outDir = join(jobDir, 'out');
@@ -88,7 +97,7 @@ registerHandler('pptx/thumbnail', async ({ jobDir, files, params, spawn }) => {
 
   const outputs = [];
   for (const filename of slideFilenames) {
-    const buffer = await readFile(join(outDir, filename));
+    const buffer = await readJobFile(jobDir, join('out', filename), `pdftoppm output "${filename}" vanished`);
     outputs.push({ name: filename, filename, contentType: JPEG_MIME, buffer });
   }
 

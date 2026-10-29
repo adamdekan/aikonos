@@ -9,9 +9,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # extraction), libreoffice (xlsx.recalc, pptx.thumbnail, office.convert),
 # poppler-utils (pdftoppm/pdftotext), qpdf (pdf.transform), tesseract-ocr with
 # English only (pdf.extract OCR fallback — additional language packs are a
-# later knob per the design's Open questions).
+# later knob per the design's Open questions), tini (PID 1, see ENTRYPOINT),
+# util-linux for prlimit (per-script rlimits, run-script.js).
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
+      tini \
+      util-linux \
       pandoc \
       libreoffice \
       poppler-utils \
@@ -72,4 +75,10 @@ ENV OFFICE_JOB_TIMEOUT_MS=120000
 ENV OFFICE_MAX_CONCURRENCY=4
 
 EXPOSE 8081
+# tini as PID 1: node does not reap orphans re-parented to it, so every
+# grandchild a job's group kill (or a script's double fork) orphans would stay
+# a zombie charged against the container's pids_limit until spawns fail for
+# every tenant. tini reaps them and forwards SIGTERM to node. compose's
+# `init: true` does the same; this covers runners without it.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/index.js"]
