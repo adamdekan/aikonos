@@ -225,7 +225,7 @@ impl SignIn {
                     div()
                         .text_xs()
                         .text_color(cx.theme().danger)
-                        .child("This server does not use HTTPS, so your sign-in travels unencrypted. Ask your administrator to enable HTTPS."),
+                        .child("This server or its sign-in service does not use HTTPS, so your sign-in travels unencrypted. Ask your administrator to enable HTTPS."),
                 )
             })
             .child(

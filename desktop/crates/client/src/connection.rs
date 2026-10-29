@@ -27,9 +27,6 @@ const RENEW_MARGIN: Duration = Duration::from_secs(60);
 /// (agent-gateway agui.ts), so a stream starts with at least this much left.
 const STREAM_MARGIN: Duration = Duration::from_secs(10 * 60);
 const PASSTHROUGH: [&str; 2] = ["/agui", "/audit/stream"];
-/// A stalled server fails a call after this long without a byte. The
-/// gateway's event streams send a ping every 15 s, so they stay open.
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Discovery, token and sign-out calls to the server or identity provider
 /// end after this long in total, so a stalled one cannot hang sign-in,
 /// renewal or sign-out.
@@ -42,11 +39,13 @@ const REJECTION_LIMIT: usize = 64 * 1024;
 /// Events read ahead of the UI before the reader waits.
 const STREAM_BUFFER: usize = 1024;
 
+/// No read timeout, as in the browser: a workflow step or an LLM-backed
+/// call can stay silent for minutes (the web server allows five). The
+/// sign-in and token calls carry [`AUTH_TIMEOUT`] instead.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(concat!("aikonos-desktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
-        .read_timeout(READ_TIMEOUT)
         .build()
         .expect("TLS backend initializes")
 }
@@ -566,6 +565,25 @@ mod tests {
             .expect("sign-out waits for no renewal");
         renewing.abort();
         assert!(connection.current().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_quiet_server_is_waited_for() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0u8; 4096]);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n");
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = stream.write_all(b"ok");
+        });
+        let response = http_client().get(url).send().await.unwrap();
+        // A workflow step can stay silent for minutes. With the clock
+        // paused, a read timeout would fire at once instead of after that.
+        tokio::time::pause();
+        assert_eq!(response.text().await.expect("no read timeout"), "ok");
     }
 
     #[tokio::test]

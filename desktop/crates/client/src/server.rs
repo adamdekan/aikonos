@@ -66,10 +66,13 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// Whether bearer tokens to this server travel unencrypted over a
-    /// network. Plain HTTP to the local machine is the development stack.
+    /// Whether the sign-in code, refresh token or bearers travel
+    /// unencrypted over a network, to this server or to its identity
+    /// provider. Plain HTTP to the local machine is the development stack.
     pub fn is_insecure(&self) -> bool {
-        self.origin.scheme() == "http" && !is_loopback(&self.origin)
+        let plain = |url: &Url| url.scheme() == "http" && !is_loopback(url);
+        // The authority parsed when the config was read; fail closed anyway.
+        plain(&self.origin) || Url::parse(&self.oidc.authority).map_or(true, |authority| plain(&authority))
     }
 }
 
@@ -481,18 +484,22 @@ mod tests {
 
     #[test]
     fn plain_http_is_insecure_unless_local() {
-        let config = |origin: &str| ServerConfig {
+        let config = |origin: &str, authority: &str| ServerConfig {
             origin: Url::parse(origin).unwrap(),
             oidc: OidcSettings {
-                authority: DEFAULT_AUTHORITY.into(),
+                authority: authority.into(),
                 client_id: DEFAULT_DESKTOP_CLIENT_ID.into(),
                 scope: DEFAULT_SCOPE.into(),
                 token_kind: TokenKind::Access,
             },
             release: None,
         };
-        assert!(config("http://ai.example.org/").is_insecure());
-        assert!(!config("http://localhost:4200/").is_insecure());
-        assert!(!config("https://ai.example.org/").is_insecure());
+        assert!(config("http://ai.example.org/", DEFAULT_AUTHORITY).is_insecure());
+        assert!(!config("http://localhost:4200/", DEFAULT_AUTHORITY).is_insecure());
+        assert!(!config("https://ai.example.org/", DEFAULT_AUTHORITY).is_insecure());
+        // With AIKONOS_DESKTOP_ALLOW_HTTP an HTTPS server may name a
+        // plain-HTTP identity provider; the code and tokens go there.
+        assert!(config("https://ai.example.org/", "http://id.example.org/realms/a").is_insecure());
+        assert!(!config("https://ai.example.org/", "https://id.example.org/realms/a").is_insecure());
     }
 }

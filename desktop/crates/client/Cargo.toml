@@ -20,3 +20,7 @@ thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# A paused clock: a test can wait out minutes of timeouts in no time.
+tokio = { workspace = true, features = ["test-util"] }
