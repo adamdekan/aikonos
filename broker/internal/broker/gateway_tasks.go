@@ -29,6 +29,7 @@ import (
 
 	"github.com/adamdekan/aikonos/broker/internal/approvalsvc"
 	"github.com/adamdekan/aikonos/broker/internal/audit"
+	"github.com/adamdekan/aikonos/broker/internal/auth"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/gatewaygrant"
 	"github.com/adamdekan/aikonos/broker/internal/ids"
@@ -374,15 +375,23 @@ func (s *SandboxService) refuseBlockedUser(ctx context.Context, tenantID, user s
 // MintSessionGrant issues an interactive session's owner grant (F171): the
 // subject is the OIDC caller, so the gateway can present a grant only for a
 // user with a live session. The north interceptors have already refused a
-// blocked user and a revoked session (AG-06) and audited the call.
+// blocked user and a revoked session (AG-06) and audited the call. The grant
+// expires with the bearer it was minted from, never later.
 func (s *BrokerService) MintSessionGrant(ctx context.Context, req *brokerv1.MintSessionGrantRequest) (*brokerv1.MintSessionGrantResponse, error) {
 	tenant, user, err := s.callerIdentity(ctx, req.TenantId, req.UserId)
 	if err != nil {
 		return nil, err
 	}
+	ttl := s.deps.GatewayGrantTTL
+	if id, ok := auth.IdentityFromContext(ctx); ok && !id.ExpiresAt.IsZero() && time.Until(id.ExpiresAt) < ttl {
+		ttl = time.Until(id.ExpiresAt)
+	}
+	if ttl <= 0 {
+		return nil, status.Error(codes.Unauthenticated, "session token expired; sign in again")
+	}
 	g, err := gatewaygrant.Mint(s.deps.GatewayGrantKey, gatewaygrant.Grant{
 		TenantID: tenant, Subject: user, Kind: gatewaygrant.KindInteractive,
-	}, s.deps.GatewayGrantTTL)
+	}, ttl)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "mint owner grant: %v", err)
 	}

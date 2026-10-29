@@ -568,6 +568,73 @@ mod tests {
         assert!(connection.current().await.is_err());
     }
 
+    /// G19: verify sends back the hash of the content the user reviewed; the
+    /// broker refuses a verify without it.
+    #[tokio::test]
+    async fn verify_sends_the_reviewed_content_hash() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        use crate::api::memory::{Concept, MemoryScope};
+
+        let concept: Concept =
+            serde_json::from_str(r#"{"meta":{"id":"c1"},"body":"b","contentSha256":"abc"}"#).unwrap();
+        assert_eq!(concept.content_sha256, "abc");
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let request = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 4096];
+            // The JSON body is the last thing sent and ends with `}`.
+            while !seen.ends_with(b"}") {
+                let n = stream.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "request ended early");
+                seen.extend_from_slice(&chunk[..n]);
+            }
+            let reply = r#"{"meta":{"id":"c1"}}"#;
+            let reply = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{reply}", reply.len());
+            stream.write_all(reply.as_bytes()).await.unwrap();
+            String::from_utf8(seen).unwrap()
+        });
+        let server = ServerConfig {
+            origin,
+            oidc: crate::server::OidcSettings {
+                authority: "http://127.0.0.1".into(),
+                client_id: "aikonos-desktop".into(),
+                scope: "openid".into(),
+                token_kind: crate::server::TokenKind::Access,
+            },
+            release: None,
+        };
+        let provider = ProviderMetadata {
+            issuer: "http://127.0.0.1".into(),
+            authorization_endpoint: "http://127.0.0.1/auth".into(),
+            token_endpoint: "http://127.0.0.1/token".into(),
+            end_session_endpoint: None,
+            revocation_endpoint: None,
+        };
+        let tokens = TokenSet {
+            access_token: "t".into(),
+            id_token: None,
+            refresh_token: None,
+            expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
+        };
+        let connection = Connection::new(http_client(), server, provider, tokens);
+        let meta = connection
+            .verify_concept(&MemoryScope::User, "c1", &concept.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(meta.id, "c1");
+        let request = request.await.unwrap();
+        assert!(request.starts_with("POST /api/memory/verify "), "{request}");
+        let body: serde_json::Value = serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"scope": "user", "id": "c1", "content_sha256": "abc"})
+        );
+    }
+
     #[tokio::test]
     async fn bodies_over_the_limit_are_refused() {
         let body = "x".repeat(2048);

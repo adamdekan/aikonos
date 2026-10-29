@@ -67,7 +67,11 @@ func Scan(ctx context.Context, be workspacefs.Backend, tenant, user string) ([]S
 // oversize SKILL.md is never buffered; the post-read check stays because the
 // file can grow in between.
 func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name string) SkillEntry {
-	if n, ok := FileSize(ctx, be, tenant, user, SkillMdPath(name)); ok && n > MaxSkillMdBytes {
+	n, ok := FileSize(ctx, be, tenant, user, SkillMdPath(name))
+	if !ok {
+		return SkillEntry{Name: name, Warning: "missing SKILL.md"}
+	}
+	if n > MaxSkillMdBytes {
 		return SkillEntry{Name: name, Warning: fmt.Sprintf("SKILL.md is %d bytes, exceeds the %d byte cap", n, MaxSkillMdBytes)}
 	}
 	data, _, err := be.Read(ctx, tenant, user, SkillMdPath(name))
@@ -83,8 +87,10 @@ func scanOne(ctx context.Context, be workspacefs.Backend, tenant, user, name str
 
 // FileSize reports the size of the file at rel from a shallow listing of its
 // directory, so a caller can refuse an over-cap file without buffering it
-// (G17). ok is false when the listing fails or holds no such file; the caller
-// then reads as before and keeps its post-read cap check.
+// (G17). ok is false when the listing fails or holds no such file, and the
+// caller then refuses without reading: a listing truncated at
+// workspacefs.MaxListEntries may have dropped the file, so an unknown size
+// fails closed.
 func FileSize(ctx context.Context, be workspacefs.Backend, tenant, user, rel string) (int64, bool) {
 	infos, err := be.ListDir(ctx, tenant, user, path.Dir(rel), false)
 	if err != nil {
