@@ -123,6 +123,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
 				"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
 			})
+			s.denyTask(ctx, tenantID, req.TaskId, taskStore)
 			return &planv1.PlanValidationResult{
 				PlanId:     plan.PlanId,
 				Outcome:    planv1.ValidationOutcome_DENIED,
@@ -143,6 +144,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
 			"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
 		})
+		s.denyTask(ctx, tenantID, req.TaskId, taskStore)
 		return &planv1.PlanValidationResult{
 			PlanId:     plan.PlanId,
 			Outcome:    planv1.ValidationOutcome_DENIED,
@@ -171,10 +173,11 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		OPA:     planDec.Evidence,
 	})
 	if !planDec.Allow {
-		// Structural violations — agent must replan. Task stays in VALIDATING.
+		// Structural violations end the task (see denyTask).
 		s.emitPlanAudit(ctx, traceID, tenantID, req, auditv1.PolicyDecision_DENY, map[string]any{
 			"plan_id": plan.PlanId, "outcome": planv1.ValidationOutcome_DENIED.String(),
 		})
+		s.denyTask(ctx, tenantID, req.TaskId, taskStore)
 		return &planv1.PlanValidationResult{
 			PlanId:     plan.PlanId,
 			Outcome:    planv1.ValidationOutcome_DENIED,
@@ -405,7 +408,7 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	var outcome planv1.ValidationOutcome
 	switch {
 	case anyDeny:
-		outcome = planv1.ValidationOutcome_DENIED // agent may replan; task stays VALIDATING
+		outcome = planv1.ValidationOutcome_DENIED // ends the task (see denyTask)
 	case anyStepUp:
 		outcome = planv1.ValidationOutcome_NEEDS_STEP_UP
 	case anyApproval:
@@ -466,6 +469,8 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 	var capTokens map[int32]string
 	var argsDigest string
 	switch outcome {
+	case planv1.ValidationOutcome_DENIED:
+		s.denyTask(ctx, tenantID, req.TaskId, taskStore)
 	case planv1.ValidationOutcome_APPROVED:
 		if err := taskStore.Transition(ctx, tenantID, req.TaskId, db.TaskStateValidating, db.TaskStateApproved); err != nil {
 			return nil, status.Errorf(codes.Internal, "transition to APPROVED failed: %v", err)
@@ -681,6 +686,16 @@ func (s *SandboxService) recordStepDecision(ctx context.Context, traceID, tenant
 		ResourceRef:   fmt.Sprintf("aikonos:task:%s#%d", req.TaskId, rec.Step.Seq),
 		Decision:      decision,
 	}, rec)
+}
+
+// denyTask ends a task whose plan came back DENIED (VALIDATING→DENIED) so it
+// never sits in VALIDATING forever: the gateway, the only SubmitPlan caller,
+// opens one task per tool call and never replans it. Best-effort: the DENIED
+// result reaches the caller either way.
+func (s *SandboxService) denyTask(ctx context.Context, tenantID, taskID string, ts taskStore) {
+	if err := ts.Transition(ctx, tenantID, taskID, db.TaskStateValidating, db.TaskStateDenied); err != nil {
+		s.deps.Logger.Warn("SubmitPlan: transition to DENIED failed", zap.String("task_id", taskID), zap.Error(err))
+	}
 }
 
 // advanceToValidating walks a task into VALIDATING using only legal transitions.
