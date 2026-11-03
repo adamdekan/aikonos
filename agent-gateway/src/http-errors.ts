@@ -12,7 +12,7 @@ export interface ErrorReply {
   code(statusCode: number): { send(body: unknown): void };
 }
 
-function grpcCode(err: unknown): number | undefined {
+export function grpcCode(err: unknown): number | undefined {
   return typeof err === "object" && err !== null && "code" in err && typeof err.code === "number"
     ? err.code
     : undefined;

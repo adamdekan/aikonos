@@ -56,8 +56,12 @@ func (f *fakeTaskStore) Transition(_ context.Context, _, _ string, from, to db.T
 	return nil
 }
 
-func (f *fakeTaskStore) InsertPlanSteps(_ context.Context, _ string, steps []db.PlanStepRecord) error {
+func (f *fakeTaskStore) InsertPlanSteps(_ context.Context, _, _ string, steps []db.PlanStepRecord, to db.TaskState) error {
 	f.insertedRecords = append(f.insertedRecords, steps...)
+	if to != "" {
+		f.transitions = append(f.transitions, [2]db.TaskState{db.TaskStateValidating, to})
+		f.task.State = to
+	}
 	return nil
 }
 
@@ -651,6 +655,21 @@ func TestSubmitPlan_StepCap(t *testing.T) {
 	}
 	if pol.actor != "" || len(taskStore.transitions) != 0 {
 		t.Fatalf("an oversized plan must not reach OPA or move the task (opa actor %q, transitions %+v)", pol.actor, taskStore.transitions)
+	}
+}
+
+// An empty plan must still leave VALIDATING; InsertPlanSteps is a no-op for it.
+func TestSubmitPlan_EmptyPlanStillTransitions(t *testing.T) {
+	taskStore := &fakeTaskStore{task: newFakeTask(db.TaskStateCreated)}
+	svc := newSandboxSvcForPlan(taskStore, &fakePolicyEngine{planAllow: true}, nil)
+	result, err := svc.SubmitPlan(asGateway(context.Background()), &brokerv1.SubmitPlanRequest{
+		TaskId: validTaskUUID(), Plan: makePlan(testTenantUUID, nil),
+	})
+	if err != nil {
+		t.Fatalf("SubmitPlan: %v", err)
+	}
+	if result.Outcome != planv1.ValidationOutcome_APPROVED || taskStore.task.State != db.TaskStateApproved {
+		t.Fatalf("outcome %v, task state %v; want APPROVED both", result.Outcome, taskStore.task.State)
 	}
 }
 

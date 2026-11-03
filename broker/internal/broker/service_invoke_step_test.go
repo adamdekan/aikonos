@@ -6,10 +6,12 @@ import (
 	"slices"
 	"testing"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/adamdekan/aikonos/broker/internal/capability"
 	"github.com/adamdekan/aikonos/broker/internal/db"
 	"github.com/adamdekan/aikonos/broker/internal/toolproxy"
 	brokerv1 "github.com/adamdekan/aikonos/gen/go/broker/v1"
@@ -125,4 +127,22 @@ func lastDenyReason(svc *SandboxService) string {
 		}
 	}
 	return ""
+}
+
+// A reservation taken before the claim is released when the claim is denied,
+// so a refused call does not hold budget.
+func TestInvokeTool_DeniedClaimReleasesReservation(t *testing.T) {
+	m, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	base := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 10}}
+	tasks := &planStepTaskStore{fakeInvokeToolTaskStore: base, steps: map[int32]*db.PlanStepRecord{}, consumed: map[int32]bool{}}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: toolproxy.New(toolproxy.Config{}, zap.NewNop()), Tasks: tasks}}
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "9", TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: mintForScope(t, m, "web:read"), Args: fetchArgs(t),
+	})
+	if status.Code(err) != codes.PermissionDenied || len(base.incrementCosts) != 1 || base.incrementCosts[0] != -1 {
+		t.Fatalf("err=%v increments=%v, want PermissionDenied and one release of -1", err, base.incrementCosts)
+	}
 }

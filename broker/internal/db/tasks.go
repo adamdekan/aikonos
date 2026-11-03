@@ -292,27 +292,65 @@ func (r *TaskRepo) Transition(ctx context.Context, tenantID, taskID string, from
 	}
 
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
-		tag, err := conn.Exec(ctx, `
-		UPDATE tasks SET state = $1
-		WHERE task_id = $2 AND state = $3`,
-			to, taskID, from,
-		)
-		if err != nil {
-			return fmt.Errorf("update state: %w", err)
+		if err := transitionExec(ctx, conn, taskID, from, to); err != nil {
+			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("state transition failed: task %s was not in state %s", taskID, from)
-		}
-
-		r.logger.Info("task state transition",
-			zap.String("task_id", taskID),
-			zap.String("from", string(from)),
-			zap.String("to", string(to)),
-		)
-		if r.recorder != nil {
-			r.recorder.RecordTransition(ctx, string(from), string(to), tenantID)
-		}
+		r.transitioned(ctx, tenantID, taskID, from, to)
 		return nil
+	})
+}
+
+// transitionExec is Transition's guarded UPDATE, runnable on a conn or inside
+// a caller's tx (which then calls transitioned after commit).
+func transitionExec(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, taskID string, from, to TaskState) error {
+	tag, err := q.Exec(ctx, `UPDATE tasks SET state = $1 WHERE task_id = $2 AND state = $3`, to, taskID, from)
+	if err != nil {
+		return fmt.Errorf("update state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("state transition failed: task %s was not in state %s", taskID, from)
+	}
+	return nil
+}
+
+// transitioned logs and records a committed transition.
+func (r *TaskRepo) transitioned(ctx context.Context, tenantID, taskID string, from, to TaskState) {
+	r.logger.Info("task state transition",
+		zap.String("task_id", taskID),
+		zap.String("from", string(from)),
+		zap.String("to", string(to)),
+	)
+	if r.recorder != nil {
+		r.recorder.RecordTransition(ctx, string(from), string(to), tenantID)
+	}
+}
+
+// ReserveCost atomically adds the plan step's estimated_cost (at least 1) to
+// cost_consumed only while the result stays within cost_budget, so parallel
+// calls cannot all pass a stale pre-check. It returns the units reserved, or
+// ErrBudgetExceeded (errors.Is) when they would not fit; the caller trues up
+// with IncrementCost(actual-units) after the call, or releases with -units.
+func (r *TaskRepo) ReserveCost(ctx context.Context, tenantID, taskID string, seq int32) (int64, error) {
+	return withConn(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (int64, error) {
+		var units int64
+		err := conn.QueryRow(ctx, `
+		WITH e AS (
+			SELECT GREATEST(COALESCE(MAX(estimated_cost), 0), 1) AS u
+			FROM plan_steps WHERE task_id = $1 AND seq = $2
+		)
+		UPDATE tasks SET cost_consumed = cost_consumed + e.u
+		FROM e
+		WHERE task_id = $1 AND cost_consumed + e.u <= cost_budget
+		RETURNING e.u`, taskID, seq).Scan(&units)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("cost budget exceeded: %w", ErrBudgetExceeded)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("reserve cost: %w", err)
+		}
+		return units, nil
 	})
 }
 

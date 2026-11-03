@@ -325,6 +325,45 @@ test("a denial cast elsewhere (Inbox) ends the wait with a refusal", async () =>
   assert.deepEqual(decision, { allow: false, reason: "approval declined" });
 });
 
+test("a poll refused for an expired owner grant re-mints it and still sees the decision", async () => {
+  const south = makeSouth(needsHumanPlan(), [gatewayApproval()]);
+  const real = south.getGatewayApproval;
+  let n = 0;
+  south.getGatewayApproval = (...args: unknown[]) => {
+    const req = args[0] as { ownerGrant: string };
+    if (n > 0 && req.ownerGrant === "old") return Promise.reject(Object.assign(new Error("invalid owner grant: expired"), { code: 7 }));
+    return n++ === 0 ? real(...args) : Promise.resolve(gatewayApproval({ status: TaskStatus.APPROVED, capabilityTokenIds: { 1: "tok" } }));
+  };
+  const north = Object.assign(makeNorth(), { mintSessionGrant: () => Promise.resolve({ ownerGrant: "fresh" }) });
+  const neverAnswers = (_i: unknown, decided?: AbortSignal) =>
+    new Promise<boolean>((resolve) => decided?.addEventListener("abort", () => resolve(false)));
+  const bridge = new GovernanceBridge(cfg, makeClients(north as never, south), { ...southIdentity, token: "bearer", ownerGrant: "fresh" }, neverAnswers, log);
+  bridge.approvalPollMs = 1;
+  (bridge as unknown as { identity: { ownerGrant: string } }).identity.ownerGrant = "old";
+
+  assert.equal((await bridge.gate("call-expired", "web_fetch", { url: "https://example.com" })).allow, true);
+});
+
+test("a poll denied even with a fresh owner grant re-mints once, not every tick", async () => {
+  const south = makeSouth(needsHumanPlan(), [gatewayApproval()]);
+  const real = south.getGatewayApproval;
+  let polls = 0;
+  south.getGatewayApproval = (...args: unknown[]) =>
+    polls++ === 0 ? real(...args) : Promise.reject(Object.assign(new Error("not the task owner"), { code: 7 }));
+  let mints = 0;
+  const north = Object.assign(makeNorth(), { mintSessionGrant: () => Promise.resolve({ ownerGrant: `g${++mints}` }) });
+  const neverAnswers = (_i: unknown, decided?: AbortSignal) =>
+    new Promise<boolean>((resolve) => decided?.addEventListener("abort", () => resolve(false)));
+  const bridge = new GovernanceBridge(cfg, makeClients(north as never, south), { ...southIdentity, token: "bearer", ownerGrant: "g0" }, neverAnswers, log);
+  bridge.approvalPollMs = 1;
+
+  const pending = bridge.gate("call-denied", "web_fetch", { url: "https://example.com" });
+  while (polls < 6) await new Promise((r) => setTimeout(r, 2));
+  bridge.close();
+  await pending;
+  assert.equal(mints, 1);
+});
+
 test("closing the run's bridge ends a pending wait", async () => {
   const south = makeSouth(needsHumanPlan(), [gatewayApproval({ ownerMayApprove: false })]);
   const bridge = new GovernanceBridge(cfg, makeClients(makeNorth(), south), { ...southIdentity }, async () => true, log);

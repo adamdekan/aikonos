@@ -1941,6 +1941,9 @@ message CreateGatewayTaskRequest {
 message GetGatewayApprovalRequest {
   string tenant_id = 1;
   string task_id   = 2;
+  // The session's owner grant; its owner must own the task (it gates token
+  // minting). Required outside dev mode.
+  string owner_grant = 3;
 }
 
 message GatewayApproval {

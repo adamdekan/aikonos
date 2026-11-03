@@ -38,6 +38,7 @@ type fakeInvokeToolTaskStore struct {
 	getErr         error
 	incrementCosts []int64
 	incrementErr   error
+	reserveErr     error
 	transitions    [][2]db.TaskState
 	transErr       error
 }
@@ -69,6 +70,10 @@ func (f *fakeInvokeToolTaskStore) Get(_ context.Context, _, _ string) (*db.Task,
 func (f *fakeInvokeToolTaskStore) IncrementCost(_ context.Context, _, _ string, units int64) error {
 	f.incrementCosts = append(f.incrementCosts, units)
 	return f.incrementErr
+}
+
+func (f *fakeInvokeToolTaskStore) ReserveCost(_ context.Context, _, _ string, _ int32) (int64, error) {
+	return 1, f.reserveErr
 }
 
 // fakeTaskMetrics records RecordToolInvokeDuration calls for F23 assertions.
@@ -156,13 +161,39 @@ func TestInvokeTool_PostCallIncrementsCost(t *testing.T) {
 	if !resp.Success {
 		t.Fatalf("expected success, got error %q", resp.Error)
 	}
-	if len(tasks.incrementCosts) != 1 || tasks.incrementCosts[0] != 7 {
-		t.Fatalf("expected IncrementCost(7) once, got %v", tasks.incrementCosts)
+	if len(tasks.incrementCosts) != 1 || tasks.incrementCosts[0] != 6 {
+		t.Fatalf("expected IncrementCost(7-1 reserved) once, got %v", tasks.incrementCosts)
 	}
 }
 
-// TestInvokeTool_ZeroCostCallSkipsIncrement verifies a zero-cost call does not
-// call IncrementCost (no DB write).
+// A call that passes the stale pre-gate read but loses the atomic reservation
+// (a parallel call used the last budget) is refused before the tool runs.
+func TestInvokeTool_ReservationRefusedWhenBudgetFull(t *testing.T) {
+	m, err := capability.GenerateMinter()
+	if err != nil {
+		t.Fatalf("GenerateMinter: %v", err)
+	}
+	proxy := toolproxy.New(toolproxy.Config{}, zap.NewNop())
+	ran := false
+	proxy.Register("web.fetch", func(_ context.Context, req toolproxy.Request) (map[string]any, int64, error) {
+		ran = true
+		return map[string]any{"status_code": 200}, 1, nil
+	})
+	tasks := &fakeInvokeToolTaskStore{task: &db.Task{State: db.TaskStateExecuting, CostBudget: 1, CostConsumed: 0}, reserveErr: db.ErrBudgetExceeded}
+	svc := &SandboxService{deps: Deps{GatewaySpiffeID: testGWSpiffeID, Logger: zap.NewNop(), Capability: m, ToolProxy: proxy, Tasks: tasks}}
+
+	tok := mintForScope(t, m, "web:read")
+	args, _ := structpb.NewStruct(map[string]any{"url": "https://example.com"})
+	_, err = svc.InvokeTool(asGateway(context.Background()), &brokerv1.InvokeToolRequest{
+		StepId: "1", TaskId: "task-1", ToolId: "web.fetch", CapabilityToken: tok, Args: args,
+	})
+	if status.Code(err) != codes.ResourceExhausted || ran {
+		t.Fatalf("err=%v ran=%v, want ResourceExhausted and no tool run", err, ran)
+	}
+}
+
+// TestInvokeTool_ZeroCostCallSkipsIncrement verifies a zero-cost call only
+// releases its reservation.
 func TestInvokeTool_ZeroCostCallSkipsIncrement(t *testing.T) {
 	m, err := capability.GenerateMinter()
 	if err != nil {
@@ -183,8 +214,8 @@ func TestInvokeTool_ZeroCostCallSkipsIncrement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InvokeTool: %v", err)
 	}
-	if len(tasks.incrementCosts) != 0 {
-		t.Errorf("zero-cost call must not call IncrementCost, got %v", tasks.incrementCosts)
+	if len(tasks.incrementCosts) != 1 || tasks.incrementCosts[0] != -1 {
+		t.Errorf("zero-cost call must release the reservation (IncrementCost(-1)), got %v", tasks.incrementCosts)
 	}
 }
 
@@ -607,8 +638,8 @@ func TestInvokeTool_InvalidUTF8ResultIsToolFailureNotInternal(t *testing.T) {
 	// The tool already ran: cost must still be recorded and the tool.invoked
 	// audit event must still fire (the encode failure is a serialization-layer
 	// failure, not a reason to skip the side effects of a completed call).
-	if len(tasks.incrementCosts) != 1 || tasks.incrementCosts[0] != 5 {
-		t.Errorf("expected IncrementCost(5) once despite the encode failure, got %v", tasks.incrementCosts)
+	if len(tasks.incrementCosts) != 1 || tasks.incrementCosts[0] != 4 {
+		t.Errorf("expected IncrementCost(5-1 reserved) once despite the encode failure, got %v", tasks.incrementCosts)
 	}
 	var invoked bool
 	for _, ev := range aud.events {

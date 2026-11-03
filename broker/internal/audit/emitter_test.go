@@ -144,7 +144,7 @@ func TestResumeTail_OutOfOrderUploads(t *testing.T) {
 	put("t1/2026/02/28/old.json", evs[0], -time.Hour)
 	store.getErrs = map[string]error{"t1/2026/02/28/old.json": errors.New("must not be read")}
 
-	got, ok := resumeTail(context.Background(), store, "t1/2026/03/01/c.json")
+	got, ok, _ := resumeTail(context.Background(), store, "t1/2026/03/01/c.json")
 	if !ok || got != hashes[3] {
 		t.Fatalf("resumeTail = %q,%v; want true tail %q (newest-by-LastModified is %q)", got, ok, hashes[3], hashes[2])
 	}
@@ -153,14 +153,26 @@ func TestResumeTail_OutOfOrderUploads(t *testing.T) {
 func TestResumeTail_SingleObject(t *testing.T) {
 	evs, hashes := chainOf(t, "t1", 1)
 	store := &fakeStore{objects: map[string][]byte{"t1/2026/03/01/a.json": mustMarshalEvent(evs[0])}}
-	got, ok := resumeTail(context.Background(), store, "t1/2026/03/01/a.json")
+	got, ok, _ := resumeTail(context.Background(), store, "t1/2026/03/01/a.json")
 	if !ok || got != hashes[0] {
 		t.Fatalf("resumeTail = %q,%v; want %q", got, ok, hashes[0])
 	}
 }
 
+// A get failure must surface as an error, not a fallback that picks a wrong head.
+func TestResumeTail_GetErrorIsError(t *testing.T) {
+	evs, _ := chainOf(t, "t1", 1)
+	store := &fakeStore{
+		objects: map[string][]byte{"t1/2026/03/01/a.json": mustMarshalEvent(evs[0])},
+		getErrs: map[string]error{"t1/2026/03/01/a.json": errors.New("boom")},
+	}
+	if _, _, err := resumeTail(context.Background(), store, "t1/2026/03/01/a.json"); err == nil {
+		t.Fatal("get failure must be returned as an error")
+	}
+}
+
 func TestResumeTail_EmptyStore(t *testing.T) {
-	if _, ok := resumeTail(context.Background(), &fakeStore{objects: map[string][]byte{}}, "t1/2026/03/01/a.json"); ok {
+	if _, ok, _ := resumeTail(context.Background(), &fakeStore{objects: map[string][]byte{}}, "t1/2026/03/01/a.json"); ok {
 		t.Fatal("empty store must not resolve a tail")
 	}
 }

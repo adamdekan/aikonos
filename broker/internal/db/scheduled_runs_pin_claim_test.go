@@ -294,3 +294,80 @@ func TestWorkflowRepo_PublishRepinsOwnerSchedules(t *testing.T) {
 		t.Errorf("other user's schedule: reason %q, want workflow_changed", reasons[other])
 	}
 }
+
+// Finding 2: Reschedule restores a claimed one-off's fire time, but never
+// revives a run the owner paused in the meantime.
+func TestScheduledRun_RescheduleOnlyRestoresActiveClaimedRun(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	repo := NewScheduledRunRepo(pool, zap.NewNop())
+	tenant := uuid.New()
+	past := time.Now().UTC().Add(-time.Minute)
+	retryAt := time.Now().UTC().Add(30 * time.Second).Truncate(time.Microsecond)
+
+	mk := func() uuid.UUID {
+		id := uuid.New()
+		if err := repo.Create(ctx, &ScheduledRun{
+			ScheduledRunID: id, TenantID: tenant, OwnerUserID: "alice", Prompt: "p",
+			Kind: ScheduleKindOnce, NextFireAt: &past, ApprovedTools: []string{}, CreatedBy: "alice",
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return id
+	}
+	kept, paused := mk(), mk()
+	if _, err := repo.ClaimDue(ctx, tenant.String(), time.Now().UTC(), 10, false); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := repo.SetState(ctx, tenant.String(), paused.String(), ScheduledRunPaused, nil); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	for _, id := range []uuid.UUID{kept, paused} {
+		if err := repo.Reschedule(ctx, tenant.String(), id.String(), retryAt); err != nil {
+			t.Fatalf("reschedule: %v", err)
+		}
+	}
+	if r, _ := repo.Get(ctx, tenant.String(), kept.String()); r.State != ScheduledRunActive || r.NextFireAt == nil || !r.NextFireAt.Equal(retryAt) {
+		t.Fatalf("claimed one-off must be re-armed at %v, got %+v", retryAt, r)
+	}
+	if r, _ := repo.Get(ctx, tenant.String(), paused.String()); r.State != ScheduledRunPaused || r.NextFireAt != nil {
+		t.Fatalf("a paused run must stay paused, got %+v", r)
+	}
+}
+
+// Finding 2: a one-off handed to a gateway that never reported (crash) is
+// failed visibly once its claim is stale, instead of staying ACTIVE forever.
+func TestScheduledRun_ClaimFailsAbandonedOneOff(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	repo := NewScheduledRunRepo(pool, zap.NewNop())
+	tenant := uuid.New()
+	past := time.Now().UTC().Add(-time.Minute)
+	id := uuid.New()
+	if err := repo.Create(ctx, &ScheduledRun{
+		ScheduledRunID: id, TenantID: tenant, OwnerUserID: "alice", Prompt: "p",
+		Kind: ScheduleKindOnce, NextFireAt: &past, ApprovedTools: []string{}, CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := repo.ClaimDue(ctx, tenant.String(), time.Now().UTC(), 10, false); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := repo.MarkClaimed(ctx, tenant.String(), id.String()); err != nil {
+		t.Fatalf("mark claimed: %v", err)
+	}
+	// Inside the TTL the outstanding claim is left alone.
+	if _, err := repo.ClaimDue(ctx, tenant.String(), time.Now().UTC(), 10, false); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r, _ := repo.Get(ctx, tenant.String(), id.String()); r.State != ScheduledRunActive {
+		t.Fatalf("an in-flight one-off must stay ACTIVE, got %+v", r)
+	}
+	// Past the TTL with no report, it is abandoned.
+	if _, err := repo.ClaimDue(ctx, tenant.String(), time.Now().UTC().Add(scheduledRunClaimTTL+time.Minute), 10, false); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r, _ := repo.Get(ctx, tenant.String(), id.String()); r.State != ScheduledRunFailed || r.LastStatus != "abandoned" {
+		t.Fatalf("abandoned one-off must be FAILED/abandoned, got %+v", r)
+	}
+}

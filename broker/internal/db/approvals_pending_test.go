@@ -22,6 +22,12 @@ func newApprovalFixture(t *testing.T, approverSet []string, requiresN int16, exp
 	if err := repo.Create(ctx, &Task{TaskID: task, TenantID: tenant, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 10}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	for _, st := range []TaskState{TaskStatePlanning, TaskStateValidating, TaskStateAwaitingApproval} {
+		prev := map[TaskState]TaskState{TaskStatePlanning: TaskStateCreated, TaskStateValidating: TaskStatePlanning, TaskStateAwaitingApproval: TaskStateValidating}[st]
+		if err := repo.Transition(ctx, tenant.String(), task.String(), prev, st); err != nil {
+			t.Fatalf("Transition to %s: %v", st, err)
+		}
+	}
 	id, err := repo.CreateApprovalRequest(ctx, &ApprovalRequest{
 		TaskID: task, TenantID: tenant, RequesterID: "alice@example.com",
 		Summary: map[string]any{"step_up": true}, ApproverSet: approverSet, RequiresN: requiresN, ExpiresAt: expiresAt,
@@ -36,7 +42,7 @@ func newApprovalFixture(t *testing.T, approverSet []string, requiresN int16, exp
 // approvers and never to an outsider; once an approver has voted it drops off
 // their list, and the second approver completes the gate.
 func TestListPendingApprovalsFor_TwoApproversOneOutsider(t *testing.T) {
-	repo, tenant, _, id := newApprovalFixture(t, []string{"bob@example.com", "carol@example.com"}, 2, time.Now().Add(time.Hour))
+	repo, tenant, task, id := newApprovalFixture(t, []string{"bob@example.com", "carol@example.com"}, 2, time.Now().Add(time.Hour))
 	ctx := context.Background()
 
 	count := func(user string) int {
@@ -68,6 +74,10 @@ func TestListPendingApprovalsFor_TwoApproversOneOutsider(t *testing.T) {
 	}
 	if count("carol@example.com") != 0 {
 		t.Fatal("a resolved gate must leave every list")
+	}
+	// Finding 8: the resolving vote moved the task in its own transaction.
+	if got, err := repo.Get(ctx, tenant, task); err != nil || got.State != TaskStateApproved {
+		t.Fatalf("task after the resolving vote: %+v err=%v, want APPROVED", got, err)
 	}
 	// F174: a late vote on the resolved gate is not a resolution of its own,
 	// and an outsider is refused as an outsider, not told it was resolved.

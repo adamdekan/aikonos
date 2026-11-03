@@ -299,6 +299,16 @@ func (d Deps) accumulateLlmSpend(ctx context.Context, req *brokerv1.EmitLlmUsage
 	periodStart := db.SpendPeriodStart(time.Now())
 	if err := d.SpendCounters.Accumulate(ctx, req.TenantId, req.UserId, req.AgentId, periodStart, costMicros, req.TokensIn, req.TokensOut); err != nil {
 		d.Logger.Warn("accumulateLlmSpend: accumulate failed", zap.Error(err))
+		return
+	}
+	// Drop the cached rollups this spend counts toward so the next
+	// CheckRateLimit re-reads it instead of allowing calls for up to the TTL.
+	if d.SpendCache != nil {
+		d.SpendCache.invalidate(
+			spendCacheKey(req.TenantId, db.SpendCapScopeOrg, "", periodStart),
+			spendCacheKey(req.TenantId, db.SpendCapScopeUser, req.UserId, periodStart),
+			spendCacheKey(req.TenantId, db.SpendCapScopeAgent, req.AgentId, periodStart),
+		)
 	}
 }
 

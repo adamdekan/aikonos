@@ -737,6 +737,9 @@ func (s *SandboxService) requireGatewayPeer(ctx context.Context) error {
 	return nil
 }
 
+// onceRetryBackoff is how soon a ONCE run skipped on a transient error is due again.
+const onceRetryBackoff = 30 * time.Second
+
 // ClaimDueScheduledRuns atomically claims up to limit due runs for the tenant
 // and returns each with a broker-minted HMAC owner grant; restricted to the
 // agent-gateway SPIFFE identity (any trust-domain peer in dev when GatewaySpiffeID is unset).
@@ -773,6 +776,24 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 	out := make([]*brokerv1.DueRun, 0, len(due))
 	traceID := span.SpanContext().TraceID().String()
 	skillByOwner := map[string]bool{} // one FGA check per owner per claim batch
+	// ClaimDue already spent a ONCE run's only slot (next_fire_at NULL): put it
+	// back for a transient skip (empty reason), park it for a deliberate one,
+	// or it is lost.
+	settleOnce := func(r *db.ScheduledRun, parkReason string) {
+		if r.Kind != db.ScheduleKindOnce {
+			return
+		}
+		id := r.ScheduledRunID.String()
+		var e error
+		if parkReason == "" {
+			e = s.deps.Scheduled.Reschedule(ctx, req.TenantId, id, now.Add(onceRetryBackoff))
+		} else {
+			e = s.deps.Scheduled.Park(ctx, req.TenantId, id, parkReason)
+		}
+		if e != nil {
+			s.deps.Logger.Warn("ClaimDueScheduledRuns: one-off run not put back", zap.String("run_id", id), zap.String("park_reason", parkReason), zap.Error(e))
+		}
+	}
 	for _, r := range due {
 		obo := runOBO(r)
 		// ClaimDue parked a revoked/expired delegation, a blocked or
@@ -792,6 +813,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			if serr != nil {
 				s.deps.Logger.Warn("ClaimDueScheduledRuns: scheduler skill check failed, skipping run",
 					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(serr))
+				settleOnce(r, "")
 				continue
 			}
 			granted = ok
@@ -814,6 +836,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 				// The row is already claimed; skip this fire like a mint failure.
 				s.deps.Logger.Warn("ClaimDueScheduledRuns: default agent unavailable, skipping run",
 					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(aerr))
+				settleOnce(r, "")
 				continue
 			}
 			if reason != "" {
@@ -822,6 +845,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 				}
 				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 					"aikonos.scheduler.run.skipped."+reason, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				settleOnce(r, reason)
 				continue
 			}
 			actor = a.ID.String()
@@ -832,6 +856,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			if !mayOperateActor(ctx, s.deps, r.OwnerUserID, actor) {
 				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 					"aikonos.scheduler.run.skipped.actor_not_permitted", r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				settleOnce(r, "actor_not_permitted")
 				continue
 			}
 			// AG-03: a suspended (or staged) actor skips this fire and keeps
@@ -840,11 +865,13 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 			if rerr != nil {
 				s.deps.Logger.Warn("ClaimDueScheduledRuns: agent state read failed, skipping run",
 					zap.String("run_id", r.ScheduledRunID.String()), zap.Error(rerr))
+				settleOnce(r, "")
 				continue
 			}
 			if refusal != "" {
 				schedulerAudit(s.deps, ctx, traceID, req.TenantId, r.OwnerUserID,
 					"aikonos.scheduler.run.skipped."+refusal, r.ScheduledRunID.String(), auditv1.PolicyDecision_DENY, obo)
+				settleOnce(r, refusal)
 				continue
 			}
 		}
@@ -859,6 +886,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 				zap.String("run_id", r.ScheduledRunID.String()),
 				zap.Error(mintErr),
 			)
+			settleOnce(r, "")
 			continue
 		}
 		// F172: stamp the claim only on a run actually handed out, so none of
@@ -866,6 +894,7 @@ func (s *SandboxService) ClaimDueScheduledRuns(ctx context.Context, req *brokerv
 		if cerr := s.deps.Scheduled.MarkClaimed(ctx, req.TenantId, r.ScheduledRunID.String()); cerr != nil {
 			s.deps.Logger.Warn("ClaimDueScheduledRuns: mark claimed failed, skipping run",
 				zap.String("run_id", r.ScheduledRunID.String()), zap.Error(cerr))
+			settleOnce(r, "")
 			continue
 		}
 		due := &brokerv1.DueRun{

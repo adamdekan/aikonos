@@ -46,10 +46,6 @@ func (f *fakeApprovalStore) ResolveApproval(_ context.Context, _, _, _ string, _
 	return "", false, nil
 }
 
-func (f *fakeApprovalStore) Transition(_ context.Context, _, _ string, _, _ db.TaskState) error {
-	return nil
-}
-
 func (f *fakeApprovalStore) Get(_ context.Context, _, _ string) (*db.Task, error) {
 	return nil, nil
 }

@@ -89,73 +89,117 @@ type ApprovalRequest struct {
 
 // InsertPlanSteps persists all steps of a validated plan in one transaction.
 // Replaces any prior steps for the same (task, seq) via upsert so a replan
-// overwrites the previous attempt's decisions.
-func (r *TaskRepo) InsertPlanSteps(ctx context.Context, tenantID string, steps []PlanStepRecord) error {
-	if len(steps) == 0 {
+// overwrites the previous attempt's decisions. It locks the task row and
+// refuses unless the task is VALIDATING; a non-empty `to` moves the task out
+// of VALIDATING in the same tx, so concurrent plans cannot both store steps
+// and only the plan whose steps are stored can win the transition.
+func (r *TaskRepo) InsertPlanSteps(ctx context.Context, tenantID, taskID string, steps []PlanStepRecord, to TaskState) error {
+	if len(steps) == 0 && to == "" {
 		return nil
 	}
+	if to != "" && !isValidTransition(TaskStateValidating, to) {
+		return fmt.Errorf("invalid state transition: %s → %s", TaskStateValidating, to)
+	}
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
-		batch := &pgx.Batch{}
-		for _, s := range steps {
-			var argsJSON []byte
-			if s.Args != nil {
-				if b, mErr := json.Marshal(s.Args); mErr == nil {
-					argsJSON = b
-				}
-			}
-			var traceJSON []byte
-			if s.DecisionTrace != nil {
-				if b, mErr := json.Marshal(s.DecisionTrace); mErr == nil {
-					traceJSON = b
-				}
-			}
-			batch.Queue(`
-			INSERT INTO plan_steps (
-				task_id, tenant_id, seq, tool_id, args_hash,
-				effect_class, justification, estimated_cost,
-				policy_decision, policy_rule_id, state, args_json,
-				policy_reason, decision_trace
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-			ON CONFLICT (task_id, seq) DO UPDATE SET
-				tool_id = EXCLUDED.tool_id,
-				args_hash = EXCLUDED.args_hash,
-				effect_class = EXCLUDED.effect_class,
-				justification = EXCLUDED.justification,
-				estimated_cost = EXCLUDED.estimated_cost,
-				policy_decision = EXCLUDED.policy_decision,
-				policy_rule_id = EXCLUDED.policy_rule_id,
-				state = EXCLUDED.state,
-				args_json = EXCLUDED.args_json,
-				policy_reason = EXCLUDED.policy_reason,
-				decision_trace = EXCLUDED.decision_trace,
-				consumed_at = NULL`,
-				s.TaskID, s.TenantID, s.Seq, s.ToolID, s.ArgsHash,
-				s.EffectClass, s.Justification, s.EstimatedCost,
-				string(s.PolicyDecision), s.PolicyRuleID, stepStateFor(s.PolicyDecision), argsJSON,
-				s.PolicyReason, traceJSON,
-			)
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
 		}
+		defer tx.Rollback(ctx)
 
-		// A replan drops the earlier plan's other seqs, so InvokeTool's step
-		// binding (ClaimPlanStep) can only match a step of the current plan.
-		seqs := make([]int32, len(steps))
-		for i, s := range steps {
-			seqs[i] = s.Seq
+		// The guarded UPDATE (or, with no target state, SELECT ... FOR UPDATE)
+		// takes the row lock before any step is written.
+		if to != "" {
+			if err := transitionExec(ctx, tx, taskID, TaskStateValidating, to); err != nil {
+				return err
+			}
+		} else if err := tx.QueryRow(ctx, `SELECT 1 FROM tasks WHERE task_id = $1 AND state = $2 FOR UPDATE`,
+			taskID, TaskStateValidating).Scan(new(int)); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("state transition failed: task %s was not in state %s", taskID, TaskStateValidating)
+			}
+			return fmt.Errorf("lock task: %w", err)
 		}
-		batch.Queue(`DELETE FROM plan_steps WHERE task_id = $1 AND seq <> ALL($2::int[])`, steps[0].TaskID, seqs)
-
-		br := conn.SendBatch(ctx, batch)
-		defer br.Close()
-		for range steps {
-			if _, err := br.Exec(); err != nil {
-				return fmt.Errorf("insert plan step: %w", err)
+		if len(steps) > 0 {
+			if err := insertPlanStepBatch(ctx, tx, taskID, steps); err != nil {
+				return err
 			}
 		}
-		if _, err := br.Exec(); err != nil {
-			return fmt.Errorf("drop stale plan steps: %w", err)
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+		if to != "" {
+			r.transitioned(ctx, tenantID, taskID, TaskStateValidating, to)
 		}
 		return nil
 	})
+}
+
+// insertPlanStepBatch upserts steps and drops the task's other seqs.
+func insertPlanStepBatch(ctx context.Context, tx pgx.Tx, taskID string, steps []PlanStepRecord) error {
+	batch := &pgx.Batch{}
+	for _, s := range steps {
+		var argsJSON []byte
+		if s.Args != nil {
+			if b, mErr := json.Marshal(s.Args); mErr == nil {
+				argsJSON = b
+			}
+		}
+		var traceJSON []byte
+		if s.DecisionTrace != nil {
+			if b, mErr := json.Marshal(s.DecisionTrace); mErr == nil {
+				traceJSON = b
+			}
+		}
+		batch.Queue(`
+		INSERT INTO plan_steps (
+			task_id, tenant_id, seq, tool_id, args_hash,
+			effect_class, justification, estimated_cost,
+			policy_decision, policy_rule_id, state, args_json,
+			policy_reason, decision_trace
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		ON CONFLICT (task_id, seq) DO UPDATE SET
+			tool_id = EXCLUDED.tool_id,
+			args_hash = EXCLUDED.args_hash,
+			effect_class = EXCLUDED.effect_class,
+			justification = EXCLUDED.justification,
+			estimated_cost = EXCLUDED.estimated_cost,
+			policy_decision = EXCLUDED.policy_decision,
+			policy_rule_id = EXCLUDED.policy_rule_id,
+			state = EXCLUDED.state,
+			args_json = EXCLUDED.args_json,
+			policy_reason = EXCLUDED.policy_reason,
+			decision_trace = EXCLUDED.decision_trace`,
+			s.TaskID, s.TenantID, s.Seq, s.ToolID, s.ArgsHash,
+			s.EffectClass, s.Justification, s.EstimatedCost,
+			string(s.PolicyDecision), s.PolicyRuleID, stepStateFor(s.PolicyDecision), argsJSON,
+			s.PolicyReason, traceJSON,
+		)
+	}
+
+	// A replan drops the earlier plan's other seqs, so InvokeTool's step
+	// binding (ClaimPlanStep) can only match a step of the current plan.
+	seqs := make([]int32, len(steps))
+	for i, s := range steps {
+		seqs[i] = s.Seq
+	}
+	batch.Queue(`DELETE FROM plan_steps WHERE task_id = $1 AND seq <> ALL($2::int[])`, taskID, seqs)
+
+	br := tx.SendBatch(ctx, batch)
+	for range steps {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
+			return fmt.Errorf("insert plan step: %w", err)
+		}
+	}
+	if _, err := br.Exec(); err != nil {
+		br.Close()
+		return fmt.Errorf("drop stale plan steps: %w", err)
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("close plan step batch: %w", err)
+	}
+	return nil
 }
 
 // PlanStepClaim is what ClaimPlanStep found for (task, seq): the stored step
@@ -547,7 +591,8 @@ func (r *TaskRepo) WithdrawApproval(ctx context.Context, tenantID, taskID, by st
 // vote from the same user does not double-count. A row past expires_at reads
 // as missing (pgx.ErrNoRows), so an expired gate cannot be voted on (M-09); a
 // gate another vote already resolved returns ErrApprovalAlreadyResolved, after
-// the approver-set check so a non-voter learns nothing.
+// the approver-set check so a non-voter learns nothing. A resolving vote also
+// moves the task AWAITING_APPROVAL -> APPROVED/DENIED in the same transaction.
 func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, approver string, approved bool, reason string) (ApprovalState, bool, error) {
 	return withConn2(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) (ApprovalState, bool, error) {
 		tx, err := conn.Begin(ctx)
@@ -557,6 +602,7 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 		defer tx.Rollback(ctx)
 
 		var (
+			taskID      string
 			requiresN   int16
 			requester   string
 			approverSet []string
@@ -565,11 +611,11 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 			state       ApprovalState
 		)
 		err = tx.QueryRow(ctx, `
-		SELECT requires_n, requester_id, approver_set, approved_by, denied_by, state
+		SELECT task_id::text, requires_n, requester_id, approver_set, approved_by, denied_by, state
 		FROM approval_requests
 		WHERE approval_id = $1 AND expires_at > NOW()
 		FOR UPDATE`, approvalID,
-		).Scan(&requiresN, &requester, &approverSet, &approvedBy, &deniedBy, &state)
+		).Scan(&taskID, &requiresN, &requester, &approverSet, &approvedBy, &deniedBy, &state)
 		if err != nil {
 			return "", false, err
 		}
@@ -617,8 +663,22 @@ func (r *TaskRepo) ResolveApproval(ctx context.Context, tenantID, approvalID, ap
 		if err != nil {
 			return "", false, fmt.Errorf("update approval: %w", err)
 		}
+		// Same tx as the decision, so a crash cannot leave an APPROVED gate on a
+		// task stuck in AWAITING_APPROVAL (nothing would ever retry it).
+		to := TaskStateApproved
+		if newState == ApprovalDenied {
+			to = TaskStateDenied
+		}
+		if resolved {
+			if err := transitionExec(ctx, tx, taskID, TaskStateAwaitingApproval, to); err != nil {
+				return "", false, err
+			}
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return "", false, fmt.Errorf("commit: %w", err)
+		}
+		if resolved {
+			r.transitioned(ctx, tenantID, taskID, TaskStateAwaitingApproval, to)
 		}
 		return newState, resolved, nil
 	})

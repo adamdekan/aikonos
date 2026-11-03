@@ -493,9 +493,13 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to acquire dedicated connection for singleton lock", zap.Error(err))
 	}
-	if err := acquireSingletonLock(ctx, &pgSingletonLocker{conn: singletonConn}, singletonLockKey); err != nil {
+	singletonLocker := &pgSingletonLocker{conn: singletonConn}
+	if err := acquireSingletonLock(ctx, singletonLocker, singletonLockKey); err != nil {
 		log.Fatal("Singleton lock acquisition failed", zap.Error(err))
 	}
+	go watchSingletonLock(ctx, singletonLocker, singletonPingInterval, singletonPingTimeout, func(err error) {
+		log.Fatal("Singleton lock connection lost; exiting so the lock is re-acquired", zap.Error(err))
+	})
 	log.Info("Singleton lock acquired")
 
 	rateLimiter := ratelimit.New(rlHitsCounter)

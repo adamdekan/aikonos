@@ -44,7 +44,6 @@ type Store interface {
 	CreateApprovalRequest(ctx context.Context, ar *db.ApprovalRequest) (uuid.UUID, error)
 	GetPendingApprovalByTask(ctx context.Context, tenantID, taskID string) (*db.ApprovalRequest, error)
 	ResolveApproval(ctx context.Context, tenantID, approvalID, approver string, approved bool, reason string) (db.ApprovalState, bool, error)
-	Transition(ctx context.Context, tenantID, taskID string, from, to db.TaskState) error
 	Get(ctx context.Context, tenantID, taskID string) (*db.Task, error)
 	ListMintableSteps(ctx context.Context, tenantID, taskID string) ([]db.ExecutableStep, error)
 }

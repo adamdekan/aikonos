@@ -89,7 +89,11 @@ func (n *noopTaskStore) IncrementCost(_ context.Context, _, _ string, _ int64) e
 	n.t.Fatalf("SimulatePolicy must not touch the task store: IncrementCost")
 	return nil
 }
-func (n *noopTaskStore) InsertPlanSteps(_ context.Context, _ string, _ []db.PlanStepRecord) error {
+func (n *noopTaskStore) ReserveCost(_ context.Context, _, _ string, _ int32) (int64, error) {
+	n.t.Fatalf("SimulatePolicy must not touch the task store: ReserveCost")
+	return 0, nil
+}
+func (n *noopTaskStore) InsertPlanSteps(_ context.Context, _, _ string, _ []db.PlanStepRecord, _ db.TaskState) error {
 	n.t.Fatalf("SimulatePolicy must not touch the task store: InsertPlanSteps")
 	return nil
 }

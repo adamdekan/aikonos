@@ -100,7 +100,9 @@ func TestLoadChainHeads_SameMillisecondBurstThenRestart(t *testing.T) {
 
 	after, _ := NewEmitter(ctx, Config{SigningKeySource: ks})
 	after.store = store
-	after.loadChainHeads(ctx, zap.NewNop())
+	if err := after.loadChainHeads(ctx, zap.NewNop()); err != nil {
+		t.Fatal(err)
+	}
 	if got := after.lastHash[tenant]; got != tail {
 		t.Fatalf("resumed head = %q, want the true tail %q", got, tail)
 	}
@@ -114,5 +116,20 @@ func TestLoadChainHeads_SameMillisecondBurstThenRestart(t *testing.T) {
 	}
 	if rep := VerifyChainVersioned(ctx, append(evs, next), ks); !rep.OK || rep.Total != n+1 {
 		t.Fatalf("chain after restart: %+v", rep)
+	}
+}
+
+// TestLoadChainHeads_StoreErrorFailsStartup: a listing failure must not leave
+// empty heads (the next event would fork the chain); an empty store is fine.
+func TestLoadChainHeads_StoreErrorFailsStartup(t *testing.T) {
+	ctx := context.Background()
+	e, _ := NewEmitter(ctx, Config{})
+	e.store = &fakeStore{listErr: fmt.Errorf("minio down")}
+	if err := e.loadChainHeads(ctx, zap.NewNop()); err == nil {
+		t.Fatal("want an error when listing tenants fails")
+	}
+	e.store = &fakeStore{}
+	if err := e.loadChainHeads(ctx, zap.NewNop()); err != nil {
+		t.Fatalf("empty store must start clean: %v", err)
 	}
 }

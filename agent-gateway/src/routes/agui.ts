@@ -791,6 +791,38 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // or `out` ever outlived this response object.
     reply.raw.on("drain", () => stream.notifyDrain());
 
+    // Teardown on client disconnect. Listen on reply.raw (the response socket),
+    // NOT req.raw: Fastify's body parser resumes req.raw and Node's Readable
+    // autoDestroy emits its one-shot 'close' ~1-2ms after the body is read —
+    // before this line runs — so a req.raw listener misses that spurious close
+    // AND never sees a genuine later disconnect (the event already fired). The
+    // response socket closes only on real termination (client disconnect, or
+    // finish()'s end() on the normal path). The once-guard makes the
+    // normal-path close a no-op: on a settled run stopHeartbeat/drainForRun/
+    // clearRunContext are no-ops and abortRun sends a stale runId the child
+    // ignores.
+    //
+    // Registered right after hijack: a disconnect during the south awaits below
+    // would otherwise fire 'close' before any listener exists. Every action is
+    // safe before the run context is bound.
+    let torndown = false;
+    reply.raw.on("close", () => {
+      if (torndown) return;
+      torndown = true;
+      stream.stopHeartbeat();
+      approvals.drainForRun(runId, user, false);
+      handle.abortRun(runId);
+      handle.clearRunContext(runId);
+      // CP6: a spawn_subagents fan-out reuses
+      // this chat run's own id, so its branch children live under pool keys
+      // derived from runId (ephemeralKey) — separate ChildSupervisor handles
+      // the parent handle above never reaches. Evicts every in-flight branch
+      // of THIS run only; a sibling run's branches are untouched by
+      // construction of the key match, and another user's run that reuses
+      // this client-chosen runId is untouched by the owner match (F62).
+      supervisor.evictBranchesForRun(runId, "run teardown", { tenantId, userId: user });
+    });
+
     const finish = (err?: string) => {
       if (err) stream.runError(err);
       else stream.runFinished();
@@ -817,13 +849,24 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
     // OPA DENY or capability-scope failures; it only flips NEEDS_HUMAN → allow.
     // A8 / H-06: the org unattended-mode master. Fails closed: an unreadable
     // setting only means this run asks its user, it never breaks the run.
-    const { approver, preApproved } = await selectRunApprover(
-      { south: clients.south, tenantId, log, userId: user, ownerGrant },
-      spec,
-      sessionAgentId,
-      hitl,
-      await unattendedAllowed(clients.south, tenantId, log),
-    );
+    let selected: Awaited<ReturnType<typeof selectRunApprover>>;
+    try {
+      selected = await selectRunApprover(
+        { south: clients.south, tenantId, log, userId: user, ownerGrant },
+        spec,
+        sessionAgentId,
+        hitl,
+        await unattendedAllowed(clients.south, tenantId, log),
+      );
+    } catch (err) {
+      log.error({ err }, "/agui approver selection failed");
+      stream.stopHeartbeat();
+      finish(trimmedErrorMessage(err));
+      return;
+    }
+    // Client left during the awaits: teardown already ran, so start no run.
+    if (torndown) return;
+    const { approver, preApproved } = selected;
 
     // F129: the broker refused this run's user as blocked or revoked mid-run.
     // Stop the child and end the stream with that error instead of letting the
@@ -881,34 +924,6 @@ export function registerAgUiRoutes(app: FastifyInstance, ctx: AgUiCtx): void {
       }
     };
     handle.setRunContext(runId, runIdentity, approver, sessionId, onSubagentEvent);
-
-    // Teardown on client disconnect. Listen on reply.raw (the response socket),
-    // NOT req.raw: Fastify's body parser resumes req.raw and Node's Readable
-    // autoDestroy emits its one-shot 'close' ~1-2ms after the body is read —
-    // before this line runs — so a req.raw listener misses that spurious close
-    // AND never sees a genuine later disconnect (the event already fired). The
-    // response socket closes only on real termination (client disconnect, or
-    // finish()'s end() on the normal path). The once-guard makes the
-    // normal-path close a no-op: on a settled run stopHeartbeat/drainForRun/
-    // clearRunContext are no-ops and abortRun sends a stale runId the child
-    // ignores.
-    let torndown = false;
-    reply.raw.on("close", () => {
-      if (torndown) return;
-      torndown = true;
-      stream.stopHeartbeat();
-      approvals.drainForRun(runId, user, false);
-      handle.abortRun(runId);
-      handle.clearRunContext(runId);
-      // CP6: a spawn_subagents fan-out reuses
-      // this chat run's own id, so its branch children live under pool keys
-      // derived from runId (ephemeralKey) — separate ChildSupervisor handles
-      // the parent handle above never reaches. Evicts every in-flight branch
-      // of THIS run only; a sibling run's branches are untouched by
-      // construction of the key match, and another user's run that reuses
-      // this client-chosen runId is untouched by the owner match (F62).
-      supervisor.evictBranchesForRun(runId, "run teardown", { tenantId, userId: user });
-    });
 
     try {
       stream.runStarted();

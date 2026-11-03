@@ -87,7 +87,9 @@ func TestEmit_FailedWriteReturnsErrorAndLeavesNoHole(t *testing.T) {
 	putBackoff = time.Millisecond
 	defer func() { putBackoff = old }()
 	e.logger = zap.NewNop()
-	e.startSink(ctx, store, 8)
+	if err := e.startSink(ctx, store, 8); err != nil {
+		t.Fatal(err)
+	}
 	defer e.Close()
 
 	if err := e.Emit(ctx, ev("lost", "t1")); err == nil {
@@ -244,7 +246,9 @@ func TestEmit_LandedWriteDespiteErrorLeavesNoFork(t *testing.T) {
 	putBackoff = time.Millisecond
 	defer func() { putBackoff = old }()
 	e.logger = zap.NewNop()
-	e.startSink(ctx, store, 8)
+	if err := e.startSink(ctx, store, 8); err != nil {
+		t.Fatal(err)
+	}
 	defer e.Close()
 
 	if err := e.Emit(ctx, ev("a", "t1")); err != nil {
@@ -274,7 +278,9 @@ func TestEmit_OnlyAllowedRPCEnvelopeSkipsTheWait(t *testing.T) {
 	putBackoff = time.Millisecond
 	defer func() { putBackoff = old }()
 	e.logger = zap.NewNop()
-	e.startSink(ctx, store, 8)
+	if err := e.startSink(ctx, store, 8); err != nil {
+		t.Fatal(err)
+	}
 	defer e.Close()
 
 	for _, tc := range []struct {

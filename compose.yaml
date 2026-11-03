@@ -304,8 +304,8 @@ services:
       - --js
       - --store_dir=/data/jetstream
     ports:
-      - "4222:4222"   # NATS client
-      - "8222:8222"   # NATS monitoring
+      - "127.0.0.1:4222:4222"   # NATS client
+      - "127.0.0.1:8222:8222"   # NATS monitoring
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
       interval: 5s
@@ -1012,9 +1012,9 @@ services:
       # destination stays fixed so the filelog config path never changes.
       - ${AIKONOS_DOCKER_CONTAINERS_DIR:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # Prometheus metrics endpoint (scraped by prometheus service)
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+      - "127.0.0.1:8889:8889"   # Prometheus metrics endpoint (scraped by prometheus service)
     # No healthcheck: the contrib image is distroless (no shell/nc). Nothing
     # depends on the collector's health; it is a sink, not a dependency.
     restart: unless-stopped
@@ -1033,9 +1033,10 @@ services:
     networks: [obs, backend]
     environment:
       GF_SECURITY_ADMIN_USER:     ${GF_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
-      GF_AUTH_ANONYMOUS_ENABLED:  "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set GF_ADMIN_PASSWORD in .env (see deploy/compose/.env.*.example)}
+      # Off: the Postgres datasource reads every tenant's analytics rows, so a
+      # viewer must sign in (docs/17-security-findings.md).
+      GF_AUTH_ANONYMOUS_ENABLED:  "false"
       GF_FEATURE_TOGGLES_ENABLE:  traceqlEditor
       # Read by datasources.yaml via $__env{} — the aikonos_grafana credentials.
       GRAFANA_PG_RO_PASSWORD:     ${AIKONOS_GRAFANA_DB_PASSWORD:-aikonos-grafana-dev}
@@ -1043,7 +1044,7 @@ services:
     volumes:
       - ./deploy/compose/obs/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "3030:3000"   # host:3030 avoids clash with frontend on 3000
+      - "127.0.0.1:3030:3000"   # host:3030 avoids clash with frontend on 3000
     depends_on:
       - loki
       - tempo
@@ -1066,7 +1067,7 @@ services:
     volumes:
       - ./deploy/compose/obs/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
     ports:
-      - "3100:3100"   # Loki HTTP (OTLP ingest + query API)
+      - "127.0.0.1:3100:3100"   # Loki HTTP (OTLP ingest + query API)
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
       interval: 10s
@@ -1085,7 +1086,7 @@ services:
     volumes:
       - ./deploy/compose/obs/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
     ports:
-      - "3200:3200"   # Tempo HTTP query API
+      - "127.0.0.1:3200:3200"   # Tempo HTTP query API
       # 4317/4318 already exposed on otel-collector; Tempo's own OTLP ports
       # are internal-only (collector → tempo on the aikonos network).
     healthcheck:
@@ -1109,7 +1110,7 @@ services:
     volumes:
       - ./deploy/compose/obs/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
     ports:
-      - "9095:9090"   # host:9095 avoids clash with broker's 9090/9091
+      - "127.0.0.1:9095:9090"   # host:9095 avoids clash with broker's 9090/9091
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
       interval: 10s

@@ -545,3 +545,80 @@ func TestReader_Query_OverCapReturnsNewest(t *testing.T) {
 		t.Fatalf("want the two oldest events for the old range, got %v", got)
 	}
 }
+
+// TestReader_Query_PagesPastScanCap: with more events than the scan cap, next
+// cursors must keep reaching older events until the oldest one.
+func TestReader_Query_PagesPastScanCap(t *testing.T) {
+	old := maxScanObjects
+	maxScanObjects = 30
+	defer func() { maxScanObjects = old }()
+
+	const n = 100
+	objects := make(map[string][]byte, n)
+	for i := 0; i < n; i++ {
+		ev := &auditv1.AuditEvent{
+			EventId:    ids_for_test(i),
+			TenantId:   "tenant1",
+			EventType:  "test.event",
+			OccurredAt: timestamppb.New(t0.Add(time.Duration(i) * 6 * time.Hour)),
+		}
+		objects[objectKey(ev)] = mustMarshalEvent(ev)
+	}
+	r := &Reader{store: &fakeStore{objects: objects}, cfg: Config{}, logger: nopLogger()}
+
+	seen, cursor := 0, ""
+	for pages := 0; pages < n; pages++ {
+		events, next, _, err := r.Query(context.Background(), "tenant1", QueryFilter{Limit: 20, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen += len(events)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if seen != n {
+		t.Fatalf("paging saw %d events, want all %d", seen, n)
+	}
+}
+
+// TestReader_Query_SparseFilterPagesPastScanCap: matches only in the oldest
+// events, beyond the scan window, must stay reachable via continuation cursors.
+func TestReader_Query_SparseFilterPagesPastScanCap(t *testing.T) {
+	old := maxScanObjects
+	maxScanObjects = 30
+	defer func() { maxScanObjects = old }()
+
+	const n = 100
+	objects := make(map[string][]byte, n)
+	for i := 0; i < n; i++ {
+		ev := &auditv1.AuditEvent{
+			EventId:    ids_for_test(i),
+			TenantId:   "tenant1",
+			EventType:  "test.event",
+			OccurredAt: timestamppb.New(t0.Add(time.Duration(i) * 6 * time.Hour)),
+		}
+		if i < 10 {
+			ev.EventType = "rare.event"
+		}
+		objects[objectKey(ev)] = mustMarshalEvent(ev)
+	}
+	r := &Reader{store: &fakeStore{objects: objects}, cfg: Config{}, logger: nopLogger()}
+
+	seen, cursor := 0, ""
+	for pages := 0; pages < n; pages++ {
+		events, next, _, err := r.Query(context.Background(), "tenant1", QueryFilter{Limit: 20, EventType: "rare.event", Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen += len(events)
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if seen != 10 {
+		t.Fatalf("paging saw %d rare events, want 10", seen)
+	}
+}

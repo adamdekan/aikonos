@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -18,8 +19,13 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// maxScanObjects is the hard cap on objects scanned in one Query call.
-const maxScanObjects = 5000
+// dayLayout is the date path of an object key (tenant/YYYY/MM/DD/id.json),
+// also the day part of a Query cursor.
+const dayLayout = "2006/01/02"
+
+// maxScanObjects is the hard cap on objects scanned in one Query call. A var so
+// tests can lower it.
+var maxScanObjects = 5000
 
 // maxVerifyObjects caps one VerifyChain walk. Verify streams the whole trail
 // and keeps only each event's link (~250 bytes), so the cap bounds memory and
@@ -157,28 +163,55 @@ func (r *Reader) Query(ctx context.Context, tenant string, f QueryFilter) ([]*au
 		return nil, "", false, nil
 	}
 
+	// A next cursor is "<YYYY/MM/DD>|<event_id>" so the listing can start at that
+	// day instead of re-listing the newest maxScanObjects; a bare event_id (older
+	// cursors) still works, just without the date bound.
+	listF := f
+	if day, id, ok := strings.Cut(f.Cursor, "|"); ok {
+		if d, err := time.Parse(dayLayout, day); err == nil {
+			f.Cursor, listF.Cursor = id, id
+			if listF.EndTime.IsZero() || d.Before(listF.EndTime) {
+				listF.EndTime = d
+			}
+		}
+	}
 	prefix := keySegment(tenant) + "/"
-	metas, err := r.listNewest(ctx, prefix, prefix, f, nil)
+	metas, err := r.listNewest(ctx, prefix, prefix, listF, nil)
 	if err != nil {
 		r.logger.Warn("audit reader: list objects failed", zap.String("tenant", tenant), zap.Error(err))
 		return nil, "", true, err
 	}
 
 	var events []*auditv1.AuditEvent
+	skipped := 0
 	for _, m := range metas {
 		data, err := r.store.get(ctx, m.key)
 		if err != nil {
 			r.logger.Warn("audit reader: get object failed, skipping", zap.String("key", m.key), zap.Error(err))
+			skipped++
 			continue
 		}
 		ev, err := unmarshalAuditEvent(data)
 		if err != nil {
+			r.logger.Warn("audit reader: decode object failed, skipping", zap.String("key", m.key), zap.Error(err))
+			skipped++
 			continue
 		}
 		events = append(events, ev)
 	}
+	if skipped > 0 {
+		r.logger.Warn("audit reader: query results incomplete, objects skipped", zap.String("tenant", tenant), zap.Int("skipped", skipped))
+	}
 
 	page, next := filterAndPage(events, f)
+	if next != "" && len(page) > 0 && page[len(page)-1].OccurredAt != nil {
+		next = page[len(page)-1].OccurredAt.AsTime().UTC().Format(dayLayout) + "|" + next
+	}
+	// A capped listing with a short page (sparse filter) must not end paging: continue from the oldest scanned key.
+	if next == "" && len(metas) >= maxScanObjects {
+		oldest := metas[len(metas)-1].key
+		next = strings.TrimPrefix(path.Dir(oldest), prefix) + "|" + strings.TrimSuffix(path.Base(oldest), ".json")
+	}
 	return page, next, true, nil
 }
 
@@ -208,6 +241,10 @@ func (r *Reader) listNewest(ctx context.Context, root, prefix string, f QueryFil
 		if len(out) >= maxScanObjects {
 			break
 		}
+		// Only keys older than the cursor count toward the cap, so paging walks past it.
+		if f.Cursor != "" && strings.TrimSuffix(path.Base(o.key), ".json") >= f.Cursor {
+			continue
+		}
 		out = append(out, o)
 	}
 	return out, nil
@@ -217,17 +254,16 @@ func (r *Reader) listNewest(ctx context.Context, root, prefix string, f QueryFil
 // "YYYY/MM/DD", relative to the tenant) lies wholly outside f's time range.
 // Anything not shaped like a date directory is never pruned.
 func dateDirOutside(rel string, f QueryFilter) bool {
-	const layout = "2006/01/02"
 	if n := len(rel); n != 4 && n != 7 && n != 10 {
 		return false
 	}
-	if _, err := time.Parse(layout[:len(rel)], rel); err != nil {
+	if _, err := time.Parse(dayLayout[:len(rel)], rel); err != nil {
 		return false
 	}
-	if !f.StartTime.IsZero() && rel < f.StartTime.UTC().Format(layout)[:len(rel)] {
+	if !f.StartTime.IsZero() && rel < f.StartTime.UTC().Format(dayLayout)[:len(rel)] {
 		return true
 	}
-	return !f.EndTime.IsZero() && rel > f.EndTime.UTC().Format(layout)[:len(rel)]
+	return !f.EndTime.IsZero() && rel > f.EndTime.UTC().Format(dayLayout)[:len(rel)]
 }
 
 // filterAndPage is the pure, unit-tested helper that applies all QueryFilter
