@@ -26,7 +26,7 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 
 # uv's blessed container idiom (planner/Dockerfile precedent): copy the static
 # binary rather than installing via curl/pip.
-COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
