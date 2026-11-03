@@ -13,6 +13,6 @@
 }
 
 .site-title img {
-  height: 1.2rem !important;
+  height: 44px !important; /* matches the homepage .brand-logo */
   width: auto;
 }
