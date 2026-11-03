@@ -842,7 +842,10 @@ func TestGetGatewayApproval_StateVotesAndTokens(t *testing.T) {
 		},
 	}
 	svc := newSandboxSvcForGatewayTest(t, store, minter)
-	req := &brokerv1.GetGatewayApprovalRequest{TenantId: testTenantUUID, TaskId: taskID.String()}
+	req := &brokerv1.GetGatewayApprovalRequest{
+		TenantId: testTenantUUID, TaskId: taskID.String(),
+		OwnerGrant: mintTestGrant(t, testTenantUUID, "alice@example.com"),
+	}
 
 	got, err := svc.GetGatewayApproval(gatewaySpiffeCtx(), req)
 	if err != nil {
@@ -864,6 +867,17 @@ func TestGetGatewayApproval_StateVotesAndTokens(t *testing.T) {
 
 	if _, err := svc.GetGatewayApproval(nonGatewayCtx(), req); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("non-gateway peer: err = %v, want PermissionDenied", err)
+	}
+
+	// Finding 10: no grant, or another user's grant, must not mint the owner's tokens.
+	for name, grant := range map[string]string{
+		"missing grant":    "",
+		"other user grant": mintTestGrant(t, testTenantUUID, "mallory@example.com"),
+	} {
+		bad := &brokerv1.GetGatewayApprovalRequest{TenantId: testTenantUUID, TaskId: taskID.String(), OwnerGrant: grant}
+		if got, err := svc.GetGatewayApproval(gatewaySpiffeCtx(), bad); err == nil || len(got.GetCapabilityTokenIds()) != 0 {
+			t.Fatalf("%s: got %+v, err %v; want refusal", name, got, err)
+		}
 	}
 }
 

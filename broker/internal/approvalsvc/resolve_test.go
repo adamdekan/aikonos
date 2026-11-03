@@ -111,16 +111,14 @@ func TestArgsDigest_Canonical(t *testing.T) {
 // lateVoteStore reports that another vote resolved the gate first.
 type lateVoteStore struct {
 	resolvingStore
-	transitioned bool
+	resolveOK bool
 }
 
 func (f *lateVoteStore) ResolveApproval(context.Context, string, string, string, bool, string) (db.ApprovalState, bool, error) {
+	if f.resolveOK {
+		return db.ApprovalApproved, true, nil
+	}
 	return db.ApprovalApproved, false, db.ErrApprovalAlreadyResolved
-}
-
-func (f *lateVoteStore) Transition(context.Context, string, string, db.TaskState, db.TaskState) error {
-	f.transitioned = true
-	return nil
 }
 
 // TestResolve_LateVoteMintsNothing pins F174: a caller whose vote lands after
@@ -133,7 +131,19 @@ func TestResolve_LateVoteMintsNothing(t *testing.T) {
 	}
 	_, toks, _, _, err := Resolve(context.Background(), st, &fakeAccessPolicy{}, mint, zap.NewNop(),
 		"tenant", "task", "bob@example.com", true, "", ArgsDigest(nil), StepUp{})
-	if status.Code(err) != codes.FailedPrecondition || toks != nil || st.transitioned {
-		t.Fatalf("late vote: err=%v tokens=%v transitioned=%v", err, toks, st.transitioned)
+	if status.Code(err) != codes.FailedPrecondition || toks != nil {
+		t.Fatalf("late vote: err=%v tokens=%v", err, toks)
+	}
+}
+
+// Finding 8: the task transition happens inside ResolveApproval's tx (Store has
+// no Transition), so a vote that resolves the gate needs nothing more.
+func TestResolve_ResolvingVoteSucceeds(t *testing.T) {
+	st := &lateVoteStore{resolvingStore: resolvingStore{task: &db.Task{OwnerUserID: "alice@example.com"}}}
+	st.resolveOK = true
+	mint := func(_, _ string, _ db.OnBehalfOf, _ []StepScope) (map[int32]string, error) { return nil, nil }
+	if _, _, _, _, err := Resolve(context.Background(), st, &fakeAccessPolicy{}, mint, zap.NewNop(),
+		"tenant", "task", "bob@example.com", true, "", ArgsDigest(nil), StepUp{}); err != nil {
+		t.Fatalf("resolving vote: %v", err)
 	}
 }

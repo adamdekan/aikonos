@@ -105,9 +105,6 @@ func Resolve(
 	if resolved {
 		switch newState {
 		case db.ApprovalApproved:
-			if terr := store.Transition(ctx, tenantID, taskID, db.TaskStateAwaitingApproval, db.TaskStateApproved); terr != nil {
-				return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "transition failed: %v", terr)
-			}
 			respStatus = brokerv1.TaskStatus_APPROVED
 			eventType = "aikonos.broker.task.approved"
 			decision = auditv1.PolicyDecision_ALLOW
@@ -126,9 +123,6 @@ func Resolve(
 			}
 
 		case db.ApprovalDenied:
-			if terr := store.Transition(ctx, tenantID, taskID, db.TaskStateAwaitingApproval, db.TaskStateDenied); terr != nil {
-				return 0, nil, "", 0, status.Errorf(codes.FailedPrecondition, "transition failed: %v", terr)
-			}
 			respStatus = brokerv1.TaskStatus_DENIED
 			eventType = "aikonos.broker.task.denied"
 			decision = auditv1.PolicyDecision_DENY

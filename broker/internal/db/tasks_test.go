@@ -250,7 +250,7 @@ func ptrBool(b bool) *bool { return &b }
 
 // TestTaskRepo_ClaimPlanStep (H-03): a step is claimed only by its tool, its
 // args hash and a non-DENY decision, and only once; a replan of the seq resets
-// it and drops seqs the new plan no longer has.
+// it never un-consumes, drops seqs the new plan no longer has, and a task past VALIDATING refuses new steps.
 func TestTaskRepo_ClaimPlanStep(t *testing.T) {
 	pool := openTestPool(t)
 	repo := NewTaskRepo(pool, zap.NewNop())
@@ -263,9 +263,15 @@ func TestTaskRepo_ClaimPlanStep(t *testing.T) {
 	step := func(seq int32, tool, hash string, d PolicyDecision) PlanStepRecord {
 		return PlanStepRecord{TaskID: taskID, TenantID: tenantID, Seq: seq, ToolID: tool, ArgsHash: hash, EffectClass: "READ_ONLY", PolicyDecision: d}
 	}
-	if err := repo.InsertPlanSteps(ctx, tenant, []PlanStepRecord{
+	if err := repo.Transition(ctx, tenant, task, TaskStateCreated, TaskStatePlanning); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if err := repo.Transition(ctx, tenant, task, TaskStatePlanning, TaskStateValidating); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if err := repo.InsertPlanSteps(ctx, tenant, task, []PlanStepRecord{
 		step(1, "web.fetch", "h1", PolicyAllow), step(2, "web.fetch", "h2", PolicyDeny),
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("InsertPlanSteps: %v", err)
 	}
 	claim := func(seq int32, tool, hash string) PlanStepClaim {
@@ -294,14 +300,70 @@ func TestTaskRepo_ClaimPlanStep(t *testing.T) {
 	if _, err := repo.ClaimPlanStep(ctx, tenant, task, 9, "web.fetch", []string{"h1"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing step: want ErrNotFound, got %v", err)
 	}
-	// Replan: seq 1 is fresh again, seq 2 is gone.
-	if err := repo.InsertPlanSteps(ctx, tenant, []PlanStepRecord{step(1, "web.fetch", "h1", PolicyAllow)}); err != nil {
+	// Replan while VALIDATING drops seq 2 but never un-consumes seq 1.
+	if err := repo.InsertPlanSteps(ctx, tenant, task, []PlanStepRecord{step(1, "web.fetch", "h1", PolicyAllow)}, TaskStateApproved); err != nil {
 		t.Fatalf("replan: %v", err)
 	}
-	if c := claim(1, "web.fetch", "h1"); !c.Claimed {
-		t.Errorf("replanned step: %+v", c)
+	if c := claim(1, "web.fetch", "h1"); c.Claimed || !c.WasConsumed {
+		t.Errorf("replanned consumed step: %+v", c)
 	}
 	if _, err := repo.ClaimPlanStep(ctx, tenant, task, 2, "web.fetch", []string{"h2"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("dropped seq: want ErrNotFound, got %v", err)
+	}
+	// The plan that won VALIDATING->APPROVED is frozen: a second plan cannot overwrite it.
+	if err := repo.InsertPlanSteps(ctx, tenant, task, []PlanStepRecord{step(1, "web.fetch", "hB", PolicyAllow)}, TaskStateAwaitingApproval); err == nil {
+		t.Errorf("InsertPlanSteps after the task left VALIDATING must fail")
+	}
+	// An empty plan still makes its transition through the same guarded tx.
+	empty := uuid.New()
+	if err := repo.Create(ctx, &Task{TaskID: empty, TenantID: tenantID, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 10}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, p := range [][2]TaskState{{TaskStateCreated, TaskStatePlanning}, {TaskStatePlanning, TaskStateValidating}} {
+		if err := repo.Transition(ctx, tenant, empty.String(), p[0], p[1]); err != nil {
+			t.Fatalf("Transition: %v", err)
+		}
+	}
+	if err := repo.InsertPlanSteps(ctx, tenant, empty.String(), nil, TaskStateApproved); err != nil {
+		t.Fatalf("empty plan: %v", err)
+	}
+	if got, err := repo.Get(ctx, tenant, empty.String()); err != nil || got.State != TaskStateApproved {
+		t.Fatalf("empty plan state: %+v err=%v, want APPROVED", got, err)
+	}
+}
+
+// Finding 11: ReserveCost adds the step's estimate only while it fits the
+// budget, so parallel calls cannot all pass a stale pre-check.
+func TestTaskRepo_ReserveCost(t *testing.T) {
+	pool := openTestPool(t)
+	repo := NewTaskRepo(pool, zap.NewNop())
+	ctx := context.Background()
+	tenantID, taskID := uuid.New(), uuid.New()
+	tenant, task := tenantID.String(), taskID.String()
+	if err := repo.Create(ctx, &Task{TaskID: taskID, TenantID: tenantID, OwnerUserID: "alice@example.com", Prompt: "p", CostBudget: 5}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, p := range [][2]TaskState{{TaskStateCreated, TaskStatePlanning}, {TaskStatePlanning, TaskStateValidating}} {
+		if err := repo.Transition(ctx, tenant, task, p[0], p[1]); err != nil {
+			t.Fatalf("Transition: %v", err)
+		}
+	}
+	if err := repo.InsertPlanSteps(ctx, tenant, task, []PlanStepRecord{
+		{TaskID: taskID, TenantID: tenantID, Seq: 1, ToolID: "web.fetch", EffectClass: "READ_ONLY", PolicyDecision: PolicyAllow, EstimatedCost: 3},
+		{TaskID: taskID, TenantID: tenantID, Seq: 2, ToolID: "web.fetch", EffectClass: "READ_ONLY", PolicyDecision: PolicyAllow},
+	}, TaskStateApproved); err != nil {
+		t.Fatalf("InsertPlanSteps: %v", err)
+	}
+	if u, err := repo.ReserveCost(ctx, tenant, task, 1); err != nil || u != 3 {
+		t.Fatalf("first reservation: units=%d err=%v, want 3", u, err)
+	}
+	if u, err := repo.ReserveCost(ctx, tenant, task, 1); !errors.Is(err, ErrBudgetExceeded) || u != 0 {
+		t.Fatalf("3+3 > 5 must be refused: units=%d err=%v", u, err)
+	}
+	if u, err := repo.ReserveCost(ctx, tenant, task, 2); err != nil || u != 1 {
+		t.Fatalf("zero-estimate step reserves at least 1: units=%d err=%v", u, err)
+	}
+	if got, _ := repo.Get(ctx, tenant, task); got.CostConsumed != 4 {
+		t.Fatalf("cost_consumed=%d, want 4 (refused reservation must not apply)", got.CostConsumed)
 	}
 }

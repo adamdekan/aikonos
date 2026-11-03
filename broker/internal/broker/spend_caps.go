@@ -66,6 +66,7 @@ type spendCacheEntry struct {
 type spendRollupCache struct {
 	mu      sync.Mutex
 	entries map[string]spendCacheEntry
+	gen     uint64 // bumped by invalidate so an in-flight read cannot re-cache stale spend
 }
 
 // NewSpendRollupCache constructs the cache for Deps.SpendCache. Exported so
@@ -75,8 +76,10 @@ func NewSpendRollupCache() *spendRollupCache {
 	return &spendRollupCache{entries: map[string]spendCacheEntry{}}
 }
 
-func spendCacheKey(tenant string, scope db.SpendCapScope, subject string) string {
-	return tenant + "|" + scope + "|" + subject
+// periodStart is part of the key so a month rollover never serves last
+// period's spend.
+func spendCacheKey(tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) string {
+	return tenant + "|" + scope + "|" + subject + "|" + periodStart.UTC().Format(time.RFC3339)
 }
 
 func (c *spendRollupCache) get(key string) (spendCacheEntry, bool) {
@@ -89,14 +92,37 @@ func (c *spendRollupCache) get(key string) (spendCacheEntry, bool) {
 	return e, true
 }
 
-func (c *spendRollupCache) set(key string, e spendCacheEntry) {
+func (c *spendRollupCache) generation() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.gen
+}
+
+// set stores e unless an invalidate ran since gen was read (before the DB read).
+func (c *spendRollupCache) set(key string, e spendCacheEntry, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != c.gen {
+		return
+	}
 	if c.entries == nil {
 		c.entries = map[string]spendCacheEntry{}
 	}
 	e.expiresAt = time.Now().Add(spendCacheTTL)
 	c.entries[key] = e
+}
+
+// invalidate drops keys' capped entries after new spend. An uncapped entry
+// never reads spend, so it stays (cap changes go through invalidateTenant).
+func (c *spendRollupCache) invalidate(keys ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gen++
+	for _, k := range keys {
+		if c.entries[k].hasCap {
+			delete(c.entries, k)
+		}
+	}
 }
 
 // invalidateTenant drops every cached entry for tenant — called on any
@@ -105,6 +131,7 @@ func (c *spendRollupCache) set(key string, e spendCacheEntry) {
 func (c *spendRollupCache) invalidateTenant(tenant string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.gen++
 	prefix := tenant + "|"
 	for k := range c.entries {
 		if strings.HasPrefix(k, prefix) {
@@ -168,8 +195,10 @@ func (d Deps) spendCapBreached(ctx context.Context, tenant string, scope db.Spen
 // serving from the TTL cache when fresh and populating it on a miss. Spend
 // is read only when a cap is set. Errors are returned and never cached.
 func (d Deps) spendRollup(ctx context.Context, tenant string, scope db.SpendCapScope, subject string, periodStart time.Time) (int64, int64, bool, error) {
-	key := spendCacheKey(tenant, scope, subject)
+	key := spendCacheKey(tenant, scope, subject, periodStart)
+	var gen uint64
 	if d.SpendCache != nil {
+		gen = d.SpendCache.generation()
 		if e, ok := d.SpendCache.get(key); ok {
 			return e.capMicros, e.spendMicros, e.hasCap, nil
 		}
@@ -186,7 +215,7 @@ func (d Deps) spendRollup(ctx context.Context, tenant string, scope db.SpendCapS
 		}
 	}
 	if d.SpendCache != nil {
-		d.SpendCache.set(key, spendCacheEntry{capMicros: capMicros, hasCap: hasCap, spendMicros: spendMicros})
+		d.SpendCache.set(key, spendCacheEntry{capMicros: capMicros, hasCap: hasCap, spendMicros: spendMicros}, gen)
 	}
 	return capMicros, spendMicros, hasCap, nil
 }

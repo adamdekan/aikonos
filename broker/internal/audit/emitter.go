@@ -147,7 +147,9 @@ func NewEmitter(ctx context.Context, cfg Config) (*Emitter, error) {
 	}
 
 	e.client = client
-	e.startSink(ctx, &minioStore{client: client, bucket: cfg.Bucket}, 1024)
+	if err := e.startSink(ctx, &minioStore{client: client, bucket: cfg.Bucket}, 1024); err != nil {
+		return nil, fmt.Errorf("audit chain resume: %w", err)
+	}
 
 	currentKey, currentVersion := keySource.Current()
 	logger.Info("Audit emitter initialized (MinIO sink active)",
@@ -167,13 +169,16 @@ func (e *Emitter) Durable() bool { return e.queue != nil }
 // startSink attaches the object store, resumes each tenant's hash chain from
 // its newest persisted event (so a restart continues the chain instead of
 // starting a fresh one) and starts the upload worker.
-func (e *Emitter) startSink(ctx context.Context, store chainStore, queueSize int) {
+func (e *Emitter) startSink(ctx context.Context, store chainStore, queueSize int) error {
 	e.store = store
-	e.loadChainHeads(ctx, e.logger)
+	if err := e.loadChainHeads(ctx, e.logger); err != nil {
+		return err
+	}
 	e.queue = make(chan uploadJob, queueSize)
 	e.workerCtx, e.cancel = context.WithCancel(context.Background())
 	e.wg.Add(1)
 	go e.worker()
+	return nil
 }
 
 // ensureBucket creates the audit bucket with object locking + the default
@@ -356,32 +361,36 @@ func keySegment(s string) string {
 }
 
 // loadChainHeads seeds lastHash for every tenant with existing history, reading
-// the chain hash of each tenant's chain tail (see resumeTail). Best-effort: a
-// failure just means that tenant's chain restarts (logged), never a hard error.
-func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
+// the chain hash of each tenant's chain tail (see resumeTail). A storage
+// failure is an error: starting with an empty head would fork the chain.
+func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) error {
 	tenants, _, err := e.store.listLevel(ctx, "")
 	if err != nil {
-		logger.Warn("audit: list tenants for chain resume failed", zap.Error(err))
-		return
+		return fmt.Errorf("list tenants: %w", err)
 	}
 	for _, prefix := range tenants {
 		if strings.HasPrefix(prefix, "_") {
 			continue // "_policy/" etc. are not tenants
 		}
 		tenant := strings.TrimSuffix(prefix, "/")
-		key, ok := newestUnder(ctx, e.store, prefix)
-		if !ok {
-			continue
+		key, err := newestUnder(ctx, e.store, prefix)
+		if err != nil {
+			return fmt.Errorf("tenant %q: %w", tenant, err)
 		}
-		h, ok := resumeTail(ctx, e.store, key)
+		if key == "" {
+			continue // no events yet
+		}
+		h, ok, err := resumeTail(ctx, e.store, key)
+		if err != nil {
+			return fmt.Errorf("tenant %q: resume tail: %w", tenant, err)
+		}
 		if !ok {
 			// Fall back to the newest object by LastModified (pre-tail-pick
 			// behaviour). May fork the chain if uploads landed out of order.
 			logger.Warn("audit: could not identify a unique chain tail among recent events; resuming from newest by LastModified",
 				zap.String("tenant", tenant), zap.String("key", key))
 			if h, err = e.store.chainHash(ctx, key); err != nil {
-				logger.Warn("audit: stat newest event for chain resume failed", zap.String("tenant", tenant), zap.Error(err))
-				continue
+				return fmt.Errorf("tenant %q: stat newest event: %w", tenant, err)
 			}
 		}
 		if h != "" {
@@ -389,6 +398,7 @@ func (e *Emitter) loadChainHeads(ctx context.Context, logger *zap.Logger) {
 			logger.Info("audit: resumed hash chain", zap.String("tenant", tenant), zap.String("head", h[:min(16, len(h))]))
 		}
 	}
+	return nil
 }
 
 // Chain-resume candidate bounds. The worker writes in chain order, but a trail
@@ -411,8 +421,9 @@ const (
 // stamped before the chain lock, so a burst around midnight can put the tail in
 // the earlier directory). The tail is the one candidate whose hash no other
 // candidate names as prior_event_hash. ok=false when that is not exactly one
-// candidate, or on any read/parse failure — the caller then falls back.
-func resumeTail(ctx context.Context, store objectStore, newestKey string) (string, bool) {
+// candidate or a candidate does not parse — the caller then falls back. A
+// list/get failure is an error: falling back could silently pick a wrong head.
+func resumeTail(ctx context.Context, store objectStore, newestKey string) (string, bool, error) {
 	dir := path.Dir(newestKey) // <tenant>/YYYY/MM/DD
 	dirs := []string{dir + "/"}
 	if parts := strings.Split(dir, "/"); len(parts) == 4 {
@@ -424,12 +435,12 @@ func resumeTail(ctx context.Context, store objectStore, newestKey string) (strin
 	for _, d := range dirs {
 		m, err := store.list(ctx, d)
 		if err != nil {
-			return "", false
+			return "", false, err
 		}
 		metas = append(metas, m...)
 	}
 	if len(metas) == 0 {
-		return "", false
+		return "", false, nil
 	}
 	sort.Slice(metas, func(i, j int) bool { return metas[i].lastModified.After(metas[j].lastModified) })
 	var cands []*auditv1.AuditEvent
@@ -439,15 +450,16 @@ func resumeTail(ctx context.Context, store objectStore, newestKey string) (strin
 		}
 		data, err := store.get(ctx, m.key)
 		if err != nil {
-			return "", false
+			return "", false, err
 		}
 		ev, err := unmarshalAuditEvent(data)
 		if err != nil {
-			return "", false
+			return "", false, nil
 		}
 		cands = append(cands, ev)
 	}
-	return chainTail(cands)
+	h, ok := chainTail(cands)
+	return h, ok, nil
 }
 
 // chainTail returns the hash of the only event not referenced as another's
@@ -478,13 +490,14 @@ func chainTail(events []*auditv1.AuditEvent) (string, bool) {
 // dates sort by time — then at the leaf picks the object with the latest
 // LastModified. (event_id is a time-sortable UUIDv7, so lexical order would also
 // work; LastModified keeps this robust regardless of the id scheme.) A handful
-// of bounded list calls regardless of trail size.
-func newestUnder(ctx context.Context, store chainStore, prefix string) (string, bool) {
+// of bounded list calls regardless of trail size. Returns "" with a nil error
+// when there is nothing under prefix; a listing failure is an error.
+func newestUnder(ctx context.Context, store chainStore, prefix string) (string, error) {
 	cur := prefix
 	for depth := 0; depth < 8; depth++ {
 		dirs, objs, err := store.listLevel(ctx, cur)
 		if err != nil {
-			return "", false
+			return "", err
 		}
 		var maxDir string
 		for _, d := range dirs {
@@ -502,9 +515,9 @@ func newestUnder(ctx context.Context, store chainStore, prefix string) (string, 
 				newest = o
 			}
 		}
-		return newest.key, newest.key != ""
+		return newest.key, nil
 	}
-	return "", false
+	return "", nil
 }
 
 // chainStore is the object-store view chain resume needs (*minioStore in

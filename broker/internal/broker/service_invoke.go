@@ -270,21 +270,48 @@ func (s *SandboxService) memoryGroupPreGate(ctx context.Context, req *brokerv1.I
 }
 
 // claimPlanStep consumes the plan step req names (step_id is the step's seq)
-// when it matches req's tool and args. It returns the denial reason, "" when
-// the step was claimed, or an error when the store could not be read.
-func (s *SandboxService) claimPlanStep(ctx context.Context, tenantID string, req *brokerv1.InvokeToolRequest) (string, error) {
+// when it matches req's tool and args. It first reserves the step's cost
+// against the task budget (atomic, so parallel calls cannot all pass the stale
+// pre-gate) and releases it if the claim does not go through. It returns the
+// reserved units, the denial reason ("" when the step was claimed;
+// "budget_exceeded" when the reservation did not fit), or an error when the
+// store could not be read.
+func (s *SandboxService) claimPlanStep(ctx context.Context, tenantID string, req *brokerv1.InvokeToolRequest) (int64, string, error) {
 	seq, perr := strconv.ParseInt(strings.TrimSpace(req.StepId), 10, 16)
 	if perr != nil {
-		return "step_unbound", nil
+		return 0, "step_unbound", nil
 	}
 	hashes := []string{argsHash(req.Args)}
 	if len(req.Args.GetFields()) == 0 {
 		// No args: a plan step stored with none (nil → "") or with {} matches.
 		hashes = []string{"", argsHash(&structpb.Struct{})}
 	} else if hashes[0] == "" {
-		return "step_args_mismatch", nil // unhashable args never match a step stored without any
+		return 0, "step_args_mismatch", nil // unhashable args never match a step stored without any
 	}
-	c, err := s.deps.Tasks.ClaimPlanStep(ctx, tenantID, req.TaskId, int32(seq), req.ToolId, hashes)
+	reserved, rErr := s.deps.Tasks.ReserveCost(ctx, tenantID, req.TaskId, int32(seq))
+	if errors.Is(rErr, db.ErrBudgetExceeded) {
+		return 0, "budget_exceeded", nil
+	} else if rErr != nil {
+		return 0, "", rErr
+	}
+	reason, err := s.matchPlanStep(ctx, tenantID, req, int32(seq), hashes)
+	if reason != "" || err != nil {
+		s.releaseCost(ctx, tenantID, req.TaskId, reserved)
+		return 0, reason, err
+	}
+	return reserved, "", nil
+}
+
+// releaseCost gives back a reservation; a failure only leaves the budget
+// conservatively over-held, so it warns rather than failing the call.
+func (s *SandboxService) releaseCost(ctx context.Context, tenantID, taskID string, units int64) {
+	if err := s.deps.Tasks.IncrementCost(ctx, tenantID, taskID, -units); err != nil {
+		s.deps.Logger.Warn("InvokeTool: cost release failed", zap.String("task_id", taskID), zap.Error(err))
+	}
+}
+
+func (s *SandboxService) matchPlanStep(ctx context.Context, tenantID string, req *brokerv1.InvokeToolRequest, seq int32, hashes []string) (string, error) {
+	c, err := s.deps.Tasks.ClaimPlanStep(ctx, tenantID, req.TaskId, seq, req.ToolId, hashes)
 	switch {
 	case errors.Is(err, db.ErrNotFound):
 		return "step_unbound", nil
@@ -698,9 +725,16 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	// denied — and each step runs once. Capability scopes are per connector,
 	// so without this an approved read could drive another tool on it, or the
 	// same tool with other args. A store failure is Unavailable, no decision.
-	if reason, cerr := s.claimPlanStep(ctx, tenantID, req); cerr != nil {
+	reserved, reason, cerr := s.claimPlanStep(ctx, tenantID, req)
+	if cerr != nil {
 		s.deps.Logger.Error("InvokeTool: plan step claim failed", zap.String("task_id", req.TaskId), zap.Error(cerr))
 		return nil, status.Errorf(codes.Unavailable, "task %s could not be loaded; retry", req.TaskId)
+	} else if reason == "budget_exceeded" {
+		s.emitToolDenied(ctx, req, scope, reason, nil, map[string]any{
+			"consumed": preCallConsumed,
+			"budget":   taskCostBudget,
+		})
+		return nil, status.Errorf(codes.ResourceExhausted, "task %s cost budget exceeded: consumed=%d budget=%d", req.TaskId, preCallConsumed, taskCostBudget)
 	} else if reason != "" {
 		s.emitToolDenied(ctx, req, scope, reason, nil, map[string]any{"step_id": claimedField(req.StepId)})
 		return nil, status.Errorf(codes.PermissionDenied, "call does not match an approved step of task %s", req.TaskId)
@@ -747,6 +781,7 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 	}
 	if err != nil {
 		// Proxy-internal failure (e.g. registry/handler drift) — not a tool error.
+		s.releaseCost(ctx, tenantID, req.TaskId, reserved)
 		s.deps.Logger.Error("InvokeTool: proxy error", zap.String("tool_id", req.ToolId), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "tool proxy error")
 	}
@@ -820,17 +855,21 @@ func (s *SandboxService) InvokeTool(ctx context.Context, req *brokerv1.InvokeToo
 
 	// Always-record: a successful call's cost is persisted even when it
 	// crosses the budget — the call already ran, so an accounting failure of
-	// any kind must never fail an already-completed tool call. The pre-gate
-	// above denies the *next* call once cost_consumed reflects the crossing.
-	if res.Success && res.CostUnits > 0 {
-		if tasks := s.deps.Tasks; tasks != nil {
-			if incErr := tasks.IncrementCost(ctx, tenantID, req.TaskId, res.CostUnits); incErr != nil {
-				if errors.Is(incErr, db.ErrBudgetExceeded) {
+	// any kind must never fail an already-completed tool call. The reservation
+	// is trued up to the actual cost (a failed call costs nothing).
+	actual := int64(0)
+	if res.Success {
+		actual = res.CostUnits
+	}
+	if delta := actual - reserved; delta != 0 {
+		if incErr := s.deps.Tasks.IncrementCost(ctx, tenantID, req.TaskId, delta); incErr != nil {
+			if errors.Is(incErr, db.ErrBudgetExceeded) {
+				if delta > 0 {
 					s.emitBudgetExceeded(ctx, tenantID, req, preCallConsumed+res.CostUnits, taskCostBudget, incErr)
-				} else {
-					s.deps.Logger.Warn("InvokeTool: increment cost failed",
-						zap.String("task_id", req.TaskId), zap.Error(incErr))
 				}
+			} else {
+				s.deps.Logger.Warn("InvokeTool: increment cost failed",
+					zap.String("task_id", req.TaskId), zap.Error(incErr))
 			}
 		}
 	}

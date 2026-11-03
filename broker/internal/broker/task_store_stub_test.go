@@ -36,7 +36,11 @@ func (stubTaskStore) IncrementCost(_ context.Context, _, _ string, _ int64) erro
 	return nil
 }
 
-func (stubTaskStore) InsertPlanSteps(_ context.Context, _ string, _ []db.PlanStepRecord) error {
+func (stubTaskStore) ReserveCost(_ context.Context, _, _ string, _ int32) (int64, error) {
+	return 1, nil
+}
+
+func (stubTaskStore) InsertPlanSteps(_ context.Context, _, _ string, _ []db.PlanStepRecord, _ db.TaskState) error {
 	return nil
 }
 

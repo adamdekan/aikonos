@@ -395,3 +395,83 @@ test("POST /agui close handler: sweeps this run's subagent branch children via s
     supervisor.dispose();
   }
 });
+
+// A disconnect during the south awaits (selectRunApprover / unattendedAllowed)
+// fires 'close' before the run starts. The handler must already be listening:
+// no run may start and the ping interval must be cleared.
+test("POST /agui: a disconnect during the approver-selection awaits starts no run and stops the heartbeat", async () => {
+  const { privateKey, jwk } = await makeKey();
+  const jwksResolver = await localResolver(jwk);
+  const token = await mintToken(privateKey);
+
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let entered!: () => void;
+  const inAwait = new Promise<void>((r) => { entered = r; });
+
+  const clients: BrokerClients = Object.create(BrokerClients.prototype);
+  const south: SouthClient = Object.create(SouthClient.prototype);
+  Object.assign(south, {
+    getAgentSpec: async () => ({ found: false }),
+    resolveRunAgent: async () => ({ agentId: "00000000-0000-4000-8000-0000000000de", isDefault: true }),
+    listUserAgentSkills: async () => ({ bundles: [] }),
+    getOrgSettings: async () => { entered(); await gate; return { settings: {} }; },
+  });
+  clients.south = south;
+  clients.north = { mintSessionGrant: async () => ({ ownerGrant: "grant-test" }) } as unknown as BrokerClients["north"];
+
+  const supervisor = new ChildSupervisor(makeFakeProxy(), makeFakeDeps(), () => makeFakeBridge(), makeFakeSpawn(), makeFakeCredentials());
+  let runCalls = 0;
+  supervisor.run = (async () => { runCalls++; }) as unknown as typeof supervisor.run;
+
+  const realSetInterval = global.setInterval;
+  const realClearInterval = global.clearInterval;
+  const pingIds: NodeJS.Timeout[] = [];
+  const clearedIds: NodeJS.Timeout[] = [];
+  global.setInterval = ((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    const id = realSetInterval(fn, ms, ...rest);
+    if (ms === 15_000) pingIds.push(id);
+    return id;
+  }) as typeof setInterval;
+  global.clearInterval = ((id: NodeJS.Timeout | undefined) => {
+    clearedIds.push(id as NodeJS.Timeout);
+    return realClearInterval(id);
+  }) as typeof clearInterval;
+
+  const app = Fastify({ logger: false });
+  try {
+    registerAgUiRoutes(app, {
+      clients, jwksResolver, verifyOpts: VERIFY_OPTS, approvals: new ApprovalRegistry(),
+      supervisor, cfg: fakeConfig(), log: pino({ level: "silent" }),
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+
+    const payload = JSON.stringify({ prompt: "hello", threadId: "thread-early-close" });
+    const clientReq = httpRequest({
+      host: "127.0.0.1", port: address.port, path: "/agui", method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+    });
+    clientReq.on("error", () => {});
+    clientReq.end(payload);
+
+    await inAwait;
+    clientReq.destroy();
+    // Let the server observe the socket close while the south call is still pending.
+    for (let i = 0; i < 40 && clearedIds.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    release();
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.equal(runCalls, 0, "supervisor.run must not start for a client that already left");
+    assert.equal(pingIds.length, 1);
+    assert.ok(clearedIds.includes(pingIds[0]), "the ping interval must be cleared");
+  } finally {
+    global.setInterval = realSetInterval;
+    global.clearInterval = realClearInterval;
+    release();
+    app.server.closeAllConnections();
+    await app.close();
+    supervisor.dispose();
+  }
+});

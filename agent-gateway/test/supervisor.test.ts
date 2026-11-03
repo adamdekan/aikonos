@@ -307,6 +307,22 @@ test("CP6 reuse: getOrSpawn with the same key returns the SAME child handle", as
   assert.equal(h1, h2, "both calls must return the same handle object");
 });
 
+test("CP6 concurrent first getOrSpawn for one key forks once and returns the same handle", async () => {
+  // WHY: two tabs / a double submit both see no child; without the in-flight
+  // join the second fork overwrites the first in children and leaks it.
+  const rig = makeTestRig();
+  const identity = makeIdentity();
+  const key = rig.supervisor.keyFor(identity);
+
+  const [h1, h2] = await Promise.all([
+    rig.supervisor.getOrSpawn(key, identity),
+    rig.supervisor.getOrSpawn(key, identity),
+  ]);
+
+  assert.equal(rig.spawnRecords.length, 1, "concurrent callers must share one fork");
+  assert.equal(h1, h2);
+});
+
 test("CP6 env-scrub: SECURITY — scrubbed env EQUALS the allowlist (fail-closed, not denylist)", async () => {
   // WHY this test is structured as an EQUALITY check, not a negative check:
   //

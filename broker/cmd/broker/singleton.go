@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,6 +21,34 @@ const singletonLockKey int64 = 78412093
 // in acquireSingletonLock is unit-testable without a live Postgres.
 type singletonLocker interface {
 	TryLock(ctx context.Context, key int64) (bool, error)
+	Ping(ctx context.Context) error
+}
+
+const (
+	singletonPingInterval = 5 * time.Second
+	singletonPingTimeout  = 3 * time.Second
+)
+
+// watchSingletonLock pings the lock connection until ctx ends. A dead
+// connection means Postgres already released the lock and a second broker may
+// start, so it calls exit (the supervisor restarts us and re-acquires).
+func watchSingletonLock(ctx context.Context, l singletonLocker, interval, timeout time.Duration, exit func(error)) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, timeout)
+			err := l.Ping(pctx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				exit(err)
+				return
+			}
+		}
+	}
 }
 
 // acquireSingletonLock returns a non-nil error when the lock is held by
@@ -52,4 +81,8 @@ func (l *pgSingletonLocker) TryLock(ctx context.Context, key int64) (bool, error
 		return false, err
 	}
 	return locked, nil
+}
+
+func (l *pgSingletonLocker) Ping(ctx context.Context) error {
+	return l.conn.Ping(ctx)
 }

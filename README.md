@@ -154,8 +154,11 @@ And a capability token can only be narrowed, never widened, so delegating a task
 to a colleague can only shrink what their agent may do.
 
 High-risk steps pause at gate 3 and stream an approval card to the browser.
-Approvals are n-of-m with separation of duty: configuration can raise the
-approver bar but never lower it, and a requester cannot approve their own task.
+Approvals are n-of-m: configuration can raise the approver bar but never lower
+it. A single-approver gate goes to the task's owner, who confirms their own
+agent's action. Any gate needing two or more approvers (every step-up, or
+`approval_required_n` of 2 or more) enforces separation of duty: the requester
+cannot approve their own task.
 
 For the full model, see [`docs/02-policy-model.md`](docs/02-policy-model.md).
 

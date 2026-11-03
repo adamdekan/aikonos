@@ -427,11 +427,6 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		})
 	}
 
-	if err := taskStore.InsertPlanSteps(ctx, tenantID, stepRecords); err != nil {
-		s.deps.Logger.Error("SubmitPlan: persist steps failed", zap.Error(err))
-		return nil, status.Errorf(codes.Internal, "failed to persist plan steps")
-	}
-
 	// 3. Aggregate the per-step decisions into a plan outcome + drive state.
 	var outcome planv1.ValidationOutcome
 	switch {
@@ -494,15 +489,26 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 		s.deps.TaskMetrics.RecordPlanOutcome(ctx, outcome.String())
 	}
 
+	// Steps and the VALIDATING exit commit in one tx: the plan that stores its
+	// steps is the plan that wins the transition (a loser's insert is refused).
+	var next db.TaskState
+	switch outcome {
+	case planv1.ValidationOutcome_APPROVED:
+		next = db.TaskStateApproved
+	case planv1.ValidationOutcome_NEEDS_HUMAN, planv1.ValidationOutcome_NEEDS_STEP_UP:
+		next = db.TaskStateAwaitingApproval
+	}
+	if err := taskStore.InsertPlanSteps(ctx, tenantID, req.TaskId, stepRecords, next); err != nil {
+		s.deps.Logger.Error("SubmitPlan: persist steps failed", zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to persist plan steps")
+	}
+
 	var capTokens map[int32]string
 	var argsDigest string
 	switch outcome {
 	case planv1.ValidationOutcome_DENIED:
 		s.denyTask(ctx, tenantID, req.TaskId, taskStore)
 	case planv1.ValidationOutcome_APPROVED:
-		if err := taskStore.Transition(ctx, tenantID, req.TaskId, db.TaskStateValidating, db.TaskStateApproved); err != nil {
-			return nil, status.Errorf(codes.Internal, "transition to APPROVED failed: %v", err)
-		}
 		// Mint a per-step capability token so the caller can drive InvokeTool.
 		// Every step is ALLOW in the APPROVED outcome.
 		scopes := make([]stepScope, 0, len(plan.Steps))
@@ -513,10 +519,6 @@ func (s *SandboxService) SubmitPlan(ctx context.Context, req *brokerv1.SubmitPla
 			return nil, status.Errorf(codes.Internal, "failed to mint capability tokens: %v", err)
 		}
 	case planv1.ValidationOutcome_NEEDS_HUMAN, planv1.ValidationOutcome_NEEDS_STEP_UP:
-		if err := taskStore.Transition(ctx, tenantID, req.TaskId, db.TaskStateValidating, db.TaskStateAwaitingApproval); err != nil {
-			return nil, status.Errorf(codes.Internal, "transition to AWAITING_APPROVAL failed: %v", err)
-		}
-
 		if err := approvalsvc.Create(ctx, gateIn, *gate); err != nil {
 			return nil, err
 		}

@@ -838,3 +838,49 @@ func TestUpdateScheduledRun_AdminCannotRewrite(t *testing.T) {
 		}
 	})
 }
+
+// retryStore records the Reschedule the broker uses to put a ONCE run back.
+type retryStore struct {
+	parkClaimStore
+	resetTo map[string]*time.Time
+}
+
+func (f *retryStore) Reschedule(_ context.Context, _, id string, at time.Time) error {
+	if f.resetTo == nil {
+		f.resetTo = map[string]*time.Time{}
+	}
+	f.resetTo[id] = &at
+	return nil
+}
+
+// A ONCE run's only slot is spent by ClaimDue: a transient skip (mint failure)
+// must reschedule it, and a deliberate skip (actor not permitted) must park it.
+func TestClaimDueScheduledRuns_OnceSkipKeepsRunVisible(t *testing.T) {
+	retry, refused := uuid.New(), uuid.New()
+	rev := newFakeRevStore()
+	susp := uuid.New()
+	rev.agentSt[susp.String()] = db.AgentSuspended
+	actor := uuid.New()
+	store := &retryStore{parkClaimStore: parkClaimStore{fakeClaimDueStore: fakeClaimDueStore{runs: []*db.ScheduledRun{
+		{ScheduledRunID: retry, Kind: db.ScheduleKindOnce, OwnerUserID: "alice", Prompt: "p", ActorAgentID: &actor},
+		{ScheduledRunID: refused, Kind: db.ScheduleKindOnce, OwnerUserID: "alice", Prompt: "p", ActorAgentID: &susp},
+	}}}}
+	svc := NewSandboxService(Deps{
+		Logger: zap.NewNop(), Audit: &fakeInvokeAudit{}, GatewaySpiffeID: testGWSpiffeID,
+		GatewayGrantKey: nil, GatewayGrantTTL: testGrantTTL, // empty key: Mint fails
+		Revocation: revocation.New(rev), Scheduled: store,
+	})
+	resp, err := svc.ClaimDueScheduledRuns(
+		auth.WithIdentity(context.Background(), &auth.Identity{SpiffeID: testGWSpiffeID}),
+		&brokerv1.ClaimDueScheduledRunsRequest{TenantId: testTenantUUID},
+	)
+	if err != nil || len(resp.Runs) != 0 {
+		t.Fatalf("want no runs fired, got %v %v", resp, err)
+	}
+	if next := store.resetTo[retry.String()]; next == nil || !next.After(store.now) {
+		t.Fatalf("mint-failed ONCE run next_fire_at = %v, want a time after the claim", next)
+	}
+	if store.parked[refused.String()] != "agent_suspended" {
+		t.Fatalf("refused ONCE run parked = %v, want agent_suspended", store.parked)
+	}
+}

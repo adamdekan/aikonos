@@ -436,6 +436,22 @@ func (r *ScheduledRunRepo) Park(ctx context.Context, tenantID, id, reason string
 	})
 }
 
+// Reschedule puts back a ONCE run whose only slot ClaimDue spent; it touches
+// only a still-ACTIVE row with no next fire, so a concurrent pause/delete wins.
+func (r *ScheduledRunRepo) Reschedule(ctx context.Context, tenantID, id string, at time.Time) error {
+	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, `
+		UPDATE scheduled_runs SET next_fire_at = $1, updated_at = NOW()
+		WHERE scheduled_run_id = $2 AND state = 'ACTIVE' AND next_fire_at IS NULL`,
+			at, id,
+		)
+		if err != nil {
+			return fmt.Errorf("reschedule scheduled_run: %w", err)
+		}
+		return nil
+	})
+}
+
 func (r *ScheduledRunRepo) Delete(ctx context.Context, tenantID, id string) error {
 	return withConnErr(ctx, r.pool, tenantID, func(conn *pgxpool.Conn) error {
 		tag, err := conn.Exec(ctx, `DELETE FROM scheduled_runs WHERE scheduled_run_id = $1`, id)
@@ -480,6 +496,19 @@ func (r *ScheduledRunRepo) ClaimDue(ctx context.Context, tenantID string, now ti
 			return nil, fmt.Errorf("begin tx: %w", err)
 		}
 		defer tx.Rollback(ctx)
+
+		// A ONCE run handed out but never reported within the claim TTL was lost
+		// with its gateway. It has no next fire, so nothing would ever pick it up
+		// again: fail it visibly rather than re-run it (it may have acted already).
+		if _, err := tx.Exec(ctx, `
+		UPDATE scheduled_runs
+		SET state = 'FAILED', last_status = 'abandoned', claimed_at = NULL, updated_at = NOW()
+		WHERE state = 'ACTIVE' AND schedule_kind = $1 AND next_fire_at IS NULL
+		  AND claimed_at IS NOT NULL AND claimed_at < $2`,
+			ScheduleKindOnce, now.Add(-scheduledRunClaimTTL),
+		); err != nil {
+			return nil, fmt.Errorf("fail abandoned one-off runs: %w", err)
+		}
 
 		rows, err := tx.Query(ctx, `
 		SELECT `+scheduledRunCols+`

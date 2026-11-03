@@ -549,6 +549,11 @@ func (s *SandboxService) GetGatewayApproval(ctx context.Context, req *brokerv1.G
 	if req.TaskId == "" || req.TenantId == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id and task_id required")
 	}
+	// The grant owner; "" only on the dev-mode no-grant fallback.
+	_, grantOwner, err := s.southPrincipal(ctx, req.TenantId, req.OwnerGrant, "")
+	if err != nil {
+		return nil, err
+	}
 	store := s.deps.Tasks
 	task, err := store.Get(ctx, req.TenantId, req.TaskId)
 	if err != nil || task == nil {
@@ -560,6 +565,9 @@ func (s *SandboxService) GetGatewayApproval(ctx context.Context, req *brokerv1.G
 	}
 	if !task.GatewayManaged {
 		return nil, status.Errorf(codes.FailedPrecondition, "task %s is not gateway-managed", req.TaskId)
+	}
+	if grantOwner != "" && grantOwner != task.OwnerUserID {
+		return nil, status.Error(codes.PermissionDenied, "owner grant does not name the task owner")
 	}
 
 	out := &brokerv1.GatewayApproval{Status: dbStateToProtoStatus(task.State)}

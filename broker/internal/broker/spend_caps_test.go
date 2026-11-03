@@ -297,14 +297,47 @@ func TestCheckRateLimit_SpendDenialEmitsAudit(t *testing.T) {
 
 func TestSpendCache_MutationInvalidatesTenant(t *testing.T) {
 	c := NewSpendRollupCache()
-	key := spendCacheKey(testTenant, db.SpendCapScopeOrg, "")
-	c.set(key, spendCacheEntry{capMicros: 100, hasCap: true, spendMicros: 50})
+	key := spendCacheKey(testTenant, db.SpendCapScopeOrg, "", db.SpendPeriodStart(time.Now()))
+	c.set(key, spendCacheEntry{capMicros: 100, hasCap: true, spendMicros: 50}, c.generation())
 	if _, ok := c.get(key); !ok {
 		t.Fatal("expected cache hit before invalidation")
 	}
 	c.invalidateTenant(testTenant)
 	if _, ok := c.get(key); ok {
 		t.Fatal("expected cache miss after invalidateTenant")
+	}
+}
+
+// A cached near-cap rollup must not keep allowing calls after new spend lands.
+func TestAccumulateLlmSpend_InvalidatesCachedRollup(t *testing.T) {
+	caps, counters := newFakeSpendCapStore(), newFakeSpendCounterStore()
+	caps.caps[spendCapFakeKey(testTenant, db.SpendCapScopeUser, "alice")] = db.SpendCap{CapMicros: 100}
+	counters.userTotals["alice"] = 95
+	d := Deps{Logger: zap.NewNop(), SpendCaps: caps, SpendCounters: counters, SpendCache: NewSpendRollupCache()}
+	if ok, _ := d.checkSpendCaps(context.Background(), testTenant, "alice", ""); !ok {
+		t.Fatal("expected allow below cap")
+	}
+	counters.userTotals["alice"] = 105 // what Accumulate would persist
+	d.accumulateLlmSpend(context.Background(), &brokerv1.EmitLlmUsageRequest{TenantId: testTenant, UserId: "alice"}, 10)
+	if ok, lt := d.checkSpendCaps(context.Background(), testTenant, "alice", ""); ok || lt != "spend_user" {
+		t.Fatalf("expected spend_user denial without waiting for the TTL, got ok=%v limit=%q", ok, lt)
+	}
+}
+
+// A read that began before an invalidate must not re-cache its stale spend.
+func TestSpendCache_SetAfterInvalidateDropped(t *testing.T) {
+	c := NewSpendRollupCache()
+	gen := c.generation()
+	c.invalidate("k")
+	c.set("k", spendCacheEntry{capMicros: 100, hasCap: true, spendMicros: 95}, gen)
+	if _, ok := c.get("k"); ok {
+		t.Fatal("stale set after invalidate must be dropped")
+	}
+	// An uncapped entry never reads spend, so new spend leaves it cached.
+	c.set("u", spendCacheEntry{}, c.generation())
+	c.invalidate("u")
+	if _, ok := c.get("u"); !ok {
+		t.Fatal("uncapped entry must survive a spend invalidate")
 	}
 }
 

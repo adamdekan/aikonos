@@ -352,6 +352,8 @@ export class ChildSupervisor {
   // over that map (LRU pass, TTL reaper, evictIdleForAgent, dispose) would then
   // have to defend against a handle-less member.
   private readonly reserved = new Map<string, string>();
+  // Spawns under way per key, so concurrent getOrSpawn callers share one child.
+  private readonly inFlight = new Map<string, Promise<ChildHandle>>();
   private readonly crashes = new Map<string, CrashRecord>();
   // F58: live branch children per `${tenantId} ${userId}`.
   private readonly ephemeralPerUser = new Map<string, number>();
@@ -396,6 +398,11 @@ export class ChildSupervisor {
   // external) so the session plan honours the agent's skills and provider pin
   // (F203). Absent for a default-agent chat (the user's own grants).
   async getOrSpawn(key: string, identity: Identity, agentSpec?: AgentSpec): Promise<ChildHandle> {
+    // A concurrent caller (two tabs, double submit) joins the spawn already
+    // under way: forkChild's children.set would otherwise overwrite the first
+    // child, leaking it and its proxy registration.
+    const racing = this.inFlight.get(key);
+    if (racing) return racing;
     const existing = this.children.get(key);
     if (existing) {
       existing.lastUsedAt = Date.now();
@@ -419,6 +426,9 @@ export class ChildSupervisor {
               fresh.systemPrompt !== existing.systemPrompt ||
               providerChanged)
           ) {
+            // A concurrent caller already started the respawn during our awaits.
+            const respawning = this.inFlight.get(key);
+            if (respawning) return respawning;
             const reason = providerChanged ? "llm provider changed" : "tool allowlist or persona changed";
             log.info({ key, reason }, "plan changed since spawn — respawning child");
             // Hold the slot this evict frees: the respawn below only registers
@@ -434,7 +444,7 @@ export class ChildSupervisor {
             // one slot smaller.
             this.evict(key, reason);
             this.reserved.set(key, ownerOf(identity));
-            return this.spawn(key, identity, agentSpec);
+            return this.tracked(key, () => this.spawn(key, identity, agentSpec));
           }
         } catch (err) {
           // F203: FAILED_PRECONDITION is the resolver's answer, not a blip — e.g.
@@ -451,10 +461,23 @@ export class ChildSupervisor {
       return existing;
     }
 
-    this.checkCircuitBreaker(key);
-    await this.enforceCapBefore(key, identity);
+    return this.tracked(key, async () => {
+      this.checkCircuitBreaker(key);
+      await this.enforceCapBefore(key, identity);
+      return this.spawn(key, identity, agentSpec);
+    });
+  }
 
-    return this.spawn(key, identity, agentSpec);
+  // Runs fn and publishes its promise as the key's in-flight spawn before fn's
+  // first await can yield, so concurrent getOrSpawn callers share one spawn.
+  private async tracked(key: string, fn: () => Promise<ChildHandle>): Promise<ChildHandle> {
+    const p = fn();
+    this.inFlight.set(key, p);
+    try {
+      return await p;
+    } finally {
+      if (this.inFlight.get(key) === p) this.inFlight.delete(key);
+    }
   }
 
   // withEphemeralChild spawns a child under a caller-supplied synthetic key

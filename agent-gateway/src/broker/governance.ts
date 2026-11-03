@@ -10,6 +10,7 @@
 //   execute(): InvokeTool with the stashed token (faithful: runs through the
 //              broker capability gate + Tool Proxy + audit), then EmitStatus.
 import { setTimeout as sleep } from "node:timers/promises";
+import { status } from "@grpc/grpc-js";
 import type { Config } from "../config";
 import type { BrokerClients } from "./clients";
 import { mapTool, knownWorkflowStepSkills, unknownSkills, type ToolMapping } from "./mapping";
@@ -32,7 +33,7 @@ import { chatCandidates, visionCandidates, shouldFailover } from "../llm/provide
 import { decisionOnlyGatedTools, gateSkippedTools } from "../pi/gating-manifest.js";
 import { PERSONAL_SKILL_PREFIX } from "../pi/load-skill.js";
 import type { RateLimitChecker } from "../llm/egress-proxy.js";
-import { isAccessRevoked, isStepUpRequired, trimmedErrorMessage } from "../http-errors.js";
+import { grpcCode, isAccessRevoked, isStepUpRequired, trimmedErrorMessage } from "../http-errors.js";
 import type { AgentSpec } from "../pi/session.js";
 // CP5: a runtime import of runSubagents plus a
 // type-only import of BranchSupervisor/SubagentBranch/BranchResult. There is no
@@ -353,7 +354,7 @@ export class GovernanceBridge {
       case ValidationOutcome.NEEDS_STEP_UP: {
         // AG-07 slice 2: the approval lives in the broker. Its row, not the
         // plan outcome or the stream, says step-up and who may still vote.
-        const gate = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
+        const gate = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId, ownerGrant: this.identity.ownerGrant ?? "" });
         const decided = await this.awaitApproval(taskId, result.argsDigest, {
           toolCallId,
           taskId,
@@ -499,6 +500,16 @@ export class GovernanceBridge {
     }
   }
 
+  // mintOwnerGrant (re)mints this session's owner grant from its bearer; a
+  // session without one (no token) keeps whatever grant it has.
+  private async mintOwnerGrant(): Promise<void> {
+    if (!this.identity.token) return;
+    this.identity.ownerGrant = (await this.north.mintSessionGrant(
+      { tenantId: this.identity.tenantId, userId: this.identity.userId },
+      this.identity.token,
+    )).ownerGrant;
+  }
+
   // pollApproval reads the broker's approval state until it leaves
   // AWAITING_APPROVAL, or until signal aborts (reported as CANCELLED). Never
   // rejects: a failed read is retried on the next tick, and nothing is
@@ -509,6 +520,7 @@ export class GovernanceBridge {
     info: ApprovalInfo,
   ): Promise<{ status: TaskStatus; capabilityTokenIds: Record<number, string> }> {
     const cancelled = { status: TaskStatus.CANCELLED, capabilityTokenIds: {} };
+    let reminted = false; // one successful re-mint per denial streak, not one per poll
     for (;;) {
       try {
         await sleep(this.approvalPollMs, undefined, { signal });
@@ -516,12 +528,22 @@ export class GovernanceBridge {
         return cancelled;
       }
       try {
-        const st = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId });
+        const st = await this.south.getGatewayApproval({ tenantId: this.identity.tenantId, taskId, ownerGrant: this.identity.ownerGrant ?? "" });
         if (signal.aborted) return cancelled;
         if (st.status !== TaskStatus.AWAITING_APPROVAL) return st;
         info.approvals = st.approvals;
+        reminted = false;
       } catch (err) {
         this.log.warn({ taskId, err: String(err) }, "approval poll failed; retrying");
+        // The session grant expires with the bearer while an approval can stay open longer; re-mint it.
+        if (grpcCode(err) === status.PERMISSION_DENIED && !reminted) {
+          try {
+            await this.mintOwnerGrant();
+            reminted = true;
+          } catch (mintErr) {
+            this.log.warn({ taskId, err: String(mintErr) }, "owner grant re-mint failed");
+          }
+        }
       }
     }
   }
@@ -678,12 +700,7 @@ export class GovernanceBridge {
       try {
         // F171: a personal token-path run (the HTTP workflow route) has no
         // owner grant yet; it mints its session's own on first need.
-        if (!this.identity.ownerGrant && this.identity.token) {
-          this.identity.ownerGrant = (await this.north.mintSessionGrant(
-            { tenantId: this.identity.tenantId, userId: this.identity.userId },
-            this.identity.token,
-          )).ownerGrant;
-        }
+        if (!this.identity.ownerGrant) await this.mintOwnerGrant();
         const resp = await this.south.listMcpServerToolsSouth({
           tenantId: this.identity.tenantId,
           userId: this.identity.userId,
