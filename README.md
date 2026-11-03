@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://aikonos.com/"><img src="docs/img/aikonos-wordmark.png" alt="aikonOS" height="80" /></a>
+  <a href="https://aikonos.com/"><img src="docs/img/aikonos-logo.svg" alt="Aikonos" height="80" /></a>
 </p>
 
 <h3 align="center">
