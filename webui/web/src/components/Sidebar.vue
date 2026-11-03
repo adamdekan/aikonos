@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import Icon from "./Icon.vue";
+import wordmark from "../assets/aikonos-wordmark.svg";
 import UserSwitcher from "./UserSwitcher.vue";
 import SessionsNav from "./SessionsNav.vue";
 
@@ -119,7 +120,7 @@ function isActive(path) {
 <template>
   <aside :class="['sidebar', { rail: collapsed }]">
     <div class="sidebar-header">
-      <span v-if="!collapsed" class="brand-text">aikonOS</span>
+      <img v-if="!collapsed" class="brand-logo" :src="wordmark" alt="Aikonos" width="93" height="36" />
       <button
         class="toggle-btn"
         data-testid="sidebar-toggle"
@@ -227,13 +228,11 @@ function isActive(path) {
   padding: 16px 14px 12px;
 }
 
-.brand-text {
-  font-family: "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-weight: 700;
-  font-size: 1.25rem;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  line-height: 46px;
+.brand-logo {
+  display: block;
+  height: 36px;
+  width: auto;
+  margin: 5px 0;
 }
 
 .toggle-btn {
