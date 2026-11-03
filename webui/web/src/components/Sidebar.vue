@@ -1,12 +1,11 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import Icon from "./Icon.vue";
 import UserSwitcher from "./UserSwitcher.vue";
 import SessionsNav from "./SessionsNav.vue";
 
 import { useUserStore } from "../store/user.js";
-import { useChatStore } from "../store/chat.js";
 import { useInboxStore } from "../store/inbox.js";
 import { useAgentsStore } from "../store/agents.js";
 import { refreshAdminStatus } from "../api/adminStatus.js";
@@ -34,18 +33,9 @@ function toggleAdmin() {
   writeCollapsed(ADMIN_KEY, adminCollapsed.value);
 }
 const route = useRoute();
-const router = useRouter();
 const userStore = useUserStore();
-const chatStore = useChatStore();
 const inboxStore = useInboxStore();
 const agentsStore = useAgentsStore();
-
-function newChat() {
-  const agentId = route.query.agent || "";
-  chatStore.clearActiveSession();
-  chatStore.reset();
-  router.push(agentId ? `/chat?agent=${agentId}` : "/chat");
-}
 
 function toggle() {
   collapsed.value = !collapsed.value;
@@ -141,11 +131,6 @@ function isActive(path) {
     </div>
 
     <div class="sidebar-scroll scroll-min" v-autoscroll>
-      <button class="new-chat-btn" data-testid="new-chat-btn" @click="newChat">
-        <Icon name="plus" :size="16" />
-        <span v-if="!collapsed" class="btn-label">New chat</span>
-      </button>
-
       <nav class="nav-section">
         <div v-if="!collapsed" class="section-label">Workspace</div>
         <router-link
@@ -265,33 +250,6 @@ function isActive(path) {
 .toggle-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-.new-chat-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 10px 8px;
-  padding: 8px 12px;
-  background: var(--accent);
-  color: var(--text-on-accent);
-  border: 0;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.new-chat-btn:hover {
-  background: var(--accent-hover);
-  color: var(--text-on-accent);
-}
-
-.sidebar.rail .new-chat-btn {
-  justify-content: center;
-  margin: 0 8px 8px;
-  padding: 8px;
 }
 
 .nav-section {

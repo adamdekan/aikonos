@@ -410,55 +410,6 @@ describe("Sidebar.vue", () => {
     expect(refreshSpy).toHaveBeenCalled();
   });
 
-  // ── New chat button ───────────────────────────────────────────────────────────
-
-  it("newChat resets buffer (no args) and navigates to /chat when no agent query", async () => {
-    const router = makeRouter("/chat");
-    await router.isReady();
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const userStore = useUserStore();
-    userStore.setFromProfile({ email: "alice@example.com", sub: "alice@example.com" });
-    const { useChatStore } = await import("../store/chat.js");
-    const chatStore = useChatStore();
-    const resetSpy = vi.spyOn(chatStore, "reset");
-    const clearSpy = vi.spyOn(chatStore, "clearActiveSession");
-    const wrapper = mount(Sidebar, { global: { plugins: [router], directives: { autoscroll: autoScrollbar } } });
-    await nextTick();
-
-    await wrapper.find("[data-testid='new-chat-btn']").trigger("click");
-    await nextTick();
-
-    // reset() takes no args in new contract (buffer is conversation-scoped, not agent-scoped)
-    expect(resetSpy).toHaveBeenCalledWith();
-    expect(clearSpy).toHaveBeenCalled();
-    expect(router.currentRoute.value.fullPath).toBe("/chat");
-  });
-
-  it("newChat resets buffer and navigates preserving agent param", async () => {
-    const router = createRouter({ history: createWebHashHistory(), routes });
-    await router.push("/chat?agent=bot-99");
-    await router.isReady();
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const userStore = useUserStore();
-    userStore.setFromProfile({ email: "alice@example.com", sub: "alice@example.com" });
-    const { useChatStore } = await import("../store/chat.js");
-    const chatStore = useChatStore();
-    const resetSpy = vi.spyOn(chatStore, "reset");
-    const clearSpy = vi.spyOn(chatStore, "clearActiveSession");
-    const wrapper = mount(Sidebar, { global: { plugins: [router], directives: { autoscroll: autoScrollbar } } });
-    await nextTick();
-
-    await wrapper.find("[data-testid='new-chat-btn']").trigger("click");
-    await nextTick();
-
-    // reset() takes no args — the buffer is not agent-scoped
-    expect(resetSpy).toHaveBeenCalledWith();
-    expect(clearSpy).toHaveBeenCalled();
-    expect(router.currentRoute.value.query.agent).toBe("bot-99");
-  });
-
   // Note: agentsStore.refresh on user switch is proven by the combination of:
   // 1. "Sidebar calls agentsStore.refresh on mount" (above) — same watch wiring
   // 2. "Sidebar calls inboxStore.refresh on user switch" — same watch callback
