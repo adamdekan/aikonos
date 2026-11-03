@@ -36,7 +36,7 @@ WORKDIR /app
 # Pinned to the patch release so a rebuild never quietly picks an older one;
 # raise it (and uv above, which must know the build) for Python security fixes.
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
-RUN uv python install 3.12.15
+RUN uv python install 3.12.16
 
 # Node deps first for layer caching (production only — no test runner needed
 # at runtime).
@@ -51,7 +51,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
 # pyproject.toml/uv.lock drift). Empty today; checkpoints 2-3 populate
 # pyproject.toml with the script-runtime libraries.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --python 3.12.15 --no-install-project
+RUN uv sync --frozen --python 3.12.16 --no-install-project
 
 COPY src ./src
 
