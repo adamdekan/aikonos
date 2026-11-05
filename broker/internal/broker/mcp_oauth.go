@@ -39,7 +39,7 @@ func (d *Deps) mcpHTTPClient() *http.Client {
 
 // configureMcpOAuth fills rec's oauth columns from discovery and settles the
 // client: an admin-supplied client id (secret optional, write-only, kept when
-// the id is unchanged), else the aikonOS client metadata document when the
+// the id is unchanged), else the Aikonos client metadata document when the
 // server supports it, else dynamic registration. Fails closed: a server we
 // cannot discover or register with is not saved as oauth.
 func (s *BrokerService) configureMcpOAuth(ctx context.Context, tenant string, rec *db.McpConnection, in *brokerv1.McpConnection, secret string, prev *db.McpConnection) error {

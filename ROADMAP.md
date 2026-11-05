@@ -73,7 +73,7 @@ Usability for the people who approve, audit and get refused:
 Not committed, listed so the direction is visible.
 
 - **Delegation interop.** Cross App Access and OIDC-A are converging on how
-  one agent calls another system on a user's behalf. aikonOS mints its own
+  one agent calls another system on a user's behalf. Aikonos mints its own
   grants today; speaking a standard would remove an integration cliff.
 - **Reproducible image builds.** Release images are signed and carry SBOMs
   and provenance, which proves who built them. Only a bit-for-bit rebuild
@@ -81,7 +81,7 @@ Not committed, listed so the direction is visible.
 - **Agent inventory and lifecycle.** Admins export the agent inventory
   (owners, status, connectors, keys) for identity-governance tools, and agents
   move through staged, active, suspended and retired. Discovering agents that
-  run outside aikonOS is still manual.
+  run outside Aikonos is still manual.
 - **Access-decision replay.** Policy decisions replay against the archived
   policy that made them. Access checks record the OpenFGA model and their
   result, but not the relationship tuples behind it; archiving tuple history

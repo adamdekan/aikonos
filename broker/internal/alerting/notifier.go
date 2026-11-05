@@ -196,9 +196,9 @@ func (n *SMTPNotifier) Notify(ctx context.Context, a Alert) error {
 		return fmt.Errorf("alerting: smtp DATA: %w", err)
 	}
 
-	subject := fmt.Sprintf("[aikonOS alert] %s — %s (%s)", a.Rule, a.Severity, a.TenantID)
+	subject := fmt.Sprintf("[Aikonos alert] %s — %s (%s)", a.Rule, a.Severity, a.TenantID)
 	if a.Link != "" {
-		subject = fmt.Sprintf("[aikonOS] %s", a.Title)
+		subject = fmt.Sprintf("[Aikonos] %s", a.Title)
 	}
 	body := n.composeMessage(a, subject, strings.Join(to, ", "))
 	if _, err := fmt.Fprint(wc, body); err != nil {
@@ -226,7 +226,7 @@ func (n *SMTPNotifier) composeMessage(a Alert, subject, to string) string {
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")
-	b.WriteString("aikonOS alerting notification\r\n\r\n")
+	b.WriteString("Aikonos alerting notification\r\n\r\n")
 	b.WriteString(fmt.Sprintf("Rule:      %s\r\n", a.Rule))
 	b.WriteString(fmt.Sprintf("Severity:  %s\r\n", a.Severity))
 	b.WriteString(fmt.Sprintf("Tenant:    %s\r\n", a.TenantID))

@@ -31,11 +31,11 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "aikonOS"
+      VALUE "FileDescription", "Aikonos"
       VALUE "FileVersion", "{version}"
       VALUE "InternalName", "aikonos"
       VALUE "OriginalFilename", "aikonos.exe"
-      VALUE "ProductName", "aikonOS for Windows"
+      VALUE "ProductName", "Aikonos for Windows"
       VALUE "ProductVersion", "{version}"
     END
   END

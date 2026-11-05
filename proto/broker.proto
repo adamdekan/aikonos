@@ -1574,7 +1574,7 @@ message McpConnection {
   string created_by = 7;
   google.protobuf.Timestamp created_at = 8;
   // oauth only. A pre-registered client id; empty → the broker uses the
-  // aikonOS client metadata document or dynamic registration and stores the
+  // Aikonos client metadata document or dynamic registration and stores the
   // resulting id here.
   string oauth_client_id = 9;
   // oauth only. Scopes to request; empty → the server's scopes_supported.
@@ -2686,7 +2686,7 @@ message OrgSettings {
   // interactive runs regardless of its per-agent setting. Unset = true (allowed).
   optional bool unattended_allowed = 2;
 
-  // A6 — org master over workflow sharing (aikonOS's user-authored, shareable
+  // A6 — org master over workflow sharing (Aikonos's user-authored, shareable
   // artifact). When false, PublishWorkflow is refused org-wide so members cannot
   // publish workflows to groups regardless of their skill:workflows grant.
   // Unset = true (allowed).

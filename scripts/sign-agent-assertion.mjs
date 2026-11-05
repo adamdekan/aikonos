@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // scripts/sign-agent-assertion.mjs
-// Sign an RFC 7523 client assertion for an aikonOS external agent (AG-05).
+// Sign an RFC 7523 client assertion for an Aikonos external agent (AG-05).
 // Zero dependencies (node:crypto). Prints the JWT to stdout.
 //
 //   node scripts/sign-agent-assertion.mjs <private-key.pem> <agent-id> <audience> [kid]

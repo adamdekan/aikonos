@@ -1,6 +1,6 @@
 # Microsoft Entra ID login (F2 Phase 2)
 
-> How to point aikonOS's OIDC at Microsoft Entra ID for real end-user login, in a
+> How to point Aikonos's OIDC at Microsoft Entra ID for real end-user login, in a
 > way that **migrates cleanly from a dev/personal tenant to an enterprise tenant**
 > later. The auth code is generic OIDC/JWKS — the swap is **env + a re-seed of
 > identity tuples**, no code change. Another OIDC provider:
@@ -168,7 +168,7 @@ Entra v2 access tokens carry no `amr`, so use a Conditional Access
 authentication context and a claims challenge:
 
 1. Entra admin center → Protection → Conditional Access → Authentication
-   contexts → create one (for example `c1`, "aikonOS risky approvals") and
+   contexts → create one (for example `c1`, "Aikonos risky approvals") and
    publish it to apps.
 2. Create a Conditional Access policy: Target resources → Authentication
    context `c1`; Grant → Require multifactor authentication (or an

@@ -15,7 +15,7 @@ import (
 // ExportAgentInventory lists every agent with its owners and credential state
 // for identity-governance tools (AG-14). Tenant-admin gated through
 // listAgents; owners are read strictly. The soul (system prompt) is left out:
-// the export is meant to leave aikonOS.
+// the export is meant to leave Aikonos.
 // ponytail: two key reads per agent; one tenant-wide query when tenants hold
 // thousands of agents.
 func (s *BrokerService) ExportAgentInventory(ctx context.Context, req *brokerv1.ExportAgentInventoryRequest) (*brokerv1.ExportAgentInventoryResponse, error) {

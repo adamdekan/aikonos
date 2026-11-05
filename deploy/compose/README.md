@@ -1,6 +1,6 @@
 # Compose deployment — operator guide
 
-Brings up the full aikonOS platform under Docker Compose. Profiles:
+Brings up the full Aikonos platform under Docker Compose. Profiles:
 `core` (infra + broker + gateway + webui), `full` (same service set as core),
 `obs` (OTel Collector + Grafana LGTM stack),
 `dev` (development-only extras), `docs-mcp` (streamable-HTTP docs MCP server).
@@ -141,14 +141,14 @@ in the broker container and is written to Vault; a blank key seeds the provider 
 gateway reads `usage` on each turn and reports it to the broker (`EmitLlmUsage`), which records a signed
 `llm.usage` audit event **and** OTLP counters (`llm_tokens_total`, `llm_cost_total`,
 `llm_requests_total`, labelled by provider/model/tenant/agent/direction — never user). With the `obs`
-profile up these land in Prometheus → the Grafana **"LLM Analytics"** dashboard (folder *aikonOS*,
+profile up these land in Prometheus → the Grafana **"LLM Analytics"** dashboard (folder *Aikonos*,
 http://localhost:3030): tokens + cost over time, cost by agent, top spenders.
 
 ### LLM Spend dashboard
 
 Prometheus retention is short and user/session/run ids are cardinality-unsafe as labels, so durable
 spend analytics come from Postgres instead. Every billable call also lands one row in
-`llm_usage_events`, and the Grafana **"LLM Spend"** dashboard (same *aikonOS* folder,
+`llm_usage_events`, and the Grafana **"LLM Spend"** dashboard (same *Aikonos* folder,
 http://localhost:3030) reads it directly: day/week/month totals and a month-burn forecast, spend by
 user / group / agent / model / provider / source, cache hit rate, top sessions and runs, and cap
 utilization against `spend_caps`.
@@ -266,7 +266,7 @@ document the compose-wired ones next to their lines; `docs/OPS-RUNBOOK.md`
 | `OFFICE_SCRIPT_MAX_AS_MB` | office-worker | `1024` | not passed | Address-space limit (MiB) for each model-authored script (node: on top of its heap). |
 | `HOST`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` | docs-mcp | `127.0.0.1`; `aikonos-docs-mcp,localhost,127.0.0.1,[::1]`; none | `HOST=0.0.0.0` | Container bind, Host allowlist, Origin allowlist (see Profiles above). |
 | `AIKONOS_DEPLOY_REQUIRE_SIGNED`, `AIKONOS_DEPLOY_ALLOW_ROLLBACK` | on-prem git deploy hook | `true`; unset | hook environment | Signed commits required; a non-fast-forward deploy is refused unless `AIKONOS_DEPLOY_ALLOW_ROLLBACK=1`. See `deploy/onprem/README.md`. |
-| `AIKONOS_DESKTOP_ALLOW_HTTP` | aikonOS for Windows (user's PC) | unset | n/a | `1` lets the app sign in to a plain-http server that is not on the PC. See `docs/16-desktop-client.md`. |
+| `AIKONOS_DESKTOP_ALLOW_HTTP` | Aikonos for Windows (user's PC) | unset | n/a | `1` lets the app sign in to a plain-http server that is not on the PC. See `docs/16-desktop-client.md`. |
 
 To change a setting compose does not pass, add it to that service's `environment:` in an overlay.
 

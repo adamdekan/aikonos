@@ -1,5 +1,5 @@
 // AG-09: a "mcp:<id>" connect key reaches the broker as mcp_connection_id, and
-// the external surface publishes the aikonOS OAuth client metadata document.
+// the external surface publishes the Aikonos OAuth client metadata document.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";

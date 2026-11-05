@@ -156,7 +156,7 @@ so old events verify unchanged. *Unverified*: confirm with
 | Interactive chat (`/agui`, north) | OIDC `sub` | `req.agent_id` (AG-01; tenant default agent or named agent with `can_use`) | none; OIDC bearer; step tokens carry both facts | OBO/OAuth as subject | `kind=interactive` |
 | Scheduled run | schedule owner | `scheduled_runs.actor_agent_id` | claim re-checks expiry, revocation, subject block (AG-06), actor status (AG-03), then mints grant v2 `kind=scheduled`, `grant_id=schedule id` | as subject; a blocked subject stops the next claim | `grant_id` |
 | External REST, `tk_` key only | none (`svc-<agent>`) | key's agent, must be `service_agent` (AG-02 flag) | grant v2 `kind=external`, actor only | connector tools refused; MCP static bearer with chain logged; web search tenant key | `service_run=true`, `external_client_id=key id` |
-| External REST, key + user assertion | user from the assertion (`aud` = aikonOS, validated by the north `oidc.Validator`) | key's agent, needs `can_use(user, agent)` | grant v2 `kind=external` with subject | as subject; OBO bootstrap can use the assertion as the Entra assertion when the IdP is Entra | `external_client_id` |
+| External REST, key + user assertion | user from the assertion (`aud` = Aikonos, validated by the north `oidc.Validator`) | key's agent, needs `can_use(user, agent)` | grant v2 `kind=external` with subject | as subject; OBO bootstrap can use the assertion as the Entra assertion when the IdP is Entra | `external_client_id` |
 | Delegation envelope accept | recipient | recipient's default agent (AG-01) | ordinary task; AG-11 intersects scopes | as recipient | `delegated_by=sender`, `envelope_id` |
 | Subagent branches | parent's | parent's | parent's identity verbatim (`subagent/run.ts:234-237`); each branch task row copies the parent's chain and sets `parent_task_id` | as parent | inherited |
 | Google Drive / OneDrive / Entra OBO | required | logged | `FreshAccessToken(tenant, subject)`; per-call, short-lived, Vault-cached per subject | token names the subject; actor cannot be expressed to Graph today | `obo` on the tool event |
@@ -230,7 +230,7 @@ AG-02; S6 with AG-05 and S7 with AG-11/AG-12 in phase 3; S8 closes phase 3.
   from AG-01; until then S4 can land with the column nullable and a startup
   warning, which weakens the "every actor explicit" guarantee for one release.
 - **External assertion replay.** A user access token presented to the REST
-  endpoint is a bearer; it is bounded by its own `exp` and the aikonOS
+  endpoint is a bearer; it is bounded by its own `exp` and the Aikonos
   audience. AG-05's `jti` replay cache applies to the agent assertion, not
   to this one.
 - **Open:** should `kind=workflow` be its own kind or `interactive` with an

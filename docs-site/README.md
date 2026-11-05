@@ -1,4 +1,4 @@
-# aikonOS Docs
+# Aikonos Docs
 
 Astro Starlight site. Standalone: no dependency on the rest of this repo, no CI wiring.
 

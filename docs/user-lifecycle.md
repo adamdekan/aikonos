@@ -1,13 +1,13 @@
 # User lifecycle: sign-in, access, and disablement
 
 > Review note (2026-06-12, updated 2026-10-28 for AG-06). Identity lifecycle belongs to
-> the IdP; aikonOS governs authorization after sign-in. Since AG-06 aikonOS can also
+> the IdP; Aikonos governs authorization after sign-in. Since AG-06 Aikonos can also
 > block a user and revoke all sessions of a user or an agent, so access ends at once
 > instead of at token expiry. There is still no user delete.
 
 ## How a user gets the ability to sign in
 
-aikonOS stores no passwords and no user accounts. Authentication is fully delegated to
+Aikonos stores no passwords and no user accounts. Authentication is fully delegated to
 the OIDC identity provider (Entra ID in the live deployment; Keycloak in dev).
 
 A user can sign in if and only if the IdP issues them a valid token for the configured
@@ -56,7 +56,7 @@ Provisioning tab always win. The file is not auto-mounted — you must add a bin
 set the env var explicitly. See `deploy/compose/provisioning.yaml.example` for the
 format.
 
-## What aikonOS controls: authorization, not authentication
+## What Aikonos controls: authorization, not authentication
 
 A signed-in user with zero group memberships hits deny-by-default:
 
@@ -247,5 +247,5 @@ extension.
 | Purge a removed user's oauth MCP tokens | stay in Vault until the user disconnects; the connection's deletion orphans them unreadable | sweep `workspaces/<tenant>/<user>/connectors/mcp-*` on block/offboard |
 | Directory sync from the IdP | Done (AG-16): SCIM maps IdP deactivation to a block and IdP groups to FGA groups | — |
 
-Decision: Entra stays the front door and aikonOS the permission system behind it; the
-block and revoke-all are aikonOS-side kill switches for when IdP revocation lags.
+Decision: Entra stays the front door and Aikonos the permission system behind it; the
+block and revoke-all are Aikonos-side kill switches for when IdP revocation lags.

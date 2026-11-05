@@ -419,7 +419,7 @@ test("GET /desktop.json exposes only its public settings, never other env", asyn
 test("GET /desktop.json answers JSON even where the SPA fallback answers unknown paths", async (t) => {
   const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
   t.after(() => rmSync(dist, { recursive: true, force: true }));
-  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>Aikonos</title>");
   const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: dist, env: {} });
   await app.ready();
   t.after(() => app.close());
@@ -479,7 +479,7 @@ test("/api/* forwards content-disposition and cache-control (AG-14 export)", asy
 test("security headers on the SPA, /runtime-config.js and /api/*", async (t) => {
   const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
   t.after(() => rmSync(dist, { recursive: true, force: true }));
-  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>Aikonos</title>");
   globalThis.fetch = captureFetch({});
   const app = await buildApp({
     gatewayUrl: "http://mock-gateway",
@@ -508,7 +508,7 @@ test("security headers on the SPA, /runtime-config.js and /api/*", async (t) => 
 test("only /auth/callback may be framed, by this origin (silent renew)", async (t) => {
   const dist = mkdtempSync(join(tmpdir(), "aikonos-dist-"));
   t.after(() => rmSync(dist, { recursive: true, force: true }));
-  writeFileSync(join(dist, "index.html"), "<!doctype html><title>aikonOS</title>");
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>Aikonos</title>");
   const app = await buildApp({ gatewayUrl: "http://mock-gateway", distDir: dist, env: {} });
   await app.ready();
   t.after(() => app.close());

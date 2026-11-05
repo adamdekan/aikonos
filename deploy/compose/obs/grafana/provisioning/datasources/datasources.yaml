@@ -52,7 +52,7 @@ datasources:
 
   # Durable per-call LLM spend analytics.
   # aikonos_grafana is SELECT-only on five tables; migrate.sh provisions it.
-  - name: aikonOS Postgres
+  - name: Aikonos Postgres
     type: postgres
     uid: aikonos-postgres
     url: postgres:5432

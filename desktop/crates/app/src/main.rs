@@ -1,9 +1,9 @@
 // A release build is a GUI program: no console window behind it.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! aikonOS for Windows: the member console as a native app.
+//! Aikonos for Windows: the member console as a native app.
 //!
-//! It signs in to the organisation's aikonOS server and offers what a
+//! It signs in to the organisation's Aikonos server and offers what a
 //! member sees in the web console (chat, files, connections, schedules,
 //! workflows, skills, inbox), drawn natively with GPUI Kit. Local files
 //! move only when the user moves them; see `local_files`.
@@ -55,7 +55,7 @@ fn main() {
             // The title bar is drawn by the app; this names the window to
             // Windows itself: Alt+Tab, the taskbar preview.
             titlebar: Some(TitlebarOptions {
-                title: Some("aikonOS".into()),
+                title: Some("Aikonos".into()),
                 ..TitleBar::title_bar_options()
             }),
             ..TitleBar::window_options()

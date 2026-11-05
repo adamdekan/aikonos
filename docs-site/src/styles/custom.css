@@ -5,13 +5,6 @@
   --sl-color-text-accent: var(--sl-color-accent-high);
 }
 
-:root[data-theme="light"] {
-  --sl-color-accent-low: hsl(48, 100%, 90%);
-  --sl-color-accent: hsl(48, 100%, 45%);
-  --sl-color-accent-high: hsl(48, 100%, 20%);
-  --sl-color-text-accent: var(--sl-color-accent);
-}
-
 .site-title img {
   height: 44px !important; /* matches the homepage .brand-logo */
   width: auto;

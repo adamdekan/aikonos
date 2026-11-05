@@ -26,17 +26,17 @@ describe("api/workspace.js", () => {
   });
 
   it("setWorkspaceBackend PUTs {backend, onedriveFolderPath} to /workspace/backend", async () => {
-    clientMod.put.mockResolvedValue({ pref: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" } });
-    await setWorkspaceBackend({ backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" });
+    clientMod.put.mockResolvedValue({ pref: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" } });
+    await setWorkspaceBackend({ backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" });
     expect(clientMod.put).toHaveBeenCalledWith("/workspace/backend", {
-      body: { backend: "onedrive", onedriveFolderPath: "Apps/aikonOS" },
+      body: { backend: "onedrive", onedriveFolderPath: "Apps/Aikonos" },
     });
   });
 
   it("listOneDriveFolders GETs /workspace/onedrive/folders?dir=<encoded>", async () => {
     clientMod.get.mockResolvedValue({ folders: [] });
-    await listOneDriveFolders("Apps/aikonOS");
-    expect(clientMod.get).toHaveBeenCalledWith("/workspace/onedrive/folders?dir=Apps%2FaikonOS");
+    await listOneDriveFolders("Apps/Aikonos");
+    expect(clientMod.get).toHaveBeenCalledWith("/workspace/onedrive/folders?dir=Apps%2FAikonos");
   });
 
   it("listOneDriveFolders defaults to the drive root (empty dir)", async () => {

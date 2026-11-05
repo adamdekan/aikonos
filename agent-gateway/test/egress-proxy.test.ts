@@ -1128,7 +1128,7 @@ test("CP5 egress-proxy fix-4: cookie/x-api-key/x-forwarded-for/x-real-ip NOT for
         "openai-organization": "org-someone-else",
         "x-litellm-key": "other-team",
         "x-forwarded-host": "evil.example",
-        "x-title": "aikonOS Agent Gateway",
+        "x-title": "Aikonos Agent Gateway",
       },
       body: JSON.stringify({ model: "test-model", messages: [] }),
     });
@@ -1143,7 +1143,7 @@ test("CP5 egress-proxy fix-4: cookie/x-api-key/x-forwarded-for/x-real-ip NOT for
     assert.ok(!("openai-organization" in h), "F61: unlisted headers are not forwarded");
     assert.ok(!("x-litellm-key" in h), "F61: unlisted headers are not forwarded");
     assert.ok(!("x-forwarded-host" in h), "F61: unlisted headers are not forwarded");
-    assert.equal(h["x-title"], "aikonOS Agent Gateway", "allowlisted SDK headers still reach the upstream");
+    assert.equal(h["x-title"], "Aikonos Agent Gateway", "allowlisted SDK headers still reach the upstream");
   } finally {
     await proxy.stop();
     await headerClose();

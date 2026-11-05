@@ -1,12 +1,12 @@
 # Another OIDC identity provider
 
-> How to point aikonOS at an OpenID Connect provider other than Microsoft Entra
+> How to point Aikonos at an OpenID Connect provider other than Microsoft Entra
 > ID or the bundled Keycloak. The broker and the gateway validate tokens with
 > generic OIDC and JWKS code, so a new IdP is configuration, not code. Entra has
 > its own guide: [12-entra-login.md](12-entra-login.md).
 
 A deployment trusts **one** issuer at a time. To move users from one IdP to
-another, follow "Switch IdPs" below; aikonOS does not accept two issuers side by
+another, follow "Switch IdPs" below; Aikonos does not accept two issuers side by
 side.
 
 ## What the IdP must issue
@@ -17,11 +17,11 @@ gateway forwards it to the broker. Both check it. The token needs:
 | Requirement | Claim | Why |
 |---|---|---|
 | Issuer equal to `AIKONOS_OIDC_ISSUER`, character for character | `iss` | Exact match. A trailing slash counts. Multi-tenant issuer templates are not supported. |
-| Audience that names aikonOS | `aud` contains `AIKONOS_OIDC_AUDIENCE` | Required whenever an issuer is set; the broker refuses to start without it, because no audience check accepts tokens minted for any other client of the IdP. |
+| Audience that names Aikonos | `aud` contains `AIKONOS_OIDC_AUDIENCE` | Required whenever an issuer is set; the broker refuses to start without it, because no audience check accepts tokens minted for any other client of the IdP. |
 | Signature with RS256, RS384, RS512 or ES256 | header `alg`, `kid` | Other algorithms are rejected. The `kid` must be in the JWKS. |
 | A stable, never-reused user id | `AIKONOS_OIDC_SUBJECT_CLAIM` (default `sub`) | This is the FGA principal, the task owner and the per-user storage key. Use an immutable id, not an email that can be reassigned. It must not start with `svc-` (reserved for agent service accounts). |
 | An email or user name | `email`, else `preferred_username` | The gateway refuses a token with neither. It is the human-readable actor in the audit log. |
-| The aikonOS tenant, as a UUID | `AIKONOS_OIDC_TENANT_CLAIM` (default `tenant_id`) | Row-level security keys on it. A token without the claim is refused (`auth.tenant.missing`); a value that is not a UUID fails every call with `invalid tenant_id`. |
+| The Aikonos tenant, as a UUID | `AIKONOS_OIDC_TENANT_CLAIM` (default `tenant_id`) | Row-level security keys on it. A token without the claim is refused (`auth.tenant.missing`); a value that is not a UUID fails every call with `invalid tenant_id`. |
 | For step-up approvals (AG-13) | `auth_time`, and `amr` or `acr` | See "Step-up" below. |
 
 Most IdPs issue `iss`, `sub`, `email` and a signature out of the box. The two
@@ -29,9 +29,9 @@ things you normally have to add are the **audience** and the **tenant claim**.
 
 ### Audience
 
-The token must carry an audience aikonOS can check. Two ways:
+The token must carry an audience Aikonos can check. Two ways:
 
-- **An API / resource for aikonOS** (preferred). Register a resource server
+- **An API / resource for Aikonos** (preferred). Register a resource server
   (called API, resource, or authorization server audience depending on the
   IdP), for example `aikonos-broker`, and have the web UI client request a
   token for it. Set `AIKONOS_OIDC_AUDIENCE` to that identifier and send the
@@ -43,14 +43,14 @@ The token must carry an audience aikonOS can check. Two ways:
   login-only model.
 
 Some IdPs issue opaque (non-JWT) access tokens unless an API audience is
-requested. aikonOS needs a JWT; check with step 4 of the setup.
+requested. Aikonos needs a JWT; check with step 4 of the setup.
 
 ### Tenant claim
 
-aikonOS needs the tenant as a UUID in a claim. Pick one UUID for the
+Aikonos needs the tenant as a UUID in a claim. Pick one UUID for the
 deployment (or reuse `AIKONOS_TENANT_ID`) and make the IdP emit it:
 
-- **Constant claim** (one aikonOS tenant per IdP app): a static or hardcoded
+- **Constant claim** (one Aikonos tenant per IdP app): a static or hardcoded
   claim mapper on the client, for example `tenant_id` =
   `2b0e5f1c-…`. Keycloak: mapper type *Hardcoded claim*. Other IdPs call it a
   static claim, a claims transformation or a token hook that adds a fixed value.
@@ -154,7 +154,7 @@ mapped show as orphaned.
 
 ## Agent inventory export
 
-Identity-governance tools can import aikonOS agents from the inventory export
+Identity-governance tools can import Aikonos agents from the inventory export
 (AG-14): Admin → Agents → *Export inventory (JSON)* or *(CSV)*, or
 `GET /api/admin/agents/inventory?format=json|csv` with a tenant-admin bearer.
 Each agent carries its id, name, status, owners (`user:` and `group:`

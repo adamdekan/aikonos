@@ -1,4 +1,4 @@
-// AG-09: the aikonOS OAuth client metadata document (CIMD). An MCP
+// AG-09: the Aikonos OAuth client metadata document (CIMD). An MCP
 // authorization server that supports client_id_metadata_document fetches this
 // URL — which is itself the client_id — to learn our redirect URI, so no
 // per-server registration is needed. Point the broker's
@@ -17,7 +17,7 @@ export function registerClientMetadataRoute(
   if (!cfg.externalBaseUrl || !cfg.connectorsRedirectUri) return;
   const doc = {
     client_id: `${cfg.externalBaseUrl}${CLIENT_METADATA_PATH}`,
-    client_name: "aikonOS",
+    client_name: "Aikonos",
     redirect_uris: [cfg.connectorsRedirectUri],
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
