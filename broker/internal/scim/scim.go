@@ -846,7 +846,7 @@ func (h *Handler) createGroup(ctx context.Context, req Request) (int, any, error
 	} else if inUse {
 		h.emit(ctx, req, "aikonos.broker.scim.group.claim_refused", "group:"+fga, map[string]any{"display_name": b.DisplayName})
 		return 0, nil, &Error{Status: http.StatusConflict, ScimType: "uniqueness",
-			Detail: fmt.Sprintf("group %q is already managed in aikonOS; rename the IdP group or have an admin clear its tuples first", fga)}
+			Detail: fmt.Sprintf("group %q is already managed in Aikonos; rename the IdP group or have an admin clear its tuples first", fga)}
 	}
 	g := db.ScimGroup{DisplayName: b.DisplayName, ExternalID: b.ExternalID, FGAGroup: fga, Members: members}
 	// The row first: its unique fga_group stops two IdP groups from sharing

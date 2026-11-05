@@ -1,5 +1,5 @@
 /**
- * server.js — aikonOS docs MCP server.
+ * server.js — Aikonos docs MCP server.
  *
  * Per-request fresh McpServer + StreamableHTTPServerTransport in stateless mode.
  * corpusRoot is captured from createApp closure — never re-read from env per call.
@@ -82,7 +82,7 @@ export function createApp({ corpusRoot, allowedHosts = DEFAULT_ALLOWED_HOSTS, al
       'search_docs',
       {
         description:
-          'Search aikonOS documentation by keyword. Returns ranked results with snippets. ' +
+          'Search Aikonos documentation by keyword. Returns ranked results with snippets. ' +
           'Use this to find docs relevant to a topic before reading them in full.',
         inputSchema: z.object({
           query: z.string().max(MAX_QUERY_LENGTH),
@@ -110,7 +110,7 @@ export function createApp({ corpusRoot, allowedHosts = DEFAULT_ALLOWED_HOSTS, al
       'list_docs',
       {
         description:
-          'List all Markdown documents available in the aikonOS documentation corpus. ' +
+          'List all Markdown documents available in the Aikonos documentation corpus. ' +
           `Returns path and title for each file, at most ${LIST_PAGE_MAX} per call; ` +
           'pass offset to page through a larger corpus.',
         inputSchema: z.object({
@@ -135,7 +135,7 @@ export function createApp({ corpusRoot, allowedHosts = DEFAULT_ALLOWED_HOSTS, al
       'read_doc',
       {
         description:
-          'Read the full content of an aikonOS documentation file by its relative path ' +
+          'Read the full content of an Aikonos documentation file by its relative path ' +
           '(e.g. "docs/ONBOARDING.md"). Use list_docs to discover available paths.',
         inputSchema: z.object({
           path: z.string(),

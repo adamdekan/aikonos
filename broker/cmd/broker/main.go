@@ -1,5 +1,5 @@
 // broker/cmd/broker/main.go
-// aikonOS Broker — main entry point.
+// Aikonos Broker — main entry point.
 // Wires: SPIFFE workload API, OTel tracing, gRPC servers (north + south bound),
 // policy engine clients, audit emitter, sandbox manager.
 package main
@@ -202,7 +202,7 @@ func main() {
 	// Connector OAuth apps (platform secrets). Empty client_id → that provider
 	// is unconfigured: its connector RPCs/tools are unavailable.
 	viper.SetDefault("connectors.redirect_uri", "")
-	// AG-09: https URL of the aikonOS OAuth client metadata document the
+	// AG-09: https URL of the Aikonos OAuth client metadata document the
 	// gateway serves (<external base>/oauth/client-metadata.json). Empty →
 	// oauth MCP connections use a configured client id or dynamic registration.
 	viper.SetDefault("connectors.mcp_client_metadata_url", "")
@@ -358,7 +358,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer log.Sync()
-	log.Info("aikonOS Broker starting")
+	log.Info("Aikonos Broker starting")
 
 	// Load skill manifests. Conflict with a baseline scope → fatal (fail-closed).
 	// Absent or empty dir → OK, baseline only.

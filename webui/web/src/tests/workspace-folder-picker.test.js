@@ -54,13 +54,13 @@ describe("WorkspaceFolderPicker.vue", () => {
     await flushPromises();
 
     workspaceApi.listOneDriveFolders.mockResolvedValueOnce({
-      folders: [{ name: "aikonOS", path: "Apps/aikonOS" }],
+      folders: [{ name: "Aikonos", path: "Apps/Aikonos" }],
     });
     await w.find("[data-testid='picker-folder']").trigger("click");
     await flushPromises();
 
     expect(workspaceApi.listOneDriveFolders).toHaveBeenCalledWith("Apps");
-    expect(w.text()).toContain("aikonOS");
+    expect(w.text()).toContain("Aikonos");
   });
 
   it("breadcrumb ascend re-queries with the crumb's path", async () => {
@@ -71,7 +71,7 @@ describe("WorkspaceFolderPicker.vue", () => {
     await flushPromises();
 
     workspaceApi.listOneDriveFolders.mockResolvedValueOnce({
-      folders: [{ name: "aikonOS", path: "Apps/aikonOS" }],
+      folders: [{ name: "Aikonos", path: "Apps/Aikonos" }],
     });
     await w.find("[data-testid='picker-folder']").trigger("click");
     await flushPromises();

@@ -1,4 +1,4 @@
-//! The aikonOS user API, as the desktop client speaks it.
+//! The Aikonos user API, as the desktop client speaks it.
 //!
 //! This crate holds everything that does not draw: locating a server,
 //! signing in, the authenticated request helpers, the AG-UI and workflow

@@ -378,7 +378,7 @@ impl Shell {
                         .text_xl()
                         .line_height(rems(2.875))
                         .text_color(cx.theme().foreground)
-                        .child("aikonOS"),
+                        .child("Aikonos"),
                 )
             })
             .child(
@@ -764,7 +764,7 @@ impl Shell {
                             .text_color(console(cx).accent_text)
                             .label(if collapsed { "".into() } else { label })
                             .icon(Icon::new(AppIcon::Download))
-                            .tooltip("Download the newer aikonOS for Windows from your server")
+                            .tooltip("Download the newer Aikonos for Windows from your server")
                             .when_some(url, |this, url| {
                                 this.on_click(move |_, window, cx| app::open_link(&url, window, cx))
                             }),

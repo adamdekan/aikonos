@@ -1,4 +1,4 @@
-# aikonOS Incident Response Runbook
+# Aikonos Incident Response Runbook
 
 **Version:** 1.0  
 **Status:** Active  

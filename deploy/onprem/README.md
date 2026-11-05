@@ -1,6 +1,6 @@
-# aikonOS on-prem test deployment (on-prem)
+# Aikonos on-prem test deployment (on-prem)
 
-Deploys the aikonOS stack on a server that already runs Traefik with a company-issued
+Deploys the Aikonos stack on a server that already runs Traefik with a company-issued
 TLS certificate. Only company Entra ID users can sign in.
 
 ```
@@ -57,7 +57,7 @@ the built files already live at `html/docs/` inside the image.
 
 You need **one** app registration in your tenant:
 
-**aikonOS SPA:**
+**Aikonos SPA:**
 - Platform: Single-page application
 - Redirect URI: `https://aikonos.example.com/auth/callback`
 - Expose an API: add scope `access_as_user` (App ID URI: `api://<client-id>`)
@@ -85,7 +85,7 @@ user to link OneDrive individually:
    secret, or a mismatched app registration).
 4. **Enable**.
 
-Every user then gets a default `Apps/aikonOS` OneDrive folder and a working-folder
+Every user then gets a default `Apps/Aikonos` OneDrive folder and a working-folder
 control under the chat composer (local vs. OneDrive) — no per-user connect step.
 The **audience constraint**: this only works when the M365 connection reuses the
 same app registration users sign in with; a different `client_id` fails the
@@ -352,7 +352,7 @@ curl -I https://aikonos-api.example.com/v1/agents/  # → 401 (no key)
 ```
 
 Browser → `https://aikonos.example.com` → SPA loads → SPA redirects to Entra sign-in
-→ company user logs in → SPA receives auth code → exchanges for bearer → lands in aikonOS.
+→ company user logs in → SPA receives auth code → exchanges for bearer → lands in Aikonos.
 
 ---
 
@@ -573,7 +573,7 @@ the MCP container must (1) share a network with the broker and (2) be reachable 
 the broker's SSRF guard. Three things are required — all three, or the agent silently
 sees no MCP tools:
 
-1. **Join the shared network.** aikonOS's mesh network is named `aikonos_mesh` (stable,
+1. **Join the shared network.** Aikonos's mesh network is named `aikonos_mesh` (stable,
    set in `compose.yaml`). In the MCP project's compose file, declare it external and
    attach the service to it alongside its own default network:
 
@@ -601,15 +601,15 @@ sees no MCP tools:
    for **all** broker MCP dials — acceptable on-prem where MCP servers live only on
    internal Docker networks; do not enable on an internet-exposed tenant.)
 
-3. **Register by DNS name, not IP.** In aikonOS (Admin → MCP / connector), set the
+3. **Register by DNS name, not IP.** In Aikonos (Admin → MCP / connector), set the
    server URL to the container DNS name — `http://eu-regs-mcp:3000` — never a raw
    `172.x` IP. Container IPs change on every restart; the DNS name is stable on the
    shared network.
 
-#### Worked example: attach the bundled aikonOS docs MCP server
+#### Worked example: attach the bundled Aikonos docs MCP server
 
 The repo ships a ready-made docs MCP server (`docs-mcp/`) that lets agents answer
-questions about aikonOS's own documentation. To enable it:
+questions about Aikonos's own documentation. To enable it:
 
 1. **Start the service** (run in `~/apps/aikonos`):
 
@@ -687,7 +687,7 @@ so no external-network declaration is needed.
    agent gains a real write path to production dashboards and alert rules with no
    second gate behind it.
 
-   Nor is there necessarily a human in the loop. aikonOS classes an MCP tool with no
+   Nor is there necessarily a human in the loop. Aikonos classes an MCP tool with no
    read-only annotation as `WRITE_EXTERNAL` and routes it to approval, but an agent
    whose `approval_mode` is `auto` pre-authorizes every tool of every attached MCP
    server regardless of effect class (`resolveAutoApproveAllowlist`). On a stack

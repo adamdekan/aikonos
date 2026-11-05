@@ -2,7 +2,7 @@
 -- AG-05: key-pair authentication for external agents. An agent registers one
 -- or more public keys and authenticates on the external surface with a
 -- short-lived signed JWT client assertion (RFC 7523) instead of a tk_ bearer
--- key. The private key never reaches aikonOS.
+-- key. The private key never reaches Aikonos.
 --
 -- public_key is the SPKI PEM, normalised at registration whatever the admin
 -- pasted (PEM or JWK). alg is fixed per key (ES256 | EdDSA): an assertion

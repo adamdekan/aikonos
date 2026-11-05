@@ -1,7 +1,7 @@
 # Agent identity and governance — improvement plan
 
 > Date: 2026-10-28, against `main` at `e219bba`.
-> Scope: how aikonOS identifies, bounds, delegates for and revokes AI agents,
+> Scope: how Aikonos identifies, bounds, delegates for and revokes AI agents,
 > and how agents reach downstream systems. Facts were checked in code and docs
 > on `main`; file references are to that commit.
 > Purpose: a ranked list of improvements for later implementation. Items are
@@ -11,7 +11,7 @@
 
 ## 0. Summary
 
-aikonOS governs agents well at the **tool-call layer**: every call passes task
+Aikonos governs agents well at the **tool-call layer**: every call passes task
 binding, OPA, OpenFGA, a task-bound capability token, budgets and rate limits,
 and risky calls wait for a human.
 
@@ -101,7 +101,7 @@ dependency, and closes L-03.
 | Agent ceiling | Agent skills, MCP grant per whole connector, allowed LLM providers, capability-token attenuation | Per connector, not per tool. MCP effect class taken from the plan (H-11) |
 | Downstream tokens | Vault holds per-user OAuth tokens for Google and Microsoft with refresh; tenant-wide keys for web search and MCP | No per-user MCP auth, no generic OAuth provider |
 | MCP server auth | Static bearer or none (`broker/internal/toolproxy/mcp.go`) | No MCP OAuth |
-| Cross-system delegation | aikonOS mints its own grants; ROADMAP lists "Delegation interop" under consideration | No standard protocol |
+| Cross-system delegation | Aikonos mints its own grants; ROADMAP lists "Delegation interop" under consideration | No standard protocol |
 | Human approval | n-of-m approvals, four-eyes for step-up, separation of duty. Records live in Postgres `approval_requests` (`001_initial_schema.sql:167`, `db/approvals.go`, `approvalsvc/`); `expires_at` is stored but never enforced (M-09). The interactive wait is a promise in gateway memory (`agui/hitl.ts`). Scheduler pre-approves `web.fetch`, `doc.read`, `doc.write` even with `approvedTools: []` (L-25, `ticker.ts:45`); `unattendedAllowed` is read only in `routes/agui.ts` (H-06) | No pending-approvals RPC, no out-of-band channel, no expiry |
 | Notifiers | Webhook and SMTP (`alerting/notifier.go`); SMTP never STARTTLS (L-08) | No Teams or Slack notifier |
 | Revocation | Delete agent, revoke API key or role. Tokens live to expiry (`docs/user-lifecycle.md:73-75`) | No block flag, no revoke-all, no SCIM |
@@ -237,8 +237,8 @@ dependency, and closes L-03.
   agent id, `aud` = the gateway, `exp` at most five minutes ahead, `jti`
   checked against a replay cache). Keys carry a `kid`, a status and an expiry;
   rotation registers the new key before retiring the old. When an external
-  agent acts for a specific person, such as an IDE agent calling aikonOS for
-  its user, accept that person's IdP access token with the aikonOS audience
+  agent acts for a specific person, such as an IDE agent calling Aikonos for
+  its user, accept that person's IdP access token with the Aikonos audience
   instead of a shared key.
 
 ### AG-06 Revocation epoch and user block (High, S–M)
@@ -321,7 +321,7 @@ dependency, and closes L-03.
   (RFC 9728), run authorization code with PKCE per user, bind tokens to the
   server with resource indicators (RFC 8707), and keep them in Vault per user.
   Reuse the connector flow, state store and refresh write-back in
-  `broker/internal/connector/oauth.go` and `token.go`. Publish an aikonOS
+  `broker/internal/connector/oauth.go` and `token.go`. Publish an Aikonos
   client metadata document (CIMD) so servers that support it need no
   per-server registration. Keep the static bearer as an explicitly labelled
   service mode.
@@ -329,17 +329,17 @@ dependency, and closes L-03.
 ### AG-10 Identity-assertion grant (ID-JAG) client (Medium, L; only when a customer needs it)
 
 - **Why:** when an enterprise IdP mediates access between applications,
-  aikonOS can reach other SaaS as the user under the IdP's central policy,
+  Aikonos can reach other SaaS as the user under the IdP's central policy,
   without per-app consent or shared keys.
 - **Worth it when** a customer's IdP issues ID-JAGs and the target resources
   accept them; Slack and Atlassian document resource-side support. I found no
-  evidence that Microsoft Entra, aikonOS's main production IdP, issues them.
+  evidence that Microsoft Entra, Aikonos's main production IdP, issues them.
   Do not start this without a named customer and a verified IdP.
 - **Change:** a connector auth type next to Entra on-behalf-of. The broker
   keeps the user's IdP refresh token server-side, as it already does for OBO,
   performs leg 1 (RFC 8693 token exchange at the IdP for an ID-JAG naming the
   resource) and leg 2 (RFC 7523 JWT-bearer grant at the resource's
-  authorization server), and authenticates as aikonOS with a private-key
+  authorization server), and authenticates as Aikonos with a private-key
   client assertion. Resource tokens stay inside the broker; the agent never
   holds them. This implements the ROADMAP's "Delegation interop" item.
 
@@ -384,11 +384,11 @@ dependency, and closes L-03.
 - **Further IdPs:** the broker accepts any OIDC IdP but needs a tenant claim
   holding a UUID (`oidc.tenant_claim`, default `tenant_id`). IdPs without such
   a claim need a custom claim and an authorization server that issues the
-  aikonOS audience. Write and test setup steps next to `docs/12-entra-login.md`
+  Aikonos audience. Write and test setup steps next to `docs/12-entra-login.md`
   for the next IdP a customer brings.
 - **Inventory export:** identity-governance tools increasingly keep registries
   of AI agents. An agent inventory endpoint (id, owners, status, connectors),
-  available once AG-03 and AG-04 land, would let them import aikonOS agents.
+  available once AG-03 and AG-04 land, would let them import Aikonos agents.
   This advances the ROADMAP's "Agent inventory and lifecycle" item.
 
 ### AG-15 Mandatory expiry for `tk_` API keys (High, S; first PR)
@@ -450,7 +450,7 @@ dependency, and closes L-03.
   delegations: `actor_agent_id`, `delegation_expires_at`,
   `delegation_revoked_at` on the schedule row, re-checked at each claim
   against the subject's block (AG-06) and the actor's status (AG-03).
-  External agents may add the person's own IdP token (aikonOS audience) to
+  External agents may add the person's own IdP token (Aikonos audience) to
   their key to act with a subject; key-only runs need the AG-02
   `service_agent` flag. Every tool, plan and scheduler audit event carries
   `actor_agent_id` and `context.obo`. Downstream: OBO and (later) AG-09 and
@@ -499,7 +499,7 @@ dependency, and closes L-03.
 - **Long-lived cached resource tokens** for downstream systems.
 - **Open dynamic client registration for agents.** Admin-issued registration is
   safer. If self-registration is ever needed, prefer CIMD with an allowlist.
-- **aikonOS as an ID-JAG issuer.** That is the IdP's job; aikonOS should
+- **Aikonos as an ID-JAG issuer.** That is the IdP's job; Aikonos should
   consume ID-JAGs, not mint them.
 - **Inbound ID-JAG acceptance.** Dropped from AG-10 until an external agent
   with an ID-JAG-issuing IdP exists.

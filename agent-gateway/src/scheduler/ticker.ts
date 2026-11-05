@@ -5,7 +5,7 @@
 //
 // Unattended approvals: a run carries an approved_tools allowlist (standing
 // human-consent). The unattended approver grants a NEEDS_HUMAN tool iff its
-// aikonOS tool id is in that list; any other gated call pauses the run until a
+// Aikonos tool id is in that list; any other gated call pauses the run until a
 // human decides it in the Inbox (AG-07 slice 2). With the org master
 // unattendedAllowed off (H-06) nothing is pre-approved. It never overrides an
 // OPA DENY or a capability-scope failure — those still come back as a blocked
@@ -50,7 +50,7 @@ interface RunOutcome {
 
 // preAuthApprover is the deny-fast allowlist policy (auto-approve chat agents,
 // subagent branches): a tool requiring human approval is granted iff its
-// aikonOS tool id is in the allowlist, else denied at once.
+// Aikonos tool id is in the allowlist, else denied at once.
 export function preAuthApprover(approvedTools: string[], log?: Logger): Approver {
   const allow = new Set(approvedTools);
   return async (info) => {

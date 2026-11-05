@@ -156,7 +156,7 @@ test("trimmedErrorText (F66): a gateway prefix around String(err) keeps the pref
   );
   assert.equal(trimmedErrorText("lookup failed: Error: 5 NOT_FOUND: no such workflow"), "lookup failed: no such workflow");
   assert.equal(trimmedErrorText("Error: 13 INTERNAL: pq: relation missing"), "internal error");
-  assert.equal(trimmedErrorText("tool 'x' is not permitted by aikonOS policy"), "tool 'x' is not permitted by aikonOS policy");
+  assert.equal(trimmedErrorText("tool 'x' is not permitted by Aikonos policy"), "tool 'x' is not permitted by Aikonos policy");
 });
 
 test("sendError: response body never leaks a 'Error:' / stack-shaped string", () => {

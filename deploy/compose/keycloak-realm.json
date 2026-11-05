@@ -125,7 +125,7 @@
     },
     {
       "clientId": "aikonos-desktop",
-      "name": "aikonOS for Windows",
+      "name": "Aikonos for Windows",
       "enabled": true,
       "publicClient": true,
       "standardFlowEnabled": true,

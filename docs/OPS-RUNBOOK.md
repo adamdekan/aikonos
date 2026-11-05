@@ -1,9 +1,9 @@
-# aikonOS Operations Runbook
+# Aikonos Operations Runbook
 
 **Audience**: Solo developer / operator during MVP phase.
 **Update**: After every Phase completion and after every incident.
 
-> aikonOS deploys via **Docker Compose only**. See `deploy/compose/README.md` for the
+> Aikonos deploys via **Docker Compose only**. See `deploy/compose/README.md` for the
 > operator guide and `compose.yaml` for the stack. Profiles: `core` / `full` / `obs` / `dev` / `docs-mcp`.
 >
 > Upgrading to the agent-identity release: follow the order in
@@ -139,7 +139,7 @@ settings (0.7.5)".
 - **SCIM tokens expire.** A token now works for 365 days; tokens that existed
   before the upgrade expire 365 days after it. Rotate the token to renew it
   ([18-scim-provisioning.md](18-scim-provisioning.md)).
-- **SCIM group adoption.** SCIM no longer adopts an existing aikonOS group that
+- **SCIM group adoption.** SCIM no longer adopts an existing Aikonos group that
   already has members or grants: the create is refused with 409. Rename the
   Entra group, or clear that group in Access Control and let Entra retry.
 - **SCIM deactivations from before the upgrade.** A user whose IdP sent an
@@ -653,10 +653,10 @@ docker compose ps | grep -E 'grafana|prometheus|loki|otel'   # all should be hea
 ```
 
 Then open Grafana (default host port `3030`; if that port is taken, publish on
-another, e.g. `-p 3031:3000`) and find the dashboards under the **aikonOS** folder.
+another, e.g. `-p 3031:3000`) and find the dashboards under the **Aikonos** folder.
 
 A Grafana that ran v0.7.3 or earlier moves the dashboards and alert rules into the
-**aikonOS** and **aikonOS Security** folders on its first start with v0.7.4, and keeps
+**Aikonos** and **Aikonos Security** folders on its first start with v0.7.4, and keeps
 the old, now empty **Aikonos** and **Aikonos Security** folders. Delete those two in
 Grafana if you don't want them; nothing refers to them.
 

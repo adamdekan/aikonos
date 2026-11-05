@@ -126,7 +126,7 @@ an agent ("Acts as") in the edit form first, then resumes.
   9728 protected-resource metadata, then RFC 8414 / OIDC metadata) and refuses
   to save one that lacks PKCE S256 or names a different resource. The client is
   the admin's pre-registered client id (secret optional, in Vault), else the
-  aikonOS client metadata document when the server supports it, else dynamic
+  Aikonos client metadata document when the server supports it, else dynamic
   registration (RFC 7591).
 - Users link their account under Connections → *MCP servers* → *Connect*
   (authorization code + PKCE, resource indicator RFC 8707 on every authorize

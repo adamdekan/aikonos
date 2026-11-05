@@ -1,11 +1,11 @@
 # SCIM 2.0 provisioning with Entra ID (AG-16)
 
-With SCIM the identity provider drives two things in aikonOS:
+With SCIM the identity provider drives two things in Aikonos:
 
 - **Deactivation.** A user disabled, unassigned or deleted in Entra is blocked in
-  aikonOS (the AG-06 user block). The block stops all use at once, and owned
+  Aikonos (the AG-06 user block). The block stops all use at once, and owned
   agents fall into the orphan sweep (AG-04).
-- **Group membership.** Entra groups assigned to the app become aikonOS groups.
+- **Group membership.** Entra groups assigned to the app become Aikonos groups.
   Membership is written as FGA tuples `user:<objectId> member group:<name>`.
 
 Sign-in itself does not change: users still sign in through OIDC (see
@@ -21,7 +21,7 @@ A tenant runs one of two modes, set in `provisioning.mode`:
 Under `scim`, email rules grant nothing and new rules are refused. This removes
 finding M-02 (groups granted from an unverified email claim) for the tenant.
 
-## What aikonOS stores
+## What Aikonos stores
 
 | SCIM attribute | Use |
 |---|---|
@@ -29,7 +29,7 @@ finding M-02 (groups granted from an unverified email claim) for the tenant.
 | `userName` | Lookup key (`filter=userName eq "…"`), unique per tenant, case-insensitive |
 | `emails`, `displayName` | Shown in SCIM responses |
 | `active` | `false` sets the user block; `true` lifts a block that SCIM set |
-| Group `displayName` | Gives the aikonOS group name: lowercase, other characters become `-` (`Finance Team` → `finance-team`). The name is fixed when the group is created, so a rename in Entra keeps the tuples. |
+| Group `displayName` | Gives the Aikonos group name: lowercase, other characters become `-` (`Finance Team` → `finance-team`). The name is fixed when the group is created, so a rename in Entra keeps the tuples. |
 | Group `members` | One FGA `member` tuple per member |
 
 Other attributes (`name.*`, `title`, the enterprise extension) are accepted and
@@ -46,7 +46,7 @@ including `members[value eq "…"]` and string booleans), and `DELETE` on single
 resources. Not supported: `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`,
 `/Bulk`, sorting, and filters other than `eq`.
 
-## 1. Prepare aikonOS
+## 1. Prepare Aikonos
 
 1. Set `AIKONOS_EXTERNAL_BASE_URL` on the agent-gateway to the public URL of
    the external surface (port 8090 by default), for example
@@ -55,9 +55,9 @@ resources. Not supported: `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`
 2. Entra sends a burst of requests during a sync. If the external surface
    answers 429, raise `AIKONOS_EXTERNAL_RATE_LIMIT` (requests per minute per IP,
    default 60).
-3. In aikonOS, open **Admin → Access Control → Provisioning**.
+3. In Aikonos, open **Admin → Access Control → Provisioning**.
 4. Under **Directory sync (SCIM)**, select **Create token**. Copy the token. It is
-   shown once; aikonOS keeps only a hash.
+   shown once; Aikonos keeps only a hash.
 5. Copy the **SCIM tenant URL** (`…/scim/v2`).
 
 Do not switch the mode yet. Under `jit` the endpoint answers 403, so Entra cannot
@@ -65,7 +65,7 @@ make changes before you are ready.
 
 ## 2. Configure the Entra enterprise app
 
-1. Entra admin center → **Enterprise applications** → your aikonOS app (the one
+1. Entra admin center → **Enterprise applications** → your Aikonos app (the one
    used for sign-in) → **Provisioning** → **Get started**.
 2. **Provisioning Mode:** Automatic.
 3. **Admin Credentials:** Tenant URL = the SCIM tenant URL; Secret Token = the
@@ -80,16 +80,16 @@ make changes before you are ready.
 5. **Mappings → Provision Microsoft Entra ID Groups:** enabled. Keep
    `displayName` ← `displayName` (matching) and `members` ← `members`.
 6. **Settings → Scope:** "Sync only assigned users and groups". Assign the
-   users and groups that should exist in aikonOS under **Users and groups**.
+   users and groups that should exist in Aikonos under **Users and groups**.
 7. Save.
 
-The aikonOS sign-in uses the `oid` claim as subject (`AIKONOS_OIDC_SUBJECT_CLAIM=oid`,
+The Aikonos sign-in uses the `oid` claim as subject (`AIKONOS_OIDC_SUBJECT_CLAIM=oid`,
 see 12-entra-login.md). `externalId` must hold the same value; that is why it
 maps to `objectId`.
 
 ## 3. Switch the mode and start
 
-1. In aikonOS, set **Provisioning mode** to **Identity provider via SCIM**. From
+1. In Aikonos, set **Provisioning mode** to **Identity provider via SCIM**. From
    now on email rules grant nothing. Groups already granted by email rules stay
    until you revoke them in the Roles tab.
 2. In Entra, select **Test Connection**. It must succeed.
@@ -105,7 +105,7 @@ maps to `objectId`.
 SCIM manages the membership of the groups it creates. It does not grant those
 groups anything: an admin grants a group roles, skills or connectors in Access
 Control as usual (for example `group:finance-team#member`), after SCIM has
-created the group. SCIM does not adopt a group already used in aikonOS: if an
+created the group. SCIM does not adopt a group already used in Aikonos: if an
 Entra group gives the name of a group that has members or grants, the create is
 refused (409, audited as `scim.group.claim_refused`), so a provisioning token
 cannot add members to a group an admin manages by hand. Rename the Entra group,
@@ -143,8 +143,8 @@ Every token change is audited (`aikonos.broker.scim.token.created`,
 |---|---|
 | Test Connection fails with 403 | `provisioning.mode` is still `jit` |
 | 401 | Token wrong, rotated, revoked or expired (365 days) |
-| 409 `group ... is already managed in aikonOS` | The Entra group's name matches a group that already has members or grants; see "Group names and grants" |
+| 409 `group ... is already managed in Aikonos` | The Entra group's name matches a group that already has members or grants; see "Group names and grants" |
 | 400 `externalId is required` | The `externalId` mapping is missing; map it to `objectId` |
 | 400 `externalId cannot change` | The mapping was changed after users were created. Delete and re-provision those users. |
 | A provisioned user signs in but has no groups | `externalId` is not the subject the OIDC token carries (check `AIKONOS_OIDC_SUBJECT_CLAIM`) |
-| 409 on a group | Another group already gives the same aikonOS name |
+| 409 on a group | Another group already gives the same Aikonos name |

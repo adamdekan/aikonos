@@ -539,7 +539,7 @@ export async function createSessionFromPlan(
     api,
     // Bearer is the OpenAI auth shape; the Anthropic client sends x-api-key itself.
     authHeader: api === "openai-completions",
-    headers: { "HTTP-Referer": "https://aikonos.com", "X-Title": "aikonOS Agent Gateway" },
+    headers: { "HTTP-Referer": "https://aikonos.com", "X-Title": "Aikonos Agent Gateway" },
     models: [
       {
         id: plan.modelId,

@@ -300,7 +300,7 @@ in their audit events.
 
 Let the identity provider drive users and groups with SCIM 2.0 (AG-16, setup in
 `docs/18-scim-provisioning.md`): a user deactivated in Entra is blocked in
-aikonOS, and group membership follows Entra. Set `provisioning.mode=scim`; it also
+Aikonos, and group membership follows Entra. Set `provisioning.mode=scim`; it also
 turns off the email-rule grants, which trust an unverified email claim. SCIM
 tokens are shown once and stored as a peppered hash; rotate or revoke them under
 Admin → Access Control → Provisioning.

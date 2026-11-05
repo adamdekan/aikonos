@@ -140,7 +140,7 @@ type McpDeps struct {
 	// AllowPrivate disables the SSRF guard in the broker-side MCP client
 	// (ListMcpServerTools). False in production; set true in tests only.
 	AllowPrivate bool
-	// ClientMetadataURL is the https URL of the aikonOS OAuth client metadata
+	// ClientMetadataURL is the https URL of the Aikonos OAuth client metadata
 	// document (CIMD, served by the gateway). Empty → oauth connections use a
 	// configured client id or dynamic registration only (AG-09).
 	ClientMetadataURL string

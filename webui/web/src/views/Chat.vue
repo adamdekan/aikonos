@@ -334,7 +334,7 @@ onMounted(async () => {
           ref="composerRef"
           v-model="draft"
           :running="running"
-          placeholder="Message aikonOS…"
+          placeholder="Message Aikonos…"
           @submit="submit"
           @stop="stop"
         />

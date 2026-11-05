@@ -40,7 +40,7 @@ if [ "$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d postgres -tAc \
 fi
 echo "[migrate] openfga database ensured"
 
-# Apply aikonOS migrations idempotently
+# Apply Aikonos migrations idempotently
 for f in $(find "${MIG_DIR}" -maxdepth 1 -name '*.sql' | sort -V); do
   ver=$(basename "$f" | cut -d_ -f1)
   applied=$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \

@@ -374,12 +374,12 @@ func fetchJSON(ctx context.Context, hc *http.Client, u string, out any) error {
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
 
-// RegisterMcpClient registers aikonOS with an authorization server by RFC 7591
+// RegisterMcpClient registers Aikonos with an authorization server by RFC 7591
 // dynamic client registration and returns the issued client id and secret
 // (empty secret → the server issued a public client).
 func RegisterMcpClient(ctx context.Context, hc *http.Client, registrationURL, redirectURI string) (clientID, clientSecret string, err error) {
 	body, _ := json.Marshal(map[string]any{
-		"client_name":                "aikonOS",
+		"client_name":                "Aikonos",
 		"redirect_uris":              []string{redirectURI},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},

@@ -25,7 +25,7 @@ Fedora CoreOS (Butane/Ignition), Flatcar, Bottlerocket, and Talos Linux.
 - Pod networking with Cilium requires disabling Talos's default flannel
   (handled in `patches/cluster-wide.yaml`).
 
-**Superseded (Docker-only pivot):** aikonOS now deploys via **Docker Compose only** —
+**Superseded (Docker-only pivot):** Aikonos now deploys via **Docker Compose only** —
 the Talos/k8s/Cilium substrate is gone. Services run as Compose containers on a bridge
 network; there is no host-OS attestation layer. See `compose.yaml` +
 `deploy/compose/README.md`. The immutable-OS / measured-boot goals are deferred to a
@@ -355,7 +355,7 @@ EXECUTING write, not a missing edge.
 **Date**: 2026-10
 **Status**: Proposed
 
-**Context**: Every agent action in aikonOS is done *for* a person *by* an agent,
+**Context**: Every agent action in Aikonos is done *for* a person *by* an agent,
 but neither party is stated explicitly. The task row has an owner string and a
 nullable agent id; the HMAC owner grant names tenant, owner and expiry only
 (`broker/internal/gatewaygrant/gatewaygrant.go:10`); capability tokens carry
