@@ -16,11 +16,15 @@ export default defineConfig({
       // Wordmark replaces the site title in the header; `title` is kept for the
       // document <title>, and Starlight renders it as the logo's screen-reader text.
       logo: {
-        dark: './src/assets/aikonos-wordmark.svg',
-        light: './src/assets/aikonos-wordmark-light.svg',
+        src: './src/assets/aikonos-wordmark.svg',
         replacesTitle: true,
       },
-      components: { SiteTitle: './src/components/SiteTitle.astro' },
+      // Dark only, like aikonos.com: theme forced to dark, theme picker removed.
+      components: {
+        SiteTitle: './src/components/SiteTitle.astro',
+        ThemeProvider: './src/components/ThemeProvider.astro',
+        ThemeSelect: './src/components/ThemeSelect.astro',
+      },
       customCss: ['./src/styles/custom.css'],
       sidebar: [
         { label: 'Concepts', items: [{ autogenerate: { directory: 'concepts' } }] },
